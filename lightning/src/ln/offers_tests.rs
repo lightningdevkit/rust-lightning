@@ -1325,7 +1325,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	connect_peers(david, alice);
-	match &mut david.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
+	match &mut david.offers_handler.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
 		MessageSendInstructions::WithSpecifiedReplyPath { destination, .. } =>
 			*destination = Destination::Node(alice_id),
 		_ => panic!(),
@@ -1350,7 +1350,7 @@ fn fails_authentication_when_handling_invoice_request() {
 		.unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	match &mut david.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
+	match &mut david.offers_handler.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
 		MessageSendInstructions::WithSpecifiedReplyPath { destination, .. } =>
 			*destination = Destination::BlindedPath(invalid_path),
 		_ => panic!(),
@@ -1430,7 +1430,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 
 	// Don't send the invoice request, but grab its reply path to use with a different request.
 	let invalid_reply_path = {
-		let mut pending_offers_messages = david.node.pending_offers_messages.lock().unwrap();
+		let mut pending_offers_messages = david.offers_handler.pending_offers_messages.lock().unwrap();
 		let pending_invoice_request = pending_offers_messages.pop().unwrap();
 		pending_offers_messages.clear();
 		match pending_invoice_request.1 {
@@ -1447,7 +1447,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	// Swap out the reply path to force authentication to fail when handling the invoice since it
 	// will be sent over the wrong blinded path.
 	{
-		let mut pending_offers_messages = david.node.pending_offers_messages.lock().unwrap();
+		let mut pending_offers_messages = david.offers_handler.pending_offers_messages.lock().unwrap();
 		let mut pending_invoice_request = pending_offers_messages.first_mut().unwrap();
 		match &mut pending_invoice_request.1 {
 			MessageSendInstructions::WithSpecifiedReplyPath { reply_path, .. } =>
@@ -1534,7 +1534,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 	let expected_invoice = alice.offers_handler.request_refund_payment(&refund).unwrap();
 
 	connect_peers(david, alice);
-	match &mut alice.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
+	match &mut alice.offers_handler.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
 		MessageSendInstructions::WithSpecifiedReplyPath { destination, .. } =>
 			*destination = Destination::Node(david_id),
 		_ => panic!(),
@@ -1565,7 +1565,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 
 	let expected_invoice = alice.offers_handler.request_refund_payment(&refund).unwrap();
 
-	match &mut alice.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
+	match &mut alice.offers_handler.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 {
 		MessageSendInstructions::WithSpecifiedReplyPath { destination, .. } =>
 			*destination = Destination::BlindedPath(invalid_path),
 		_ => panic!(),
@@ -2156,7 +2156,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 		destination: Destination::BlindedPath(reply_path),
 	};
 	let message = OffersMessage::Invoice(invoice);
-	alice.node.pending_offers_messages.lock().unwrap().push((message, instructions));
+	alice.offers_handler.pending_offers_messages.lock().unwrap().push((message, instructions));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(alice_id, &onion_message);

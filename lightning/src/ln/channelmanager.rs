@@ -67,15 +67,10 @@ use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice::UnsignedBolt12Invoice;
-use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
-use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::signer;
-#[cfg(async_payments)]
-use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
-use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, Responder, ResponseInstruction};
-use crate::onion_message::offers::OffersMessage;
+use crate::onion_message::messenger::{MessageRouter, MessageSendInstructions, Responder, ResponseInstruction};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
@@ -90,8 +85,15 @@ use crate::util::errors::APIError;
 #[cfg(feature = "dnssec")]
 use crate::onion_message::dns_resolution::{DNSResolverMessage, OMNameResolver};
 
+#[cfg(async_payments)]
+use {
+	crate::offers::static_invoice::StaticInvoice,
+	crate::onion_message::messenger::Destination,
+};
+
 #[cfg(not(c_bindings))]
 use {
+	crate::onion_message::messenger::DefaultMessageRouter,
 	crate::routing::router::DefaultRouter,
 	crate::routing::gossip::NetworkGraph,
 	crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters},
@@ -2140,8 +2142,6 @@ where
 //
 // Lock order tree:
 //
-// `pending_offers_messages`
-//
 // `pending_async_payments_messages`
 //
 // `total_consistency_lock`
@@ -2392,10 +2392,6 @@ where
 	event_persist_notifier: Notifier,
 	needs_persist_flag: AtomicBool,
 
-	#[cfg(not(any(test, feature = "_test_utils")))]
-	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
@@ -3315,7 +3311,6 @@ where
 			needs_persist_flag: AtomicBool::new(false),
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
-			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
@@ -9516,10 +9511,6 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	fn get_pending_offers_messages(&self) -> MutexGuard<'_, Vec<(OffersMessage, MessageSendInstructions)>> {
-		self.pending_offers_messages.lock().expect("Mutex is locked by other thread.")
-	}
-
 	#[cfg(feature = "dnssec")]
 	fn get_pending_dns_onion_messages(&self) -> MutexGuard<'_, Vec<(DNSResolverMessage, MessageSendInstructions)>> {
 		self.pending_dns_onion_messages.lock().expect("Mutex is locked by other thread.")
@@ -9629,42 +9620,6 @@ where
 		self.pending_outbound_payments.release_invoice_requests_awaiting_invoice()
 	}
 
-	fn enqueue_invoice_request(
-		&self,
-		invoice_request: InvoiceRequest,
-		reply_paths: Vec<BlindedMessagePath>,
-	) -> Result<(), Bolt12SemanticError> {
-		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-		if !invoice_request.paths().is_empty() {
-			reply_paths
-				.iter()
-				.flat_map(|reply_path| invoice_request.paths().iter().map(move |path| (path, reply_path)))
-				.take(OFFERS_MESSAGE_REQUEST_LIMIT)
-				.for_each(|(path, reply_path)| {
-					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-						destination: Destination::BlindedPath(path.clone()),
-						reply_path: reply_path.clone(),
-					};
-					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
-					pending_offers_messages.push((message, instructions));
-				});
-		} else if let Some(node_id) = invoice_request.issuer_signing_pubkey() {
-			for reply_path in reply_paths {
-				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: Destination::Node(node_id),
-					reply_path,
-				};
-				let message = OffersMessage::InvoiceRequest(invoice_request.clone());
-				pending_offers_messages.push((message, instructions));
-			}
-		} else {
-			debug_assert!(false);
-			return Err(Bolt12SemanticError::MissingIssuerSigningPubkey);
-		}
-
-		Ok(())
-	}
-
 	fn get_current_blocktime(&self) -> Duration {
 		Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
 	}
@@ -9764,13 +9719,6 @@ where
 		Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
 	}
 }
-
-/// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
-/// along different paths.
-/// Sending multiple requests increases the chances of successful delivery in case some
-/// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
-/// even if multiple invoices are received.
-pub const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
@@ -13165,7 +13113,6 @@ where
 
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
-			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
