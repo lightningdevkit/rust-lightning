@@ -1543,7 +1543,7 @@ impl UnfundedChannelContext {
 /// Info about a pending splice, used in the pre-splice channel
 #[cfg(splicing)]
 #[derive(Clone)]
-struct PendingSpliceInfoPre {
+struct PendingSplice {
 	pub our_funding_contribution: i64,
 	pub funding_feerate_perkw: u32,
 	pub locktime: u32,
@@ -1552,7 +1552,7 @@ struct PendingSpliceInfoPre {
 }
 
 #[cfg(splicing)]
-impl PendingSpliceInfoPre {
+impl PendingSplice {
 	#[inline]
 	fn add_checked(base: u64, delta: i64) -> u64 {
 		if delta >= 0 {
@@ -4743,7 +4743,7 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	holder_commitment_point: HolderCommitmentPoint,
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
 	#[cfg(splicing)]
-	pending_splice_pre: Option<PendingSpliceInfoPre>,
+	pending_splice_pre: Option<PendingSplice>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -8375,7 +8375,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		self.pending_splice_pre = Some(PendingSpliceInfoPre {
+		self.pending_splice_pre = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
 			funding_feerate_perkw,
 			locktime,
@@ -8426,8 +8426,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		let post_channel_value = PendingSpliceInfoPre::compute_post_value(pre_channel_value, their_funding_contribution_satoshis, our_funding_contribution_satoshis);
-		let post_balance = PendingSpliceInfoPre::add_checked(self.context.value_to_self_msat, our_funding_contribution_satoshis);
+		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, their_funding_contribution_satoshis, our_funding_contribution_satoshis);
+		let post_balance = PendingSplice::add_checked(self.context.value_to_self_msat, our_funding_contribution_satoshis);
 		// Early check for reserve requirement, assuming maximum balance of full channel value
 		// This will also be checked later at tx_complete
 		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
@@ -8463,8 +8463,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		let our_funding_contribution = pending_splice.our_funding_contribution;
 
 		let pre_channel_value = self.context.get_value_satoshis();
-		let post_channel_value = PendingSpliceInfoPre::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
-		let post_balance = PendingSpliceInfoPre::add_checked(self.context.value_to_self_msat, our_funding_contribution);
+		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
+		let post_balance = PendingSplice::add_checked(self.context.value_to_self_msat, our_funding_contribution);
 		// Early check for reserve requirement, assuming maximum balance of full channel value
 		// This will also be checked later at tx_complete
 		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
@@ -12611,9 +12611,9 @@ mod tests {
 
 	#[cfg(all(test, splicing))]
 	fn get_pre_and_post(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64) -> (u64, u64) {
-		use crate::ln::channel::PendingSpliceInfoPre;
+		use crate::ln::channel::PendingSplice;
 
-		let post_channel_value = PendingSpliceInfoPre::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
+		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
 		(pre_channel_value, post_channel_value)
 	}
 
