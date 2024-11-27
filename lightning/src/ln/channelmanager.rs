@@ -76,7 +76,7 @@ use crate::offers::signer;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::dns_resolution::HumanReadableName;
-use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::offers::OffersMessage;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -90,13 +90,10 @@ use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 
 #[cfg(feature = "dnssec")]
-use crate::blinded_path::message::DNSResolverContext;
-#[cfg(feature = "dnssec")]
-use crate::onion_message::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler, DNSSECQuery, DNSSECProof, OMNameResolver};
+use crate::onion_message::dns_resolution::{DNSResolverMessage, OMNameResolver};
 
 #[cfg(not(c_bindings))]
 use {
-	crate::onion_message::messenger::DefaultMessageRouter,
 	crate::routing::router::DefaultRouter,
 	crate::routing::gossip::NetworkGraph,
 	crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters},
@@ -2426,14 +2423,6 @@ where
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
 
-	#[cfg(feature = "_test_utils")]
-	/// In testing, it is useful be able to forge a name -> offer mapping so that we can pay an
-	/// offer generated in the test.
-	///
-	/// This allows for doing so, validating proofs as normal, but, if they pass, replacing the
-	/// offer they resolve to to the given one.
-	pub testing_dnssec_proof_offer_resolution_override: Mutex<HashMap<HumanReadableName, Offer>>,
-
 	#[cfg(test)]
 	pub(super) entropy_source: ES,
 	#[cfg(not(test))]
@@ -3364,9 +3353,6 @@ where
 			hrn_resolver: OMNameResolver::new(current_timestamp, params.best_block.height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
-
-			#[cfg(feature = "_test_utils")]
-			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -9842,6 +9828,18 @@ where
 
 		self.enqueue_invoice_request(invoice_request, reply_paths)
 	}
+
+	#[cfg(feature = "dnssec")]
+	fn amt_msats_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<u64, ()> {
+		self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id)
+	}
+
+	#[cfg(feature = "dnssec")]
+	fn received_offer(
+		&self, payment_id: PaymentId, retryable_invoice_request: Option<RetryableInvoiceRequest>,
+	) -> Result<(), ()> {
+		self.pending_outbound_payments.received_offer(payment_id, retryable_invoice_request)
+	}
 }
 
 /// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
@@ -11398,69 +11396,6 @@ where
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
-	}
-}
-
-#[cfg(feature = "dnssec")]
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	fn handle_dnssec_query(
-		&self, _message: DNSSECQuery, _responder: Option<Responder>,
-	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
-		None
-	}
-
-	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
-		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
-		#[cfg_attr(not(feature = "_test_utils"), allow(unused_mut))]
-		if let Some((completed_requests, mut offer)) = offer_opt {
-			for (name, payment_id) in completed_requests {
-				#[cfg(feature = "_test_utils")]
-				if let Some(replacement_offer) = self.testing_dnssec_proof_offer_resolution_override.lock().unwrap().remove(&name) {
-					// If we have multiple pending requests we may end up over-using the override
-					// offer, but tests can deal with that.
-					offer = replacement_offer;
-				}
-				if let Ok(amt_msats) = self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id) {
-					let offer_pay_res =
-						self.pay_for_offer_intern(&offer, None, Some(amt_msats), None, payment_id, Some(name),
-							|invoice_request, nonce| {
-								let retryable_invoice_request = RetryableInvoiceRequest {
-									invoice_request: invoice_request.clone(),
-									nonce,
-								};
-								self.pending_outbound_payments
-									.received_offer(payment_id, Some(retryable_invoice_request))
-									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
-						});
-					if offer_pay_res.is_err() {
-						// The offer we tried to pay is the canonical current offer for the name we
-						// wanted to pay. If we can't pay it, there's no way to recover so fail the
-						// payment.
-						// Note that the PaymentFailureReason should be ignored for an
-						// AwaitingInvoice payment.
-						self.pending_outbound_payments.abandon_payment(
-							payment_id, PaymentFailureReason::RouteNotFound, &self.pending_events,
-						);
-					}
-				}
-			}
-		}
-	}
-
-	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
 	}
 }
 
@@ -13343,9 +13278,6 @@ where
 			hrn_resolver: OMNameResolver::new(highest_seen_timestamp, best_block_height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
-
-			#[cfg(feature = "_test_utils")]
-			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		};
 
 		for (_, monitor) in args.channel_monitors.iter() {

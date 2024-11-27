@@ -393,7 +393,7 @@ mod test {
 		// When we get the proof back, override its contents to an offer from nodes[1]
 		let bs_offer = nodes[1].offers_handler.create_offer_builder(None).unwrap().build().unwrap();
 		nodes[0]
-			.node
+			.offers_handler
 			.testing_dnssec_proof_offer_resolution_override
 			.lock()
 			.unwrap()

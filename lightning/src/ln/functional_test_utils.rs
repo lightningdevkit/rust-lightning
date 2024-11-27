@@ -440,7 +440,7 @@ type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
 	Arc<TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg>>,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
-	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	Arc<TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg>>,
 	IgnoringMessageHandler,
 >;
 
@@ -3350,7 +3350,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		#[cfg(feature = "dnssec")]
 		let onion_messenger = OnionMessenger::new(
 			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
-			&cfgs[i].message_router, offers_handler.clone(), &chan_mgrs[i], &chan_mgrs[i],
+			&cfgs[i].message_router, offers_handler.clone(), &chan_mgrs[i], offers_handler.clone(),
 			IgnoringMessageHandler {},
 		);
 		#[cfg(not(feature = "dnssec"))]
