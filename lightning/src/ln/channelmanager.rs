@@ -8950,14 +8950,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let funding_txo = chan.context.get_funding_txo();
+				let chan = chan_entry.get_mut();
+				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+				let funding_txo = chan.context().get_funding_txo();
+				let (monitor_opt, monitor_update_opt) = try_channel_entry!(
+					self, peer_state, chan.commitment_signed(msg, best_block, &self.signer_provider, &&logger),
+					chan_entry);
 
-					if chan.interactive_tx_signing_session.is_some() {
-						let monitor = try_channel_entry!(
-							self, peer_state, chan.commitment_signed_initial_v2(msg, best_block, &self.signer_provider, &&logger),
-							chan_entry);
+				if let Some(chan) = chan.as_funded_mut() {
+					if let Some(monitor) = monitor_opt {
 						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
@@ -8972,19 +8973,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								)
 							)), chan_entry)
 						}
-					} else {
-						let monitor_update_opt = try_channel_entry!(
-							self, peer_state, chan.commitment_signed(msg, &&logger), chan_entry);
-						if let Some(monitor_update) = monitor_update_opt {
-							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
-								peer_state, per_peer_state, chan);
-						}
+					} else if let Some(monitor_update) = monitor_update_opt {
+						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
+							peer_state, per_peer_state, chan);
 					}
-					Ok(())
-				} else {
-					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got a commitment_signed message for an unfunded channel!".into())), chan_entry);
 				}
+				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}

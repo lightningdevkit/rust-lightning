@@ -1478,31 +1478,66 @@ impl<SP: Deref> Channel<SP> where
 	where
 		L::Target: Logger
 	{
-		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
-		let result = if let ChannelPhase::UnfundedV2(chan) = phase {
+		if let ChannelPhase::UnfundedV2(chan) = &mut self.phase {
 			let logger = WithChannelContext::from(logger, &chan.context, None);
-			match chan.funding_tx_constructed(signing_session, &&logger) {
-				Ok((chan, commitment_signed, event)) => {
-					self.phase = ChannelPhase::Funded(chan);
-					Ok((commitment_signed, event))
-				},
-				Err((chan, e)) => {
-					self.phase = ChannelPhase::UnfundedV2(chan);
-					Err(e)
-				},
-			}
+			chan.funding_tx_constructed(signing_session, &&logger)
 		} else {
-			self.phase = phase;
 			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
-		};
-
-		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
-		result
+		}
 	}
 
 	pub fn force_shutdown(&mut self, should_broadcast: bool, closure_reason: ClosureReason) -> ShutdownResult {
 		let (funding, context) = self.funding_and_context_mut();
 		context.force_shutdown(funding, should_broadcast, closure_reason)
+	}
+
+	pub fn commitment_signed<L: Deref>(
+		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError>
+	where
+		L::Target: Logger
+	{
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		match phase {
+			ChannelPhase::UnfundedV2(chan) => {
+				let holder_commitment_point = match chan.unfunded_context.holder_commitment_point {
+					Some(point) => point,
+					None => {
+						let channel_id = chan.context.channel_id();
+						// TODO(dual_funding): Add async signing support.
+						return Err( ChannelError::close(
+							format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+								channel_id)));
+					}
+				};
+				let mut funded_channel = FundedChannel {
+					funding: chan.funding,
+					context: chan.context,
+					interactive_tx_signing_session: chan.interactive_tx_signing_session,
+					holder_commitment_point,
+					is_v2_established: true,
+				};
+				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
+					.map(|monitor| (Some(monitor), None))
+					// TODO: Change to `inspect_err` when MSRV is high enough.
+					.map_err(|err| {
+						// We always expect a `ChannelError` close.
+						debug_assert!(matches!(err, ChannelError::Close(_)));
+						err
+					});
+				self.phase = ChannelPhase::Funded(funded_channel);
+				res
+			},
+			ChannelPhase::Funded(mut funded_channel) => {
+				let res = funded_channel.commitment_signed(msg, logger).map(|monitor_update_opt| (None, monitor_update_opt));
+				self.phase = ChannelPhase::Funded(funded_channel);
+				res
+			},
+			_ => {
+				debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
+				Err(ChannelError::close("Got a commitment_signed message for an unfunded V1 channel!".into()))
+			}
+		}
 	}
 }
 
@@ -2194,8 +2229,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(FundedChannel<SP>, msgs::CommitmentSigned, Option<Event>), (PendingV2Channel<SP>, ChannelError)>
+		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -2211,7 +2246,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 						(
 							"Multiple outputs matched the expected script and value".to_owned(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))).map_err(|e| (self, e));
+						)));
 				}
 				output_index = Some(idx as u16);
 			}
@@ -2223,7 +2258,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				(
 					"No output matched the funding script_pubkey".to_owned(),
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				))).map_err(|e| (self, e));
+				)));
 		};
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
@@ -2237,8 +2272,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			},
 			Err(err) => {
 				self.context.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
-					.map_err(|e| (self, e));
+				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
 			},
 		};
 
@@ -2249,10 +2283,10 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
 				);
-				return Err((self, ChannelError::Close((
+				return Err(ChannelError::Close((
 					"V2 channel rejected due to sender error".into(),
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-				))));
+				)));
 			}
 			None
 		} else {
@@ -2274,37 +2308,19 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				false,
 				"We don't support users providing inputs but somehow we had more than zero inputs",
 			);
-			return Err((self, ChannelError::Close((
+			return Err(ChannelError::Close((
 				"V2 channel rejected due to sender error".into(),
 				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-			))));
+			)));
 		};
 
 		self.context.channel_state = ChannelState::FundingNegotiated;
 
 		// Clear the interactive transaction constructor
 		self.interactive_tx_constructor.take();
+		self.interactive_tx_signing_session = Some(signing_session);
 
-		match self.unfunded_context.holder_commitment_point {
-			Some(holder_commitment_point) => {
-				let funded_chan = FundedChannel {
-					funding: self.funding,
-					context: self.context,
-					interactive_tx_signing_session: Some(signing_session),
-					holder_commitment_point,
-					is_v2_established: true,
-				};
-				Ok((funded_chan, commitment_signed, funding_ready_for_sig_event))
-			},
-			None => {
-				Err(ChannelError::close(
-					format!(
-						"Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
-						self.context.channel_id(),
-					)))
-					.map_err(|e| (self, e))
-			},
-		}
+		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
 }
 
@@ -9511,6 +9527,8 @@ pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	/// The signing session created after `tx_complete` handling
+	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
@@ -9576,6 +9594,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			interactive_tx_signing_session: None,
 		};
 		Ok(chan)
 	}
@@ -9747,6 +9766,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			context,
 			dual_funding_context,
 			interactive_tx_constructor,
+			interactive_tx_signing_session: None,
 			unfunded_context,
 		})
 	}
