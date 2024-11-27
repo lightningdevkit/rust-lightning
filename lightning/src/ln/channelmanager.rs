@@ -9556,6 +9556,16 @@ where
 		self.pending_offers_messages.lock().expect("Mutex is locked by other thread.")
 	}
 
+	#[cfg(feature = "dnssec")]
+	fn get_pending_dns_onion_messages(&self) -> MutexGuard<'_, Vec<(DNSResolverMessage, MessageSendInstructions)>> {
+		self.pending_dns_onion_messages.lock().expect("Mutex is locked by other thread.")
+	}
+
+	#[cfg(feature = "dnssec")]
+	fn get_hrn_resolver(&self) -> &OMNameResolver {
+		&self.hrn_resolver
+	}
+
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice,
 	) -> Result<schnorr::Signature, ()> {
@@ -9778,6 +9788,14 @@ where
 		)
 	}
 
+	#[cfg(feature = "dnssec")]
+	fn add_new_awaiting_offer(
+		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>, amount_msats: u64,
+	) -> Result<(), ()> {
+		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, max_total_routing_fee_msat, amount_msats)
+	}
+
 	fn pay_for_offer_intern<CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>>(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId,
@@ -9845,73 +9863,6 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
-	/// resolver(s) at `dns_resolvers` which resolve names according to bLIP 32.
-	///
-	/// If the wallet supports paying on-chain schemes, you should instead use
-	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
-	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
-	/// your normal URI handling.
-	///
-	/// If `max_total_routing_fee_msat` is not specified, the default from
-	/// [`RouteParameters::from_payment_params_and_value`] is applied.
-	///
-	/// # Payment
-	///
-	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
-	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
-	/// been sent.
-	///
-	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
-	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
-	/// payment will fail with an [`Event::InvoiceRequestFailed`].
-	///
-	/// # Privacy
-	///
-	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
-	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
-	///
-	/// # Limitations
-	///
-	/// Requires a direct connection to the given [`Destination`] as well as an introduction node in
-	/// [`Offer::paths`] or to [`Offer::signing_pubkey`], if empty. A similar restriction applies to
-	/// the responding [`Bolt12Invoice::payment_paths`].
-	///
-	/// # Errors
-	///
-	/// Errors if:
-	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
-	///
-	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
-	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
-	#[cfg(feature = "dnssec")]
-	pub fn pay_for_offer_from_human_readable_name(
-		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
-		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>,
-		dns_resolvers: Vec<Destination>,
-	) -> Result<(), ()> {
-		let (onion_message, context) =
-			self.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
-		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
-		let expiration = StaleExpiration::TimerTicks(1);
-		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, max_total_routing_fee_msat, amount_msats)?;
-		let message_params = dns_resolvers
-			.iter()
-			.flat_map(|destination| reply_paths.iter().map(move |path| (path, destination)))
-			.take(OFFERS_MESSAGE_REQUEST_LIMIT);
-		for (reply_path, destination) in message_params {
-			self.pending_dns_onion_messages.lock().unwrap().push((
-				DNSResolverMessage::DNSSECQuery(onion_message.clone()),
-				MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: destination.clone(),
-					reply_path: reply_path.clone(),
-				},
-			));
-		}
-		Ok(())
-	}
-
 	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
 	/// stored external to LDK.
 	///

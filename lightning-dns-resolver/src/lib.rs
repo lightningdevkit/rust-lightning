@@ -404,7 +404,7 @@ mod test {
 		let retry = Retry::Attempts(0);
 		let amt = 42_000;
 		nodes[0]
-			.node
+			.offers_handler
 			.pay_for_offer_from_human_readable_name(name, amt, payment_id, retry, None, resolvers)
 			.unwrap();
 
