@@ -10,7 +10,7 @@
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
 use bitcoin::script::{Script, ScriptBuf, Builder, WScriptHash};
-use bitcoin::transaction::{Transaction, TxIn};
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
@@ -31,11 +31,9 @@ use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
 	get_output_weight, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
-	InteractiveTxConstructorArgs, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
-	TX_COMMON_FIELDS_WEIGHT,
+	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
+	OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
-#[cfg(splicing)]
-use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
@@ -1713,6 +1711,58 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 	fn dual_funding_context(&self) -> &DualFundingChannelContext;
 
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext;
+
+	fn is_initiator(&self) -> bool;
+
+	fn begin_interactive_funding_tx_construction<ES: Deref>(
+		&mut self, entropy_source: &ES, holder_node_id: PublicKey,
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		let mut funding_outputs = Vec::new();
+		let funding_output_value_satoshis = self.context().get_value_satoshis();
+		let funding_output_script_pubkey = self.context().get_funding_redeemscript().to_p2wsh();
+		let expected_remote_shared_funding_output = if self.is_initiator() {
+			let tx_out = TxOut {
+				value: Amount::from_sat(funding_output_value_satoshis),
+				script_pubkey: funding_output_script_pubkey,
+			};
+			funding_outputs.push(
+				if self.dual_funding_context().their_funding_satoshis.unwrap_or(0) == 0 {
+					OutputOwned::SharedControlFullyOwned(tx_out)
+				} else {
+					OutputOwned::Shared(SharedOwnedOutput::new(
+						tx_out, self.dual_funding_context().our_funding_satoshis
+					))
+				}
+			);
+			None
+		} else {
+			Some((funding_output_script_pubkey, funding_output_value_satoshis))
+		};
+
+		let constructor_args = InteractiveTxConstructorArgs {
+			entropy_source,
+			holder_node_id,
+			counterparty_node_id: self.context().counterparty_node_id,
+			channel_id: self.context().channel_id(),
+			feerate_sat_per_kw: self.dual_funding_context_mut().funding_feerate_sat_per_1000_weight,
+			is_initiator: self.is_initiator(),
+			funding_tx_locktime: self.dual_funding_context_mut().funding_tx_locktime,
+			inputs_to_contribute: self.dual_funding_context_mut().our_funding_inputs.take().unwrap_or_else(|| vec![]),
+			outputs_to_contribute: funding_outputs,
+			expected_remote_shared_funding_output,
+		};
+		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)
+			.map_err(|_| APIError::APIMisuseError { err: "Incorrect shared output provided".into() })?;
+		let msg = tx_constructor.take_initiator_first_message();
+
+		self.interactive_tx_constructor_mut().replace(tx_constructor);
+
+		Ok(msg)
+	}
+
 	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
@@ -1875,8 +1925,14 @@ impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Targ
 	fn dual_funding_context(&self) -> &DualFundingChannelContext {
 		&self.dual_funding_context
 	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
+	}
+	fn is_initiator(&self) -> bool {
+		true
 	}
 }
 
@@ -1890,8 +1946,14 @@ impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Targe
 	fn dual_funding_context(&self) -> &DualFundingChannelContext {
 		&self.dual_funding_context
 	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
+	}
+	fn is_initiator(&self) -> bool {
+		false
 	}
 }
 
@@ -4295,6 +4357,8 @@ pub(super) fn calculate_our_funding_satoshis(
 pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
+	/// The amount in satoshis our counterparty will be contributing to the channel.
+	pub their_funding_satoshis: Option<u64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
 	pub funding_tx_locktime: LockTime,
@@ -4306,7 +4370,7 @@ pub(super) struct DualFundingChannelContext {
 	/// minus any fees paid for our contributed weight. This means that change will never be generated
 	/// and the maximum value possible will go towards funding the channel.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+	pub our_funding_inputs: Option<Vec<(TxIn, TransactionU16LenLimited)>>,
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -9047,9 +9111,10 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: None,
 				funding_tx_locktime,
 				funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
+				our_funding_inputs: Some(funding_inputs),
 			},
 			interactive_tx_constructor: None,
 		};
@@ -9212,9 +9277,10 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let dual_funding_context = DualFundingChannelContext {
 			our_funding_satoshis: funding_satoshis,
+			their_funding_satoshis: Some(msg.common_fields.funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
-			our_funding_inputs: funding_inputs.clone(),
+			our_funding_inputs: Some(funding_inputs.clone()),
 		};
 
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(

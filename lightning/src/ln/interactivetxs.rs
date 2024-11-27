@@ -1157,7 +1157,7 @@ pub struct SharedOwnedOutput {
 }
 
 impl SharedOwnedOutput {
-	fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
+	pub fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
 		debug_assert!(
 			local_owned <= tx_out.value.to_sat(),
 			"SharedOwnedOutput: Inconsistent local_owned value {}, larger than output value {}",
