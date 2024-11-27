@@ -2188,6 +2188,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 					context: self.context,
 					interactive_tx_signing_session: Some(signing_session),
 					holder_commitment_point,
+					is_v2_established: true,
 				};
 				Ok((funded_chan, commitment_signed, funding_ready_for_sig_event))
 			},
@@ -4542,6 +4543,9 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
+	/// Indicates whether this funded channel had been established with V2 channel
+	/// establishment (i.e. is a dual-funded channel).
+	is_v2_established: bool,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -5996,10 +6000,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError>
+	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<Option<msgs::TxSignatures>, ChannelError>
 		where L::Target: Logger
 	{
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
+		if !matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			return Err(ChannelError::close("Received tx_signatures in strange state!".to_owned()));
 		}
 
@@ -6033,25 +6037,23 @@ impl<SP: Deref> FundedChannel<SP> where
 				// for spending. Doesn't seem to be anything in rust-bitcoin.
 			}
 
-			let (tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
+			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
 				.map_err(|_| ChannelError::Warn("Witness count did not match contributed input count".to_string()))?;
+			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
+				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
+				self.context.monitor_pending_tx_signatures = holder_tx_signatures_opt;
+				return Ok(None);
+			}
 			if funding_tx_opt.is_some() {
+				// We have a persisted channel monitor and and a finalized funding transaction, so we can move
+				// the channel state forward, set the funding transaction and reset the signing session fields.
+				self.context.funding_transaction = funding_tx_opt;
+				self.context.next_funding_txid = None;
+				self.interactive_tx_signing_session = None;
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
-			self.context.funding_transaction = funding_tx_opt.clone();
 
-			self.context.next_funding_txid = None;
-
-			// Clear out the signing session
-			self.interactive_tx_signing_session = None;
-
-			if tx_signatures_opt.is_some() && self.context.channel_state.is_monitor_update_in_progress() {
-				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-				self.context.monitor_pending_tx_signatures = tx_signatures_opt;
-				return Ok((None, None));
-			}
-
-			Ok((tx_signatures_opt, funding_tx_opt))
+			Ok(holder_tx_signatures_opt)
 		} else {
 			Err(ChannelError::Close((
 				"Unexpected tx_signatures. No funding transaction awaiting signatures".to_string(),
@@ -6254,12 +6256,12 @@ impl<SP: Deref> FundedChannel<SP> where
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
 
-		// If we're past (or at) the AwaitingChannelReady stage on an outbound channel, try to
-		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
+		// If we're past (or at) the AwaitingChannelReady stage on an outbound (or V2-established) channel,
+		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable = None;
 		if let Some(funding_transaction) = &self.context.funding_transaction {
-			if self.context.is_outbound() &&
+			if (self.context.is_outbound() || self.is_v2_established()) &&
 				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
@@ -8551,6 +8553,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			})
 			.chain(self.context.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
 	}
+
+	pub fn is_v2_established(&self) -> bool {
+		self.is_v2_established
+	}
 }
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
@@ -8814,6 +8820,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			is_v2_established: false,
 			holder_commitment_point,
 		};
 
@@ -9079,6 +9086,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			is_v2_established: false,
 			holder_commitment_point,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -9887,7 +9895,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			let mut _val: u64 = Readable::read(reader)?;
 		}
 
-		let channel_id = Readable::read(reader)?;
+		let channel_id: ChannelId = Readable::read(reader)?;
 		let channel_state = ChannelState::from_u32(Readable::read(reader)?).map_err(|_| DecodeError::InvalidValue)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
@@ -10323,6 +10331,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				}
 			},
 		};
+		let is_v2_established = channel_id.is_v2_channel_id(
+			&channel_parameters.holder_pubkeys.revocation_basepoint,
+			&channel_parameters.counterparty_parameters.as_ref()
+				.expect("Persisted channel must have counterparty parameters").pubkeys.revocation_basepoint);
 
 		Ok(FundedChannel {
 			context: ChannelContext {
@@ -10460,6 +10472,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				next_funding_txid: None,
 			},
 			interactive_tx_signing_session: None,
+			is_v2_established,
 			holder_commitment_point,
 		})
 	}

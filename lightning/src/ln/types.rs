@@ -101,6 +101,11 @@ impl ChannelId {
 	pub fn temporary_v2_from_revocation_basepoint(our_revocation_basepoint: &RevocationBasepoint) -> Self {
 		Self(Sha256::hash(&[[0u8; 33], our_revocation_basepoint.0.serialize()].concat()).to_byte_array())
 	}
+
+	/// Indicates whether this is a V2 channel ID for the given local and remote revocation basepoints.
+	pub fn is_v2_channel_id(&self, ours: &RevocationBasepoint, theirs: &RevocationBasepoint) -> bool {
+		*self == Self::v2_from_revocation_basepoints(ours, theirs)
+	}
 }
 
 impl Writeable for ChannelId {
@@ -210,5 +215,17 @@ mod tests {
 		let expected_id = ChannelId(Sha256::from_engine(engine).to_byte_array());
 
 		assert_eq!(ChannelId::v2_from_revocation_basepoints(&ours, &theirs), expected_id);
+	}
+
+	#[test]
+	fn test_is_v2_channel_id() {
+		let ours = RevocationBasepoint(PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap());
+		let theirs = RevocationBasepoint(PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap());
+
+		let channel_id = ChannelId::v2_from_revocation_basepoints(&ours, &theirs);
+		assert!(channel_id.is_v2_channel_id(&ours, &theirs));
+
+		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
+		assert!(!channel_id.is_v2_channel_id(&ours, &theirs))
 	}
 }
