@@ -1028,16 +1028,16 @@ pub enum Amount {
 		/// The amount in millisatoshi.
 		amount_msats: u64,
 	},
-	/// An amount of currency specified using ISO 4712.
+	/// An amount of currency specified using ISO 4217.
 	Currency {
 		/// The currency that the amount is denominated in.
 		iso4217_code: CurrencyCode,
-		/// The amount in the currency unit adjusted by the ISO 4712 exponent (e.g., USD cents).
+		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
 }
 
-/// An ISO 4712 three-letter currency code (e.g., USD).
+/// An ISO 4217 three-letter currency code (e.g., USD).
 pub type CurrencyCode = [u8; 3];
 
 /// Quantity of items supported by an [`Offer`].

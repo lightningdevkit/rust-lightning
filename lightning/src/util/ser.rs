@@ -664,7 +664,7 @@ macro_rules! impl_array {
 	);
 }
 
-impl_array!(3, u8); // for rgb, ISO 4712 code
+impl_array!(3, u8); // for rgb, ISO 4217 code
 impl_array!(4, u8); // for IPv4
 impl_array!(12, u8); // for OnionV2
 impl_array!(16, u8); // for IPv6
