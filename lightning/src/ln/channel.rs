@@ -6860,8 +6860,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.channel_state.set_their_tx_signatures_sent();
 
 			if funding_tx_opt.is_some() {
-				// We have a finalized funding transaction, so we can set the funding transaction.
+				// We have a finalized funding transaction, so we can set the funding transaction and reset the
+				// signing session fields.
 				self.funding.funding_transaction = funding_tx_opt.clone();
+				self.interactive_tx_signing_session = None;
 			}
 
 			// Note that `holder_tx_signatures_opt` will be `None` if we sent `tx_signatures` first, so this
