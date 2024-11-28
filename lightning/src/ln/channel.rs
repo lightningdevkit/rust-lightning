@@ -925,6 +925,8 @@ pub(super) struct ReestablishResponses {
 	pub order: RAACommitmentOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
+	pub tx_signatures: Option<msgs::TxSignatures>,
+	pub tx_abort: Option<msgs::TxAbort>,
 }
 
 /// The result of a shutdown that should be handled.
@@ -6391,6 +6393,8 @@ impl<SP: Deref> Channel<SP> where
 					raa: None, commitment_update: None,
 					order: RAACommitmentOrder::CommitmentFirst,
 					shutdown_msg, announcement_sigs,
+					tx_signatures: None,
+					tx_abort: None,
 				});
 			}
 
@@ -6400,6 +6404,8 @@ impl<SP: Deref> Channel<SP> where
 				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
+				tx_signatures: None,
+				tx_abort: None,
 			});
 		}
 
@@ -6445,11 +6451,53 @@ impl<SP: Deref> Channel<SP> where
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
 			}
 
+			// if next_funding_txid is set:
+			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
+				 if let Some(session) = &self.interactive_tx_signing_session {
+					// if next_funding_txid matches the latest interactive funding transaction:
+					if session.unsigned_tx.compute_txid() == next_funding_txid {
+						// if it has not received tx_signatures for that funding transaction:
+						if !session.counterparty_sent_tx_signatures {
+							// MUST retransmit its commitment_signed for that funding transaction.
+							let commitment_signed = self.context.get_initial_commitment_signed(logger)?;
+							let commitment_update = Some(msgs::CommitmentUpdate {
+								commitment_signed,
+								update_add_htlcs: vec![],
+								update_fulfill_htlcs: vec![],
+								update_fail_htlcs: vec![],
+								update_fail_malformed_htlcs: vec![],
+								update_fee: None,
+							});
+							// if it has already received commitment_signed and it should sign first, as specified in the tx_signatures requirements:
+							if session.received_commitment_signed && session.holder_sends_tx_signatures_first {
+								// MUST send its tx_signatures for that funding transaction.
+								(commitment_update, session.holder_tx_signatures.clone(), None)
+							} else {
+								(commitment_update, None, None)
+							}
+						} else {
+							// if it has already received tx_signatures for that funding transaction:
+							// MUST send its tx_signatures for that funding transaction.
+							(None, session.holder_tx_signatures.clone(), None)
+						}
+					} else {
+						// MUST send tx_abort to let the sending node know that they can forget this funding transaction.
+						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
+					}
+				} else {
+					// Counterparty set `next_funding_txid` at incorrect state.
+					// TODO(dual_funding): Should probably error here (or send tx_abort) but not in spec.
+					(None, None, None)
+				}
+			} else { (None, None, None) };
+
 			Ok(ReestablishResponses {
 				channel_ready, shutdown_msg, announcement_sigs,
 				raa: required_revoke,
-				commitment_update: None,
+				commitment_update,
 				order: self.context.resend_order.clone(),
+				tx_signatures,
+				tx_abort,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
@@ -6464,6 +6512,8 @@ impl<SP: Deref> Channel<SP> where
 					channel_ready, shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
 					order: self.context.resend_order.clone(),
+					tx_signatures: None,
+					tx_abort: None,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -6486,6 +6536,8 @@ impl<SP: Deref> Channel<SP> where
 					channel_ready, shutdown_msg, announcement_sigs,
 					raa, commitment_update,
 					order: self.context.resend_order.clone(),
+					tx_signatures: None,
+					tx_abort: None,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {

@@ -291,9 +291,9 @@ impl ConstructedTransaction {
 pub(crate) struct InteractiveTxSigningSession {
 	pub unsigned_tx: ConstructedTransaction,
 	pub counterparty_sent_tx_signatures: bool,
-	holder_sends_tx_signatures_first: bool,
-	received_commitment_signed: bool,
-	holder_tx_signatures: Option<TxSignatures>,
+	pub holder_sends_tx_signatures_first: bool,
+	pub received_commitment_signed: bool,
+	pub holder_tx_signatures: Option<TxSignatures>,
 }
 
 impl InteractiveTxSigningSession {
