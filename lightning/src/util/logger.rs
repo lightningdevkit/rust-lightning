@@ -10,9 +10,8 @@
 //! Log traits live here, which are called throughout the library to provide useful information for
 //! debugging purposes.
 //!
-//! There is currently 2 ways to filter log messages. First one, by using compilation features, e.g "max_level_off".
-//! The second one, client-side by implementing check against Record Level field.
-//! Each module may have its own Logger or share one.
+//! Log messages should be filtered client-side by implementing check against a given [`Record`]'s
+//! [`Level`] field. Each module may have its own Logger or share one.
 
 use bitcoin::secp256k1::PublicKey;
 

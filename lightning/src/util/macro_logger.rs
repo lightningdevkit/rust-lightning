@@ -173,36 +173,9 @@ macro_rules! log_spendable {
 /// but it needs to be exported so `log_trace` etc can use it in external crates.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! log_internal {
-	($logger: expr, $lvl:expr, $($arg:tt)+) => (
-		$logger.log($crate::util::logger::Record::new($lvl, None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None))
-	);
-}
-
-/// Logs an entry at the given level.
-#[doc(hidden)]
-#[macro_export]
 macro_rules! log_given_level {
 	($logger: expr, $lvl:expr, $($arg:tt)+) => (
-		match $lvl {
-			#[cfg(not(any(feature = "max_level_off")))]
-			$crate::util::logger::Level::Error => $crate::log_internal!($logger, $lvl, $($arg)*),
-			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error")))]
-			$crate::util::logger::Level::Warn => $crate::log_internal!($logger, $lvl, $($arg)*),
-			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn")))]
-			$crate::util::logger::Level::Info => $crate::log_internal!($logger, $lvl, $($arg)*),
-			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info")))]
-			$crate::util::logger::Level::Debug => $crate::log_internal!($logger, $lvl, $($arg)*),
-			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug")))]
-			$crate::util::logger::Level::Trace => $crate::log_internal!($logger, $lvl, $($arg)*),
-			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug", feature = "max_level_trace")))]
-			$crate::util::logger::Level::Gossip => $crate::log_internal!($logger, $lvl, $($arg)*),
-
-			#[cfg(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug", feature = "max_level_trace"))]
-			_ => {
-				// The level is disabled at compile-time
-			},
-		}
+		$logger.log($crate::util::logger::Record::new($lvl, None, None, format_args!($($arg)+), module_path!(), file!(), line!(), None))
 	);
 }
 
