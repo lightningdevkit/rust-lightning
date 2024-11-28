@@ -290,10 +290,10 @@ impl ConstructedTransaction {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractiveTxSigningSession {
 	pub unsigned_tx: ConstructedTransaction,
+	pub counterparty_sent_tx_signatures: bool,
 	holder_sends_tx_signatures_first: bool,
 	received_commitment_signed: bool,
 	holder_tx_signatures: Option<TxSignatures>,
-	counterparty_sent_tx_signatures: bool,
 }
 
 impl InteractiveTxSigningSession {
