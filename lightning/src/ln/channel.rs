@@ -31,9 +31,8 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
-	get_output_weight, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
-	InteractiveTxConstructorArgs, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
-	TX_COMMON_FIELDS_WEIGHT,
+	get_output_weight, HandleTxCompleteResult, InteractiveTxConstructor, InteractiveTxConstructorArgs,
+	InteractiveTxSigningSession, InteractiveTxMessageSendResult, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
@@ -1498,21 +1497,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
-	// The `next_funding_txid` field allows peers to finalize the signing steps of an interactive
-	// transaction construction, or safely abort that transaction if it was not signed by one of the
-	// peers, who has thus already removed it from its state.
-	// 
-	// If we've sent `commtiment_signed` for an interactively constructed transaction
-	// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
-	// to the txid of that interactive transaction, else we MUST NOT set it.
-	//
-	// See the spec for further details on this:
-	//   * `channel_reestablish`-sending node: https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2466-L2470
-	//   * `channel_reestablish`-receiving node: https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2520-L2531
-	//
-	// TODO(dual_funding): Persist this when we actually contribute funding inputs. For now we always
-	// send an empty witnesses array in `tx_signatures` as a V2 channel acceptor
-	next_funding_txid: Option<Txid>,
 }
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
@@ -1745,10 +1729,6 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 			Err(reason) => {
 				return HandleTxCompleteResult(Err(reason.into_tx_abort_msg(msg.channel_id)))
 			}
-		};
-
-		if let HandleTxCompleteValue::SendTxComplete(_, ref signing_session) = tx_complete {
-			self.context_mut().next_funding_txid = Some(signing_session.unsigned_tx.compute_txid());
 		};
 
 		HandleTxCompleteResult(Ok(tx_complete))
@@ -2217,8 +2197,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			blocked_monitor_updates: Vec::new(),
 
 			is_manual_broadcast: false,
-
-			next_funding_txid: None,
 		};
 
 		Ok(channel_context)
@@ -2451,7 +2429,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
-			next_funding_txid: None,
 		})
 	}
 
@@ -5763,7 +5740,6 @@ impl<SP: Deref> Channel<SP> where
 				// We have a persisted channel monitor and and a finalized funding transaction, so we can move
 				// the channel state forward, set the funding transaction and reset the signing session fields.
 				self.context.funding_transaction = funding_tx_opt;
-				self.context.next_funding_txid = None;
 				self.interactive_tx_signing_session = None;
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
@@ -7782,6 +7758,25 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	fn maybe_get_next_funding_txid(&self) -> Option<Txid> {
+		// If we've sent `commtiment_signed` for an interactively constructed transaction
+		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
+		// to the txid of that interactive transaction, else we MUST NOT set it.
+		if let Some(signing_session) = &self.interactive_tx_signing_session {
+			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
+			if !signing_session.counterparty_sent_tx_signatures {
+				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
+				None
+			} else {
+				// ...and we received a `tx_signatures` from the counterparty.
+				Some(self.funding_outpoint().txid)
+			}
+		} else {
+			// We don't have an active signing session.
+			None
+		}
+	}
+
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
 	pub fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
@@ -7826,7 +7821,7 @@ impl<SP: Deref> Channel<SP> where
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
-			next_funding_txid: self.context.next_funding_txid,
+			next_funding_txid: self.maybe_get_next_funding_txid(),
 		}
 	}
 
@@ -10141,13 +10136,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
-				// TODO(dual_funding): Instead of getting this from persisted value, figure it out based on the
-				// funding transaction and other channel state.
-				//
-				// If we've sent `commtiment_signed` for an interactively constructed transaction
-				// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
-				// to the txid of that interactive transaction, else we MUST NOT set it.
-				next_funding_txid: None,
 			},
 			interactive_tx_signing_session: None,
 		})
