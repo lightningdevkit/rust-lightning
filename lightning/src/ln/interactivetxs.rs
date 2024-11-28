@@ -309,16 +309,36 @@ impl ConstructedTransaction {
 /// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#sharing-funding-signatures-tx_signatures
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractiveTxSigningSession {
-	pub unsigned_tx: ConstructedTransaction,
-	pub counterparty_sent_tx_signatures: bool,
+	unsigned_tx: ConstructedTransaction,
+	has_received_tx_signatures: bool,
 	holder_sends_tx_signatures_first: bool,
-	received_commitment_signed: bool,
+	has_received_commitment_signed: bool,
 	holder_tx_signatures: Option<TxSignatures>,
 }
 
 impl InteractiveTxSigningSession {
+	pub fn unsigned_tx(&self) -> &ConstructedTransaction {
+		&self.unsigned_tx
+	}
+
+	pub fn has_received_tx_signatures(&self) -> bool {
+		self.has_received_tx_signatures
+	}
+
+	pub fn holder_sends_tx_signatures_first(&self) -> bool {
+		self.holder_sends_tx_signatures_first
+	}
+
+	pub fn has_received_commitment_signed(&self) -> bool {
+		self.has_received_commitment_signed
+	}
+
+	pub fn holder_tx_signatures(&self) -> &Option<TxSignatures> {
+		&self.holder_tx_signatures
+	}
+
 	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
-		self.received_commitment_signed = true;
+		self.has_received_commitment_signed = true;
 		if self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
 		} else {
@@ -327,7 +347,7 @@ impl InteractiveTxSigningSession {
 	}
 
 	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.received_commitment_signed {
+		if self.has_received_commitment_signed {
 			self.holder_tx_signatures.clone()
 		} else {
 			None
@@ -352,7 +372,7 @@ impl InteractiveTxSigningSession {
 			return Err(());
 		}
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
-		self.counterparty_sent_tx_signatures = true;
+		self.has_received_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
@@ -1008,9 +1028,9 @@ macro_rules! define_state_transitions {
 				let signing_session = InteractiveTxSigningSession {
 					holder_sends_tx_signatures_first: tx.holder_sends_tx_signatures_first,
 					unsigned_tx: tx,
-					received_commitment_signed: false,
+					has_received_commitment_signed: false,
 					holder_tx_signatures: None,
-					counterparty_sent_tx_signatures: false,
+					has_received_tx_signatures: false,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
