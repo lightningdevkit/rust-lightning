@@ -2630,7 +2630,10 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => commitment_signed,
+			Ok(commitment_signed) => {
+				self.funding.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
+				commitment_signed
+			},
 			Err(err) => {
 				self.funding.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
