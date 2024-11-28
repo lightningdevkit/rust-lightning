@@ -930,6 +930,8 @@ pub(super) struct ReestablishResponses {
 	pub order: RAACommitmentOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
+	pub tx_signatures: Option<msgs::TxSignatures>,
+	pub tx_abort: Option<msgs::TxAbort>,
 }
 
 /// The first message we send to our peer after connection
@@ -2117,7 +2119,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let mut output_index = None;
 		let expected_spk = self.context.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
+		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == self.context.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(ChannelError::Close(
@@ -2130,7 +2132,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			}
 		}
 		let outpoint = if let Some(output_index) = output_index {
-			OutPoint { txid: signing_session.unsigned_tx.compute_txid(), index: output_index }
+			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
 			return Err(ChannelError::Close(
 				(
@@ -2145,7 +2147,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let commitment_signed = self.context.get_initial_commitment_signed(logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
+				self.context.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
@@ -6003,7 +6005,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
-			if msg.tx_hash != signing_session.unsigned_tx.compute_txid() {
+			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
 				return Err(ChannelError::Close(
 					(
 						"The txid for the transaction does not match".to_string(),
@@ -6633,7 +6635,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-			msg.next_local_commitment_number == 0 {
+			msg.next_local_commitment_number == 0 && msg.next_funding_txid.is_none() {
 			return Err(ChannelError::close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
@@ -6697,6 +6699,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					raa: None, commitment_update: None,
 					order: RAACommitmentOrder::CommitmentFirst,
 					shutdown_msg, announcement_sigs,
+					tx_signatures: None,
+					tx_abort: None,
 				});
 			}
 
@@ -6706,6 +6710,8 @@ impl<SP: Deref> FundedChannel<SP> where
 				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
+				tx_signatures: None,
+				tx_abort: None,
 			});
 		}
 
@@ -6751,11 +6757,67 @@ impl<SP: Deref> FundedChannel<SP> where
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
 			}
 
+			// if next_funding_txid is set:
+			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
+				 if let Some(session) = &self.interactive_tx_signing_session {
+					// if next_funding_txid matches the latest interactive funding transaction:
+					if session.unsigned_tx().compute_txid() == next_funding_txid {
+						// if it has not received tx_signatures for that funding transaction:
+						if !session.counterparty_sent_tx_signatures() {
+							// if next_commitment_number is zero:
+							let commitment_update = if msg.next_local_commitment_number == 0 {
+								// MUST retransmit its commitment_signed for that funding transaction.
+								let commitment_signed = self.context.get_initial_commitment_signed(logger)?;
+								Some(msgs::CommitmentUpdate {
+									commitment_signed,
+									update_add_htlcs: vec![],
+									update_fulfill_htlcs: vec![],
+									update_fail_htlcs: vec![],
+									update_fail_malformed_htlcs: vec![],
+									update_fee: None,
+								})
+							} else { None };
+							// if it has already received commitment_signed and it should sign first, as specified in the tx_signatures requirements:
+							if session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first() {
+								// MUST send its tx_signatures for that funding transaction.
+								(commitment_update, session.holder_tx_signatures().clone(), None)
+							} else {
+								(commitment_update, None, None)
+							}
+						} else {
+							// if it has already received tx_signatures for that funding transaction:
+							// MUST send its tx_signatures for that funding transaction.
+							(None, session.holder_tx_signatures().clone(), None)
+						}
+					} else {
+						// MUST send tx_abort to let the sending node know that they can forget this funding transaction.
+						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
+					}
+				} else {
+					// Counterparty set `next_funding_txid` at incorrect state.
+					// TODO(dual_funding): Should probably error here (or send tx_abort) but not in spec.
+					(None, None, None)
+				}
+			} else {
+				// if `next_funding_txid` is not set, and `next_commitment_number` is zero:
+				if msg.next_local_commitment_number == 0 {
+					// MUST immediately fail the channel and broadcast any relevant latest commitment transaction.
+					return Err(ChannelError::close(format!(
+						"Peer attempted to reestablish channel expecting a future local commitment transaction: {} (received) vs {} (expected)",
+						msg.next_remote_commitment_number,
+						our_commitment_transaction
+					)));
+				}
+				(None, None, None)
+			};
+
 			Ok(ReestablishResponses {
 				channel_ready, shutdown_msg, announcement_sigs,
 				raa: required_revoke,
-				commitment_update: None,
+				commitment_update,
 				order: self.context.resend_order.clone(),
+				tx_signatures,
+				tx_abort,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
@@ -6770,6 +6832,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					channel_ready, shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
 					order: self.context.resend_order.clone(),
+					tx_signatures: None,
+					tx_abort: None,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -6792,6 +6856,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					channel_ready, shutdown_msg, announcement_sigs,
 					raa, commitment_update,
 					order: self.context.resend_order.clone(),
+					tx_signatures: None,
+					tx_abort: None,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
@@ -8069,7 +8135,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// to the txid of that interactive transaction, else we MUST NOT set it.
 		if let Some(signing_session) = &self.interactive_tx_signing_session {
 			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
-			if !signing_session.counterparty_sent_tx_signatures {
+			if !signing_session.counterparty_sent_tx_signatures() {
 				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
 				Some(self.funding_outpoint().txid)
 			} else {
