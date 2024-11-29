@@ -9239,7 +9239,14 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_id.write(writer)?;
 		{
 			let mut channel_state = self.context.channel_state;
-			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)) {
+			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_))
+			{
+				channel_state.set_peer_disconnected();
+			} else if matches!(channel_state, ChannelState::FundingNegotiated) &&
+				self.context.holder_commitment_point.transaction_number() == INITIAL_COMMITMENT_NUMBER - 1 {
+				// This is a V2 session which has an active signing session
+				// TODO(dual_funding): When we allow contributing funds to dual-funded channels,
+				// we will need to handle persisting appropriate signing session state.
 				channel_state.set_peer_disconnected();
 			} else {
 				debug_assert!(false, "Pre-funded/shutdown channels should not be written");
