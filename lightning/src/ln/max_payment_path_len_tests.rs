@@ -16,16 +16,19 @@ use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, PaymentCo
 use crate::events::{Event, MessageSendEventsProvider};
 use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{PaymentId, Verification};
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs;
 use crate::ln::msgs::OnionMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
+use crate::offers::nonce::Nonce;
 use crate::prelude::*;
 use crate::routing::router::{DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, PaymentParameters, RouteParameters};
+use crate::sign::NodeSigner;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
@@ -157,14 +160,19 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	// Construct the route parameters for sending to nodes[2]'s 1-hop blinded path.
 	let amt_msat = 100_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = ExpandedKey::new(&chanmon_cfgs[2].keys_manager.get_inbound_payment_key_material());
+	let hmac = payee_tlvs.hmac_for_offer_payment(nonce, &expanded_key);
+	payee_tlvs.authentication = Some((hmac, nonce));
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[2].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,

@@ -10472,20 +10472,28 @@ where
 	fn create_blinded_payment_paths(
 		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
 		let first_hops = self.list_usable_channels();
 		let payee_node_id = self.get_our_node_id();
 		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
 			+ LATENCY_GRACE_PERIOD_BLOCKS;
-		let payee_tlvs = ReceiveTlvs {
+
+		let mut payee_tlvs = ReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
 			payment_context,
+			authentication: None,
 		};
+		let nonce = Nonce::from_entropy_source(entropy);
+		let hmac = payee_tlvs.hmac_for_offer_payment(nonce, expanded_key);
+		payee_tlvs.authentication = Some((hmac, nonce));
+
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
 		)

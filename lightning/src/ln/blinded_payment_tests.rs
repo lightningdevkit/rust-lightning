@@ -7,7 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
@@ -17,9 +19,10 @@ use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsP
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::ln::channelmanager;
-use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields, Verification};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::functional_test_utils::*;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, UnsignedGossipMessage};
 use crate::ln::onion_payment;
@@ -27,6 +30,7 @@ use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::nonce::Nonce;
 use crate::prelude::*;
 use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters};
 use crate::sign::{KeyMaterial, NodeSigner, Recipient};
@@ -69,7 +73,8 @@ fn blinded_payment_path(
 				.unwrap_or_else(|| channel_upds[idx - 1].htlc_maximum_msat),
 		});
 	}
-	let payee_tlvs = ReceiveTlvs {
+
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
@@ -77,13 +82,25 @@ fn blinded_payment_path(
 				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
 		},
 		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, keys_manager));
+
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPaymentPath::new(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
 		intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
 		TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
+}
+
+fn hmac_payee_tlvs(
+	payee_tlvs: &ReceiveTlvs, keys_manager: &test_utils::TestKeysInterface,
+) -> (Hmac<Sha256>, Nonce) {
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = ExpandedKey::new(&keys_manager.get_inbound_payment_key_material());
+	let hmac = payee_tlvs.hmac_for_offer_payment(nonce, &expanded_key);
+	(hmac, nonce)
 }
 
 pub fn get_blinded_route_parameters(
@@ -116,14 +133,16 @@ fn do_one_hop_blinded_path(success: bool) {
 
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, &chanmon_cfgs[1].keys_manager));
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
@@ -160,14 +179,16 @@ fn mpp_to_one_hop_blinded_path() {
 
 	let amt_msat = 15_000_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, &chanmon_cfgs[3].keys_manager));
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[3].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[3].keys_manager, &secp_ctx
@@ -302,7 +323,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
-	route_params.payment_params.max_path_length = 18;
+	route_params.payment_params.max_path_length = 17;
 
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -1375,14 +1396,16 @@ fn custom_tlvs_to_blinded_path() {
 
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, &chanmon_cfgs[1].keys_manager));
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
