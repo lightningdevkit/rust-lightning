@@ -480,6 +480,20 @@ impl Verification for PaymentHash {
 	}
 }
 
+impl Verification for ReceiveTlvs {
+	fn hmac_for_offer_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
+	}
+
+	fn verify_for_offer_payment(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
+	}
+}
+
 /// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
 /// a payment and ensure idempotency in LDK.
 ///

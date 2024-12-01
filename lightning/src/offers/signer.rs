@@ -16,6 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, self};
 use types::payment::PaymentHash;
 use core::fmt;
+use crate::blinded_path::payment::ReceiveTlvs;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::offers::merkle::TlvRecord;
@@ -45,6 +46,9 @@ const ASYNC_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[6; 16];
 
 // HMAC input for a `PaymentHash`. The HMAC is used in `OffersContext::InboundPayment`.
 const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[7; 16];
+
+// HMAC input for `ReceiveTlvs`. The HMAC is used in `blinded_path::payment::PaymentContext`.
+const PAYMENT_TLVS_HMAC_INPUT: &[u8; 16] = &[8; 16];
 
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
@@ -458,4 +462,23 @@ fn hmac_for_payment_id(
 	hmac.input(&payment_id.0);
 
 	Hmac::from_engine(hmac)
+}
+
+pub(crate) fn hmac_for_payment_tlvs(
+	receive_tlvs: &ReceiveTlvs, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment TLVs";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(PAYMENT_TLVS_HMAC_INPUT);
+	receive_tlvs.write(&mut hmac).unwrap();
+
+	Hmac::from_engine(hmac)
+}
+
+pub(crate) fn verify_payment_tlvs(
+	receive_tlvs: &ReceiveTlvs, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_payment_tlvs(receive_tlvs, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
 }
