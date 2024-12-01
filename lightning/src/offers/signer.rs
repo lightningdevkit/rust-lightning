@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, self};
 use types::payment::PaymentHash;
 use core::fmt;
-use crate::blinded_path::payment::ReceiveTlvs;
+use crate::blinded_path::payment::UnauthenticatedReceiveTlvs;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::offers::merkle::TlvRecord;
@@ -465,7 +465,7 @@ fn hmac_for_payment_id(
 }
 
 pub(crate) fn hmac_for_payment_tlvs(
-	receive_tlvs: &ReceiveTlvs, nonce: Nonce, expanded_key: &ExpandedKey,
+	receive_tlvs: &UnauthenticatedReceiveTlvs, nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Hmac<Sha256> {
 	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment TLVs";
 	let mut hmac = expanded_key.hmac_for_offer();
@@ -478,7 +478,8 @@ pub(crate) fn hmac_for_payment_tlvs(
 }
 
 pub(crate) fn verify_payment_tlvs(
-	receive_tlvs: &ReceiveTlvs, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+	receive_tlvs: &UnauthenticatedReceiveTlvs, hmac: Hmac<Sha256>, nonce: Nonce,
+	expanded_key: &ExpandedKey,
 ) -> Result<(), ()> {
 	if hmac_for_payment_tlvs(receive_tlvs, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
 }

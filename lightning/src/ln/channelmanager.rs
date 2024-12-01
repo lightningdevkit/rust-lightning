@@ -36,7 +36,7 @@ use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -480,7 +480,7 @@ impl Verification for PaymentHash {
 	}
 }
 
-impl Verification for ReceiveTlvs {
+impl Verification for UnauthenticatedReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
@@ -10490,13 +10490,16 @@ where
 	fn create_blinded_payment_paths(
 		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
 		let first_hops = self.list_usable_channels();
 		let payee_node_id = self.get_our_node_id();
 		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
 			+ LATENCY_GRACE_PERIOD_BLOCKS;
-		let payee_tlvs = ReceiveTlvs {
+
+		let payee_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry,
@@ -10504,6 +10507,9 @@ where
 			},
 			payment_context,
 		};
+		let nonce = Nonce::from_entropy_source(entropy);
+		let payee_tlvs = payee_tlvs.authenticate(nonce, expanded_key);
+
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
 		)

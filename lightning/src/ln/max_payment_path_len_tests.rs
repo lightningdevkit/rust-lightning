@@ -12,7 +12,7 @@
 
 use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::BlindedHop;
-use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::events::{Event, MessageSendEventsProvider};
 use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
@@ -24,8 +24,10 @@ use crate::ln::msgs::OnionMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
+use crate::offers::nonce::Nonce;
 use crate::prelude::*;
 use crate::routing::router::{DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, PaymentParameters, RouteParameters};
+use crate::sign::NodeSigner;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
@@ -157,7 +159,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	// Construct the route parameters for sending to nodes[2]'s 1-hop blinded path.
 	let amt_msat = 100_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let payee_tlvs = ReceiveTlvs {
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
@@ -165,6 +167,9 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		},
 		payment_context: PaymentContext::unknown(),
 	};
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = chanmon_cfgs[2].keys_manager.get_inbound_payment_key();
+	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[2].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,

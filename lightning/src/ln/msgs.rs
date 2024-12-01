@@ -31,7 +31,7 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
-use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -2907,9 +2907,11 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						next_blinding_override,
 					})
 				},
-				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints, payment_context
-				})} => {
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(receive_tlvs) } => {
+					let ReceiveTlvs { tlvs, authentication: _ } = receive_tlvs;
+					let UnauthenticatedReceiveTlvs {
+						payment_secret, payment_constraints, payment_context,
+					} = tlvs;
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
