@@ -9,6 +9,8 @@
 
 //! Data structures and methods for constructing [`BlindedPaymentPath`]s to send a payment over.
 
+use bitcoin::hashes::hmac::Hmac;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
@@ -22,6 +24,7 @@ use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::invoice_request::InvoiceRequestFields;
+use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -260,6 +263,8 @@ pub struct ReceiveTlvs {
 	pub payment_constraints: PaymentConstraints,
 	/// Context for the receiver of this payment.
 	pub payment_context: PaymentContext,
+	/// An HMAC of `payment_context` along with a nonce used to construct it.
+	pub authentication: (Hmac<Sha256>, Nonce),
 }
 
 /// Data to construct a [`BlindedHop`] for sending a payment over.
@@ -404,7 +409,8 @@ impl Writeable for ReceiveTlvs {
 		encode_tlv_stream!(w, {
 			(12, self.payment_constraints, required),
 			(65536, self.payment_secret, required),
-			(65537, self.payment_context, required)
+			(65537, self.payment_context, required),
+			(65539, self.authentication, required),
 		});
 		Ok(())
 	}
@@ -432,6 +438,7 @@ impl Readable for BlindedPaymentTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, (default_value, PaymentContext::unknown())),
+			(65539, authentication, option),
 		});
 		let _padding: Option<utils::Padding> = _padding;
 
@@ -452,6 +459,7 @@ impl Readable for BlindedPaymentTlvs {
 				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
 				payment_context: payment_context.0.unwrap(),
+				authentication: authentication.ok_or(DecodeError::InvalidValue)?,
 			}))
 		}
 	}

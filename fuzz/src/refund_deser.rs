@@ -14,11 +14,13 @@ use lightning::blinded_path::payment::{
 	BlindedPaymentPath, Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext,
 	PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
-use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
+use lightning::ln::channelmanager::{MIN_FINAL_CLTV_EXPIRY_DELTA, Verification};
+use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::nonce::Nonce;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::offers::refund::Refund;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, KeyMaterial};
 use lightning::types::features::BlindedHopFeatures;
 use lightning::types::payment::{PaymentHash, PaymentSecret};
 use lightning::util::ser::Writeable;
@@ -67,8 +69,11 @@ fn privkey(byte: u8) -> SecretKey {
 fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	refund: &Refund, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>,
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
+	let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 	let entropy_source = Randomness {};
 	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let nonce = Nonce::from_entropy_source(&entropy_source);
+	let hmac = payment_context.hmac_for_offer_payment(nonce, &expanded_key);
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret: PaymentSecret([42; 32]),
 		payment_constraints: PaymentConstraints {
@@ -76,6 +81,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 			htlc_minimum_msat: 1,
 		},
 		payment_context,
+		authentication: (hmac, nonce),
 	};
 	let intermediate_nodes = [PaymentForwardNode {
 		tlvs: ForwardTlvs {
