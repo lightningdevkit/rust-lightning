@@ -1148,6 +1148,9 @@ enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	UnfundedV2(PendingV2Channel<SP>),
 	Funded(FundedChannel<SP>),
+	#[cfg(splicing)]
+	/// Used during splicing, channel is funded but a new funding is being renegotiated.
+	RefundingV2(FundedChannel<SP>),
 }
 
 impl<SP: Deref> Channel<SP> where
@@ -1161,6 +1164,8 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedV2(chan) => &chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) => &chan.context,
 		}
 	}
 
@@ -1171,6 +1176,8 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(ref mut chan) => &mut chan.context,
 		}
 	}
 
@@ -1181,6 +1188,8 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(_) => { debug_assert!(false); None },
 		}
 	}
 
@@ -1288,6 +1297,8 @@ impl<SP: Deref> Channel<SP> where
 				})
 			},
 			ChannelPhase::UnfundedV2(_) => None,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) => Some(chan.signer_maybe_unblocked(logger)),
 		}
 	}
 
@@ -1307,6 +1318,8 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) => chan.remove_uncommitted_htlcs_and_mark_paused(logger).is_ok(),
 		}
 	}
 
@@ -1347,6 +1360,9 @@ impl<SP: Deref> Channel<SP> where
 			},
 			#[cfg(not(dual_funding))]
 			ChannelPhase::UnfundedV2(_) => ReconnectionMsg::None,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) =>
+				ReconnectionMsg::Reestablish(chan.get_channel_reestablish(logger)),
 		}
 	}
 
@@ -1380,6 +1396,8 @@ impl<SP: Deref> Channel<SP> where
 				debug_assert!(false);
 				Ok(None)
 			},
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(_) => Ok(None),
 		}
 	}
 
