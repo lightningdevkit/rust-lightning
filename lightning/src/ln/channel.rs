@@ -1132,6 +1132,9 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	Funded(Channel<SP>),
+	#[cfg(splicing)]
+	/// Used during splicing, channel is funded but a new funding is being renegotiated.
+	RefundingV2(Channel<SP>),
 }
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
@@ -1145,6 +1148,8 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) => &chan.context,
 		}
 	}
 
@@ -1155,6 +1160,26 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedInboundV1(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(ref mut chan) => &mut chan.context,
+		}
+	}
+
+	pub fn funded_channel(&self) -> Option<&Channel<SP>> {
+		match self {
+			ChannelPhase::Funded(chan) => Some(&chan),
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) => Some(&chan),
+			_ => None
+		}
+	}
+
+	pub fn funded_channel_mut(&mut self) -> Option<&mut Channel<SP>> {
+		match self {
+			ChannelPhase::Funded(ref mut chan) => Some(chan),
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(ref mut chan) => Some(chan),
+			_ => None
 		}
 	}
 }
