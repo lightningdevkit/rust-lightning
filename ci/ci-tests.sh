@@ -18,8 +18,8 @@ function PIN_RELEASE_DEPS {
 	# Here we opt to keep using unicode-rs by pinning idna_adapter as described here: https://docs.rs/crate/idna_adapter/1.2.0
 	[ "$RUSTC_MINOR_VERSION" -lt 67 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
 
-	# indexmap 2.6.0 upgraded to hashbrown 0.15, which unfortunately bumped their MSRV to rustc 1.65 with the 0.15.1 release
-	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p indexmap@2.6.0 --precise "2.5.0" --verbose
+	# indexmap 2.6.0 upgraded to hashbrown 0.15, which unfortunately bumped their MSRV to rustc 1.65 with the 0.15.1 release (and 2.7.0 was released since).
+	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p indexmap@2.7.0 --precise "2.5.0" --verbose
 
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
