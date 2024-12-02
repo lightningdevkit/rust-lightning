@@ -125,7 +125,9 @@ use core::time::Duration;
 use core::ops::Deref;
 use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+#[cfg(test)]
+pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -2376,7 +2378,9 @@ where
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,
-	#[allow(unused)]
+	#[cfg(fuzzing)]
+	pub router: R,
+	#[cfg(not(fuzzing))]
 	router: R,
 	message_router: MR,
 
@@ -4621,8 +4625,11 @@ where
 	// [`TestRouter::expect_find_route`] instead.
 	//
 	// [`TestRouter::expect_find_route`]: crate::util::test_utils::TestRouter::expect_find_route
-	#[cfg(any(test, fuzzing))]
-	pub fn send_payment_with_route(&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
+	#[cfg(test)]
+	pub(crate) fn send_payment_with_route(
+		&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+		payment_id: PaymentId
+	) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
