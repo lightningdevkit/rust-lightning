@@ -482,7 +482,7 @@ pub enum RetryableSendFailure {
 /// as the Err() type describing which state the payment is in, see the description of individual
 /// enum states for more.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PaymentSendFailure {
+pub(crate) enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
 	/// send the payment at all.
 	///
