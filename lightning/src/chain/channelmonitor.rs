@@ -791,10 +791,10 @@ struct IrrevocablyResolvedHTLC {
 	payment_preimage: Option<PaymentPreimage>,
 }
 
-// In LDK versions prior to 0.0.111 commitment_tx_output_idx was not Option-al and
-// IrrevocablyResolvedHTLC objects only existed for non-dust HTLCs. This was a bug, but to maintain
-// backwards compatibility we must ensure we always write out a commitment_tx_output_idx field,
-// using `u32::MAX` as a sentinal to indicate the HTLC was dust.
+/// In LDK versions prior to 0.0.111 commitment_tx_output_idx was not Option-al and
+/// IrrevocablyResolvedHTLC objects only existed for non-dust HTLCs. This was a bug, but to maintain
+/// backwards compatibility we must ensure we always write out a commitment_tx_output_idx field,
+/// using [`u32::MAX`] as a sentinal to indicate the HTLC was dust.
 impl Writeable for IrrevocablyResolvedHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let mapped_commitment_tx_output_idx = self.commitment_tx_output_idx.unwrap_or(u32::MAX);
