@@ -85,7 +85,8 @@ macro_rules! _check_encoded_tlv_order {
 	($last_type: expr, $type: expr, (static_value, $value: expr)) => { };
 	($last_type: expr, $type: expr, $fieldty: tt) => {
 		if let Some(t) = $last_type {
-			#[allow(unused_comparisons)] // Note that $type may be 0 making the following comparison always false
+			// Note that $type may be 0 making the following comparison always false
+			#[allow(unused_comparisons)]
 			(debug_assert!(t < $type))
 		}
 		$last_type = Some($type);
@@ -196,7 +197,8 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 		$len.0 += field_len;
 	};
 	($len: expr, $type: expr, $field: expr, required_vec) => {
-		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::WithoutLength(&$field), required);
+		let field = $crate::util::ser::WithoutLength(&$field);
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, required);
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -215,7 +217,8 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
 	($len: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
-		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field.map(|f| $encoding(f)), option);
+		let field = $field.map(|f| $encoding(f));
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, option);
 	};
 	($len: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
@@ -260,7 +263,8 @@ macro_rules! _encode_varint_length_prefixed_tlv {
 #[macro_export]
 macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
+		// Note that $type may be 0 making the second comparison always false
+		#[allow(unused_comparisons)]
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			$field = $default.into();
@@ -269,7 +273,8 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (static_value, $value: expr)) => {
 	};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
+		// Note that $type may be 0 making the second comparison always false
+		#[allow(unused_comparisons)]
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			return Err(DecodeError::InvalidValue);
@@ -313,7 +318,8 @@ macro_rules! _check_decoded_tlv_order {
 #[macro_export]
 macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
+		// Note that $type may be 0 making the second comparison always false
+		#[allow(unused_comparisons)]
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
 			$field = $default.into();
@@ -323,7 +329,8 @@ macro_rules! _check_missing_tlv {
 		$field = $value;
 	};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
+		// Note that $type may be 0 making the second comparison always false
+		#[allow(unused_comparisons)]
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
 			return Err(DecodeError::InvalidValue);
@@ -1339,53 +1346,59 @@ mod tests {
 	#[test]
 	fn tlv_v_short_read() {
 		// We only expect a u32 for type 3 (which we are given), but the L says its 8 bytes.
-		if let Err(DecodeError::ShortRead) = tlv_reader(&<Vec<u8>>::from_hex(
-				concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")
-				).unwrap()[..]) {
+		let buf = <Vec<u8>>::from_hex(
+			concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")
+		).unwrap();
+		if let Err(DecodeError::ShortRead) = tlv_reader(&buf[..]) {
 		} else { panic!(); }
 	}
 
 	#[test]
 	fn tlv_types_out_of_order() {
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
-				concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")
-				).unwrap()[..]) {
+		let buf = <Vec<u8>>::from_hex(concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")).unwrap();
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
 		} else { panic!(); }
 		// ...even if its some field we don't understand
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
-				concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")
-				).unwrap()[..]) {
+		let buf = <Vec<u8>>::from_hex(
+			concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")
+		).unwrap();
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
 		} else { panic!(); }
 	}
 
 	#[test]
 	fn tlv_req_type_missing_or_extra() {
 		// It's also bad if they included even fields we don't understand
-		if let Err(DecodeError::UnknownRequiredFeature) = tlv_reader(&<Vec<u8>>::from_hex(
+		let buf = <Vec<u8>>::from_hex(
 				concat!("0100", "0208deadbeef1badbeef", "0304deadbeef", "0600")
-				).unwrap()[..]) {
+				).unwrap();
+		if let Err(DecodeError::UnknownRequiredFeature) = tlv_reader(&buf[..]) {
 		} else { panic!(); }
 		// ... or if they're missing fields we need
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
-				concat!("0100", "0208deadbeef1badbeef")
-				).unwrap()[..]) {
+		let buf = <Vec<u8>>::from_hex(
+			concat!("0100", "0208deadbeef1badbeef")
+			).unwrap();
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
 		} else { panic!(); }
 		// ... even if that field is even
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&<Vec<u8>>::from_hex(
+		let buf = <Vec<u8>>::from_hex(
 				concat!("0304deadbeef", "0500")
-				).unwrap()[..]) {
+				).unwrap();
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
 		} else { panic!(); }
 	}
 
 	#[test]
 	fn tlv_simple_good_cases() {
-		assert_eq!(tlv_reader(&<Vec<u8>>::from_hex(
-				concat!("0208deadbeef1badbeef", "03041bad1dea")
-				).unwrap()[..]).unwrap(),
+		let buf = <Vec<u8>>::from_hex(
+			concat!("0208deadbeef1badbeef", "03041bad1dea")
+		).unwrap();
+		assert_eq!(tlv_reader(&buf[..]).unwrap(),
 			(0xdeadbeef1badbeef, 0x1bad1dea, None));
-		assert_eq!(tlv_reader(&<Vec<u8>>::from_hex(
-				concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
-				).unwrap()[..]).unwrap(),
+		let buf = <Vec<u8>>::from_hex(
+			concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
+		).unwrap();
+		assert_eq!(tlv_reader(&buf[..]).unwrap(),
 			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
 	}
 
@@ -1407,26 +1420,30 @@ mod tests {
 
 	#[test]
 	fn upgradable_tlv_simple_good_cases() {
-		assert_eq!(upgradable_tlv_reader(&<Vec<u8>>::from_hex(
-			concat!("0204deadbeef", "03041bad1dea", "0404deadbeef")
-		).unwrap()[..]).unwrap(),
+		let buf = <Vec<u8>>::from_hex(
+		concat!("0204deadbeef", "03041bad1dea", "0404deadbeef")
+	).unwrap();
+		assert_eq!(upgradable_tlv_reader(&buf[..]).unwrap(),
 		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: Some(0xdeadbeef) }));
 
-		assert_eq!(upgradable_tlv_reader(&<Vec<u8>>::from_hex(
+		let buf = <Vec<u8>>::from_hex(
 			concat!("0204deadbeef", "03041bad1dea")
-		).unwrap()[..]).unwrap(),
+		).unwrap();
+		assert_eq!(upgradable_tlv_reader(&buf[..]).unwrap(),
 		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: None}));
 	}
 
 	#[test]
 	fn missing_required_upgradable() {
-		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&<Vec<u8>>::from_hex(
+		let buf = <Vec<u8>>::from_hex(
 			concat!("0100", "0204deadbeef")
-			).unwrap()[..]) {
+		).unwrap();
+		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&buf[..]) {
 		} else { panic!(); }
-		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&<Vec<u8>>::from_hex(
+		let buf = <Vec<u8>>::from_hex(
 			concat!("0100", "03041bad1dea")
-		).unwrap()[..]) {
+		).unwrap();
+		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&buf[..]) {
 		} else { panic!(); }
 	}
 
