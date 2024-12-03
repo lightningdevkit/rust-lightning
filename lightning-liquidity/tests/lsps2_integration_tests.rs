@@ -109,10 +109,7 @@ fn invoice_generation_flow() {
 	let get_info_request_id = client_handler.request_opening_params(service_node_id, None);
 	let get_info_request = get_lsps_message!(client_node, service_node_id);
 
-	service_node
-		.liquidity_manager
-		.handle_custom_message(get_info_request, &client_node_id)
-		.unwrap();
+	service_node.liquidity_manager.handle_custom_message(get_info_request, client_node_id).unwrap();
 
 	let get_info_event = service_node.liquidity_manager.next_event().unwrap();
 	match get_info_event {
@@ -149,7 +146,7 @@ fn invoice_generation_flow() {
 
 	client_node
 		.liquidity_manager
-		.handle_custom_message(get_info_response, &service_node_id)
+		.handle_custom_message(get_info_response, service_node_id)
 		.unwrap();
 
 	let opening_params_event = client_node.liquidity_manager.next_event().unwrap();
@@ -174,7 +171,7 @@ fn invoice_generation_flow() {
 		.unwrap();
 
 	let buy_request = get_lsps_message!(client_node, service_node_id);
-	service_node.liquidity_manager.handle_custom_message(buy_request, &client_node_id).unwrap();
+	service_node.liquidity_manager.handle_custom_message(buy_request, client_node_id).unwrap();
 
 	let buy_event = service_node.liquidity_manager.next_event().unwrap();
 	match buy_event {
@@ -209,7 +206,7 @@ fn invoice_generation_flow() {
 		.unwrap();
 
 	let buy_response = get_lsps_message!(service_node, client_node_id);
-	client_node.liquidity_manager.handle_custom_message(buy_response, &service_node_id).unwrap();
+	client_node.liquidity_manager.handle_custom_message(buy_response, service_node_id).unwrap();
 
 	let invoice_params_event = client_node.liquidity_manager.next_event().unwrap();
 	match invoice_params_event {

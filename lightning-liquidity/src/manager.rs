@@ -22,13 +22,14 @@ use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::chain::{self, BestBlock, Confirm, Filter, Listen};
 use lightning::ln::channelmanager::{AChannelManager, ChainParameters};
-use lightning::ln::features::{InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
 use lightning::util::ser::Readable;
+
+use lightning_types::features::{InitFeatures, NodeFeatures};
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -489,7 +490,7 @@ where
 	C::Target: Filter,
 {
 	fn handle_custom_message(
-		&self, msg: Self::CustomMessage, sender_node_id: &PublicKey,
+		&self, msg: Self::CustomMessage, sender_node_id: PublicKey,
 	) -> Result<(), lightning::ln::msgs::LightningError> {
 		{
 			if self.ignored_peers.read().unwrap().contains(&sender_node_id) {
@@ -513,8 +514,8 @@ where
 					data: None,
 				};
 
-				self.pending_messages.enqueue(sender_node_id, LSPSMessage::Invalid(error));
-				self.ignored_peers.write().unwrap().insert(*sender_node_id);
+				self.pending_messages.enqueue(&sender_node_id, LSPSMessage::Invalid(error));
+				self.ignored_peers.write().unwrap().insert(sender_node_id);
 				let err = format!(
 					"Failed to deserialize invalid LSPS message. Ignoring peer {} from now on.",
 					sender_node_id
@@ -523,7 +524,7 @@ where
 			})?
 		};
 
-		self.handle_lsps_message(message, sender_node_id)
+		self.handle_lsps_message(message, &sender_node_id)
 	}
 
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
@@ -565,7 +566,7 @@ where
 		features
 	}
 
-	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 		let mut features = InitFeatures::empty();
 
 		let advertise_service = self.service_config.as_ref().map_or(false, |c| c.advertise_service);
@@ -578,9 +579,9 @@ where
 		features
 	}
 
-	fn peer_disconnected(&self, _: &bitcoin::secp256k1::PublicKey) {}
+	fn peer_disconnected(&self, _: bitcoin::secp256k1::PublicKey) {}
 	fn peer_connected(
-		&self, _: &bitcoin::secp256k1::PublicKey, _: &lightning::ln::msgs::Init, _: bool,
+		&self, _: bitcoin::secp256k1::PublicKey, _: &lightning::ln::msgs::Init, _: bool,
 	) -> Result<(), ()> {
 		Ok(())
 	}

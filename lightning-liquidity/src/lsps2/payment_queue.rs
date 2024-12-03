@@ -1,6 +1,6 @@
 use crate::prelude::Vec;
 use lightning::ln::channelmanager::InterceptId;
-use lightning::ln::PaymentHash;
+use lightning_types::payment::PaymentHash;
 
 /// Holds payments with the corresponding HTLCs until it is possible to pay the fee.
 /// When the fee is successfully paid with a forwarded payment, the queue should be consumed and the

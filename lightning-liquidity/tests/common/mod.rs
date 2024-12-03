@@ -19,6 +19,8 @@ use lightning::ln::msgs::{ChannelMessageHandler, Init};
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
+
+use lightning::onion_message::messenger::DefaultMessageRouter;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path};
 use lightning::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
@@ -75,6 +77,13 @@ type ChannelManager = channelmanager::ChannelManager<
 			Arc<Mutex<TestScorer>>,
 			(),
 			TestScorer,
+		>,
+	>,
+	Arc<
+		DefaultMessageRouter<
+			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+			Arc<test_utils::TestLogger>,
+			Arc<KeysManager>,
 		>,
 	>,
 	Arc<test_utils::TestLogger>,
@@ -387,9 +396,7 @@ pub(crate) fn create_liquidity_node(
 	client_config: Option<LiquidityClientConfig>,
 ) -> Node {
 	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(network));
-	let target_override = Mutex::new(HashMap::new());
-	let fee_estimator =
-		Arc::new(test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253), target_override });
+	let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
 	let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 	let genesis_block = genesis_block(network);
 	let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
@@ -398,12 +405,14 @@ pub(crate) fn create_liquidity_node(
 	let seed = [i as u8; 32];
 	let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 	let router = Arc::new(DefaultRouter::new(
-		network_graph.clone(),
+		Arc::clone(&network_graph),
 		logger.clone(),
 		keys_manager.clone(),
 		scorer.clone(),
 		Default::default(),
 	));
+	let msg_router =
+		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager)));
 	let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 	let kv_store =
 		Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
@@ -421,6 +430,7 @@ pub(crate) fn create_liquidity_node(
 		chain_monitor.clone(),
 		tx_broadcaster.clone(),
 		router.clone(),
+		msg_router.clone(),
 		logger.clone(),
 		keys_manager.clone(),
 		keys_manager.clone(),
@@ -492,7 +502,7 @@ pub(crate) fn create_service_and_client_nodes(
 	service_node
 		.channel_manager
 		.peer_connected(
-			&client_node.channel_manager.get_our_node_id(),
+			client_node.channel_manager.get_our_node_id(),
 			&Init {
 				features: client_node.channel_manager.init_features(),
 				networks: None,
@@ -504,7 +514,7 @@ pub(crate) fn create_service_and_client_nodes(
 	client_node
 		.channel_manager
 		.peer_connected(
-			&service_node.channel_manager.get_our_node_id(),
+			service_node.channel_manager.get_our_node_id(),
 			&Init {
 				features: service_node.channel_manager.init_features(),
 				networks: None,
