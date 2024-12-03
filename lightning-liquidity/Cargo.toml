@@ -16,7 +16,6 @@ categories = ["cryptography::cryptocurrencies"]
 [features]
 default = ["std"]
 std = ["lightning/std", "bitcoin/std", "lightning-invoice/std"]
-no-std = ["hashbrown"]
 
 [dependencies]
 lightning = { version = "0.0.124", path = "../lightning", default-features = false }
@@ -24,7 +23,7 @@ lightning-types = { version = "0.1", path = "../lightning-types", default-featur
 lightning-invoice = { version = "0.32.0", path = "../lightning-invoice", default-features = false, features = ["serde"] }
 
 bitcoin = { version = "0.32.2", default-features = false, features = ["serde"] }
-hashbrown = { version = "0.8", optional = true }
+hashbrown = { version = "0.8" }
 
 chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

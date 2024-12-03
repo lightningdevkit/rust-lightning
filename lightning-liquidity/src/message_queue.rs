@@ -13,7 +13,7 @@ pub struct MessageQueue {
 	queue: Mutex<VecDeque<(PublicKey, LSPSMessage)>>,
 	#[cfg(feature = "std")]
 	process_msgs_callback: RwLock<Option<Box<dyn Fn() + Send + Sync + 'static>>>,
-	#[cfg(feature = "no-std")]
+	#[cfg(not(feature = "std"))]
 	process_msgs_callback: RwLock<Option<Box<dyn Fn() + 'static>>>,
 }
 
@@ -29,7 +29,7 @@ impl MessageQueue {
 		*self.process_msgs_callback.write().unwrap() = Some(Box::new(callback));
 	}
 
-	#[cfg(feature = "no-std")]
+	#[cfg(not(feature = "std"))]
 	pub(crate) fn set_process_msgs_callback(&self, callback: impl Fn() + 'static) {
 		*self.process_msgs_callback.write().unwrap() = Some(Box::new(callback));
 	}

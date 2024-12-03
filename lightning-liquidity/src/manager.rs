@@ -361,7 +361,7 @@ where {
 	/// ```
 	///
 	/// [`PeerManager::process_events`]: lightning::ln::peer_handler::PeerManager::process_events
-	#[cfg(feature = "no-std")]
+	#[cfg(not(feature = "std"))]
 	pub fn set_process_msgs_callback(&self, callback: impl Fn() + 'static) {
 		self.pending_messages.set_process_msgs_callback(callback)
 	}

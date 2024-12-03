@@ -18,22 +18,14 @@
 #![allow(clippy::drop_non_drop)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
-#[cfg(not(any(feature = "std", feature = "no-std")))]
-compile_error!("at least one of the `std` or `no-std` features must be enabled");
 
 #[macro_use]
 extern crate alloc;
 
 mod prelude {
 	#![allow(unused_imports)]
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
-
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{hash_map, HashMap, HashSet};
 	pub use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{hash_map, HashMap, HashSet};
+	pub use hashbrown::{hash_map, HashMap, HashSet};
 
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;
