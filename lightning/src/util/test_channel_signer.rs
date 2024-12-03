@@ -313,7 +313,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				&hash_to_message!(sighash.as_byte_array()), &htlc_descriptor.counterparty_sig, &countersignatory_htlc_key.to_public_key()
 			).unwrap();
 		}
-		Ok(EcdsaChannelSigner::sign_holder_htlc_transaction(&self.inner, htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
+		self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx)
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
