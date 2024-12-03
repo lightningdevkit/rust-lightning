@@ -23,7 +23,6 @@ use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
-use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 
 use bitcoin::secp256k1::PublicKey;
