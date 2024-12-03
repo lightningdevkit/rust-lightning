@@ -42,4 +42,5 @@ level = "forbid"
 # When adding a new cfg attribute, ensure that it is added to this list.
 check-cfg = [
 	"cfg(lsps1_service)",
+	"cfg(c_bindings)",
 ]

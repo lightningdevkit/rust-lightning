@@ -62,6 +62,11 @@ impl SocketDescriptor for TestDescriptor {
 	fn disconnect_socket(&mut self) {}
 }
 
+#[cfg(c_bindings)]
+type LockingWrapper<T> = lightning::routing::scoring::MultiThreadedLockableScore<T>;
+#[cfg(not(c_bindings))]
+type LockingWrapper<T> = std::sync::Mutex<T>;
+
 type ChannelManager = channelmanager::ChannelManager<
 	Arc<ChainMonitor>,
 	Arc<test_utils::TestBroadcaster>,
@@ -74,7 +79,7 @@ type ChannelManager = channelmanager::ChannelManager<
 			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 			Arc<test_utils::TestLogger>,
 			Arc<KeysManager>,
-			Arc<Mutex<TestScorer>>,
+			Arc<LockingWrapper<TestScorer>>,
 			(),
 			TestScorer,
 		>,
@@ -136,7 +141,7 @@ pub(crate) struct Node {
 	pub(crate) network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 	pub(crate) logger: Arc<test_utils::TestLogger>,
 	pub(crate) best_block: BestBlock,
-	pub(crate) scorer: Arc<Mutex<TestScorer>>,
+	pub(crate) scorer: Arc<LockingWrapper<TestScorer>>,
 }
 
 impl Drop for Node {
@@ -371,6 +376,9 @@ impl ScoreUpdate for TestScorer {
 	fn time_passed(&mut self, _: Duration) {}
 }
 
+#[cfg(c_bindings)]
+impl lightning::routing::scoring::Score for TestScorer {}
+
 impl Drop for TestScorer {
 	fn drop(&mut self) {
 		if std::thread::panicking() {
@@ -400,7 +408,7 @@ pub(crate) fn create_liquidity_node(
 	let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 	let genesis_block = genesis_block(network);
 	let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
-	let scorer = Arc::new(Mutex::new(TestScorer::new()));
+	let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 	let now = Duration::from_secs(genesis_block.header.time as u64);
 	let seed = [i as u8; 32];
 	let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
