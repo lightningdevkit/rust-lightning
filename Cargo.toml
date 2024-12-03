@@ -16,6 +16,7 @@ members = [
     "lightning-transaction-sync",
     "lightning-macros",
     "lightning-dns-resolver",
+    "lightning-liquidity",
     "possiblyrandom",
 ]
 

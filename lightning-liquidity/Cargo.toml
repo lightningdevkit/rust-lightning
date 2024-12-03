@@ -16,15 +16,12 @@ categories = ["cryptography::cryptocurrencies"]
 [features]
 default = ["std"]
 std = ["lightning/std", "bitcoin/std", "lightning-invoice/std"]
-no-std = ["hashbrown", "lightning/no-std"]
+no-std = ["hashbrown"]
 
 [dependencies]
-lightning = { version = "0.0.125", default-features = false, features = ["max_level_trace"] }
-lightning-types = { version = "0.1", default-features = false }
-lightning-invoice = { version = "0.32.0", default-features = false, features = ["serde"] }
-#lightning = { path = "../rust-lightning/lightning", default-features = false, features = ["max_level_trace"] }
-#lightning-types = { path = "../rust-lightning/lightning-types", default-features = false }
-#lightning-invoice = { path = "../rust-lightning/lightning-invoice", default-features = false, features = ["serde"] }
+lightning = { version = "0.0.124", path = "../lightning", default-features = false }
+lightning-types = { version = "0.1", path = "../lightning-types", default-features = false }
+lightning-invoice = { version = "0.32.0", path = "../lightning-invoice", default-features = false, features = ["serde"] }
 
 bitcoin = { version = "0.32.2", default-features = false, features = ["serde"] }
 hashbrown = { version = "0.8", optional = true }
@@ -34,12 +31,9 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 serde_json = "1.0"
 
 [dev-dependencies]
-lightning = { version = "0.0.125", default-features = false, features = ["_test_utils"] }
-lightning-persister = { version = "0.0.125", default-features = false }
-lightning-background-processor = { version = "0.0.125", default-features = false, features = ["std"] }
-# lightning = { path = "../rust-lightning/lightning", default-features = false, features = ["max_level_trace", "_test_utils"] }
-# lightning-persister = { path = "../rust-lightning/lightning-persister", default-features = false }
-# lightning-background-processor = { path = "../rust-lightning/lightning-background-processor", default-features = false, features = ["std"] }
+lightning = { version = "0.0.124", path = "../lightning", default-features = false, features = ["_test_utils"] }
+lightning-persister = { version = "0.0.124", path = "../lightning-persister", default-features = false }
+lightning-background-processor = { version = "0.0.124", path = "../lightning-background-processor", default-features = false, features = ["std"] }
 
 proptest = "1.0.0"
 tokio = { version = "1.35", default-features = false, features = [ "rt-multi-thread", "time", "sync", "macros" ] }

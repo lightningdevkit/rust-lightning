@@ -35,6 +35,9 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # Starting with version 0.5.9 (there is no .6-.8), the `home` crate has an MSRV of rustc 1.70.0.
 [ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p home --precise "0.5.5" --verbose
 
+# proptest 1.3.0 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p proptest --precise "1.2.0" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the full workspace."
@@ -55,6 +58,7 @@ WORKSPACE_MEMBERS=(
 	lightning-transaction-sync
 	lightning-macros
 	lightning-dns-resolver
+	lightning-liquidity
 	possiblyrandom
 )
 
