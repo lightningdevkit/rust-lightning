@@ -106,11 +106,6 @@ cargo test -p lightning-custom-message --verbose --color always
 echo -e "\n\nTest backtrace-debug builds"
 cargo test -p lightning --verbose --color always --features backtrace
 
-echo -e "\n\nBuilding with all Log-Limiting features"
-grep '^max_level_' lightning/Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
-	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check -p lightning --verbose --color always --features "$FEATURE"
-done
-
 echo -e "\n\nTesting no_std builds"
 for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 	cargo test -p $DIR --verbose --color always --no-default-features

@@ -28,13 +28,6 @@
 //!
 //! * `std`
 //! * `grind_signatures`
-//! * Skip logging of messages at levels below the given log level:
-//!     * `max_level_off`
-//!     * `max_level_error`
-//!     * `max_level_warn`
-//!     * `max_level_info`
-//!     * `max_level_debug`
-//!     * `max_level_trace`
 
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, feature = "_test_utils")), forbid(unsafe_code))]
