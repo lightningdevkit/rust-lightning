@@ -111,7 +111,7 @@ echo -e "\n\nTest backtrace-debug builds"
 cargo test -p lightning --verbose --color always --features backtrace
 
 echo -e "\n\nTesting no_std builds"
-for DIR in lightning-invoice lightning-rapid-gossip-sync; do
+for DIR in lightning-invoice lightning-rapid-gossip-sync lightning-liquidity; do
 	cargo test -p $DIR --verbose --color always --no-default-features
 done
 
