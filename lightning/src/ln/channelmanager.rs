@@ -477,17 +477,17 @@ impl Verification for PaymentHash {
 	}
 }
 
-impl Verification for PaymentContext {
+impl Verification for ReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_context(self, nonce, expanded_key)
+		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
 	}
 
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
-		signer::verify_payment_context(self, hmac, nonce, expanded_key)
+		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
 	}
 }
 
