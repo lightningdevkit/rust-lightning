@@ -233,7 +233,7 @@ pub enum PendingHTLCRouting {
 		requires_blinded_error: bool,
 		/// Set if we are receiving a keysend to a blinded path, meaning we created the
 		/// [`PaymentSecret`] and should verify it using our
-		/// [`NodeSigner::get_inbound_payment_key_material`].
+		/// [`NodeSigner::get_inbound_payment_key`].
 		has_recipient_created_payment_secret: bool,
 	},
 }
@@ -3494,8 +3494,7 @@ where
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
-		let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
-		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let expanded_inbound_key = node_signer.get_inbound_payment_key();
 		ChannelManager {
 			default_configuration: config.clone(),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -13902,8 +13901,7 @@ where
 			}, None));
 		}
 
-		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
-		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let expanded_inbound_key = args.node_signer.get_inbound_payment_key();
 
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {

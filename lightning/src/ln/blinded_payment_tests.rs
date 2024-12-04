@@ -20,6 +20,7 @@ use crate::ln::channelmanager;
 use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::functional_test_utils::*;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, UnsignedGossipMessage};
 use crate::ln::onion_payment;
@@ -29,7 +30,7 @@ use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::prelude::*;
 use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters};
-use crate::sign::{KeyMaterial, NodeSigner, Recipient};
+use crate::sign::{NodeSigner, Recipient};
 use crate::util::config::UserConfig;
 use crate::util::ser::WithoutLength;
 use crate::util::test_utils;
@@ -1221,9 +1222,7 @@ fn blinded_keysend() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
-	let inbound_payment_key = inbound_payment::ExpandedKey::new(
-		&nodes[2].keys_manager.get_inbound_payment_key_material()
-	);
+	let inbound_payment_key = nodes[2].keys_manager.get_inbound_payment_key();
 	let payment_secret = inbound_payment::create_for_spontaneous_payment(
 		&inbound_payment_key, None, u32::MAX, nodes[2].node.duration_since_epoch().as_secs(), None
 	).unwrap();
@@ -1262,9 +1261,7 @@ fn blinded_mpp_keysend() {
 	let chan_1_3 = create_announced_chan_between_nodes(&nodes, 1, 3);
 	let chan_2_3 = create_announced_chan_between_nodes(&nodes, 2, 3);
 
-	let inbound_payment_key = inbound_payment::ExpandedKey::new(
-		&nodes[3].keys_manager.get_inbound_payment_key_material()
-	);
+	let inbound_payment_key = nodes[3].keys_manager.get_inbound_payment_key();
 	let payment_secret = inbound_payment::create_for_spontaneous_payment(
 		&inbound_payment_key, None, u32::MAX, nodes[3].node.duration_since_epoch().as_secs(), None
 	).unwrap();
@@ -1528,7 +1525,7 @@ fn route_blinding_spec_test_vector() {
 			}
 			Ok(SharedSecret::new(other_key, &node_secret))
 		}
-		fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!() }
+		fn get_inbound_payment_key(&self) -> ExpandedKey { unreachable!() }
 		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,

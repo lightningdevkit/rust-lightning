@@ -50,6 +50,7 @@ use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, Retry,
 };
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
@@ -334,10 +335,10 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		#[rustfmt::skip]
 		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_secret[31]];
-		KeyMaterial(random_bytes)
+		ExpandedKey::new(&KeyMaterial(random_bytes))
 	}
 
 	fn sign_invoice(

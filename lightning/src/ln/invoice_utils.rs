@@ -12,7 +12,7 @@ use crate::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
 use crate::types::payment::PaymentHash;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{Bolt11InvoiceParameters, ChannelManager, PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA};
-use crate::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
+use crate::ln::inbound_payment::{create, create_from_hash};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{RouteHint, RouteHintHop, Router};
 use crate::onion_message::messenger::MessageRouter;
@@ -165,8 +165,7 @@ where
 		Bolt11InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
 	};
 
-	// If we ever see performance here being too slow then we should probably take this ExpandedKey as a parameter instead.
-	let keys = ExpandedKey::new(&node_signer.get_inbound_payment_key_material());
+	let keys = node_signer.get_inbound_payment_key();
 	let (payment_hash, payment_secret) = if let Some(payment_hash) = payment_hash {
 		let payment_secret = create_from_hash(
 			&keys,

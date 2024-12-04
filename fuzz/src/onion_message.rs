@@ -9,6 +9,7 @@ use lightning::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageContext, OffersContext,
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
+use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
@@ -22,7 +23,7 @@ use lightning::onion_message::messenger::{
 };
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
-use lightning::sign::{EntropySource, KeyMaterial, NodeSigner, Recipient, SignerProvider};
+use lightning::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use lightning::types::features::InitFeatures;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
@@ -223,7 +224,7 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		unreachable!()
 	}
 
