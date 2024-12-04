@@ -19,7 +19,6 @@ use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::{PaymentId, Verification};
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
-use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs;
 use crate::ln::msgs::OnionMessageHandler;
 use crate::ln::onion_utils;
@@ -170,7 +169,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		authentication: None,
 	};
 	let nonce = Nonce([42u8; 16]);
-	let expanded_key = ExpandedKey::new(&chanmon_cfgs[2].keys_manager.get_inbound_payment_key_material());
+	let expanded_key = chanmon_cfgs[2].keys_manager.get_inbound_payment_key();
 	let hmac = payee_tlvs.hmac_for_offer_payment(nonce, &expanded_key);
 	payee_tlvs.authentication = Some((hmac, nonce));
 	let mut secp_ctx = Secp256k1::new();
