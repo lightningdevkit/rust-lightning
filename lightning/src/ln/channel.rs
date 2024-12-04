@@ -4554,7 +4554,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// self.channel_state = ChannelState::NegotiatingFunding(
 		// 	NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
 		// );
-		log_info!(logger, "Splicing process started, old channel value {}, outgoing {}, channel_id {}",
+		log_info!(logger, "Splicing process started, new channel value {}, outgoing {}, channel_id {}",
 			self.channel_value_satoshis, is_outgoing, self.channel_id);
 	}
 
@@ -9496,6 +9496,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			#[cfg(splicing)]
 			pending_splice_post: None,
 		};
 		Ok(chan)
@@ -9505,7 +9506,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	#[cfg(splicing)]
 	pub fn new_spliced<L: Deref>(
 		is_outbound: bool,
-		pre_splice_channel: &mut Channel<SP>,
+		pre_splice_channel: &Channel<SP>,
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		our_funding_contribution: i64,
@@ -9558,7 +9559,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			their_funding_satoshis: Some(their_funding_satoshis),
 			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight,
-			our_funding_inputs: Some(funding_inputs),
+			our_funding_inputs: funding_inputs,
 		};
 		let unfunded_context = UnfundedChannelContext::default();
 		let post_chan = Self {
@@ -9655,6 +9656,9 @@ pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	/// Info about an in-progress, pending splice (if any), on the post-splice channel
+	#[cfg(splicing)]
+	pending_splice_post: Option<PendingSplicePost>,
 }
 
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -9758,7 +9762,79 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context,
 			interactive_tx_constructor,
 			unfunded_context: UnfundedChannelContext::default(),
+			#[cfg(splicing)]
+			pending_splice_post: None,
 		})
+	}
+
+	/// Create new channel for splicing
+	#[cfg(splicing)]
+	pub fn new_spliced<L: Deref>(
+		is_outbound: bool,
+		pre_splice_channel: &Channel<SP>,
+		signer_provider: &SP,
+		counterparty_funding_pubkey: &PublicKey,
+		our_funding_contribution: i64,
+		their_funding_contribution: i64,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		funding_tx_locktime: LockTime,
+		funding_feerate_sat_per_1000_weight: u32,
+		logger: &L,
+	) -> Result<Self, ChannelError> where L::Target: Logger
+	{
+		if pre_splice_channel.is_splice_pending() {
+			return Err(ChannelError::Warn(format!("Internal error: Channel is already splicing, channel_id {}", pre_splice_channel.context.channel_id)));
+		}
+
+		let pre_channel_value = pre_splice_channel.context.get_value_satoshis();
+
+		// Save the current funding transaction
+		let pre_funding_transaction = pre_splice_channel.context.funding_transaction.clone();
+		let pre_funding_txo = pre_splice_channel.context.get_funding_txo().clone();
+
+		let pending_splice_post = PendingSplicePost::new(
+			pre_channel_value, our_funding_contribution, their_funding_contribution,
+			pre_funding_transaction, pre_funding_txo,
+		);
+		let post_channel_value = pending_splice_post.post_channel_value();
+
+		// Create new signer, using the new channel value.
+		// Note: channel_keys_id is not changed
+		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_channel.context.channel_keys_id);
+
+		let context = ChannelContext::new_for_splice(
+			&pre_splice_channel.context,
+			false,
+			counterparty_funding_pubkey,
+			our_funding_contribution,
+			their_funding_contribution,
+			holder_signer,
+			logger,
+		)?;
+
+		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
+			pre_channel_value,
+			our_funding_contribution,
+			their_funding_contribution,
+			is_outbound,
+		)?;
+
+		let dual_funding_context = DualFundingChannelContext {
+			our_funding_satoshis,
+			their_funding_satoshis: Some(their_funding_satoshis),
+			funding_tx_locktime,
+			funding_feerate_sat_per_1000_weight,
+			our_funding_inputs: funding_inputs,
+		};
+		let unfunded_context = UnfundedChannelContext::default();
+		let post_chan = Self {
+			context,
+			dual_funding_context,
+			unfunded_context,
+			interactive_tx_constructor: None,
+			pending_splice_post: Some(pending_splice_post),
+		};
+		Ok(post_chan)
 	}
 
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
@@ -9840,7 +9916,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			#[cfg(splicing)]
 			pending_splice_pre: None,
 			#[cfg(splicing)]
-			pending_splice_post: None,
+			pending_splice_post: self.pending_splice_post,
 		};
 
 		Ok(channel)
