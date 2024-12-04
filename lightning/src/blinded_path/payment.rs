@@ -638,11 +638,15 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::hashes::hmac::Hmac;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{PaymentForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::types::payment::PaymentSecret;
 	use crate::types::features::BlindedHopFeatures;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
+	use crate::offers::nonce::Nonce;
 
 	#[test]
 	fn compute_payinfo() {
@@ -691,6 +695,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			authentication: (Hmac::<Sha256>::hash(&[42u8]), Nonce([42u8; 16])),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12).unwrap();
@@ -710,6 +715,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			authentication: (Hmac::<Sha256>::hash(&[42u8]), Nonce([42u8; 16])),
 		};
 		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
@@ -766,6 +772,7 @@ mod tests {
 				htlc_minimum_msat: 3,
 			},
 			payment_context: PaymentContext::unknown(),
+			authentication: (Hmac::<Sha256>::hash(&[42u8]), Nonce([42u8; 16])),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
@@ -819,6 +826,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			authentication: (Hmac::<Sha256>::hash(&[42u8]), Nonce([42u8; 16])),
 		};
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1, TEST_FINAL_CLTV as u16).is_err());
@@ -876,6 +884,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			authentication: (Hmac::<Sha256>::hash(&[42u8]), Nonce([42u8; 16])),
 		};
 
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();
