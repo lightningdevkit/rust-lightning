@@ -221,6 +221,10 @@ fn test_v1_splice_in() {
 
 	// ==== Channel is now ready for normal operation
 
+	// Expected balances
+	let mut exp_balance1 = 1000 * channel_value_sat;
+	let mut exp_balance2 = 0;
+	
 	// === Start of Splicing
 	println!("Start of Splicing ..., channel_id {}", channel_id2);
 
@@ -276,8 +280,8 @@ fn test_v1_splice_in() {
 		assert!(channel.is_usable);
 		assert!(channel.is_channel_ready);
 		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
-		assert_eq!(channel.outbound_capacity_msat, 0);
-		assert!(channel.funding_txo.is_some());
+		assert_eq!(channel.outbound_capacity_msat, exp_balance2);
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.compute_txid());
 		assert!(channel.confirmations.unwrap() > 0);
 	}
 
@@ -295,9 +299,9 @@ fn test_v1_splice_in() {
 		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
 		assert_eq!(
 			channel.outbound_capacity_msat,
-			1000 * (channel_value_sat - channel_reserve_amnt_sat)
+			exp_balance1 - 1000 * channel_reserve_amnt_sat
 		);
-		assert!(channel.funding_txo.is_some());
+		assert_eq!(channel.funding_txo.unwrap().txid, funding_tx.compute_txid());
 		assert!(channel.confirmations.unwrap() > 0);
 	}
 
