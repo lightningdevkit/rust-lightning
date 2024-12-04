@@ -4736,7 +4736,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			latest_monitor_update_id: self.latest_monitor_update_id,
 			shutdown_scriptpubkey: self.shutdown_scriptpubkey.clone(),
 			destination_script: self.destination_script.clone(),
-			// holder_commitment_point: self.holder_commitment_point,
 			cur_counterparty_commitment_transaction_number: self.cur_counterparty_commitment_transaction_number,
 			value_to_self_msat: self.value_to_self_msat,
 			pending_inbound_htlcs: self.pending_inbound_htlcs.clone(),
@@ -4904,7 +4903,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// self.channel_state = ChannelState::NegotiatingFunding(
 		// 	NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
 		// );
-		log_info!(logger, "Splicing process started, old channel value {}, outgoing {}, channel_id {}",
+		log_info!(logger, "Splicing process started, new channel value {}, outgoing {}, channel_id {}",
 			self.channel_value_satoshis, is_outgoing, self.channel_id);
 	}
 
@@ -9909,6 +9908,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			#[cfg(splicing)]
 			pending_splice_post: None,
 		};
 		Ok(chan)
@@ -9918,7 +9918,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[cfg(splicing)]
 	pub fn new_spliced<L: Deref>(
 		is_outbound: bool,
-		pre_splice_channel: &mut FundedChannel<SP>,
+		pre_splice_channel: &FundedChannel<SP>,
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		our_funding_contribution: i64,
@@ -9951,7 +9951,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let context = ChannelContext::new_for_splice(
 			&pre_splice_channel.context,
-			true,
+			is_outbound,
 			counterparty_funding_pubkey,
 			our_funding_contribution,
 			their_funding_contribution,
