@@ -32,6 +32,7 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
+use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -1745,12 +1746,9 @@ pub struct FinalOnionHopData {
 }
 
 mod fuzzy_internal_msgs {
-	use bitcoin::hashes::hmac::Hmac;
-	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::offers::invoice_request::InvoiceRequest;
-	use crate::offers::nonce::Nonce;
 	use crate::types::payment::{PaymentPreimage, PaymentSecret};
 	use crate::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
@@ -1794,7 +1792,6 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: Option<PublicKey>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
-			authentication: (Hmac<Sha256>, Nonce),
 		}
 	}
 
@@ -2911,9 +2908,19 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						next_blinding_override,
 					})
 				},
-				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints, payment_context, authentication,
-				})} => {
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(mut receive_tlvs) } => {
+					if let Some((hmac, nonce)) = receive_tlvs.authentication.take() {
+						let expanded_key = node_signer.get_inbound_payment_key();
+						if receive_tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
+							return Err(DecodeError::InvalidValue);
+						}
+					} else {
+						return Err(DecodeError::InvalidValue);
+					}
+
+					let ReceiveTlvs {
+						payment_secret, payment_constraints, payment_context, authentication: _,
+					} = receive_tlvs;
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
@@ -2925,7 +2932,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						intro_node_blinding_point,
 						keysend_preimage,
 						custom_tlvs,
-						authentication,
 					})
 				},
 			}
