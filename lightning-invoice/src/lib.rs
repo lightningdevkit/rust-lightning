@@ -1086,6 +1086,7 @@ impl RawBolt11Invoice {
 
 	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
+		#[cfg(not(fuzzing))]
 		use crate::ser::Base32Iterable;
 
 		Self::hash_from_parts(self.hrp.to_string().as_bytes(), self.data.fe_iter())
