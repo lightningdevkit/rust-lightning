@@ -209,7 +209,7 @@ fn build_trampoline_onion_payloads<'a>(
 }
 
 fn build_trampoline_onion_payloads_callback<'a, H, B, F>(
-	hops: H, mut blinded_tail: BlindedTailHopIter<'a, B>, total_msat: u64,
+	hops: H, blinded_tail: BlindedTailHopIter<'a, B>, total_msat: u64,
 	recipient_onion: &'a RecipientOnionFields, starting_htlc_offset: u32,
 	keysend_preimage: &Option<PaymentPreimage>, mut callback: F,
 ) -> Result<(u64, u32), APIError>
