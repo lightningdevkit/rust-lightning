@@ -984,7 +984,9 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
-	let supported_shutdown_script = chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+	let channel_keys_id = [42u8; 32];
+	let supported_shutdown_script = chanmon_cfgs[1].keys_manager
+		.get_shutdown_scriptpubkey(channel_keys_id).unwrap();
 	let unsupported_witness_program = WitnessProgram::new(WitnessVersion::V16, &[0, 40]).unwrap();
 	let unsupported_shutdown_script =
 		ShutdownScript::new_witness_program(&unsupported_witness_program).unwrap();

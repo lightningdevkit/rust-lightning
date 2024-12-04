@@ -99,7 +99,7 @@ impl AnchorDescriptor {
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.keys_id,
+			self.channel_derivation_parameters.channel_keys_id,
 		);
 		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
 		signer
@@ -791,7 +791,7 @@ where
 
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.channel_keys_id)
 				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
 			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
 			let witness_script = htlc_descriptor.witness_script(&self.secp);
@@ -955,7 +955,7 @@ mod tests {
 			anchor_descriptor: AnchorDescriptor {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: 42_000_000,
-					keys_id: [42; 32],
+					channel_keys_id: [42; 32],
 					transaction_parameters: ChannelTransactionParameters::test_dummy(),
 				},
 				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },

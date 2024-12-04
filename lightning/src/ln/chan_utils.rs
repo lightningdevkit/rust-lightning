@@ -478,7 +478,7 @@ pub struct ChannelPublicKeys {
 	/// The public key on which the non-broadcaster (ie the countersignatory) receives an immediately
 	/// spendable primary channel balance on the broadcaster's commitment transaction. This key is
 	/// static across every commitment transaction.
-	pub payment_point: PublicKey,
+	pub payment_basepoint: PublicKey,
 	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
 	/// public key which receives non-HTLC-encumbered funds which are only available for spending
 	/// after some delay (or can be claimed via the revocation path).
@@ -491,7 +491,7 @@ pub struct ChannelPublicKeys {
 impl_writeable_tlv_based!(ChannelPublicKeys, {
 	(0, funding_pubkey, required),
 	(2, revocation_basepoint, required),
-	(4, payment_point, required),
+	(4, payment_basepoint, required),
 	(6, delayed_payment_basepoint, required),
 	(8, htlc_basepoint, required),
 });
@@ -550,11 +550,11 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 
 /// Returns the script for the counterparty's output on a holder's commitment transaction based on
 /// the channel type.
-pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
+pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_basepoint: &PublicKey) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_p2wsh()
+		get_to_countersignatory_with_anchors_redeemscript(payment_basepoint).to_p2wsh()
 	} else {
-		ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
+		ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&payment_basepoint.serialize()))
 	}
 }
 
@@ -816,9 +816,9 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
 #[inline]
-pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> ScriptBuf {
+pub fn get_to_countersignatory_with_anchors_redeemscript(payment_basepoint: &PublicKey) -> ScriptBuf {
 	Builder::new()
-		.push_slice(payment_point.serialize())
+		.push_slice(payment_basepoint.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
 		.push_int(1)
 		.push_opcode(opcodes::all::OP_CSV)
@@ -933,7 +933,7 @@ impl ChannelTransactionParameters {
 		let dummy_keys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
 			revocation_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
-			payment_point: PublicKey::from_slice(&[2; 33]).unwrap(),
+			payment_basepoint: PublicKey::from_slice(&[2; 33]).unwrap(),
 			delayed_payment_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
 			htlc_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
 		};
@@ -1119,7 +1119,7 @@ impl HolderCommitmentTransaction {
 		let channel_pubkeys = ChannelPublicKeys {
 			funding_pubkey: dummy_key.clone(),
 			revocation_basepoint: RevocationBasepoint::from(dummy_key),
-			payment_point: dummy_key.clone(),
+			payment_basepoint: dummy_key.clone(),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key.clone()),
 			htlc_basepoint: HtlcBasepoint::from(dummy_key.clone())
 		};
@@ -1515,9 +1515,9 @@ impl CommitmentTransaction {
 
 		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-				get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_p2wsh()
+				get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_basepoint).to_p2wsh()
 			} else {
-				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_pubkeys.payment_point.serialize()).into())
+				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_pubkeys.payment_basepoint.serialize()).into())
 			};
 			txouts.push((
 				TxOut {
@@ -1608,8 +1608,8 @@ impl CommitmentTransaction {
 		let broadcaster_pubkeys = channel_parameters.broadcaster_pubkeys();
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
 		let commitment_transaction_number_obscure_factor = get_commitment_transaction_number_obscure_factor(
-			&broadcaster_pubkeys.payment_point,
-			&countersignatory_pubkeys.payment_point,
+			&broadcaster_pubkeys.payment_basepoint,
+			&countersignatory_pubkeys.payment_basepoint,
 			channel_parameters.is_outbound(),
 		);
 
@@ -1974,13 +1974,13 @@ mod tests {
 		// Generate broadcaster and counterparty outputs
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 2);
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_point), Network::Testnet).script_pubkey());
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_basepoint), Network::Testnet).script_pubkey());
 
 		// Generate broadcaster and counterparty outputs as well as two anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 4);
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_basepoint).to_p2wsh());
 
 		// Generate broadcaster output and anchor
 		let tx = builder.build(3000, 0);
@@ -2015,9 +2015,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
-				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
+			"0020510277dd095f7e3a7a46efbd9de3a49f527b5b32f4acc70f144dc5c928529520");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
-				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
+			"0020b981c1ea6c0d0c3971e89800312d6fd5564872f22040771d1555605edf5b1cfe");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
@@ -2027,9 +2027,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
-				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
+			"002078193f615fc1b050814d866d6c46097f9d19fdae0dbc4905b2b35f427c8d0662");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
-				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
+			"0020ac28c4778c24e79755cedc11e7feb638630aa74478781ae7c809aed06e6bd325");
 	}
 
 	#[test]

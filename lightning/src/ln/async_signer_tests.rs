@@ -917,8 +917,9 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	if extra_closing_signed {
 		let node_1_closing_signed_2_bad = {
 			let mut node_1_closing_signed_2 = node_1_closing_signed.clone();
-			let holder_script = nodes[0].keys_manager.get_shutdown_scriptpubkey().unwrap();
-			let counterparty_script = nodes[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+			let channel_keys_id = [42u8; 32];
+			let holder_script = nodes[0].keys_manager.get_shutdown_scriptpubkey(channel_keys_id).unwrap();
+			let counterparty_script = nodes[1].keys_manager.get_shutdown_scriptpubkey(channel_keys_id).unwrap();
 			let funding_outpoint = bitcoin::OutPoint { txid: chan_1.3.compute_txid(), vout: 0 };
 			let closing_tx_2 = ClosingTransaction::new(50000, 0, holder_script.into(),
 				counterparty_script.into(), funding_outpoint);
