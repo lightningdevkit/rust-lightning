@@ -150,6 +150,15 @@ impl OfferId {
 	) -> Hmac<Sha256> {
 		signer::hmac_for_static_invoice_offer_id(*self, nonce, expanded_key)
 	}
+
+	/// Authenticates the offer id using an HMAC and a [`Nonce`] taken from an
+	/// [`AsyncPaymentsContext::InboundPayment`].
+	#[cfg(async_payments)]
+	pub fn verify_for_static_invoice_payment(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_static_invoice_offer_id(*self, hmac, nonce, expanded_key)
+	}
 }
 
 impl Borrow<[u8]> for OfferId {

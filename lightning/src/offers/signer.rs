@@ -479,3 +479,10 @@ pub(crate) fn hmac_for_static_invoice_offer_id(
 
 	Hmac::from_engine(hmac)
 }
+
+#[cfg(async_payments)]
+pub(crate) fn verify_static_invoice_offer_id(
+	offer_id: OfferId, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_static_invoice_offer_id(offer_id, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
+}

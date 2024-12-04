@@ -11833,7 +11833,22 @@ where
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
-		None
+		#[cfg(async_payments)] {
+			match _context {
+				AsyncPaymentsContext::InboundPayment { offer_id, nonce, hmac } => {
+					if let Err(()) = offer_id.verify_for_static_invoice_payment(
+						hmac, nonce, &self.inbound_payment_key
+					) { return None }
+				},
+				_ => return None
+			}
+			return _responder.map(|responder| {
+				let message = ReleaseHeldHtlc {};
+				(message, responder.respond())
+			})
+		}
+		#[cfg(not(async_payments))]
+		return None
 	}
 
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
