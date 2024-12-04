@@ -43,6 +43,7 @@ use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, InterceptId, PaymentId, RecipientOnionFields, Retry,
 };
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{self, DecodeError};
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
@@ -79,7 +80,6 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use std::cell::RefCell;
 use std::cmp;
-use std::convert::TryInto;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -364,7 +364,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 
 struct KeyProvider {
 	node_secret: SecretKey,
-	inbound_payment_key: KeyMaterial,
+	inbound_payment_key: ExpandedKey,
 	counter: AtomicU64,
 	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>,
 }
@@ -402,8 +402,8 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
-		self.inbound_payment_key.clone()
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
+		self.inbound_payment_key
 	}
 
 	fn sign_invoice(
@@ -636,7 +636,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 
 	let keys_manager = Arc::new(KeyProvider {
 		node_secret: our_network_key.clone(),
-		inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()),
+		inbound_payment_key: ExpandedKey::new(&KeyMaterial(inbound_payment_key)),
 		counter: AtomicU64::new(0),
 		signer_state: RefCell::new(new_hash_map()),
 	});

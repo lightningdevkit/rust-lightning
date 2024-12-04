@@ -51,6 +51,7 @@ use crate::ln::channel_keys::{
 	add_public_key_tweak, DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey,
 	RevocationBasepoint, RevocationKey,
 };
+use crate::ln::inbound_payment::ExpandedKey;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
@@ -820,7 +821,7 @@ pub trait EntropySource {
 
 /// A trait that can handle cryptographic operations at the scope level of a node.
 pub trait NodeSigner {
-	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
+	/// Get the [`ExpandedKey`] for use in encrypting and decrypting inbound payment data.
 	///
 	/// If the implementor of this trait supports [phantom node payments], then every node that is
 	/// intended to be included in the phantom invoice route hints must return the same value from
@@ -832,7 +833,7 @@ pub trait NodeSigner {
 	/// This method must return the same value each time it is called.
 	///
 	/// [phantom node payments]: PhantomKeysManager
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
+	fn get_inbound_payment_key(&self) -> ExpandedKey;
 
 	/// Get node id based on the provided [`Recipient`].
 	///
@@ -1852,7 +1853,7 @@ pub struct KeysManager {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	node_secret: SecretKey,
 	node_id: PublicKey,
-	inbound_payment_key: KeyMaterial,
+	inbound_payment_key: ExpandedKey,
 	destination_script: ScriptBuf,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
@@ -1938,7 +1939,7 @@ impl KeysManager {
 					secp_ctx,
 					node_secret,
 					node_id,
-					inbound_payment_key: KeyMaterial(inbound_pmt_key_bytes),
+					inbound_payment_key: ExpandedKey::new(&KeyMaterial(inbound_pmt_key_bytes)),
 
 					destination_script,
 					shutdown_pubkey,
@@ -2175,7 +2176,7 @@ impl NodeSigner for KeysManager {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		self.inbound_payment_key.clone()
 	}
 
@@ -2312,7 +2313,7 @@ pub struct PhantomKeysManager {
 	pub(crate) inner: KeysManager,
 	#[cfg(not(test))]
 	inner: KeysManager,
-	inbound_payment_key: KeyMaterial,
+	inbound_payment_key: ExpandedKey,
 	phantom_secret: SecretKey,
 	phantom_node_id: PublicKey,
 }
@@ -2344,7 +2345,7 @@ impl NodeSigner for PhantomKeysManager {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		self.inbound_payment_key.clone()
 	}
 
@@ -2444,7 +2445,7 @@ impl PhantomKeysManager {
 		let phantom_node_id = PublicKey::from_secret_key(&inner.secp_ctx, &phantom_secret);
 		Self {
 			inner,
-			inbound_payment_key: KeyMaterial(inbound_key),
+			inbound_payment_key: ExpandedKey::new(&KeyMaterial(inbound_key)),
 			phantom_secret,
 			phantom_node_id,
 		}

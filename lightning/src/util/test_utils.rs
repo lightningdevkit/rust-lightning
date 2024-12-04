@@ -30,6 +30,7 @@ use crate::ln::channelmanager;
 #[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
@@ -1188,7 +1189,7 @@ impl TestNodeSigner {
 }
 
 impl NodeSigner for TestNodeSigner {
-	fn get_inbound_payment_key_material(&self) -> crate::sign::KeyMaterial {
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		unreachable!()
 	}
 
@@ -1254,8 +1255,8 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.ecdh(recipient, other_key, tweak)
 	}
 
-	fn get_inbound_payment_key_material(&self) -> sign::KeyMaterial {
-		self.backing.get_inbound_payment_key_material()
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
+		self.backing.get_inbound_payment_key()
 	}
 
 	fn sign_invoice(&self, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()> {
