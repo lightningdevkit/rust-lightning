@@ -160,19 +160,19 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	// Construct the route parameters for sending to nodes[2]'s 1-hop blinded path.
 	let amt_msat = 100_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
-	let payment_context = PaymentContext::unknown();
-	let nonce = Nonce([42u8; 16]);
-	let expanded_key = ExpandedKey::new(&chanmon_cfgs[2].keys_manager.get_inbound_payment_key_material());
-	let hmac = payment_context.hmac_for_offer_payment(nonce, &expanded_key);
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
-		payment_context,
-		authentication: (hmac, nonce),
+		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = ExpandedKey::new(&chanmon_cfgs[2].keys_manager.get_inbound_payment_key_material());
+	let hmac = payee_tlvs.hmac_for_offer_payment(nonce, &expanded_key);
+	payee_tlvs.authentication = Some((hmac, nonce));
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[2].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,

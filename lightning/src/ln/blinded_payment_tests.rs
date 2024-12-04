@@ -74,17 +74,17 @@ fn blinded_payment_path(
 		});
 	}
 
-	let payment_context = PaymentContext::unknown();
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat:
 				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
 		},
-		authentication: hmac_payment_context(&payment_context, keys_manager),
-		payment_context,
+		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, keys_manager));
 
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPaymentPath::new(
@@ -94,12 +94,12 @@ fn blinded_payment_path(
 	).unwrap()
 }
 
-fn hmac_payment_context(
-	payment_context: &PaymentContext, keys_manager: &test_utils::TestKeysInterface,
+fn hmac_payee_tlvs(
+	payee_tlvs: &ReceiveTlvs, keys_manager: &test_utils::TestKeysInterface,
 ) -> (Hmac<Sha256>, Nonce) {
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = ExpandedKey::new(&keys_manager.get_inbound_payment_key_material());
-	let hmac = payment_context.hmac_for_offer_payment(nonce, &expanded_key);
+	let hmac = payee_tlvs.hmac_for_offer_payment(nonce, &expanded_key);
 	(hmac, nonce)
 }
 
@@ -133,16 +133,16 @@ fn do_one_hop_blinded_path(success: bool) {
 
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
-	let payment_context = PaymentContext::unknown();
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		authentication: hmac_payment_context(&payment_context, &chanmon_cfgs[1].keys_manager),
-		payment_context,
+		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, &chanmon_cfgs[1].keys_manager));
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
@@ -179,16 +179,16 @@ fn mpp_to_one_hop_blinded_path() {
 
 	let amt_msat = 15_000_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let payment_context = PaymentContext::unknown();
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
 		},
-		authentication: hmac_payment_context(&payment_context, &chanmon_cfgs[3].keys_manager),
-		payment_context,
+		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, &chanmon_cfgs[3].keys_manager));
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[3].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[3].keys_manager, &secp_ctx
@@ -1396,16 +1396,16 @@ fn custom_tlvs_to_blinded_path() {
 
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
-	let payment_context = PaymentContext::unknown();
-	let payee_tlvs = ReceiveTlvs {
+	let mut payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		authentication: hmac_payment_context(&payment_context, &chanmon_cfgs[1].keys_manager),
-		payment_context,
+		payment_context: PaymentContext::unknown(),
+		authentication: None,
 	};
+	payee_tlvs.authentication = Some(hmac_payee_tlvs(&payee_tlvs, &chanmon_cfgs[1].keys_manager));
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPaymentPath::new(
 		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,

@@ -10481,18 +10481,18 @@ where
 		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
 			+ LATENCY_GRACE_PERIOD_BLOCKS;
 
-		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = payment_context.hmac_for_offer_payment(nonce, expanded_key);
-
-		let payee_tlvs = ReceiveTlvs {
+		let mut payee_tlvs = ReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
 			payment_context,
-			authentication: (hmac, nonce),
+			authentication: None,
 		};
+		let nonce = Nonce::from_entropy_source(entropy);
+		let hmac = payee_tlvs.hmac_for_offer_payment(nonce, expanded_key);
+		payee_tlvs.authentication = Some((hmac, nonce));
 
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
