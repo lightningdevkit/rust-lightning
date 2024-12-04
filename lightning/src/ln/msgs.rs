@@ -32,6 +32,7 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
+use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -2908,7 +2909,12 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(receive_tlvs) } => {
-					let ReceiveTlvs { tlvs, authentication: _ } = receive_tlvs;
+					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
+					let expanded_key = node_signer.get_inbound_payment_key();
+					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
+						return Err(DecodeError::InvalidValue);
+					}
+
 					let UnauthenticatedReceiveTlvs {
 						payment_secret, payment_constraints, payment_context,
 					} = tlvs;
