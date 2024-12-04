@@ -131,7 +131,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 pub(super) fn create_recv_pending_htlc_info(
 	hop_data: msgs::InboundOnionPayload, shared_secret: [u8; 32], payment_hash: PaymentHash,
 	amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
-	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32, accept_mpp_keysend: bool,
+	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (
 		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
@@ -227,13 +227,6 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Payment preimage didn't match payment hash",
 			});
 		}
-		if !accept_mpp_keysend && payment_data.is_some() {
-			return Err(InboundHTLCErr {
-				err_code: 0x4000|22,
-				err_data: Vec::new(),
-				msg: "We don't support MPP keysend payments",
-			});
-		}
 		PendingHTLCRouting::ReceiveKeysend {
 			payment_data,
 			payment_preimage,
@@ -282,7 +275,7 @@ pub(super) fn create_recv_pending_htlc_info(
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 pub fn peel_payment_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
-	cur_height: u32, accept_mpp_keysend: bool, allow_skimmed_fees: bool,
+	cur_height: u32, allow_skimmed_fees: bool,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr>
 where
 	NS::Target: NodeSigner,
@@ -333,7 +326,7 @@ where
 		onion_utils::Hop::Receive(received_data) => {
 			create_recv_pending_htlc_info(
 				received_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
-				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height, accept_mpp_keysend,
+				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height
 			)?
 		}
 	})
@@ -576,7 +569,7 @@ mod tests {
 		let msg = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion);
 		let logger = test_utils::TestLogger::with_id("bob".to_string());
 
-		let peeled = peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, true, false)
+		let peeled = peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, false)
 			.map_err(|e| e.msg).unwrap();
 
 		let next_onion = match peeled.routing {
@@ -587,7 +580,7 @@ mod tests {
 		};
 
 		let msg2 = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, next_onion);
-		let peeled2 = peel_payment_onion(&msg2, &charlie, &logger, &secp_ctx, cur_height, true, false)
+		let peeled2 = peel_payment_onion(&msg2, &charlie, &logger, &secp_ctx, cur_height, false)
 			.map_err(|e| e.msg).unwrap();
 
 		match peeled2.routing {

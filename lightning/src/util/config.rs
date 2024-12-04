@@ -844,17 +844,6 @@ pub struct UserConfig {
 	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	pub accept_intercept_htlcs: bool,
-	/// If this is set to `false`, when receiving a keysend payment we'll fail it if it has multiple
-	/// parts. If this is set to `true`, we'll accept the payment.
-	///
-	/// Setting this to `true` will break backwards compatibility upon downgrading to an LDK
-	/// version prior to 0.0.116 while receiving an MPP keysend. If we have already received an MPP
-	/// keysend, downgrading will cause us to fail to deserialize [`ChannelManager`].
-	///
-	/// Default value: `false`
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	pub accept_mpp_keysend: bool,
 	/// If this is set to `true`, the user needs to manually pay [`Bolt12Invoice`]s when received.
 	///
 	/// When set to `true`, [`Event::InvoiceReceived`] will be generated for each received
@@ -881,7 +870,6 @@ impl Default for UserConfig {
 			accept_inbound_channels: true,
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
-			accept_mpp_keysend: false,
 			manually_handle_bolt12_invoices: false,
 		}
 	}
@@ -901,7 +889,6 @@ impl Readable for UserConfig {
 			accept_inbound_channels: Readable::read(reader)?,
 			manually_accept_inbound_channels: Readable::read(reader)?,
 			accept_intercept_htlcs: Readable::read(reader)?,
-			accept_mpp_keysend: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 		})
 	}
