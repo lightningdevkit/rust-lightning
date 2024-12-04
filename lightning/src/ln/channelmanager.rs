@@ -4720,35 +4720,6 @@ where
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
 
-	/// Pays the [`Bolt12Invoice`] associated with the `payment_id` encoded in its `payer_metadata`.
-	///
-	/// The invoice's `payer_metadata` is used to authenticate that the invoice was indeed requested
-	/// before attempting a payment. [`Bolt12PaymentError::UnexpectedInvoice`] is returned if this
-	/// fails or if the encoded `payment_id` is not recognized. The latter may happen once the
-	/// payment is no longer tracked because the payment was attempted after:
-	/// - an invoice for the `payment_id` was already paid,
-	/// - one full [timer tick] has elapsed since initially requesting the invoice when paying an
-	///   offer, or
-	/// - the refund corresponding to the invoice has already expired.
-	///
-	/// To retry the payment, request another invoice using a new `payment_id`.
-	///
-	/// Attempting to pay the same invoice twice while the first payment is still pending will
-	/// result in a [`Bolt12PaymentError::DuplicateInvoice`].
-	///
-	/// Otherwise, either [`Event::PaymentSent`] or [`Event::PaymentFailed`] are used to indicate
-	/// whether or not the payment was successful.
-	///
-	/// [timer tick]: Self::timer_tick_occurred
-	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<(), Bolt12PaymentError> {
-		match self.verify_bolt12_invoice(invoice, context) {
-			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
-			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
-		}
-	}
-
 	fn verify_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<PaymentId, ()> {
@@ -12116,14 +12087,6 @@ where
 				let logger = WithContext::from(
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
-
-				if self.default_configuration.manually_handle_bolt12_invoices {
-					let event = Event::InvoiceReceived {
-						payment_id, invoice, context, responder,
-					};
-					self.pending_events.lock().unwrap().push_back((event, None));
-					return None;
-				}
 
 				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
 				handle_pay_invoice_res!(res, invoice, logger);

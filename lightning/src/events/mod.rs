@@ -18,7 +18,6 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
-use crate::blinded_path::message::OffersContext;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
@@ -27,8 +26,6 @@ use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::offers::invoice::Bolt12Invoice;
-use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 use crate::sign::SpendableOutputDescriptor;
@@ -580,6 +577,8 @@ pub enum PaymentFailureReason {
 	/// An invoice was received that required unknown features.
 	UnknownRequiredFeatures,
 	/// A [`Bolt12Invoice`] was not received in a reasonable amount of time.
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	InvoiceRequestExpired,
 	/// An [`InvoiceRequest`] for the payment was rejected by the recipient.
 	///
@@ -866,39 +865,6 @@ pub enum Event {
 		node_id: PublicKey,
 		/// Sockets for connecting to the node.
 		addresses: Vec<msgs::SocketAddress>,
-	},
-	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
-	/// received.
-	///
-	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_invoices`] is set.
-	/// Use [`ChannelManager::send_payment_for_bolt12_invoice`] to pay the invoice or
-	/// [`ChannelManager::abandon_payment`] to abandon the associated payment. See those docs for
-	/// further details.
-	///
-	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	///
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`Refund`]: crate::offers::refund::Refund
-	/// [`UserConfig::manually_handle_bolt12_invoices`]: crate::util::config::UserConfig::manually_handle_bolt12_invoices
-	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	InvoiceReceived {
-		/// The `payment_id` associated with payment for the invoice.
-		payment_id: PaymentId,
-		/// The invoice to pay.
-		invoice: Bolt12Invoice,
-		/// The context of the [`BlindedMessagePath`] used to send the invoice.
-		///
-		/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
-		context: Option<OffersContext>,
-		/// A responder for replying with an [`InvoiceError`] if needed.
-		///
-		/// `None` if the invoice wasn't sent with a reply path.
-		///
-		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		responder: Option<Responder>,
 	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -1803,15 +1769,6 @@ impl Writeable for Event {
 					(0, peer_node_id, required),
 				});
 			},
-			&Event::InvoiceReceived { ref payment_id, ref invoice, ref context, ref responder } => {
-				41u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, payment_id, required),
-					(2, invoice, required),
-					(4, context, option),
-					(6, responder, option),
-				});
-			},
 			&Event::FundingTxBroadcastSafe { ref channel_id, ref user_channel_id, ref funding_txo, ref counterparty_node_id, ref former_temporary_channel_id} => {
 				43u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -2289,23 +2246,6 @@ impl MaybeReadable for Event {
 					});
 					Ok(Some(Event::OnionMessagePeerConnected {
 						peer_node_id: peer_node_id.0.unwrap()
-					}))
-				};
-				f()
-			},
-			41u8 => {
-				let mut f = || {
-					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(0, payment_id, required),
-						(2, invoice, required),
-						(4, context, option),
-						(6, responder, option),
-					});
-					Ok(Some(Event::InvoiceReceived {
-						payment_id: payment_id.0.unwrap(),
-						invoice: invoice.0.unwrap(),
-						context,
-						responder,
 					}))
 				};
 				f()
