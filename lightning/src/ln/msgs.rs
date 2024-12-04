@@ -1745,9 +1745,12 @@ pub struct FinalOnionHopData {
 }
 
 mod fuzzy_internal_msgs {
+	use bitcoin::hashes::hmac::Hmac;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::offers::invoice_request::InvoiceRequest;
+	use crate::offers::nonce::Nonce;
 	use crate::types::payment::{PaymentPreimage, PaymentSecret};
 	use crate::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
@@ -1791,6 +1794,7 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: Option<PublicKey>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
+			authentication: (Hmac<Sha256>, Nonce),
 		}
 	}
 
@@ -2908,7 +2912,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints, payment_context, authentication: _,
+					payment_secret, payment_constraints, payment_context, authentication,
 				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
@@ -2921,6 +2925,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						intro_node_blinding_point,
 						keysend_preimage,
 						custom_tlvs,
+						authentication,
 					})
 				},
 			}

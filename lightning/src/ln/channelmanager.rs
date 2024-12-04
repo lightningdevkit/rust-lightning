@@ -198,6 +198,8 @@ pub enum PendingHTLCRouting {
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
+		/// An HMAC of `payment_context` along with a nonce used to construct it.
+		authentication: Option<(Hmac<Sha256>, Nonce)>,
 	},
 	/// The onion indicates that this is for payment to us but which contains the preimage for
 	/// claiming included, and is unrelated to any invoice we'd previously generated (aka a
@@ -5994,19 +5996,19 @@ where
 								let blinded_failure = routing.blinded_failure();
 								let (
 									cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret,
-									mut onion_fields, has_recipient_created_payment_secret
+									mut onion_fields, has_recipient_created_payment_secret, authentication,
 								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
 										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
-										requires_blinded_error: _
+										requires_blinded_error: _, authentication,
 									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
-											true)
+											true, authentication)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
@@ -6019,7 +6021,7 @@ where
 											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											payment_data, None, None, onion_fields, has_recipient_created_payment_secret)
+											payment_data, None, None, onion_fields, has_recipient_created_payment_secret, None)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -6204,6 +6206,16 @@ where
 										payment_preimage
 									} else { fail_htlc!(claimable_htlc, payment_hash); }
 								} else { None };
+
+								// Authenticate the PaymentContext received over a BlindedPaymentPath
+								if let Some(payment_context) = payment_context.as_ref() {
+									if let Some((hmac, nonce)) = authentication {
+										if payment_context.verify_for_offer_payment(hmac, nonce, &self.inbound_payment_key).is_err() {
+											fail_htlc!(claimable_htlc, payment_hash);
+										}
+									}
+								}
+
 								match claimable_htlc.onion_payload {
 									OnionPayload::Invoice { .. } => {
 										let payment_data = payment_data.unwrap();
@@ -12362,6 +12374,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(5, custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
+		(11, authentication, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
