@@ -17,7 +17,7 @@ use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsP
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::ln::channelmanager;
-use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields, Verification};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
@@ -37,8 +37,8 @@ use lightning_invoice::RawBolt11Invoice;
 #[cfg(async_payments)] use {
 	crate::blinded_path::BlindedHop,
 	crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, OffersContext},
-	crate::ln::channelmanager::Verification,
 	crate::ln::inbound_payment,
+	crate::ln::inbound_payment::ExpandedKey,
 	crate::ln::msgs::OnionMessageHandler,
 	crate::offers::nonce::Nonce,
 	crate::onion_message::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler, ReleaseHeldHtlc},
@@ -1871,4 +1871,208 @@ fn route_blinding_spec_test_vector() {
 		Err(HTLCFailureMsg::Malformed(msg)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
 		_ => panic!("Unexpected error")
 	}
+}
+
+#[cfg(async_payments)]
+#[test]
+fn async_receive_flow_success() {
+	// Test that an always-online sender can successfully pay an async receiver.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let mut mpp_keysend_config = test_default_channel_config();
+	mpp_keysend_config.accept_mpp_keysend = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), Some(mpp_keysend_config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let dummy_blinded_path_to_always_online_node = BlindedMessagePath::from_raw(
+		nodes[1].node.get_our_node_id(), test_utils::pubkey(42),
+		vec![BlindedHop { blinded_node_id: test_utils::pubkey(42), encrypted_payload: vec![42; 32] }]
+	);
+	let (offer_builder, offer_nonce) = nodes[2].node.create_async_receive_offer_builder(vec![dummy_blinded_path_to_always_online_node]).unwrap();
+	let offer = offer_builder.build().unwrap();
+	let static_invoice = nodes[2].node.create_static_invoice_builder_for_async_receive_offer(&offer, offer_nonce, None).unwrap().build_and_sign(&secp_ctx).unwrap();
+
+	// Check that we won't pay static invoices that aren't expected.
+	if nodes[0].node.handle_message(
+		OffersMessage::StaticInvoice(static_invoice.clone()),
+		Some(OffersContext::OutboundPayment { payment_id: PaymentId([0; 32]), nonce: offer_nonce, hmac: None }), None
+	).is_some() { panic!() }
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None).unwrap();
+	let _invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+
+	// Don't forward the invreq since we don't support retrieving the static invoice from the
+	// recipient's LSP yet, instead just provide the invoice directly to the payer.
+	let hardcoded_random_bytes = [42; 32];
+	let keysend_preimage = PaymentPreimage(hardcoded_random_bytes);
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
+	let expanded_key = ExpandedKey::new(&nodes[0].keys_manager.get_inbound_payment_key_material());
+	let hmac = Some(payment_id.hmac_for_offer_payment(offer_nonce, &expanded_key));
+	assert!(nodes[0].node.handle_message(
+		OffersMessage::StaticInvoice(static_invoice.clone()),
+		Some(OffersContext::OutboundPayment { payment_id, nonce: offer_nonce, hmac }), None
+	).is_none());
+
+	let held_htlc_available_om_0_1 = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+
+	// Check that receiving a duplicate static invoice won't cause us to generate another
+	// held_htlc_available message.
+	assert!(nodes[0].node.handle_message(
+		OffersMessage::StaticInvoice(static_invoice),
+		Some(OffersContext::OutboundPayment { payment_id, nonce: offer_nonce, hmac }), None
+	).is_none());
+	assert!(nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).is_none());
+
+	nodes[1].onion_messenger.handle_onion_message(nodes[0].node.get_our_node_id(), &held_htlc_available_om_0_1);
+	let held_htlc_available_om_1_2 = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[2].node.get_our_node_id()).unwrap();
+	nodes[2].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &held_htlc_available_om_1_2);
+
+	let release_held_htlc_om_2_0 = nodes[2].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om_2_0);
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = if let MessageSendEvent::UpdateHTLCs {
+		updates: msgs::CommitmentUpdate { ref update_add_htlcs, .. }, ..
+	} = ev {
+		update_add_htlcs[0].payment_hash
+	} else { panic!() };
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
+		.with_payment_preimage(keysend_preimage);
+	do_pass_along_path(args);
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+}
+
+#[cfg(async_payments)]
+#[test]
+fn retry_async_payment() {
+	// Test that we can successfully retry async payments.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	// Make one blinded path's fees slightly higher so they are tried in a deterministic order.
+	let mut higher_fee_chan_cfg = test_default_channel_config();
+	higher_fee_chan_cfg.channel_config.forwarding_fee_base_msat += 5000;
+	higher_fee_chan_cfg.accept_forwards_to_priv_channels = true;
+	let mut mpp_keysend_config = test_default_channel_config();
+	mpp_keysend_config.accept_mpp_keysend = true;
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), Some(higher_fee_chan_cfg), Some(mpp_keysend_config)]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	// Create this network topology so nodes[0] has a blinded route hint to retry over.
+	//      n1
+	//    /    \
+	// n0       n3
+	//    \    /
+	//      n2
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
+	let _chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0);
+	let _chan_2_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+
+	let dummy_path_to_always_online_node = BlindedMessagePath::from_raw(
+		nodes[1].node.get_our_node_id(), test_utils::pubkey(42),
+		vec![BlindedHop { blinded_node_id: test_utils::pubkey(42), encrypted_payload: vec![42; 32] }]
+	);
+	let (offer_builder, offer_nonce) = nodes[3].node.create_async_receive_offer_builder(vec![dummy_path_to_always_online_node]).unwrap();
+	let offer = offer_builder.build().unwrap();
+	let static_invoice = nodes[3].node.create_static_invoice_builder_for_async_receive_offer(&offer, offer_nonce, None).unwrap().build_and_sign(&secp_ctx).unwrap();
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None).unwrap();
+	let _invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+
+	// Don't forward the invreq since we don't support retrieving the static invoice from the
+	// recipient's LSP yet, instead just provide the invoice directly to the payer.
+	let hardcoded_random_bytes = [42; 32];
+	let keysend_preimage = PaymentPreimage(hardcoded_random_bytes);
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
+	let expanded_key = ExpandedKey::new(&nodes[0].keys_manager.get_inbound_payment_key_material());
+	let hmac = Some(payment_id.hmac_for_offer_payment(offer_nonce, &expanded_key));
+	assert!(nodes[0].node.handle_message(
+			OffersMessage::StaticInvoice(static_invoice.clone()),
+			Some(OffersContext::OutboundPayment { payment_id, nonce: offer_nonce, hmac }), None
+	).is_none());
+
+	let held_htlc_available_om_0_3 = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[3].node.get_our_node_id()).unwrap();
+	nodes[3].onion_messenger.handle_onion_message(nodes[0].node.get_our_node_id(), &held_htlc_available_om_0_3);
+	let release_held_htlc_om_3_0 = nodes[3].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[3].node.get_our_node_id(), &release_held_htlc_om_3_0);
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = if let MessageSendEvent::UpdateHTLCs {
+		updates: msgs::CommitmentUpdate { ref update_add_htlcs, .. }, ..
+	} = ev {
+		update_add_htlcs[0].payment_hash
+	} else { panic!() };
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]]];
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
+		.with_payment_preimage(keysend_preimage);
+	do_pass_along_path(args);
+
+	// Fail the payment back to trigger the retry.
+	nodes[3].node.fail_htlc_backwards(&payment_hash);
+	expect_pending_htlcs_forwardable_conditions(
+		nodes[3].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]
+	);
+	nodes[3].node.process_pending_htlc_forwards();
+	check_added_monitors!(nodes[3], 1);
+
+	let updates = get_htlc_update_msgs!(nodes[3], nodes[1].node.get_our_node_id());
+	assert_eq!(updates.update_fail_malformed_htlcs.len(), 1);
+	let update_malformed = &updates.update_fail_malformed_htlcs[0];
+	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+	nodes[1].node.handle_update_fail_malformed_htlc(nodes[3].node.get_our_node_id(), update_malformed);
+	do_commitment_signed_dance(&nodes[1], &nodes[3], &updates.commitment_signed, true, false);
+
+	let updates =  get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(updates.update_fail_htlcs.len(), 1);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
+			assert_eq!(payment_hash, ev_payment_hash);
+			assert_eq!(payment_failed_permanently, false);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		Event::PendingHTLCsForwardable { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	nodes[0].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+
+	let route: &[&[&Node]] = &[&[&nodes[2], &nodes[3]]];
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
+		.with_payment_preimage(keysend_preimage);
+	do_pass_along_path(args);
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	// TODO: check that the payment context is as expected
 }
