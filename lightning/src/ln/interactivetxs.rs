@@ -1176,7 +1176,7 @@ impl SharedOwnedOutput {
 /// its control -- exclusive by the adder or shared --, and
 /// its ownership -- value fully owned by the adder or jointly
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OutputOwned {
+pub(super) enum OutputOwned {
 	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
 	Single(TxOut),
 	/// Output with shared control, but fully belonging to local node
@@ -1186,7 +1186,7 @@ pub enum OutputOwned {
 }
 
 impl OutputOwned {
-	fn tx_out(&self) -> &TxOut {
+	pub(super) fn tx_out(&self) -> &TxOut {
 		match self {
 			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => tx_out,
 			OutputOwned::Shared(output) => &output.tx_out,
