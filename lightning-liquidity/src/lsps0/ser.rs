@@ -14,7 +14,7 @@ use crate::lsps1::msgs::{
 use crate::lsps2::msgs::{
 	LSPS2Message, LSPS2Request, LSPS2Response, LSPS2_BUY_METHOD_NAME, LSPS2_GET_INFO_METHOD_NAME,
 };
-use crate::prelude::{HashMap, String, ToString};
+use crate::prelude::{HashMap, String};
 
 use lightning::ln::msgs::LightningError;
 use lightning::ln::wire;
@@ -22,7 +22,7 @@ use lightning::util::ser::WithoutLength;
 
 use bitcoin::secp256k1::PublicKey;
 
-use core::fmt::{self, Display};
+use core::fmt;
 use core::str::FromStr;
 
 use serde::de::{self, MapAccess, Visitor};
@@ -53,6 +53,19 @@ pub(crate) enum LSPSMethod {
 	LSPS2Buy,
 }
 
+impl LSPSMethod {
+	fn as_static_str(&self) -> &'static str {
+		match self {
+			Self::LSPS0ListProtocols => LSPS0_LISTPROTOCOLS_METHOD_NAME,
+			Self::LSPS1GetInfo => LSPS1_GET_INFO_METHOD_NAME,
+			Self::LSPS1CreateOrder => LSPS1_CREATE_ORDER_METHOD_NAME,
+			Self::LSPS1GetOrder => LSPS1_GET_ORDER_METHOD_NAME,
+			Self::LSPS2GetInfo => LSPS2_GET_INFO_METHOD_NAME,
+			Self::LSPS2Buy => LSPS2_BUY_METHOD_NAME,
+		}
+	}
+}
+
 impl FromStr for LSPSMethod {
 	type Err = &'static str;
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -65,20 +78,6 @@ impl FromStr for LSPSMethod {
 			LSPS2_BUY_METHOD_NAME => Ok(Self::LSPS2Buy),
 			_ => Err(&"Unknown method name"),
 		}
-	}
-}
-
-impl Display for LSPSMethod {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let s = match self {
-			Self::LSPS0ListProtocols => LSPS0_LISTPROTOCOLS_METHOD_NAME,
-			Self::LSPS1GetInfo => LSPS1_GET_INFO_METHOD_NAME,
-			Self::LSPS1CreateOrder => LSPS1_CREATE_ORDER_METHOD_NAME,
-			Self::LSPS1GetOrder => LSPS1_GET_ORDER_METHOD_NAME,
-			Self::LSPS2GetInfo => LSPS2_GET_INFO_METHOD_NAME,
-			Self::LSPS2Buy => LSPS2_BUY_METHOD_NAME,
-		};
-		write!(f, "{}", s)
 	}
 }
 
@@ -124,7 +123,7 @@ impl Serialize for LSPSMethod {
 	where
 		S: serde::Serializer,
 	{
-		serializer.serialize_str(&self.to_string())
+		serializer.serialize_str(&self.as_static_str())
 	}
 }
 
@@ -407,7 +406,7 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 				if let Some(method) = method {
 					return Err(de::Error::custom(format!(
 						"Received unknown notification: {}",
-						method
+						method.as_static_str()
 					)));
 				} else {
 					if let Some(error) = error {
