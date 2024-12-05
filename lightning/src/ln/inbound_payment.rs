@@ -20,7 +20,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::offers::nonce::Nonce;
-use crate::sign::{KeyMaterial, EntropySource};
+use crate::sign::EntropySource;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
@@ -64,7 +64,7 @@ impl ExpandedKey {
 	/// Create a  new [`ExpandedKey`] for generating an inbound payment hash and secret.
 	///
 	/// It is recommended to cache this value and not regenerate it for each new inbound payment.
-	pub fn new(key_material: &KeyMaterial) -> ExpandedKey {
+	pub fn new(key_material: [u8; 32]) -> ExpandedKey {
 		let (
 			metadata_key,
 			ldk_pmt_hash_key,
@@ -72,7 +72,7 @@ impl ExpandedKey {
 			offers_base_key,
 			offers_encryption_key,
 			spontaneous_pmt_key,
-		) = hkdf_extract_expand_6x(b"LDK Inbound Payment Key Expansion", &key_material.0);
+		) = hkdf_extract_expand_6x(b"LDK Inbound Payment Key Expansion", &key_material);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,

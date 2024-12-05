@@ -82,13 +82,6 @@ pub mod ecdsa;
 #[cfg(taproot)]
 pub mod taproot;
 
-/// Used as initial key material, to be expanded into multiple secret keys (but not to be used
-/// directly). This is used within LDK to encrypt/decrypt inbound payment data.
-///
-/// This is not exported to bindings users as we just use `[u8; 32]` directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct KeyMaterial(pub [u8; 32]);
-
 /// Information about a spendable output to a P2WSH script.
 ///
 /// See [`SpendableOutputDescriptor::DelayedPaymentOutput`] for more details on how to spend this.
@@ -1939,7 +1932,7 @@ impl KeysManager {
 					secp_ctx,
 					node_secret,
 					node_id,
-					inbound_payment_key: ExpandedKey::new(&KeyMaterial(inbound_pmt_key_bytes)),
+					inbound_payment_key: ExpandedKey::new(inbound_pmt_key_bytes),
 
 					destination_script,
 					shutdown_pubkey,
@@ -2445,7 +2438,7 @@ impl PhantomKeysManager {
 		let phantom_node_id = PublicKey::from_secret_key(&inner.secp_ctx, &phantom_secret);
 		Self {
 			inner,
-			inbound_payment_key: ExpandedKey::new(&KeyMaterial(inbound_key)),
+			inbound_payment_key: ExpandedKey::new(inbound_key),
 			phantom_secret,
 			phantom_node_id,
 		}

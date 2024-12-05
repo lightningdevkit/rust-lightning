@@ -57,9 +57,7 @@ use lightning::routing::router::{
 	InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router,
 };
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::{
-	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
-};
+use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::errors::APIError;
@@ -636,7 +634,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 
 	let keys_manager = Arc::new(KeyProvider {
 		node_secret: our_network_key.clone(),
-		inbound_payment_key: ExpandedKey::new(&KeyMaterial(inbound_payment_key)),
+		inbound_payment_key: ExpandedKey::new(inbound_payment_key),
 		counter: AtomicU64::new(0),
 		signer_state: RefCell::new(new_hash_map()),
 	});
