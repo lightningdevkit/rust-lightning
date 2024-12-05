@@ -1000,6 +1000,9 @@ enum BackgroundEvent {
 	/// `counterparty_node_id` is not available as the channel has closed from a [`ChannelMonitor`]
 	/// error the other variant is acceptable.
 	///
+	/// Any such events that exist in [`ChannelManager::pending_background_events`] will *also* be
+	/// tracked in [`PeerState::in_flight_monitor_updates`].
+	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
 	MonitorUpdateRegeneratedOnStartup {
@@ -1290,6 +1293,13 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// Note that the channel may no longer exist. For example if the channel was closed but we
 	/// later needed to claim an HTLC which is pending on-chain, we may generate a monitor update
 	/// for a missing channel.
+	///
+	/// Note that any pending [`BackgroundEvent::MonitorUpdateRegeneratedOnStartup`]s which are
+	/// sitting in [`ChannelManager::pending_background_events`] will *also* be tracked here. This
+	/// avoids a race condition during [`ChannelManager::pending_background_events`] processing
+	/// where we complete one [`ChannelMonitorUpdate`] (but there are more pending as background
+	/// events) but we conclude all pending [`ChannelMonitorUpdate`]s have completed and its safe
+	/// to run post-completion actions.
 	in_flight_monitor_updates: BTreeMap<OutPoint, Vec<ChannelMonitorUpdate>>,
 	/// Map from a specific channel to some action(s) that should be taken when all pending
 	/// [`ChannelMonitorUpdate`]s for the channel complete updating.
@@ -2942,8 +2952,34 @@ macro_rules! handle_error {
 ///
 /// Note that this step can be skipped if the channel was never opened (through the creation of a
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
-macro_rules! update_maps_on_chan_removal {
-	($self: expr, $peer_state: expr, $channel_context: expr) => {{
+macro_rules! locked_close_channel {
+	($self: ident, $peer_state: expr, $channel_context: expr, $shutdown_res_mut: expr) => {{
+		if let Some((counterparty_node_id, funding_txo, channel_id, update)) = $shutdown_res_mut.monitor_update.take() {
+			if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
+				handle_new_monitor_update!($self, funding_txo, update, $peer_state,
+					$channel_context, REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER);
+			} else {
+				// We want to track the in-flight update both in `in_flight_monitor_updates` and in
+				// `pending_background_events` to avoid a race condition during
+				// `pending_background_events` processing where we complete one
+				// `ChannelMonitorUpdate` (but there are more pending as background events) but we
+				// conclude that all pending `ChannelMonitorUpdate`s have completed and its safe to
+				// run post-completion actions. We could work around that with some effort, but its
+				// simpler to just track updates twice.
+				let in_flight_updates = $peer_state.in_flight_monitor_updates.entry(funding_txo)
+					.or_insert_with(Vec::new);
+				if !in_flight_updates.contains(&update) {
+					in_flight_updates.push(update.clone());
+				}
+				let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+					counterparty_node_id,
+					funding_txo,
+					channel_id,
+					update,
+				};
+				$self.pending_background_events.lock().unwrap().push(event);
+			}
+		}
 		// If there's a possibility that we need to generate further monitor updates for this
 		// channel, we need to store the last update_id of it. However, we don't want to insert
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
@@ -3003,8 +3039,8 @@ macro_rules! convert_chan_phase_err {
 			ChannelError::Close((msg, reason)) => {
 				let logger = WithChannelContext::from(&$self.logger, &$channel.context, None);
 				log_error!(logger, "Closing channel {} due to close-required error: {}", $channel_id, msg);
-				update_maps_on_chan_removal!($self, $peer_state, $channel.context);
-				let shutdown_res = $channel.context.force_shutdown(true, reason);
+				let mut shutdown_res = $channel.context.force_shutdown(true, reason);
+				locked_close_channel!($self, $peer_state, &$channel.context, &mut shutdown_res);
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
 				(true, err)
@@ -3071,10 +3107,10 @@ macro_rules! try_chan_phase_entry {
 }
 
 macro_rules! remove_channel_phase {
-	($self: expr, $peer_state: expr, $entry: expr) => {
+	($self: ident, $peer_state: expr, $entry: expr, $shutdown_res_mut: expr) => {
 		{
 			let channel = $entry.remove_entry().1;
-			update_maps_on_chan_removal!($self, $peer_state, &channel.context());
+			locked_close_channel!($self, $peer_state, &channel.context(), $shutdown_res_mut);
 			channel
 		}
 	}
@@ -3793,8 +3829,10 @@ where
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					} else {
-						let mut chan_phase = remove_channel_phase!(self, peer_state, chan_phase_entry);
-						shutdown_result = Some(chan_phase.context_mut().force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }));
+						let mut shutdown_res = chan_phase_entry.get_mut().context_mut()
+							.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
+						remove_channel_phase!(self, peer_state, chan_phase_entry, shutdown_res);
+						shutdown_result = Some(shutdown_res);
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
@@ -3915,8 +3953,8 @@ where
 					&& matches!(&monitor_update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. });
 				// If the ChannelMonitorUpdate is closing a channel that never got past initial
 				// funding (to have any commitment updates), we'll skip inserting in
-				// `update_maps_on_chan_removal`, allowing us to avoid keeping around the PeerState
-				// for that peer. In that specific case we expect no entry in the map here. In any
+				// `locked_close_channel`, allowing us to avoid keeping around the PeerState for
+				// that peer. In that specific case we expect no entry in the map here. In any
 				// other cases, this is a bug, but in production we go ahead and recover by
 				// inserting the update_id and hoping its right.
 				debug_assert!(is_closing_unupdated_monitor, "Expected closing monitor against an unused channel, got {:?}", monitor_update);
@@ -3940,7 +3978,7 @@ where
 	}
 
 	/// When a channel is removed, two things need to happen:
-	/// (a) [`update_maps_on_chan_removal`] must be called in the same `per_peer_state` lock as
+	/// (a) [`locked_close_channel`] must be called in the same `per_peer_state` lock as
 	///     the channel-closing action,
 	/// (b) this needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`].
@@ -3964,11 +4002,30 @@ where
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
 		if let Some((_, funding_txo, _channel_id, monitor_update)) = shutdown_res.monitor_update {
-			// There isn't anything we can do if we get an update failure - we're already
-			// force-closing. The monitor update on the required in-memory copy should broadcast
-			// the latest local state, which is the best we can do anyway. Thus, it is safe to
-			// ignore the result here.
+			debug_assert!(false, "This should have been handled in `locked_close_channel`");
 			let _ = self.apply_post_close_monitor_update(shutdown_res.counterparty_node_id, shutdown_res.channel_id, funding_txo, monitor_update);
+		}
+		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
+			// If a `ChannelMonitorUpdate` was applied (i.e. any time we have a funding txo and are
+			// not in the startup sequence) check if we need to handle any
+			// `MonitorUpdateCompletionAction`s.
+			// TODO: If we do the `in_flight_monitor_updates.is_empty()` check in
+			// `locked_close_channel` we can skip the locks here.
+			if let Some(funding_txo) = shutdown_res.channel_funding_txo {
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				if let Some(peer_state_mtx) = per_peer_state.get(&shutdown_res.counterparty_node_id) {
+					let mut peer_state = peer_state_mtx.lock().unwrap();
+					if peer_state.in_flight_monitor_updates.get(&funding_txo).map(|l| l.is_empty()).unwrap_or(true) {
+						let update_actions = peer_state.monitor_update_blocked_actions
+							.remove(&shutdown_res.channel_id).unwrap_or(Vec::new());
+
+						mem::drop(peer_state);
+						mem::drop(per_peer_state);
+
+						self.handle_monitor_update_completion_actions(update_actions);
+					}
+				}
+			}
 		}
 		let mut shutdown_results = Vec::new();
 		if let Some(txid) = shutdown_res.unbroadcasted_batch_funding_txid {
@@ -3980,8 +4037,9 @@ where
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
-						update_maps_on_chan_removal!(self, peer_state, &chan.context());
-						shutdown_results.push(chan.context_mut().force_shutdown(false, ClosureReason::FundingBatchClosure));
+						let mut close_res = chan.context_mut().force_shutdown(false, ClosureReason::FundingBatchClosure);
+						locked_close_channel!(self, &mut *peer_state, chan.context(), close_res);
+						shutdown_results.push(close_res);
 					}
 				}
 				has_uncompleted_channel = Some(has_uncompleted_channel.map_or(!state, |v| v || !state));
@@ -4038,23 +4096,26 @@ where
 				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(broadcast) }
 			};
 			let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
-			if let hash_map::Entry::Occupied(chan_phase_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
 				log_error!(logger, "Force-closing channel {}", channel_id);
-				let mut chan_phase = remove_channel_phase!(self, peer_state, chan_phase_entry);
-				mem::drop(peer_state);
-				mem::drop(per_peer_state);
-				match chan_phase {
-					ChannelPhase::Funded(mut chan) => {
-						self.finish_close_channel(chan.context.force_shutdown(broadcast, closure_reason));
-						(self.get_channel_update_for_broadcast(&chan).ok(), chan.context.get_counterparty_node_id())
+				let (mut shutdown_res, update_opt) = match chan_phase_entry.get_mut() {
+					ChannelPhase::Funded(ref mut chan) => {
+						(
+							chan.context.force_shutdown(broadcast, closure_reason),
+							self.get_channel_update_for_broadcast(&chan).ok(),
+						)
 					},
 					ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) |
 					ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => {
-						self.finish_close_channel(chan_phase.context_mut().force_shutdown(false, closure_reason));
 						// Unfunded channel has no update
-						(None, chan_phase.context().get_counterparty_node_id())
+						(chan_phase_entry.get_mut().context_mut().force_shutdown(false, closure_reason), None)
 					},
-				}
+				};
+				let chan_phase = remove_channel_phase!(self, peer_state, chan_phase_entry, shutdown_res);
+				mem::drop(peer_state);
+				mem::drop(per_peer_state);
+				self.finish_close_channel(shutdown_res);
+				(update_opt, chan_phase.context().get_counterparty_node_id())
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
 				// N.B. that we don't send any channel close event here: we
@@ -5318,9 +5379,10 @@ where
 						.map(|peer_state_mutex| peer_state_mutex.lock().unwrap())
 						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id).map(|chan| (chan, peer_state)))
 						.map(|(mut chan, mut peer_state)| {
-							update_maps_on_chan_removal!(self, peer_state, &chan.context());
 							let closure_reason = ClosureReason::ProcessingError { err: e.clone() };
-							shutdown_results.push(chan.context_mut().force_shutdown(false, closure_reason));
+							let mut close_res = chan.context_mut().force_shutdown(false, closure_reason);
+							locked_close_channel!(self, peer_state, chan.context(), close_res);
+							shutdown_results.push(close_res);
 							peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
 								node_id: counterparty_node_id,
 								action: msgs::ErrorAction::SendErrorMessage {
@@ -6420,8 +6482,9 @@ where
 						log_error!(logger,
 							"Force-closing pending channel with ID {} for not establishing in a timely manner",
 							context.channel_id());
-						update_maps_on_chan_removal!(self, $peer_state, context);
-						shutdown_channels.push(context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }));
+						let mut close_res = context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
+						locked_close_channel!(self, $peer_state, context, close_res);
+						shutdown_channels.push(close_res);
 						$pending_msg_events.push(MessageSendEvent::HandleError {
 							node_id: context.get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage {
@@ -8105,9 +8168,8 @@ where
 			// Note that at this point we've filled in the funding outpoint on our
 			// channel, but its actually in conflict with another channel. Thus, if
 			// we call `convert_chan_phase_err` immediately (thus calling
-			// `update_maps_on_chan_removal`), we'll remove the existing channel
-			// from `outpoint_to_peer`. Thus, we must first unset the funding outpoint
-			// on the channel.
+			// `locked_close_channel`), we'll remove the existing channel from `outpoint_to_peer`.
+			// Thus, we must first unset the funding outpoint on the channel.
 			let err = ChannelError::close($err.to_owned());
 			chan.unset_funding_info(msg.temporary_channel_id);
 			return Err(convert_chan_phase_err!(self, peer_state, err, chan, &funded_channel_id, UNFUNDED_CHANNEL).1);
@@ -8597,9 +8659,12 @@ where
 					},
 					ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) |
 					ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => {
-						log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
-						let mut chan = remove_channel_phase!(self, peer_state, chan_phase_entry);
-						finish_shutdown = Some(chan.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel));
+						let context = phase.context_mut();
+						let logger = WithChannelContext::from(&self.logger, context, None);
+						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
+						let mut close_res = phase.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
+						remove_channel_phase!(self, peer_state, chan_phase_entry, close_res);
+						finish_shutdown = Some(close_res);
 					},
 				}
 			} else {
@@ -8640,14 +8705,19 @@ where
 								msg,
 							});
 						}
-						if tx.is_some() {
+						if let Some(mut close_res) = shutdown_result {
 							// We're done with this channel, we've got a signed closing transaction and
 							// will send the closing_signed back to the remote peer upon return. This
 							// also implies there are no pending HTLCs left on the channel, so we can
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
-							(tx, Some(remove_channel_phase!(self, peer_state, chan_phase_entry)), shutdown_result)
-						} else { (tx, None, shutdown_result) }
+							debug_assert!(tx.is_some());
+							let channel_phase = remove_channel_phase!(self, peer_state, chan_phase_entry, close_res);
+							(tx, Some(channel_phase), Some(close_res))
+						} else {
+							debug_assert!(tx.is_none());
+							(tx, None, None)
+						}
 					} else {
 						return try_chan_phase_entry!(self, peer_state, Err(ChannelError::close(
 							"Got a closing_signed message for an unfunded channel!".into())), chan_phase_entry);
@@ -9370,14 +9440,16 @@ where
 								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 								let peer_state = &mut *peer_state_lock;
 								let pending_msg_events = &mut peer_state.pending_msg_events;
-								if let hash_map::Entry::Occupied(chan_phase_entry) = peer_state.channel_by_id.entry(channel_id) {
-									if let ChannelPhase::Funded(mut chan) = remove_channel_phase!(self, peer_state, chan_phase_entry) {
-										let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
-											reason
-										} else {
-											ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
-										};
-										failed_channels.push(chan.context.force_shutdown(false, reason.clone()));
+								if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(channel_id) {
+									let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
+										reason
+									} else {
+										ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
+									};
+									let mut shutdown_res = chan_phase_entry.get_mut().context_mut().force_shutdown(false, reason.clone());
+									let chan_phase = remove_channel_phase!(self, peer_state, chan_phase_entry, shutdown_res);
+									failed_channels.push(shutdown_res);
+									if let ChannelPhase::Funded(chan) = chan_phase {
 										if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 											let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
 											pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -9387,7 +9459,10 @@ where
 										pending_msg_events.push(events::MessageSendEvent::HandleError {
 											node_id: chan.context.get_counterparty_node_id(),
 											action: msgs::ErrorAction::DisconnectPeer {
-												msg: Some(msgs::ErrorMessage { channel_id: chan.context.channel_id(), data: reason.to_string() })
+												msg: Some(msgs::ErrorMessage {
+													channel_id: chan.context.channel_id(),
+													data: reason.to_string()
+												})
 											},
 										});
 									}
@@ -9563,11 +9638,11 @@ where
 					Some((_, channel_id)) if chan.context().channel_id() != channel_id => None,
 					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
 				};
-				if let Some(shutdown_result) = shutdown_result {
+				if let Some(mut shutdown_result) = shutdown_result {
 					let context = &chan.context();
 					let logger = WithChannelContext::from(&self.logger, context, None);
 					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
-					update_maps_on_chan_removal!(self, peer_state, context);
+					locked_close_channel!(self, peer_state, context, shutdown_result);
 					shutdown_results.push(shutdown_result);
 					false
 				} else {
@@ -9608,7 +9683,8 @@ where
 										});
 									}
 									debug_assert_eq!(shutdown_result_opt.is_some(), chan.is_shutdown());
-									if let Some(shutdown_result) = shutdown_result_opt {
+									if let Some(mut shutdown_result) = shutdown_result_opt {
+										locked_close_channel!(self, peer_state, &chan.context, shutdown_result);
 										shutdown_results.push(shutdown_result);
 									}
 									if let Some(tx) = tx_opt {
@@ -9623,7 +9699,6 @@ where
 
 										log_info!(logger, "Broadcasting {}", log_tx!(tx));
 										self.tx_broadcaster.broadcast_transactions(&[&tx]);
-										update_maps_on_chan_removal!(self, peer_state, &chan.context);
 										false
 									} else { true }
 								},
@@ -9650,38 +9725,6 @@ where
 		}
 
 		has_update
-	}
-
-	/// Handle a list of channel failures during a block_connected or block_disconnected call,
-	/// pushing the channel monitor update (if any) to the background events queue (if we're
-	/// currently in the startup phase) and calling [`Self::finish_close_channel`].
-	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
-		for mut failure in failed_channels.drain(..) {
-			// Either a commitment transactions has been confirmed on-chain or
-			// Channel::block_disconnected detected that the funding transaction has been
-			// reorganized out of the main chain.
-			// We cannot broadcast our latest local state via monitor update (as
-			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
-			// so we track the update internally and handle it when the user next calls
-			// timer_tick_occurred, guaranteeing we're running normally.
-			if let Some((counterparty_node_id, funding_txo, channel_id, update)) = failure.monitor_update.take() {
-				assert_eq!(update.updates.len(), 1);
-				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
-					assert!(should_broadcast);
-				} else { unreachable!(); }
-				if self.background_events_processed_since_startup.load(Ordering::Acquire) {
-					let res = self.chain_monitor.update_channel(funding_txo, &update);
-					debug_assert_eq!(res, ChannelMonitorUpdateStatus::Completed,
-						"TODO: We don't currently handle failures here, this logic is removed in the next commit");
-				} else {
-					self.pending_background_events.lock().unwrap().push(
-						BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-							counterparty_node_id, funding_txo, update, channel_id,
-						});
-				}
-			}
-			self.finish_close_channel(failure);
-		}
 	}
 
 	/// Utility for creating a BOLT11 invoice that can be verified by [`ChannelManager`] without
@@ -11095,11 +11138,12 @@ where
 									}
 								}
 							} else if let Err(reason) = res {
-								update_maps_on_chan_removal!(self, peer_state, &channel.context);
 								// It looks like our counterparty went on-chain or funding transaction was
 								// reorged out of the main chain. Close the channel.
 								let reason_message = format!("{}", reason);
-								failed_channels.push(channel.context.force_shutdown(true, reason));
+								let mut close_res = channel.context.force_shutdown(true, reason);
+								locked_close_channel!(self, peer_state, &channel.context, close_res);
+								failed_channels.push(close_res);
 								if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
 									let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
 									pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -11175,7 +11219,9 @@ where
 			});
 		}
 
-		self.handle_init_event_channel_failures(failed_channels);
+		for failure in failed_channels {
+			self.finish_close_channel(failure);
+		}
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, destination);
@@ -11534,8 +11580,9 @@ where
 						},
 					};
 					// Clean up for removal.
-					update_maps_on_chan_removal!(self, peer_state, &context);
-					failed_channels.push(context.force_shutdown(false, ClosureReason::DisconnectedPeer));
+					let mut close_res = context.force_shutdown(false, ClosureReason::DisconnectedPeer);
+					locked_close_channel!(self, peer_state, &context, close_res);
+					failed_channels.push(close_res);
 					false
 				});
 				// Note that we don't bother generating any events for pre-accept channels -
