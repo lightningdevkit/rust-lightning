@@ -15,7 +15,7 @@ use crate::lsps2::event::LSPS2ServiceEvent;
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{compute_opening_fee, is_valid_opening_fee_params};
 use crate::message_queue::MessageQueue;
-use crate::prelude::{HashMap, String, ToString, Vec};
+use crate::prelude::{new_hash_map, HashMap, String, ToString, Vec};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::events::HTLCDestination;
@@ -438,10 +438,10 @@ struct PeerState {
 
 impl PeerState {
 	fn new() -> Self {
-		let outbound_channels_by_intercept_scid = HashMap::new();
-		let pending_requests = HashMap::new();
-		let intercept_scid_by_user_channel_id = HashMap::new();
-		let intercept_scid_by_channel_id = HashMap::new();
+		let outbound_channels_by_intercept_scid = new_hash_map();
+		let pending_requests = new_hash_map();
+		let intercept_scid_by_user_channel_id = new_hash_map();
+		let intercept_scid_by_channel_id = new_hash_map();
 		Self {
 			outbound_channels_by_intercept_scid,
 			pending_requests,
@@ -481,9 +481,9 @@ where
 		Self {
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(HashMap::new()),
-			peer_by_intercept_scid: RwLock::new(HashMap::new()),
-			peer_by_channel_id: RwLock::new(HashMap::new()),
+			per_peer_state: RwLock::new(new_hash_map()),
+			peer_by_intercept_scid: RwLock::new(new_hash_map()),
+			peer_by_channel_id: RwLock::new(new_hash_map()),
 			channel_manager,
 			config,
 		}
@@ -852,7 +852,7 @@ where
 			self.peer_by_channel_id.read().unwrap().get(&next_channel_id)
 		{
 			let outer_state_lock = self.per_peer_state.read().unwrap();
-			match outer_state_lock.get(&counterparty_node_id) {
+			match outer_state_lock.get(counterparty_node_id) {
 				Some(inner_state_lock) => {
 					let mut peer_state = inner_state_lock.lock().unwrap();
 					if let Some(intercept_scid) =

@@ -20,7 +20,7 @@ use crate::message_queue::MessageQueue;
 
 use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
-use crate::prelude::{HashMap, String, ToString};
+use crate::prelude::{new_hash_map, HashMap, String, ToString};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 
@@ -159,7 +159,7 @@ where
 			chain_source,
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(HashMap::new()),
+			per_peer_state: RwLock::new(new_hash_map()),
 			config,
 		}
 	}
