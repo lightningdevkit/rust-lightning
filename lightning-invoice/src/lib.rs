@@ -262,7 +262,7 @@ impl Display for Bolt11InvoiceDescription {
 ///
 /// This is not exported to bindings users as we don't have a good way to map the reference lifetimes making this
 /// practically impossible to use safely in languages like C.
-#[derive(Eq, PartialEq, Debug, Clone, Ord, PartialOrd)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Ord, PartialOrd)]
 pub enum Bolt11InvoiceDescriptionRef<'f> {
 	/// Reference to the directly supplied description in the invoice
 	Direct(&'f Description),
