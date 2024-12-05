@@ -51,8 +51,6 @@ use bitcoin::transaction::Version;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 
-use std::collections::HashMap;
-
 use crate::io;
 use crate::prelude::*;
 use alloc::collections::BTreeSet;
@@ -7443,8 +7441,8 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 
 	macro_rules! check_broadcasted_txn {
 		($penalty_txids:ident, $fee_rates:ident) => {
-			let mut $penalty_txids = HashMap::new();
-			let mut $fee_rates = HashMap::new();
+			let mut $penalty_txids = new_hash_map();
+			let mut $fee_rates = new_hash_map();
 			{
 				let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 				// 2 justice txs can be broadcasted from ChannelMonitor:
