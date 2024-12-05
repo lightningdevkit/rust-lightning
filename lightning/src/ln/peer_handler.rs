@@ -143,7 +143,7 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _custom_data: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
 		None
 	}
 }

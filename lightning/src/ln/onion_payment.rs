@@ -134,19 +134,19 @@ pub(super) fn create_recv_pending_htlc_info(
 	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32, accept_mpp_keysend: bool,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (
-		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
+		payment_data, keysend_preimage, sender_custom_tlvs, user_custom_data, onion_amt_msat, onion_cltv_expiry,
 		payment_metadata, payment_context, requires_blinded_error, has_recipient_created_payment_secret
 	) = match hop_data {
 		msgs::InboundOnionPayload::Receive {
-			payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+			payment_data, keysend_preimage, sender_custom_tlvs, user_custom_data, sender_intended_htlc_amt_msat,
 			cltv_expiry_height, payment_metadata, ..
 		} =>
-			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+			(payment_data, keysend_preimage, sender_custom_tlvs, user_custom_data, sender_intended_htlc_amt_msat,
 			 cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none()),
 		msgs::InboundOnionPayload::BlindedReceive {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
-			custom_tlvs
+			sender_custom_tlvs, user_custom_data
 		} => {
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
@@ -159,7 +159,7 @@ pub(super) fn create_recv_pending_htlc_info(
 					}
 				})?;
 			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
-			(Some(payment_data), keysend_preimage, custom_tlvs,
+			(Some(payment_data), keysend_preimage, sender_custom_tlvs, user_custom_data,
 			 sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
 			 intro_node_blinding_point.is_none(), true)
 		}
@@ -239,7 +239,8 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_preimage,
 			payment_metadata,
 			incoming_cltv_expiry: onion_cltv_expiry,
-			custom_tlvs,
+			sender_custom_tlvs,
+			user_custom_data,
 			requires_blinded_error,
 			has_recipient_created_payment_secret,
 		}
@@ -250,7 +251,8 @@ pub(super) fn create_recv_pending_htlc_info(
 			payment_context,
 			incoming_cltv_expiry: onion_cltv_expiry,
 			phantom_shared_secret,
-			custom_tlvs,
+			sender_custom_tlvs,
+			user_custom_data,
 			requires_blinded_error,
 		}
 	} else {
@@ -537,7 +539,7 @@ mod tests {
 		) = payment_onion_args(bob_pk, charlie_pk);
 
 		// Ensure the onion will not fit all the payloads by adding a large custom TLV.
-		recipient_onion.custom_tlvs.push((13377331, vec![0; 1156]));
+		recipient_onion.sender_custom_tlvs.push((13377331, vec![0; 1156]));
 
 		let path = Path { hops, blinded_tail: None, };
 		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).unwrap();
