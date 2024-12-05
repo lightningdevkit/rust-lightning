@@ -90,9 +90,11 @@ impl From<LSPS0Message> for LSPSMessage {
 
 #[cfg(test)]
 mod tests {
+	use lightning::util::hash_tables::new_hash_map;
+
 	use super::*;
 	use crate::lsps0::ser::LSPSMethod;
-	use crate::prelude::{HashMap, ToString};
+	use crate::prelude::ToString;
 
 	#[test]
 	fn deserializes_request() {
@@ -102,7 +104,7 @@ mod tests {
 			"method": "lsps0.list_protocols"
 		}"#;
 
-		let mut request_id_method_map = HashMap::new();
+		let mut request_id_method_map = new_hash_map();
 
 		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map);
 		assert!(msg.is_ok());
@@ -138,7 +140,7 @@ mod tests {
 	            "protocols": [1,2,3]
 	        }
 	    }"#;
-		let mut request_id_to_method_map = HashMap::new();
+		let mut request_id_to_method_map = new_hash_map();
 		request_id_to_method_map
 			.insert(RequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
 
@@ -164,7 +166,7 @@ mod tests {
 				"message": "Unknown Error"
 	        }
 	    }"#;
-		let mut request_id_to_method_map = HashMap::new();
+		let mut request_id_to_method_map = new_hash_map();
 		request_id_to_method_map
 			.insert(RequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
 
@@ -193,7 +195,7 @@ mod tests {
 	            "protocols": [1,2,3]
 	        }
 	    }"#;
-		let mut request_id_to_method_map = HashMap::new();
+		let mut request_id_to_method_map = new_hash_map();
 		request_id_to_method_map
 			.insert(RequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
 
