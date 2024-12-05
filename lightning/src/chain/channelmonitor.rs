@@ -224,7 +224,7 @@ pub(crate) const COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE: u32 = 12;
 /// When we go to force-close a channel because an HTLC is expiring, we should ensure that the
 /// HTLC(s) expiring are not considered pinnable, allowing us to aggregate them with other HTLC(s)
 /// expiring at the same time.
-const _HTLCS_NOT_PINNABLE_ON_CLOSE: u32 = CLTV_CLAIM_BUFFER - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+const _: () = assert!(CLTV_CLAIM_BUFFER > COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
 
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.
