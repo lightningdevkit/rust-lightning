@@ -16,7 +16,7 @@ use lightning::offers::invoice_request::InvoiceRequest;
 use lightning::offers::nonce::Nonce;
 use lightning::offers::offer::{Amount, Offer, Quantity};
 use lightning::offers::parse::Bolt12SemanticError;
-use lightning::sign::{EntropySource, KeyMaterial};
+use lightning::sign::EntropySource;
 use lightning::util::ser::Writeable;
 
 #[inline]
@@ -43,7 +43,7 @@ impl EntropySource for FixedEntropy {
 }
 
 fn build_request(offer: &Offer) -> Result<InvoiceRequest, Bolt12SemanticError> {
-	let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+	let expanded_key = ExpandedKey::new([42; 32]);
 	let entropy = FixedEntropy {};
 	let nonce = Nonce::from_entropy_source(&entropy);
 	let secp_ctx = Secp256k1::new();

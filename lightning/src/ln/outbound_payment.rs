@@ -2411,7 +2411,6 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
-	use crate::sign::KeyMaterial;
 	use crate::sync::{Arc, Mutex, RwLock};
 	use crate::util::errors::APIError;
 	use crate::util::hash_tables::new_hash_map;
@@ -2756,7 +2755,7 @@ mod tests {
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2813,7 +2812,7 @@ mod tests {
 
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new(new_hash_map());
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
@@ -2875,7 +2874,7 @@ mod tests {
 
 		let pending_events = Mutex::new(VecDeque::new());
 		let outbound_payments = OutboundPayments::new(new_hash_map());
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0; 16]);
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
@@ -2960,7 +2959,7 @@ mod tests {
 	}
 
 	fn dummy_invoice_request() -> InvoiceRequest {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
