@@ -18,7 +18,7 @@ use crate::message_queue::MessageQueue;
 
 use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
-use crate::prelude::{HashMap, HashSet};
+use crate::prelude::{new_hash_map, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -69,7 +69,7 @@ where
 			entropy_source,
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(HashMap::new()),
+			per_peer_state: RwLock::new(new_hash_map()),
 			_config: config,
 		}
 	}
@@ -142,7 +142,7 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -219,7 +219,7 @@ where
 		response: CreateOrderResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -260,7 +260,7 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -338,7 +338,7 @@ where
 		response: CreateOrderResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -379,7 +379,7 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 

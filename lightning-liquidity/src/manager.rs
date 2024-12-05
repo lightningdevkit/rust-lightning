@@ -17,7 +17,7 @@ use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler};
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
-use crate::prelude::{HashMap, HashSet, ToString, Vec};
+use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet, ToString, Vec};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::chain::{self, BestBlock, Confirm, Filter, Listen};
@@ -124,7 +124,7 @@ where
 where {
 		let pending_messages = Arc::new(MessageQueue::new());
 		let pending_events = Arc::new(EventQueue::new());
-		let ignored_peers = RwLock::new(HashSet::new());
+		let ignored_peers = RwLock::new(new_hash_set());
 
 		let mut supported_protocols = Vec::new();
 
@@ -199,7 +199,7 @@ where {
 		Self {
 			pending_messages,
 			pending_events,
-			request_id_to_method_map: Mutex::new(HashMap::new()),
+			request_id_to_method_map: Mutex::new(new_hash_map()),
 			ignored_peers,
 			lsps0_client_handler,
 			lsps0_service_handler,

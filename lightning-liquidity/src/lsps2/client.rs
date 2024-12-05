@@ -3,8 +3,7 @@
 //
 // This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
 // or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
-// You may not use this file except in accordance with one or both of these
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option. You may not use this file except in accordance with one or both of these
 // licenses.
 
 //! Contains the main LSPS2 client object, [`LSPS2ClientHandler`].
@@ -13,7 +12,7 @@ use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
-use crate::prelude::{HashMap, HashSet, String, ToString};
+use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet, String, ToString};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -52,8 +51,8 @@ struct PeerState {
 
 impl PeerState {
 	fn new() -> Self {
-		let pending_get_info_requests = HashSet::new();
-		let pending_buy_requests = HashMap::new();
+		let pending_get_info_requests = new_hash_set();
+		let pending_buy_requests = new_hash_map();
 		Self { pending_get_info_requests, pending_buy_requests }
 	}
 }
@@ -89,7 +88,7 @@ where
 			entropy_source,
 			pending_messages,
 			pending_events,
-			per_peer_state: RwLock::new(HashMap::new()),
+			per_peer_state: RwLock::new(new_hash_map()),
 			_config,
 		}
 	}
