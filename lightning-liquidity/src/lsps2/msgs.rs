@@ -8,6 +8,8 @@ use bitcoin::hashes::{Hash, HashEngine};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use lightning::util::scid_utils;
+
 use crate::lsps0::ser::{
 	string_amount, string_amount_option, LSPSMessage, RequestId, ResponseError,
 };
@@ -129,9 +131,9 @@ pub struct InterceptScid(String);
 
 impl From<u64> for InterceptScid {
 	fn from(scid: u64) -> Self {
-		let block = utils::block_from_scid(&scid);
-		let tx_index = utils::tx_index_from_scid(&scid);
-		let vout = utils::vout_from_scid(&scid);
+		let block = scid_utils::block_from_scid(scid);
+		let tx_index = scid_utils::tx_index_from_scid(scid);
+		let vout = scid_utils::vout_from_scid(scid);
 
 		Self(format!("{}x{}x{}", block, tx_index, vout))
 	}
