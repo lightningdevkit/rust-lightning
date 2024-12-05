@@ -8480,8 +8480,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			return Err((self, ChannelError::close("Received funding_signed in strange state!".to_owned())));
 		}
 		let mut holder_commitment_point = self.unfunded_context.holder_commitment_point
-			.expect("Holder commitment must be Some by the time we receive funding_created");
-		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "funding_created");
+			.expect("Holder commitment must be Some by the time we receive funding_signed");
+		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "funding_signed");
 
 		let (channel_monitor, _) = match self.initial_commitment_signed(
 			self.context.channel_id(), msg.signature,
