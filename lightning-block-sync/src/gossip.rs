@@ -144,7 +144,7 @@ pub struct GossipVerifier<
 {
 	source: Blocks,
 	peer_manager_wake: Arc<dyn Fn() + Send + Sync>,
-	gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Self, L>>,
+	gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Arc<Self>, L>>,
 	spawn: S,
 	block_cache: Arc<Mutex<VecDeque<(u32, Block)>>>,
 }
@@ -162,7 +162,7 @@ where
 	/// This is expected to be given to a [`P2PGossipSync`] (initially constructed with `None` for
 	/// the UTXO lookup) via [`P2PGossipSync::add_utxo_lookup`].
 	pub fn new<APM: Deref + Send + Sync + Clone + 'static>(
-		source: Blocks, spawn: S, gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Self, L>>,
+		source: Blocks, spawn: S, gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Arc<Self>, L>>,
 		peer_manager: APM,
 	) -> Self
 	where
