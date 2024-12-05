@@ -35,6 +35,7 @@ RUSTFLAGS='-D warnings' cargo clippy -- \
 	-A clippy::len_without_is_empty \
 	-A clippy::len_zero \
 	-A clippy::let_and_return \
+	-A clippy::manual_div_ceil `# to be removed once we hit MSRV 1.73.0` \
 	-A clippy::manual_filter \
 	-A clippy::manual_map \
 	-A clippy::manual_memcpy \
