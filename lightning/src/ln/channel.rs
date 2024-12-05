@@ -1132,7 +1132,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
 	UnfundedInboundV2(InboundV2Channel<SP>),
-	Funded(Channel<SP>),
+	Funded(FundedChannel<SP>),
 }
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
@@ -1163,14 +1163,14 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 }
 
 /// A top-level channel struct, containing a channel phase
-pub(super) struct ChannelWrapper<SP: Deref> where SP::Target: SignerProvider {
+pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	/// The inner channel phase
 	/// Option is used to facilitate in-place replacement (see e.g. move_v2_to_funded),
 	/// but it is never None, ensured in new() and set_phase()
 	phase: Option<ChannelPhase<SP>>,
 }
 
-impl<'a, SP: Deref> ChannelWrapper<SP> where SP::Target: SignerProvider {
+impl<'a, SP: Deref> Channel<SP> where SP::Target: SignerProvider {
 	pub fn new(phase: ChannelPhase<SP>) -> Self {
 		Self {
 			phase: Some(phase),
@@ -1194,7 +1194,7 @@ impl<'a, SP: Deref> ChannelWrapper<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn funded_channel(&self) -> Option<&Channel<SP>> {
+	pub fn funded_channel(&self) -> Option<&FundedChannel<SP>> {
 		if let ChannelPhase::Funded(chan) = &self.phase.as_ref().unwrap() {
 			Some(chan)
 		} else {
@@ -1343,7 +1343,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// the future when the signer indicates it may have a signature for us.
 	///
 	/// This flag is set in such a case. Note that we don't need to persist this as we'll end up
-	/// setting it again as a side-effect of [`Channel::channel_reestablish`].
+	/// setting it again as a side-effect of [`FundedChannel::channel_reestablish`].
 	signer_pending_commitment_update: bool,
 	/// Similar to [`Self::signer_pending_commitment_update`] but we're waiting to send either a
 	/// [`msgs::FundingCreated`] or [`msgs::FundingSigned`] depending on if this channel is
@@ -1734,7 +1734,7 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> whe
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -2001,7 +2001,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if open_channel_fields.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::close(format!("Minimum htlc value ({}) was larger than full channel value ({})", open_channel_fields.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, open_channel_fields.commitment_feerate_sat_per_1000_weight, None, &&logger)?;
+		FundedChannel::<SP>::check_remote_fee(&channel_type, fee_estimator, open_channel_fields.commitment_feerate_sat_per_1000_weight, None, &&logger)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if open_channel_fields.to_self_delay > max_counterparty_selected_contest_delay {
@@ -4284,7 +4284,7 @@ pub(super) struct DualFundingChannelContext {
 
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
-pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
+pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
@@ -4354,7 +4354,7 @@ impl FailHTLCMessageName for msgs::UpdateFailMalformedHTLC {
 	}
 }
 
-impl<SP: Deref> Channel<SP> where
+impl<SP: Deref> FundedChannel<SP> where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner
 {
@@ -6146,7 +6146,7 @@ impl<SP: Deref> Channel<SP> where
 		if self.context.channel_state.is_peer_disconnected() {
 			return Err(ChannelError::close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
-		Channel::<SP>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
+		FundedChannel::<SP>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
@@ -8538,7 +8538,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed<L: Deref>(
 		mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(Channel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (OutboundV1Channel<SP>, ChannelError)>
+	) -> Result<(FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (OutboundV1Channel<SP>, ChannelError)>
 	where
 		L::Target: Logger
 	{
@@ -8561,7 +8561,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
 
-		let mut channel = Channel {
+		let mut channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: None,
 		};
@@ -8746,7 +8746,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	pub fn funding_created<L: Deref>(
 		mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(Channel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (Self, ChannelError)>
+	) -> Result<(FundedChannel<SP>, Option<msgs::FundingSigned>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), (Self, ChannelError)>
 	where
 		L::Target: Logger
 	{
@@ -8786,7 +8786,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// Promote the channel to a full-fledged one now that we have updated the state and have a
 		// `ChannelMonitor`.
-		let mut channel = Channel {
+		let mut channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: None,
 		};
@@ -8930,8 +8930,8 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_funded_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let channel = Channel {
+	pub fn into_funded_channel(self, signing_session: InteractiveTxSigningSession) -> Result<FundedChannel<SP>, ChannelError>{
+		let channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
 		};
@@ -9124,8 +9124,8 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	pub fn into_funded_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let channel = Channel {
+	pub fn into_funded_channel(self, signing_session: InteractiveTxSigningSession) -> Result<FundedChannel<SP>, ChannelError>{
+		let channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
 		};
@@ -9216,7 +9216,7 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
-impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
@@ -9595,7 +9595,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)> for Channel<SP>
+impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)> for FundedChannel<SP>
 		where
 			ES::Target: EntropySource,
 			SP::Target: SignerProvider
@@ -10067,7 +10067,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			},
 		};
 
-		Ok(Channel {
+		Ok(FundedChannel {
 			context: ChannelContext {
 				user_id,
 
@@ -10224,7 +10224,7 @@ mod tests {
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
+	use crate::ln::channel::{AwaitingChannelReadyFlags, FundedChannel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
@@ -10890,7 +10890,7 @@ mod tests {
 		let mut s = crate::io::Cursor::new(&encoded_chan);
 		let mut reader = crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan = Channel::read(&mut reader, (&&keys_provider, &&keys_provider, 0, &features)).unwrap();
+		let decoded_chan = FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, 0, &features)).unwrap();
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}

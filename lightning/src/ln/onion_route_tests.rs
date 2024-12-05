@@ -325,7 +325,7 @@ fn test_onion_failure() {
 	// amount, thus we need different htlc_minimum_msat values. We set node[2]'s htlc_minimum_msat
 	// to 2000, which is above the default value of 1000 set in create_node_chanmgrs.
 	// This exposed a previous bug because we were using the wrong value all the way down in
-	// Channel::get_counterparty_htlc_minimum_msat().
+	// FundedChannel::get_counterparty_htlc_minimum_msat().
 	let mut node_2_cfg: UserConfig = test_default_channel_config();
 	node_2_cfg.channel_handshake_config.our_htlc_minimum_msat = 2000;
 	node_2_cfg.channel_handshake_config.announce_for_forwarding = true;
