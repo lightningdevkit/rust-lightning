@@ -1994,10 +1994,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Checks if the monitor is fully resolved. Resolved monitor is one that has claimed all of
 	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set).
+	/// Additionally may update state to track when the balances set became empty.
 	///
-	/// This function returns true only if [`Self::get_claimable_balances`] has been empty for at least
+	/// This function returns a tuple of two booleans, the first indicating whether the monitor is
+	/// fully resolved, and the second whether the monitor needs persistence to ensure it is
+	/// reliably marked as resolved within 4032 blocks.
+	///
+	/// The first boolean is true only if [`Self::get_claimable_balances`] has been empty for at least
 	/// 4032 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
-	pub fn is_fully_resolved<L: Logger>(&self, logger: &L) -> bool {
+	pub fn check_and_update_full_resolution_status<L: Logger>(&self, logger: &L) -> (bool, bool) {
 		let mut is_all_funds_claimed = self.get_claimable_balances().is_empty();
 		let current_height = self.current_best_block().height;
 		let mut inner = self.inner.lock().unwrap();
@@ -2011,7 +2016,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		match (inner.balances_empty_height, is_all_funds_claimed) {
 			(Some(balances_empty_height), true) => {
 				// Claimed all funds, check if reached the blocks threshold.
-				current_height >= balances_empty_height + BLOCKS_THRESHOLD
+				(current_height >= balances_empty_height + BLOCKS_THRESHOLD, false)
 			},
 			(Some(_), false) => {
 				// previously assumed we claimed all funds, but we have new funds to claim.
@@ -2021,7 +2026,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					"WARNING: LDK thought it was done claiming all the available funds in the ChannelMonitor for channel {}, but later decided it had more to claim. This is potentially an important bug in LDK, please report it at https://github.com/lightningdevkit/rust-lightning/issues/new",
 					inner.get_funding_txo().0);
 				inner.balances_empty_height = None;
-				false
+				(false, true)
 			},
 			(None, true) => {
 				// Claimed all funds but `balances_empty_height` is None. It is set to the
@@ -2030,11 +2035,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
 					inner.get_funding_txo().0, BLOCKS_THRESHOLD);
 				inner.balances_empty_height = Some(current_height);
-				false
+				(false, true)
 			},
 			(None, false) => {
 				// Have funds to claim.
-				false
+				(false, false)
 			},
 		}
 	}
