@@ -798,7 +798,7 @@ impl PackageTemplate {
 					return false;
 				}
 
-				// First check the types of the inputs and only merge if they are possibly claiming
+				// First check the types of the inputs and don't merge if they are possibly claiming
 				// from different commitment transactions at the same time.
 				// This shouldn't ever happen, but if we do end up with packages trying to claim
 				// funds from two different commitment transactions (which cannot possibly be
@@ -831,7 +831,7 @@ impl PackageTemplate {
 					return false;
 				}
 
-				// Now check that we only merge packages if we they are both unpinnable or both
+				// Now check that we only merge packages if they are both unpinnable or both
 				// pinnable.
 				let self_pinnable = self_cluster == AggregationCluster::Pinnable ||
 					self.counterparty_spendable_height() <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
