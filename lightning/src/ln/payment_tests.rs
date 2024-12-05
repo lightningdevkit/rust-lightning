@@ -432,11 +432,9 @@ fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
 
 #[test]
 fn test_mpp_keysend() {
-	let mut mpp_keysend_config = test_default_channel_config();
-	mpp_keysend_config.accept_mpp_keysend = true;
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, Some(mpp_keysend_config)]);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -478,19 +476,14 @@ fn test_mpp_keysend() {
 }
 
 #[test]
-fn test_reject_mpp_keysend_htlc() {
-	// This test enforces that we reject MPP keysend HTLCs if our config states we don't support
-	// MPP keysend. When receiving a payment, if we don't support MPP keysend we'll reject the
-	// payment if it's keysend and has a payment secret, never reaching our payment validation
-	// logic. To check that we enforce rejecting MPP keysends in our payment logic, here we send
+fn test_reject_mpp_keysend_htlc_mismatching_secret() {
+	// This test enforces that we reject MPP keysend HTLCs if the payment_secrets between MPP parts
+	// don't match. To check that we enforce rejecting MPP keysends in our payment logic, here we send
 	// keysend payments without payment secrets, then modify them by adding payment secrets in the
 	// final node in between receiving the HTLCs and actually processing them.
-	let mut reject_mpp_keysend_cfg = test_default_channel_config();
-	reject_mpp_keysend_cfg.accept_mpp_keysend = false;
-
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, Some(reject_mpp_keysend_cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
 	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
@@ -571,7 +564,7 @@ fn test_reject_mpp_keysend_htlc() {
 					match forward_info.routing {
 						PendingHTLCRouting::ReceiveKeysend { ref mut payment_data, .. } => {
 							*payment_data = Some(msgs::FinalOnionHopData {
-								payment_secret: PaymentSecret([42; 32]),
+								payment_secret: PaymentSecret([43; 32]), // Doesn't match the secret used above
 								total_msat: amount * 2,
 							});
 						},
@@ -4282,7 +4275,7 @@ fn peel_payment_onion_custom_tlvs() {
 	};
 	let peeled_onion = crate::ln::onion_payment::peel_payment_onion(
 		&update_add, &chanmon_cfgs[1].keys_manager, &chanmon_cfgs[1].logger, &secp_ctx,
-		nodes[1].best_block_info().1, true, false
+		nodes[1].best_block_info().1, false
 	).unwrap();
 	assert_eq!(peeled_onion.incoming_amt_msat, Some(amt_msat));
 	match peeled_onion.routing {

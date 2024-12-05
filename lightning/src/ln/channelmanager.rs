@@ -4322,7 +4322,7 @@ where
 				let current_height: u32 = self.best_block.read().unwrap().height;
 				match create_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
-					current_height, self.default_configuration.accept_mpp_keysend)
+					current_height)
 				{
 					Ok(info) => {
 						// Note that we could obviously respond immediately with an update_fulfill_htlc
@@ -5749,7 +5749,7 @@ where
 														match create_recv_pending_htlc_info(hop_data,
 															incoming_shared_secret, payment_hash, outgoing_amt_msat,
 															outgoing_cltv_value, Some(phantom_shared_secret), false, None,
-															current_height, self.default_configuration.accept_mpp_keysend)
+															current_height)
 														{
 															Ok(info) => phantom_receives.push((
 																prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
@@ -6058,10 +6058,6 @@ where
 										if $purpose != claimable_payment.purpose {
 											let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
 											log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
-											fail_htlc!(claimable_htlc, payment_hash);
-										}
-										if !self.default_configuration.accept_mpp_keysend && is_keysend && !claimable_payment.htlcs.is_empty() {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash and our config states we don't accept MPP keysend", &payment_hash);
 											fail_htlc!(claimable_htlc, payment_hash);
 										}
 										if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
@@ -14201,7 +14197,6 @@ where
 #[cfg(test)]
 mod tests {
 	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
@@ -14418,26 +14413,16 @@ mod tests {
 
 	#[test]
 	fn test_keysend_dup_payment_hash() {
-		do_test_keysend_dup_payment_hash(false);
-		do_test_keysend_dup_payment_hash(true);
-	}
-
-	fn do_test_keysend_dup_payment_hash(accept_mpp_keysend: bool) {
 		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
 		//      outbound regular payment fails as expected.
 		// (2): Test that a regular payment with a duplicate payment hash to an existing keysend payment
 		//      fails as expected.
 		// (3): Test that a keysend payment with a duplicate payment hash to an existing keysend
-		//      payment fails as expected. When `accept_mpp_keysend` is false, this tests that we
-		//      reject MPP keysend payments, since in this case where the payment has no payment
-		//      secret, a keysend payment with a duplicate hash is basically an MPP keysend. If
-		//      `accept_mpp_keysend` is true, this tests that we only accept MPP keysends with
-		//      payment secrets and reject otherwise.
+		//      payment fails as expected. We only accept MPP keysends with payment secrets and reject
+		//      otherwise.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let mut mpp_keysend_cfg = test_default_channel_config();
-		mpp_keysend_cfg.accept_mpp_keysend = accept_mpp_keysend;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(mpp_keysend_cfg)]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 		let scorer = test_utils::TestScorer::new();
@@ -14615,53 +14600,6 @@ mod tests {
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Payment preimage didn't match payment hash", 1);
-	}
-
-	#[test]
-	fn test_keysend_msg_with_secret_err() {
-		// Test that we error as expected if we receive a keysend payment that includes a payment
-		// secret when we don't support MPP keysend.
-		let mut reject_mpp_keysend_cfg = test_default_channel_config();
-		reject_mpp_keysend_cfg.accept_mpp_keysend = false;
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(reject_mpp_keysend_cfg)]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-		let payer_pubkey = nodes[0].node.get_our_node_id();
-		let payee_pubkey = nodes[1].node.get_our_node_id();
-
-		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
-		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
-		let network_graph = nodes[0].network_graph;
-		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = test_utils::TestScorer::new();
-		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-		let route = find_route(
-			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
-		).unwrap();
-
-		let test_preimage = PaymentPreimage([42; 32]);
-		let test_secret = PaymentSecret([43; 32]);
-		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).to_byte_array());
-		let session_privs = nodes[0].node.test_add_new_pending_payment(payment_hash,
-			RecipientOnionFields::secret_only(test_secret), PaymentId(payment_hash.0), &route).unwrap();
-		nodes[0].node.test_send_payment_internal(&route, payment_hash,
-			RecipientOnionFields::secret_only(test_secret), Some(test_preimage),
-			PaymentId(payment_hash.0), None, session_privs).unwrap();
-		check_added_monitors!(nodes[0], 1);
-
-		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-		assert_eq!(updates.update_add_htlcs.len(), 1);
-		assert!(updates.update_fulfill_htlcs.is_empty());
-		assert!(updates.update_fail_htlcs.is_empty());
-		assert!(updates.update_fail_malformed_htlcs.is_empty());
-		assert!(updates.update_fee.is_none());
-		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-
-		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "We don't support MPP keysend payments", 1);
 	}
 
 	#[test]
@@ -15298,7 +15236,7 @@ mod tests {
 		if let Err(crate::ln::channelmanager::InboundHTLCErr { err_code, .. }) =
 			create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat),
-				current_height, node[0].node.default_configuration.accept_mpp_keysend)
+				current_height)
 		{
 			assert_eq!(err_code, 19);
 		} else { panic!(); }
@@ -15317,7 +15255,7 @@ mod tests {
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
-			current_height, node[0].node.default_configuration.accept_mpp_keysend).is_ok());
+			current_height).is_ok());
 	}
 
 	#[test]
@@ -15337,8 +15275,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]), total_msat: 100,
 			}),
 			custom_tlvs: Vec::new(),
-		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height,
-			node[0].node.default_configuration.accept_mpp_keysend);
+		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334

@@ -1214,11 +1214,9 @@ fn conditionally_round_fwd_amt() {
 #[test]
 #[cfg(async_payments)]
 fn blinded_keysend() {
-	let mut mpp_keysend_config = test_default_channel_config();
-	mpp_keysend_config.accept_mpp_keysend = true;
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(mpp_keysend_config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
@@ -1254,11 +1252,9 @@ fn blinded_keysend() {
 #[test]
 #[cfg(async_payments)]
 fn blinded_mpp_keysend() {
-	let mut mpp_keysend_config = test_default_channel_config();
-	mpp_keysend_config.accept_mpp_keysend = true;
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, Some(mpp_keysend_config)]);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -1315,11 +1311,9 @@ fn blinded_mpp_keysend() {
 #[test]
 #[cfg(async_payments)]
 fn invalid_keysend_payment_secret() {
-	let mut mpp_keysend_config = test_default_channel_config();
-	mpp_keysend_config.accept_mpp_keysend = true;
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(mpp_keysend_config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
