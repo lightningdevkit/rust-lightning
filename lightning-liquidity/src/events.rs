@@ -87,7 +87,7 @@ impl EventQueue {
 	}
 
 	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
-		self.queue.lock().unwrap().drain(..).collect()
+		self.queue.lock().unwrap().split_off(0).into()
 	}
 }
 
