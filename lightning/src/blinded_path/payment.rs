@@ -344,9 +344,6 @@ pub struct PaymentConstraints {
 /// [`PaymentPurpose`]: crate::events::PaymentPurpose
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PaymentContext {
-	/// The payment context was unknown.
-	Unknown(UnknownPaymentContext),
-
 	/// The payment was made for an invoice requested from a BOLT 12 [`Offer`].
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
@@ -363,10 +360,6 @@ pub(crate) enum PaymentContextRef<'a> {
 	Bolt12Offer(&'a Bolt12OfferContext),
 	Bolt12Refund(&'a Bolt12RefundContext),
 }
-
-/// An unknown payment context.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UnknownPaymentContext(());
 
 /// The context of a payment made for an invoice requested from a BOLT 12 [`Offer`].
 ///
@@ -390,12 +383,6 @@ pub struct Bolt12OfferContext {
 /// [`Refund`]: crate::offers::refund::Refund
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bolt12RefundContext {}
-
-impl PaymentContext {
-	pub(crate) fn unknown() -> Self {
-		PaymentContext::Unknown(UnknownPaymentContext(()))
-	}
-}
 
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 	type Error = ();
@@ -477,7 +464,7 @@ impl Readable for BlindedPaymentTlvs {
 			(12, payment_constraints, required),
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
-			(65537, payment_context, (default_value, PaymentContext::unknown())),
+			(65537, payment_context, option),
 			(65539, authentication, option),
 		});
 		let _padding: Option<utils::Padding> = _padding;
@@ -499,7 +486,7 @@ impl Readable for BlindedPaymentTlvs {
 				tlvs: UnauthenticatedReceiveTlvs {
 					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 					payment_constraints: payment_constraints.0.unwrap(),
-					payment_context: payment_context.0.unwrap(),
+					payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
 				},
 				authentication: authentication.ok_or(DecodeError::InvalidValue)?,
 			}))
@@ -637,7 +624,7 @@ impl Readable for PaymentConstraints {
 
 impl_writeable_tlv_based_enum_legacy!(PaymentContext,
 	;
-	(0, Unknown),
+	// 0 for Unknown removed in version 0.1.
 	(1, Bolt12Offer),
 	(2, Bolt12Refund),
 );
@@ -659,18 +646,6 @@ impl<'a> Writeable for PaymentContextRef<'a> {
 	}
 }
 
-impl Writeable for UnknownPaymentContext {
-	fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> {
-		Ok(())
-	}
-}
-
-impl Readable for UnknownPaymentContext {
-	fn read<R: io::Read>(_r: &mut R) -> Result<Self, DecodeError> {
-		Ok(UnknownPaymentContext(()))
-	}
-}
-
 impl_writeable_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
 	(2, invoice_request, required),
@@ -681,7 +656,7 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 #[cfg(test)]
 mod tests {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, UnauthenticatedReceiveTlvs};
+	use crate::blinded_path::payment::{Bolt12RefundContext, PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, UnauthenticatedReceiveTlvs};
 	use crate::types::payment::PaymentSecret;
 	use crate::types::features::BlindedHopFeatures;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
@@ -732,7 +707,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
-			payment_context: PaymentContext::unknown(),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12).unwrap();
@@ -751,7 +726,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
-			payment_context: PaymentContext::unknown(),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
@@ -807,7 +782,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 3,
 			},
-			payment_context: PaymentContext::unknown(),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
@@ -860,7 +835,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
-			payment_context: PaymentContext::unknown(),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1, TEST_FINAL_CLTV as u16).is_err());
@@ -917,7 +892,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
-			payment_context: PaymentContext::unknown(),
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();

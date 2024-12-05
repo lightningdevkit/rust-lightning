@@ -12,7 +12,7 @@
 
 use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::BlindedHop;
-use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::events::{Event, MessageSendEventsProvider};
 use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
@@ -165,7 +165,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::unknown(),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[2].keys_manager.get_inbound_payment_key();

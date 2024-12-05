@@ -12,7 +12,7 @@ use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use crate::blinded_path;
-use crate::blinded_path::payment::{BlindedPaymentPath, PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12RefundContext, PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, UnauthenticatedReceiveTlvs};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentSecret};
@@ -79,7 +79,7 @@ fn blinded_payment_path(
 			htlc_minimum_msat:
 				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
 		},
-		payment_context: PaymentContext::unknown(),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
 
 	let nonce = Nonce([42u8; 16]);
@@ -130,7 +130,7 @@ fn do_one_hop_blinded_path(success: bool) {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::unknown(),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[1].keys_manager.get_inbound_payment_key();
@@ -178,7 +178,7 @@ fn mpp_to_one_hop_blinded_path() {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::unknown(),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[3].keys_manager.get_inbound_payment_key();
@@ -1386,7 +1386,7 @@ fn custom_tlvs_to_blinded_path() {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::unknown(),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[1].keys_manager.get_inbound_payment_key();
