@@ -8253,8 +8253,6 @@ pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider 
 	/// We tried to send a `open_channel` message but our commitment point wasn't ready.
 	/// This flag tells us we need to send it when we are retried once the
 	/// commiment point is ready.
-	///
-	/// TODO: don't need to persist this since we'll send open_channel again on connect?
 	pub signer_pending_open_channel: bool,
 }
 
