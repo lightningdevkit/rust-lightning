@@ -46,7 +46,7 @@ mod ext_impl {
 		}
 		type ExclLock = MutexGuard<'a, T>;
 		#[inline]
-		fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> {
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<'a, T> {
 			self.lock().unwrap()
 		}
 	}
@@ -57,7 +57,7 @@ mod ext_impl {
 		}
 		type ExclLock = RwLockWriteGuard<'a, T>;
 		#[inline]
-		fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> {
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<'a, T> {
 			self.write().unwrap()
 		}
 	}

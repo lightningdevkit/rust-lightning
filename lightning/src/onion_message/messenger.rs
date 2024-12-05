@@ -210,7 +210,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH> where
 ///     &offers_message_handler, &async_payments_message_handler, &dns_resolution_message_handler,
 ///     &custom_message_handler,
 /// );
-
+///
 /// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {

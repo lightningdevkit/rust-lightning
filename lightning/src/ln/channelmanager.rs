@@ -711,7 +711,6 @@ impl Into<u16> for FailureCode {
 /// immediately (ie with no further calls on it made). Thus, this step happens inside a
 /// peer_state lock. We then return the set of things that need to be done outside the lock in
 /// this struct and call handle_error!() on it.
-
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
 	closes_channel: bool,
