@@ -11,10 +11,10 @@ use crate::ln::chan_utils::{
 	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
-use crate::ln::features::ChannelTypeFeatures;
+use lightning_types::features::ChannelTypeFeatures;
 use crate::ln::msgs::{DecodeError, UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::ln::PaymentPreimage;
+use lightning_types::payment::PaymentPreimage;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
@@ -34,6 +34,7 @@ use lightning_invoice::RawBolt11Invoice;
 use musig2::types::{PartialSignature, PublicNonce};
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::{ecdh::SharedSecret, ecdsa::Signature, PublicKey, Scalar, Secp256k1, SecretKey};
+use crate::offers::invoice::UnsignedBolt12Invoice;
 
 #[cfg(not(taproot))]
 /// A super-trait for all the traits that a dyn signer backing implements
@@ -247,6 +248,10 @@ impl EcdsaChannelSigner for DynSigner {
 			secp_ctx,
 		)
 	}
+
+	fn sign_splicing_funding_input(&self, tx: &Transaction, input_index: usize, input_value: u64, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		self.inner.sign_splicing_funding_input(tx, input_index, input_value, secp_ctx)
+	}
 }
 
 impl ChannelSignerExt for DynSigner {
@@ -322,15 +327,8 @@ impl NodeSigner for DynKeysInterface {
 
 			fn sign_invoice(&self, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()>;
 
-			fn sign_bolt12_invoice(
-				&self, invoice: &crate::offers::invoice::UnsignedBolt12Invoice
-			) -> Result<bitcoin::secp256k1::schnorr::Signature, ()>;
-
-			fn sign_bolt12_invoice_request(
-				&self, invoice_request: &crate::offers::invoice_request::UnsignedInvoiceRequest
-			) -> Result<bitcoin::secp256k1::schnorr::Signature, ()>;
-
 			fn get_inbound_payment_key_material(&self) -> KeyMaterial;
+			fn sign_bolt12_invoice(&self, invoice: &UnsignedBolt12Invoice) -> Result<secp256k1::schnorr::Signature, ()>;
 		}
 	}
 }
@@ -421,10 +419,6 @@ impl NodeSigner for DynPhantomKeysInterface {
 
 			fn sign_bolt12_invoice(
 				&self, invoice: &crate::offers::invoice::UnsignedBolt12Invoice
-			) -> Result<bitcoin::secp256k1::schnorr::Signature, ()>;
-
-			fn sign_bolt12_invoice_request(
-				&self, invoice_request: &crate::offers::invoice_request::UnsignedInvoiceRequest
 			) -> Result<bitcoin::secp256k1::schnorr::Signature, ()>;
 
 			fn get_inbound_payment_key_material(&self) -> KeyMaterial;
