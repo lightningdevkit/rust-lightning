@@ -796,7 +796,7 @@ macro_rules! get_event_msg {
 					assert_eq!(*node_id, $node_id);
 					(*msg).clone()
 				},
-				_ => panic!("Unexpected event"),
+				_ => panic!("Unexpected event {:?}", events[0]),
 			}
 		}
 	}
@@ -3618,7 +3618,7 @@ macro_rules! get_channel_value_stat {
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();
 		let chan_lock = peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&$channel_id).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|phase| phase.funded_channel()
 		).flatten().unwrap();
 		chan.get_value_stat()
 	}}

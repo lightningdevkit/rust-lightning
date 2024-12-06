@@ -1157,7 +1157,7 @@ pub struct SharedOwnedOutput {
 }
 
 impl SharedOwnedOutput {
-	fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
+	pub fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
 		debug_assert!(
 			local_owned <= tx_out.value.to_sat(),
 			"SharedOwnedOutput: Inconsistent local_owned value {}, larger than output value {}",
@@ -1176,7 +1176,7 @@ impl SharedOwnedOutput {
 /// its control -- exclusive by the adder or shared --, and
 /// its ownership -- value fully owned by the adder or jointly
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OutputOwned {
+pub(super) enum OutputOwned {
 	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
 	Single(TxOut),
 	/// Output with shared control, but fully belonging to local node
@@ -1186,7 +1186,7 @@ pub enum OutputOwned {
 }
 
 impl OutputOwned {
-	fn tx_out(&self) -> &TxOut {
+	pub(super) fn tx_out(&self) -> &TxOut {
 		match self {
 			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => tx_out,
 			OutputOwned::Shared(output) => &output.tx_out,
