@@ -17,9 +17,11 @@ members = [
     "lightning-macros",
     "lightning-dns-resolver",
     "possiblyrandom",
+    "ext-test-macro",
 ]
 
 exclude = [
+    "ext-functional-test-demo",
     "no-std-check",
     "msrv-no-dev-deps-check",
     "bench",

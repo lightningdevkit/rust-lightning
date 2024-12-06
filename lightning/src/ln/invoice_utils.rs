@@ -721,6 +721,7 @@ mod test {
 	use crate::util::test_utils;
 	use crate::util::config::UserConfig;
 	use std::collections::HashSet;
+	use crate::util::dyn_signer::{DynKeysInterface, DynPhantomKeysInterface};
 
 	#[test]
 	fn test_prefer_current_channel() {
@@ -1240,6 +1241,13 @@ mod test {
 		do_test_multi_node_receive(false);
 	}
 
+	fn make_dyn_keys_interface(seed: &[u8; 32]) -> DynKeysInterface {
+		let cross_node_seed = [44u8; 32];
+		let inner = PhantomKeysManager::new(&seed, 43, 44, &cross_node_seed);
+		let dyn_inner = DynPhantomKeysInterface::new(inner);
+		DynKeysInterface::new(Box::new(dyn_inner))
+	}
+
 	fn do_test_multi_node_receive(user_generated_pmt_hash: bool) {
 		use crate::events::{Event, EventsProvider};
 		use core::cell::RefCell;
@@ -1247,9 +1255,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1351,9 +1358,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1442,9 +1448,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1470,9 +1475,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[3].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -1500,9 +1504,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[3].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -1557,9 +1560,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1589,9 +1591,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -1622,9 +1623,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -1652,9 +1652,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];
-		let cross_node_seed = [44u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -1727,11 +1726,10 @@ mod test {
 		let seed_2 = [43 as u8; 32];
 		let seed_3 = [44 as u8; 32];
 		let seed_4 = [45 as u8; 32];
-		let cross_node_seed = [44 as u8; 32];
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
-		chanmon_cfgs[4].keys_manager.backing = PhantomKeysManager::new(&seed_3, 43, 44, &cross_node_seed);
-		chanmon_cfgs[5].keys_manager.backing = PhantomKeysManager::new(&seed_4, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[3].keys_manager.backing = make_dyn_keys_interface(&seed_2);
+		chanmon_cfgs[4].keys_manager.backing = make_dyn_keys_interface(&seed_3);
+		chanmon_cfgs[4].keys_manager.backing = make_dyn_keys_interface(&seed_4);
 		let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
 		let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
@@ -1784,9 +1782,8 @@ mod test {
 		let mut chanmon_cfgs = create_chanmon_cfgs(5);
 		let seed_1 = [42 as u8; 32];
 		let seed_2 = [43 as u8; 32];
-		let cross_node_seed = [44 as u8; 32];
-		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
-		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[1].keys_manager.backing = make_dyn_keys_interface(&seed_1);
+		chanmon_cfgs[2].keys_manager.backing = make_dyn_keys_interface(&seed_2);
 		let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
 		let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
