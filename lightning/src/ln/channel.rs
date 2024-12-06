@@ -2100,8 +2100,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				|err| APIError::APIMisuseError {
 					err: format!("Failed to get change script as new destination script, {:?}", err),
 				})?;
-			let _res = add_funding_change_output(
-				change_value, change_script, &mut funding_outputs, self.dual_funding_context.funding_feerate_sat_per_1000_weight);
+			add_funding_change_output(change_value, change_script,
+				&mut funding_outputs, self.dual_funding_context.funding_feerate_sat_per_1000_weight);
 		}
 
 		let constructor_args = InteractiveTxConstructorArgs {
@@ -4567,7 +4567,7 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 fn add_funding_change_output(
 	change_value: u64, change_script: ScriptBuf,
 	funding_outputs: &mut Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
-) -> TxOut {
+) {
 	let mut change_output = TxOut {
 		value: Amount::from_sat(change_value),
 		script_pubkey: change_script,
@@ -4576,7 +4576,6 @@ fn add_funding_change_output(
 	let change_output_fee = fee_for_weight(funding_feerate_sat_per_1000_weight, change_output_weight);
 	change_output.value = Amount::from_sat(change_value.saturating_sub(change_output_fee));
 	funding_outputs.push(OutputOwned::Single(change_output.clone()));
-	change_output
 }
 
 pub(super) fn calculate_our_funding_satoshis(

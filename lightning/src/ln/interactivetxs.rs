@@ -2728,4 +2728,58 @@ mod tests {
 			assert_eq!(res.unwrap(), 154);
 		}
 	}
+
+	#[test]
+	fn test_calculate_change_output_value_splice() {
+		let input_prevouts_owned = vec![
+			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
+			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
+		];
+		let input_prevouts: Vec<&TxOut> = input_prevouts_owned.iter().collect();
+		let our_contributed = 110_000;
+		let txout = TxOut { value: Amount::from_sat(148_000), script_pubkey: ScriptBuf::new() };
+		let outputs = vec![OutputOwned::Shared(SharedOwnedOutput::new(txout, our_contributed))];
+		let funding_feerate_sat_per_1000_weight = 3000;
+
+		let total_inputs: u64 = input_prevouts.iter().map(|o| o.value.to_sat()).sum();
+		let gross_change = total_inputs - our_contributed;
+		let fees = 1746;
+		let common_fees = 126;
+		{
+			// There is leftover for change
+			let res = calculate_change_output_value(
+				true,
+				our_contributed,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				300,
+			);
+			assert_eq!(res.unwrap(), gross_change - fees - common_fees);
+		}
+		{
+			// Very small leftover
+			let res = calculate_change_output_value(
+				false,
+				128_100,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				300,
+			);
+			assert!(res.is_none());
+		}
+		{
+			// Small leftover, but not dust
+			let res = calculate_change_output_value(
+				false,
+				128_100,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				100,
+			);
+			assert_eq!(res.unwrap(), 154);
+		}
+	}
 }
