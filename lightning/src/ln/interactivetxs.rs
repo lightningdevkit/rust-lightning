@@ -1665,8 +1665,10 @@ impl InteractiveTxConstructor {
 /// Determine whether a change output should be added or not, and if so, of what size,
 /// considering our given inputs, outputs, and intended contribution.
 /// Computes and takes into account fees.
+/// Return value is the value computed for the change output (in satoshis),
+/// or None if a change is not needed/possible.
 #[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
-pub(super) fn need_to_add_funding_change_output(
+pub(super) fn calculate_change_output_value(
 	is_initiator: bool, our_contribution: u64, funding_inputs_prev_outputs: &Vec<TxOut>,
 	funding_outputs: &Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
 	holder_dust_limit_satoshis: u64,
@@ -1707,7 +1709,7 @@ mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::interactivetxs::{
-		generate_holder_serial_id, need_to_add_funding_change_output, AbortReason,
+		calculate_change_output_value, generate_holder_serial_id, AbortReason,
 		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
 		InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
 		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
@@ -2637,7 +2639,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_need_to_add_funding_change_output_open() {
+	fn test_calculate_change_output_value_open() {
 		let input_prevouts = vec![
 			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
 			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
@@ -2653,7 +2655,7 @@ mod tests {
 		let common_fees = 126;
 		{
 			// There is leftover for change
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				true,
 				our_contributed,
 				&input_prevouts,
@@ -2665,7 +2667,7 @@ mod tests {
 		}
 		{
 			// There is leftover for change, without common fees
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				false,
 				our_contributed,
 				&input_prevouts,
@@ -2677,7 +2679,7 @@ mod tests {
 		}
 		{
 			// Larger fee, smaller change
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				true,
 				our_contributed,
 				&input_prevouts,
@@ -2689,7 +2691,7 @@ mod tests {
 		}
 		{
 			// Insufficient inputs, no leftover
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				false,
 				130_000,
 				&input_prevouts,
@@ -2701,7 +2703,7 @@ mod tests {
 		}
 		{
 			// Very small leftover
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				false,
 				128_100,
 				&input_prevouts,
@@ -2713,7 +2715,7 @@ mod tests {
 		}
 		{
 			// Small leftover, but not dust
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				false,
 				128_100,
 				&input_prevouts,
@@ -2726,7 +2728,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_need_to_add_funding_change_output_splice() {
+	fn test_calculate_change_output_value_splice() {
 		let input_prevouts = vec![
 			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
 			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
@@ -2742,7 +2744,7 @@ mod tests {
 		let common_fees = 126;
 		{
 			// There is leftover for change
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				true,
 				our_contributed,
 				&input_prevouts,
@@ -2754,7 +2756,7 @@ mod tests {
 		}
 		{
 			// Very small leftover
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				false,
 				128_100,
 				&input_prevouts,
@@ -2766,7 +2768,7 @@ mod tests {
 		}
 		{
 			// Small leftover, but not dust
-			let res = need_to_add_funding_change_output(
+			let res = calculate_change_output_value(
 				false,
 				128_100,
 				&input_prevouts,
