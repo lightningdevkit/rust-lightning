@@ -510,9 +510,18 @@ impl fmt::Display for PeerHandleError {
 	}
 }
 
+/// Internal struct for keeping track of the gossip syncing progress with a given peer
 enum InitSyncTracker{
+	/// Only sync ad-hoc gossip as it comes in, do not send historical gossip.
+	/// Upon receipt of a GossipTimestampFilter message, this is the default initial state if the
+	/// contained timestamp is less than 6 hours old.
 	NoSyncRequested,
+	/// Send historical gossip starting at the given channel id, which gets incremented as the
+	/// gossiping progresses.
+	/// Upon receipt of a GossipTimestampFilter message, this is the default initial state if the
+	/// contained timestamp is at least 6 hours old, and the initial channel id is set to 0.
 	ChannelsSyncing(u64),
+	/// Once the channel announcements and updates finish syncing, the node announcements are synced.
 	NodesSyncing(NodeId),
 }
 
@@ -1728,7 +1737,24 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			if peer_lock.their_features.as_ref().unwrap().supports_gossip_queries() &&
 				!peer_lock.sent_gossip_timestamp_filter {
 				peer_lock.sent_gossip_timestamp_filter = true;
-				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
+
+				#[allow(unused_mut)]
+				let mut should_do_full_sync = true;
+				#[cfg(feature = "std")]
+				{
+					// Forward ad-hoc gossip if the timestamp range is less than six hours ago.
+					// Otherwise, do a full sync.
+					use std::time::{SystemTime, UNIX_EPOCH};
+					let full_sync_threshold = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs() - 6 * 3600;
+					if (_msg.first_timestamp as u64) > full_sync_threshold {
+						should_do_full_sync = false;
+					}
+				}
+				if should_do_full_sync {
+					peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
+				} else {
+					peer_lock.sync_status = InitSyncTracker::NoSyncRequested;
+				}
 			}
 			return Ok(None);
 		}
