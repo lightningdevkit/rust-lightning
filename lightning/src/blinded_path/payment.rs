@@ -22,6 +22,7 @@ use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::invoice_request::InvoiceRequestFields;
+use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -318,6 +319,11 @@ pub enum PaymentContext {
 	/// [`Offer`]: crate::offers::offer::Offer
 	Bolt12Offer(Bolt12OfferContext),
 
+	/// The payment was made for a static invoice requested from a BOLT 12 [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	AsyncBolt12Offer(AsyncBolt12OfferContext),
+
 	/// The payment was made for an invoice sent for a BOLT 12 [`Refund`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
@@ -349,6 +355,22 @@ pub struct Bolt12OfferContext {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub invoice_request: InvoiceRequestFields,
+}
+
+/// The context of a payment made for a static invoice requested from a BOLT 12 [`Offer`].
+///
+/// [`Offer`]: crate::offers::offer::Offer
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AsyncBolt12OfferContext {
+	/// The identifier of the [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub offer_id: OfferId,
+	/// The [`Nonce`] used to verify that an inbound [`InvoiceRequest`] corresponds to this static
+	/// invoice's offer.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub offer_nonce: Nonce,
 }
 
 /// The context of a payment made for an invoice sent for a BOLT 12 [`Refund`].
@@ -590,6 +612,7 @@ impl_writeable_tlv_based_enum_legacy!(PaymentContext,
 	(0, Unknown),
 	(1, Bolt12Offer),
 	(2, Bolt12Refund),
+	(3, AsyncBolt12Offer),
 );
 
 impl<'a> Writeable for PaymentContextRef<'a> {
@@ -624,6 +647,11 @@ impl Readable for UnknownPaymentContext {
 impl_writeable_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
 	(2, invoice_request, required),
+});
+
+impl_writeable_tlv_based!(AsyncBolt12OfferContext, {
+	(0, offer_id, required),
+	(2, offer_nonce, required),
 });
 
 impl_writeable_tlv_based!(Bolt12RefundContext, {});
