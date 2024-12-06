@@ -1,0 +1,9 @@
+## API Updates
+ * Payment `ReceiveTlvs` now contains an `authentication` field. It should be
+   set to `None` and then filled in with a nonce and the HMAC produced by
+   `ReceiveTlvs::hmac_for_offer_payment` when passing in the nonce (#3435).
+
+## Backwards Compatibility
+ * `ReceiveTlvs` for payments over `BlindedPaymentPath`s are now authenticated.
+   Any inbound payments for a preexisting `Bolt12Invoice` will therefore fail
+   (#3435).
