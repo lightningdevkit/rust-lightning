@@ -1424,6 +1424,94 @@ fn custom_tlvs_to_blinded_path() {
 	);
 }
 
+#[test]
+fn fails_receive_tlvs_authentication() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_upd = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = chanmon_cfgs[1].keys_manager.get_inbound_payment_key();
+	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+
+	let mut secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPaymentPath::new(
+		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager, &secp_ctx
+	).unwrap();
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
+
+	// Test authentication works normally.
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1]]], amt_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+
+	// Swap in a different nonce to force authentication to fail.
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let nonce = Nonce([43u8; 16]);
+	let mut payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+	payee_tlvs.authentication.1 = Nonce([0u8; 16]);
+
+	let mut secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPaymentPath::new(
+		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager, &secp_ctx
+	).unwrap();
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let mut payment_event = SendEvent::from_event(ev);
+
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, true, true);
+	nodes[1].node.process_pending_htlc_forwards();
+
+	let mut update_fail = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(update_fail.update_fail_htlcs.len() == 1);
+	let fail_msg = &update_fail.update_fail_htlcs[0];
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
+	expect_payment_failed_conditions(
+		&nodes[0], payment_hash, true,
+		PaymentFailedConditions::new().expected_htlc_error_data(0x4000 | 22, &[]),
+	);
+}
+
 fn secret_from_hex(hex: &str) -> SecretKey {
 	SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
 }
