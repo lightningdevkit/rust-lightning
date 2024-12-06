@@ -3,7 +3,7 @@
 //!
 //! This module simply re-exports the `HashMap` used in LDK for public consumption.
 
-pub(crate) use hashbrown::hash_map;
+pub use hashbrown::hash_map;
 
 mod hashbrown_tables {
 	#[cfg(feature = "std")]
@@ -67,7 +67,8 @@ mod hashbrown_tables {
 
 	/// The HashMap type used in LDK.
 	pub type HashMap<K, V> = hashbrown::HashMap<K, V, RandomState>;
-	pub(crate) type HashSet<K> = hashbrown::HashSet<K, RandomState>;
+	/// The HashSet type used in LDK.
+	pub type HashSet<K> = hashbrown::HashSet<K, RandomState>;
 
 	pub(crate) type OccupiedHashMapEntry<'a, K, V> =
 		hashbrown::hash_map::OccupiedEntry<'a, K, V, RandomState>;
@@ -96,9 +97,11 @@ mod hashbrown_tables {
 		res
 	}
 
-	pub(crate) fn new_hash_set<K>() -> HashSet<K> {
+	/// Builds a new [`HashSet`].
+	pub fn new_hash_set<K>() -> HashSet<K> {
 		HashSet::with_hasher(RandomState::new())
 	}
+	/// Builds a new [`HashSet`] with the given capacity.
 	pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
 		HashSet::with_capacity_and_hasher(cap, RandomState::new())
 	}
