@@ -9,6 +9,9 @@ pub struct Mutex<T: ?Sized> {
 	inner: RefCell<T>,
 }
 
+#[cfg(test)]
+impl<T: ?Sized> core::panic::RefUnwindSafe for Mutex<T> {}
+
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct MutexGuard<'a, T: ?Sized + 'a> {
 	lock: RefMut<'a, T>,

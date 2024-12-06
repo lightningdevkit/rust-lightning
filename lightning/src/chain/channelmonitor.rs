@@ -3147,8 +3147,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
 				},
 			}
-		} else if self.latest_update_id + 1 != updates.update_id {
-			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
+		}
+		if updates.update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID {
+			if self.latest_update_id + 1 != updates.update_id {
+				panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
+			}
 		}
 		let mut ret = Ok(());
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);

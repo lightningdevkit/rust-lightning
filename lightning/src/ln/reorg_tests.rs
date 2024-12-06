@@ -268,6 +268,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	assert_eq!(nodes[1].node.list_channels()[0].confirmations, Some(10));
 
 	if !reorg_after_reload {
+		// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
+		// is a ChannelForceClosed on the right channel with should_broadcast set.
+		*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
 			assert_eq!(relevant_txids.len(), 1);
@@ -293,12 +296,17 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let relevant_txids = nodes[0].node.get_relevant_txids();
 		assert_eq!(relevant_txids.len(), 0);
 
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 1);
+
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
+
+		check_added_monitors!(nodes[0], 1);
 	}
 
 	if reload_node {
@@ -310,10 +318,13 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan.2).encode();
 
 		reload_node!(nodes[0], *nodes[0].node.get_current_default_configuration(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
-		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	}
 
 	if reorg_after_reload {
+		// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
+		// is a ChannelForceClosed on the right channel with should_broadcast set.
+		*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
+
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
 			assert_eq!(relevant_txids.len(), 1);
@@ -345,12 +356,18 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
+
+		if reload_node {
+			// The update may come when we free background events if we just restarted, or in-line if
+			// we were already running.
+			nodes[0].node.test_process_background_events();
+		}
+		check_added_monitors!(nodes[0], 1);
+
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 1);
 	}
-	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
-	// is a ChannelForcClosed on the right channel with should_broadcast set.
-	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
-	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
-	check_added_monitors!(nodes[0], 1);
+
 	let expected_err = "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.";
 	if reorg_after_reload || !reload_node {
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
@@ -361,8 +378,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() },
 		[nodes[1].node.get_our_node_id()], 100000);
-	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	// Now check that we can create a new channel
 	if reload_node && nodes[0].node.per_peer_state.read().unwrap().len() == 0 {
