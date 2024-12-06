@@ -1605,7 +1605,6 @@ mod tests {
 
 	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
-	use crate::sign::KeyMaterial;
 	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1649,7 +1648,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_for_offer_with_defaults() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1913,7 +1912,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	#[test]
 	fn builds_invoice_from_offer_with_expiration() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1981,7 +1980,7 @@ mod tests {
 	#[test]
 	fn builds_invoice_from_offer_using_derived_keys() {
 		let node_id = recipient_pubkey();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2014,7 +2013,7 @@ mod tests {
 			panic!("error building invoice: {:?}", e);
 		}
 
-		let expanded_key = ExpandedKey::new(&KeyMaterial([41; 32]));
+		let expanded_key = ExpandedKey::new([41; 32]);
 		assert!(
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
@@ -2039,7 +2038,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_from_refund_using_derived_keys() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
@@ -2061,7 +2060,7 @@ mod tests {
 	#[test]
 	fn builds_invoice_from_refund_with_path() {
 		let node_id = payer_pubkey();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
@@ -2090,7 +2089,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_relative_expiry() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2132,7 +2131,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_amount_from_request() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2154,7 +2153,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_quantity_from_request() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2190,7 +2189,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_fallback_address() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2242,7 +2241,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_allow_mpp() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2267,7 +2266,7 @@ mod tests {
 
 	#[test]
 	fn fails_signing_invoice() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2302,7 +2301,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_payment_paths() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2362,7 +2361,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_created_at() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2397,7 +2396,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_relative_expiry() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2424,7 +2423,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_payment_hash() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2459,7 +2458,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_amount() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2492,7 +2491,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_allow_mpp() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2523,7 +2522,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_fallback_address() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2587,7 +2586,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_node_id() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2633,7 +2632,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_node_id_from_blinded_path() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2710,7 +2709,7 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_without_signature() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2735,7 +2734,7 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_with_invalid_signature() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -2765,7 +2764,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_unknown_tlv_records() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let payment_id = PaymentId([1; 32]);
@@ -2849,7 +2848,7 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_experimental_tlv_records() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let payment_id = PaymentId([1; 32]);
@@ -2979,7 +2978,7 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_with_out_of_range_tlv_records() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -3008,7 +3007,7 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_with_message_paths() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();

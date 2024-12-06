@@ -229,7 +229,7 @@ pub enum PendingHTLCRouting {
 		requires_blinded_error: bool,
 		/// Set if we are receiving a keysend to a blinded path, meaning we created the
 		/// [`PaymentSecret`] and should verify it using our
-		/// [`NodeSigner::get_inbound_payment_key_material`].
+		/// [`NodeSigner::get_inbound_payment_key`].
 		has_recipient_created_payment_secret: bool,
 	},
 }
@@ -473,6 +473,20 @@ impl Verification for PaymentHash {
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
 		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
+	}
+}
+
+impl Verification for ReceiveTlvs {
+	fn hmac_for_offer_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
+	}
+
+	fn verify_for_offer_payment(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
 	}
 }
 
@@ -3471,8 +3485,7 @@ where
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
-		let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
-		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let expanded_inbound_key = node_signer.get_inbound_payment_key();
 		ChannelManager {
 			default_configuration: config.clone(),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -10487,20 +10500,28 @@ where
 	fn create_blinded_payment_paths(
 		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
 		let first_hops = self.list_usable_channels();
 		let payee_node_id = self.get_our_node_id();
 		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
 			+ LATENCY_GRACE_PERIOD_BLOCKS;
-		let payee_tlvs = ReceiveTlvs {
+
+		let mut payee_tlvs = ReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
 			payment_context,
+			authentication: None,
 		};
+		let nonce = Nonce::from_entropy_source(entropy);
+		let hmac = payee_tlvs.hmac_for_offer_payment(nonce, expanded_key);
+		payee_tlvs.authentication = Some((hmac, nonce));
+
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
 		)
@@ -13898,8 +13919,7 @@ where
 			}, None));
 		}
 
-		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
-		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let expanded_inbound_key = args.node_signer.get_inbound_payment_key();
 
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {
