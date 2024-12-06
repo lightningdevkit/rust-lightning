@@ -28,7 +28,7 @@ pub trait AsyncPaymentsMessageHandler {
 	/// Handle a [`HeldHtlcAvailable`] message. A [`ReleaseHeldHtlc`] should be returned to release
 	/// the held funds.
 	fn handle_held_htlc_available(
-		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
+		&self, message: HeldHtlcAvailable, context: AsyncPaymentsContext, responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)>;
 
 	/// Handle a [`ReleaseHeldHtlc`] message. If authentication of the message succeeds, an HTLC

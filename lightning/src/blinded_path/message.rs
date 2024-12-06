@@ -25,6 +25,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::types::payment::PaymentHash;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::OfferId;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -402,6 +403,28 @@ pub enum AsyncPaymentsContext {
 		/// containing the expected [`PaymentId`].
 		hmac: Hmac<Sha256>,
 	},
+	/// Context contained within the [`BlindedMessagePath`]s we put in static invoices, provided back
+	/// to us in corresponding [`HeldHtlcAvailable`] messages.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	InboundPayment {
+		/// The ID of the [`Offer`] that this [`BlindedMessagePath`]'s static invoice corresponds to.
+		/// Useful to authenticate that this blinded path was created by us for asynchronously paying
+		/// one of our offers.
+		///
+		/// [`Offer`]: crate::offers::offer::Offer
+		offer_id: OfferId,
+		/// A nonce used for authenticating that a [`HeldHtlcAvailable`] message is valid for a
+		/// preceding static invoice.
+		///
+		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+		nonce: Nonce,
+		/// Authentication code for the [`OfferId`].
+		///
+		/// Prevents the recipient from being able to deanonymize us by creating a blinded path to us
+		/// containing the expected [`OfferId`].
+		hmac: Hmac<Sha256>,
+	},
 }
 
 impl_writeable_tlv_based_enum!(MessageContext,
@@ -430,6 +453,11 @@ impl_writeable_tlv_based_enum!(OffersContext,
 impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
+		(2, nonce, required),
+		(4, hmac, required),
+	},
+	(1, InboundPayment) => {
+		(0, offer_id, required),
 		(2, nonce, required),
 		(4, hmac, required),
 	},

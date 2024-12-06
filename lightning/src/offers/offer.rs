@@ -98,6 +98,13 @@ use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
+#[cfg(async_payments)]
+use {
+	bitcoin::hashes::hmac::Hmac,
+	bitcoin::hashes::sha256::Hash as Sha256,
+	crate::ln::inbound_payment,
+};
+
 #[cfg(not(c_bindings))]
 use {
 	crate::offers::invoice_request::InvoiceRequestBuilder,
@@ -133,6 +140,24 @@ impl OfferId {
 		let tlv_stream = Offer::tlv_stream_iter(bytes);
 		let tagged_hash = TaggedHash::from_tlv_stream(Self::ID_TAG, tlv_stream);
 		Self(tagged_hash.to_bytes())
+	}
+
+	/// Constructs an HMAC to include in [`AsyncPaymentsContext::InboundPayment`] for the offer id
+	/// along with the given [`Nonce`].
+	#[cfg(async_payments)]
+	pub fn hmac_for_static_invoice(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_static_invoice_offer_id(*self, nonce, expanded_key)
+	}
+
+	/// Authenticates the offer id using an HMAC and a [`Nonce`] taken from an
+	/// [`AsyncPaymentsContext::InboundPayment`].
+	#[cfg(async_payments)]
+	pub fn verify_for_static_invoice_payment(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_static_invoice_offer_id(*self, hmac, nonce, expanded_key)
 	}
 }
 
