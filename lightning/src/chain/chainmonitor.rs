@@ -640,17 +640,22 @@ where C::Target: chain::Filter,
 	/// data could be moved to an archive location or removed entirely.
 	pub fn archive_fully_resolved_channel_monitors(&self) {
 		let mut have_monitors_to_prune = false;
-		for (_, monitor_holder) in self.monitors.read().unwrap().iter() {
+		for (funding_txo, monitor_holder) in self.monitors.read().unwrap().iter() {
 			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
-			if monitor_holder.monitor.is_fully_resolved(&logger) {
+			let (is_fully_resolved, needs_persistence) = monitor_holder.monitor.check_and_update_full_resolution_status(&logger);
+			if is_fully_resolved {
 				have_monitors_to_prune = true;
+			}
+			if needs_persistence {
+				self.persister.update_persisted_channel(*funding_txo, None, &monitor_holder.monitor);
 			}
 		}
 		if have_monitors_to_prune {
 			let mut monitors = self.monitors.write().unwrap();
 			monitors.retain(|funding_txo, monitor_holder| {
 				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
-				if monitor_holder.monitor.is_fully_resolved(&logger) {
+				let (is_fully_resolved, _) = monitor_holder.monitor.check_and_update_full_resolution_status(&logger);
+				if is_fully_resolved {
 					log_info!(logger,
 						"Archiving fully resolved ChannelMonitor for funding txo {}",
 						funding_txo
