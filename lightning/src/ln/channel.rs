@@ -10,7 +10,7 @@
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
 use bitcoin::script::{Script, ScriptBuf, Builder, WScriptHash};
-use bitcoin::transaction::{Transaction, TxIn};
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
@@ -30,9 +30,9 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
-	get_output_weight, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
-	InteractiveTxConstructorArgs, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
-	TX_COMMON_FIELDS_WEIGHT,
+	get_output_weight, calculate_change_output_value, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
+	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
+	OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -2220,6 +2220,106 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 }
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
+	pub fn begin_interactive_funding_tx_construction<ES: Deref>(
+		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		let mut funding_inputs = Vec::new();
+		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
+
+		if let Some(prev_funding_input) = prev_funding_input {
+			funding_inputs.push(prev_funding_input);
+		}
+
+		let mut funding_inputs_prev_outputs: Vec<&TxOut> = Vec::with_capacity(funding_inputs.len());
+		// Check that vouts exist for each TxIn in provided transactions.
+		for (idx, (txin, tx)) in funding_inputs.iter().enumerate() {
+			if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
+				funding_inputs_prev_outputs.push(output);
+			} else {
+				return Err(APIError::APIMisuseError {
+					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+						tx.as_transaction().compute_txid(), txin.previous_output.vout, idx) });
+			}
+		}
+
+		let total_input_satoshis: u64 = funding_inputs.iter().map(
+			|(txin, tx)| tx.as_transaction().output.get(txin.previous_output.vout as usize).map(|out| out.value.to_sat()).unwrap_or(0)
+		).sum();
+		if total_input_satoshis < self.dual_funding_context.our_funding_satoshis {
+			return Err(APIError::APIMisuseError {
+				err: format!("Total value of funding inputs must be at least funding amount. It was {} sats",
+					total_input_satoshis) });
+		}
+
+		// Add output for funding tx
+		let mut funding_outputs = Vec::new();
+		let funding_output_value_satoshis = self.funding.get_value_satoshis();
+		let funding_output_script_pubkey = self.funding.get_funding_redeemscript().to_p2wsh();
+		let expected_remote_shared_funding_output = if self.funding.is_outbound() {
+			let tx_out = TxOut {
+				value: Amount::from_sat(funding_output_value_satoshis),
+				script_pubkey: funding_output_script_pubkey,
+			};
+			funding_outputs.push(
+				if self.dual_funding_context.their_funding_satoshis.unwrap_or(0) == 0 {
+					OutputOwned::SharedControlFullyOwned(tx_out)
+				} else {
+					OutputOwned::Shared(SharedOwnedOutput::new(
+						tx_out, self.dual_funding_context.our_funding_satoshis
+					))
+				}
+			);
+			None
+		} else {
+			Some((funding_output_script_pubkey, funding_output_value_satoshis))
+		};
+
+		// Optionally add change output
+		if let Some(change_value) = calculate_change_output_value(
+			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
+			&funding_inputs_prev_outputs, &funding_outputs,
+			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
+			self.context.holder_dust_limit_satoshis,
+		) {
+			let change_script = signer_provider.get_destination_script(self.context.channel_keys_id).map_err(
+				|err| APIError::APIMisuseError {
+					err: format!("Failed to get change script as new destination script, {:?}", err),
+				})?;
+			let mut change_output = TxOut {
+				value: Amount::from_sat(change_value),
+				script_pubkey: change_script,
+			};
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee = fee_for_weight(self.dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			change_output.value = Amount::from_sat(change_value.saturating_sub(change_output_fee));
+			funding_outputs.push(OutputOwned::Single(change_output));
+		}
+
+		let constructor_args = InteractiveTxConstructorArgs {
+			entropy_source,
+			holder_node_id,
+			counterparty_node_id: self.context.counterparty_node_id,
+			channel_id: self.context.channel_id(),
+			feerate_sat_per_kw: self.dual_funding_context.funding_feerate_sat_per_1000_weight,
+			is_initiator: self.funding.is_outbound(),
+			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
+			inputs_to_contribute: funding_inputs,
+			outputs_to_contribute: funding_outputs,
+			expected_remote_shared_funding_output,
+		};
+		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)
+			.map_err(|_| APIError::APIMisuseError { err: "Incorrect shared output provided".into() })?;
+		let msg = tx_constructor.take_initiator_first_message();
+
+		self.interactive_tx_constructor = Some(tx_constructor);
+
+		Ok(msg)
+	}
+
 	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
@@ -4849,6 +4949,9 @@ fn check_v2_funding_inputs_sufficient(
 pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
+	/// The amount in satoshis our counterparty will be contributing to the channel.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
+	pub their_funding_satoshis: Option<u64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
 	pub funding_tx_locktime: LockTime,
@@ -4860,6 +4963,8 @@ pub(super) struct DualFundingChannelContext {
 	/// Note that the `our_funding_satoshis` field is equal to the total value of `our_funding_inputs`
 	/// minus any fees paid for our contributed weight. This means that change will never be generated
 	/// and the maximum value possible will go towards funding the channel.
+	///
+	/// Note that this field may be emptied once the interactive negotiation has been started.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
 }
@@ -9835,6 +9940,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			unfunded_context,
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: None,
 				funding_tx_locktime,
 				funding_feerate_sat_per_1000_weight,
 				our_funding_inputs: funding_inputs,
@@ -9980,6 +10086,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let dual_funding_context = DualFundingChannelContext {
 			our_funding_satoshis: our_funding_satoshis,
+			their_funding_satoshis: Some(msg.common_fields.funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			our_funding_inputs: our_funding_inputs.clone(),
