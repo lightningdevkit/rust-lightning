@@ -916,11 +916,11 @@ where
 	}
 }
 
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
 
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 enum HTLCFailReasonRepr {
 	LightningError { err: msgs::OnionErrorPacket },
