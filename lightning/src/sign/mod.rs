@@ -42,8 +42,8 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
-	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	get_counterparty_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
+	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -810,6 +810,24 @@ pub trait ChannelSigner {
 
 	/// Returns the parameters of this signer
 	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters>;
+
+	/// Returns the script pubkey that should be placed in the `to_remote` output of commitment
+	/// transactions.
+	///
+	/// Assumes the signer has already been given the channel parameters via
+	/// `provide_channel_parameters`.
+	///
+	/// If `is_holder_tx` is set, return the `to_remote` script pubkey for the local party's commitment
+	/// transaction, otherwise, for the remote party's.
+	fn get_counterparty_payment_script(&self, is_holder_tx: bool) -> ScriptBuf {
+		let params = if is_holder_tx {
+			self.get_channel_parameters().unwrap().as_holder_broadcastable()
+		} else {
+			self.get_channel_parameters().unwrap().as_counterparty_broadcastable()
+		};
+		let payment_point = &params.countersignatory_pubkeys().payment_point;
+		get_counterparty_payment_script(params.channel_type_features(), payment_point)
+	}
 }
 
 /// Specifies the recipient of an invoice.
@@ -1331,6 +1349,14 @@ impl InMemorySigner {
 			&[], // MINIMALIF
 			witness_script.as_bytes(),
 		]))
+	}
+
+	#[cfg(test)]
+	pub(crate) fn overwrite_channel_parameters(
+		&mut self, channel_parameters: &ChannelTransactionParameters,
+	) {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		self.channel_parameters = Some(channel_parameters.clone());
 	}
 }
 
