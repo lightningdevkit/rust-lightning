@@ -42,8 +42,8 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
-	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	get_counterparty_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
+	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -789,6 +789,14 @@ pub trait ChannelSigner {
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
+
+	/// Returns the scriptpubkey that should be placed in the `to_remote` output of commitment
+	/// transactions. Assumes the signer has already been given the channel parameters via
+	/// `provide_channel_parameters`.
+	///
+	/// If `to_self` is set, return the `to_remote` script pubkey for the counterparty's commitment
+	/// transaction, otherwise, for the local party's.
+	fn get_counterparty_payment_script(&self, to_self: bool) -> ScriptBuf;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1372,6 +1380,16 @@ impl ChannelSigner for InMemorySigner {
 		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
+	}
+
+	fn get_counterparty_payment_script(&self, to_self: bool) -> ScriptBuf {
+		let params = if to_self {
+			self.channel_parameters.as_ref().unwrap().as_counterparty_broadcastable()
+		} else {
+			self.channel_parameters.as_ref().unwrap().as_holder_broadcastable()
+		};
+		let payment_point = &params.countersignatory_pubkeys().payment_point;
+		get_counterparty_payment_script(params.channel_type_features(), payment_point)
 	}
 }
 

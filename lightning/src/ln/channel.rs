@@ -15,7 +15,7 @@ use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
-use bitcoin::Weight;
+use bitcoin::{TxOut, Weight};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1609,8 +1609,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_point, &context.get_counterparty_pubkeys().payment_point, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&context.channel_transaction_parameters);
+		let monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
 		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, context.get_holder_selected_contest_delay(),
 		                                          &context.destination_script, (funding_txo, funding_txo_script),
@@ -3165,9 +3164,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let channel_parameters =
 			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
 			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
+		let counterparty_payment_script = self.holder_signer.as_ref().get_counterparty_payment_script(!local);
+		let counterparty_txout = TxOut {
+			script_pubkey: counterparty_payment_script,
+			value: Amount::from_sat(value_to_b as u64),
+		};
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
-		                                                             value_to_b as u64,
+		                                                             counterparty_txout,
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
@@ -10863,6 +10867,7 @@ mod tests {
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
+		use crate::sign::type_resolver::ChannelSignerType;
 		use crate::util::logger::Logger;
 		use crate::sync::Arc;
 		use core::str::FromStr;
@@ -10936,6 +10941,9 @@ mod tests {
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
 				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+				let mut holder_signer = keys_provider.derive_channel_signer(chan.context.channel_value_satoshis, chan.context.channel_keys_id);
+				holder_signer.provide_channel_parameters(&chan.context.channel_transaction_parameters);
+				chan.context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
@@ -10943,6 +10951,9 @@ mod tests {
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
 				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				let mut holder_signer = keys_provider.derive_channel_signer(chan.context.channel_value_satoshis, chan.context.channel_keys_id);
+				holder_signer.provide_channel_parameters(&chan.context.channel_transaction_parameters);
+				chan.context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}

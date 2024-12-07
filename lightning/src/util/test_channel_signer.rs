@@ -25,6 +25,7 @@ use crate::sync::{Mutex, Arc};
 use bitcoin::transaction::Transaction;
 use bitcoin::hashes::Hash;
 use bitcoin::sighash;
+use bitcoin::ScriptBuf;
 use bitcoin::sighash::EcdsaSighashType;
 
 use bitcoin::secp256k1;
@@ -211,6 +212,10 @@ impl ChannelSigner for TestChannelSigner {
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
 		self.inner.provide_channel_parameters(channel_parameters)
+	}
+
+	fn get_counterparty_payment_script(&self, to_self: bool) -> ScriptBuf {
+		self.inner.get_counterparty_payment_script(to_self)
 	}
 }
 
@@ -415,16 +420,20 @@ impl Writeable for TestChannelSigner {
 
 impl TestChannelSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
+		let counterparty_spk = self.get_counterparty_payment_script(true);
 		commitment_tx.verify(
 			&self.inner.get_channel_parameters().unwrap().as_counterparty_broadcastable(),
-			self.inner.counterparty_pubkeys().unwrap(), self.inner.pubkeys(), secp_ctx
+			self.inner.counterparty_pubkeys().unwrap(), self.inner.pubkeys(), secp_ctx,
+			counterparty_spk,
 		).expect("derived different per-tx keys or built transaction")
 	}
 
 	fn verify_holder_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
+		let counterparty_spk = self.get_counterparty_payment_script(false);
 		commitment_tx.verify(
 			&self.inner.get_channel_parameters().unwrap().as_holder_broadcastable(),
-			self.inner.pubkeys(), self.inner.counterparty_pubkeys().unwrap(), secp_ctx
+			self.inner.pubkeys(), self.inner.counterparty_pubkeys().unwrap(), secp_ctx,
+			counterparty_spk,
 		).expect("derived different per-tx keys or built transaction")
 	}
 }

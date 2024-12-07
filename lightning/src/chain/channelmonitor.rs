@@ -1338,7 +1338,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		ChannelMonitor { inner: Mutex::new(imp) }
 	}
 
-	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<ScriptBuf>,
+	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, mut keys: Signer, shutdown_script: Option<ScriptBuf>,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, ScriptBuf),
 	                  channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
 	                  funding_redeemscript: ScriptBuf, channel_value_satoshis: u64,
@@ -1347,10 +1347,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	                  best_block: BestBlock, counterparty_node_id: PublicKey, channel_id: ChannelId,
 	) -> ChannelMonitor<Signer> {
 
+		keys.provide_channel_parameters(channel_parameters);
+
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
-		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
-			&channel_parameters.channel_type_features, &keys.pubkeys().payment_point
-		);
+		let counterparty_payment_script = keys.get_counterparty_payment_script(true);
 
 		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
 		let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
@@ -3416,9 +3416,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			&broadcaster_keys, &countersignatory_keys, &self.onchain_tx_handler.secp_ctx);
 		let channel_parameters =
 			&self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+		let counterparty_txout = TxOut {
+			script_pubkey: self.counterparty_payment_script.clone(),
+			value: Amount::from_sat(to_countersignatory_value),
+		};
 
 		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-			to_broadcaster_value, to_countersignatory_value, broadcaster_funding_key,
+			to_broadcaster_value, counterparty_txout, broadcaster_funding_key,
 			countersignatory_funding_key, keys, feerate_per_kw, &mut nondust_htlcs,
 			channel_parameters)
 	}
