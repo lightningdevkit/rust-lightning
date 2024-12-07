@@ -25,6 +25,7 @@ use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::{functional_test_utils::*, msgs};
+use crate::offers::flow::OffersMessageCommons;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
 use crate::util::test_channel_signer::SignerOp;

@@ -18,7 +18,7 @@ use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureR
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, BREAKDOWN_TIMEOUT};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;

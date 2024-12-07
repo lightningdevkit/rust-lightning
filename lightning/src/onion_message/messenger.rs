@@ -1826,6 +1826,10 @@ where
 			.get_mut(&peer_node_id)
 			.and_then(|buffer| buffer.dequeue_message())
 	}
+
+	fn message_received(&self) {
+		self.offers_handler.message_received();
+	}
 }
 
 // TODO: parameterize the below Simple* types with OnionMessenger and handle the messages it
