@@ -100,7 +100,7 @@ fn token_to_stream(token: TokenTree) -> proc_macro::TokenStream {
 	proc_macro::TokenStream::from(token)
 }
 
-/// Processes a list of fields in a variant definition (see the docs for [`skip_legacy_fields`])
+/// Processes a list of fields in a variant definition (see the docs for [`skip_legacy_fields!`])
 fn process_fields(group: Group) -> proc_macro::TokenStream {
 	let mut computed_fields = proc_macro::TokenStream::new();
 	if group.delimiter() == Delimiter::Brace {
@@ -247,7 +247,7 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 /// ```ignore
 /// drop_legacy_field_definition!(Self {
 ///		field1: _init_tlv_based_struct_field!(field1, option),
-///     field2: _init_tlv_based_struct_field!(field2, (legacy, u64, {}, {}))),
+///     field2: _init_tlv_based_struct_field!(field2, (legacy, u64, {}, {})),
 /// })
 /// ```
 /// and will drop fields defined like `field2` with a type starting with `legacy`.
