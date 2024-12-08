@@ -1236,7 +1236,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 }
 
 macro_rules! _process_events_body {
-	($self_opt: expr, $event_to_handle: expr, $handle_event: expr) => {
+	($self_opt: expr, $logger: expr, $event_to_handle: expr, $handle_event: expr) => {
 		loop {
 			let mut handling_res = Ok(());
 			let (pending_events, repeated_events);
@@ -1253,8 +1253,11 @@ macro_rules! _process_events_body {
 
 			let mut num_handled_events = 0;
 			for event in pending_events {
+				log_trace!($logger, "Handling event {:?}...", event);
 				$event_to_handle = event;
-				match $handle_event {
+				let event_handling_result = $handle_event;
+				log_trace!($logger, "Done handling event, result: {:?}", event_handling_result);
+				match event_handling_result {
 					Ok(()) => num_handled_events += 1,
 					Err(e) => {
 						// If we encounter an error we stop handling events and make sure to replay
@@ -1614,19 +1617,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// [`SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	/// [`BumpTransaction`]: crate::events::Event::BumpTransaction
-	pub fn process_pending_events<H: Deref>(&self, handler: &H) -> Result<(), ReplayEvent> where H::Target: EventHandler {
+	pub fn process_pending_events<H: Deref, L: Deref>(&self, handler: &H, logger: &L)
+	-> Result<(), ReplayEvent> where H::Target: EventHandler, L::Target: Logger {
 		let mut ev;
-		process_events_body!(Some(self), ev, handler.handle_event(ev))
+		process_events_body!(Some(self), logger, ev, handler.handle_event(ev))
 	}
 
 	/// Processes any events asynchronously.
 	///
 	/// See [`Self::process_pending_events`] for more information.
-	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future>(
-		&self, handler: &H
-	) -> Result<(), ReplayEvent> {
+	pub async fn process_pending_events_async<
+		Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future,
+		L: Deref,
+	>(
+		&self, handler: &H, logger: &L,
+	) -> Result<(), ReplayEvent> where L::Target: Logger {
 		let mut ev;
-		process_events_body!(Some(self), ev, { handler(ev).await })
+		process_events_body!(Some(self), logger, ev, { handler(ev).await })
 	}
 
 	#[cfg(test)]
