@@ -212,6 +212,16 @@ mod sealed {
 		,
 		// Byte 2
 		BasicMPP,
+		// Byte 3
+		,
+		// Byte 4
+		,
+		// Byte 5
+		,
+		// Byte 6
+		,
+		// Byte 7
+		Trampoline,
 	]);
 	define_context!(BlindedHopContext, []);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
@@ -573,7 +583,7 @@ mod sealed {
 	define_feature!(
 		57,
 		Trampoline,
-		[InitContext, NodeContext, Bolt11InvoiceContext],
+		[InitContext, NodeContext, Bolt11InvoiceContext, Bolt12InvoiceContext],
 		"Feature flags for Trampoline routing.",
 		set_trampoline_routing_optional,
 		set_trampoline_routing_required,
