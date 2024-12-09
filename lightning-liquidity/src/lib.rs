@@ -33,6 +33,7 @@
 //! [LSPS1]: https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1
 //! [LSPS2]: https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS2
 //! [`CustomMessageHandler`]: lightning::ln::peer_handler::CustomMessageHandler
+//! [`LiquidityManager::wait_next_event`]: crate::LiquidityManager::wait_next_event
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
