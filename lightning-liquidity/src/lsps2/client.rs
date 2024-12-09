@@ -32,14 +32,8 @@ use crate::lsps2::msgs::{
 };
 
 /// Client-side configuration options for JIT channels.
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, Default)]
 pub struct LSPS2ClientConfig {}
-
-impl Default for LSPS2ClientConfig {
-	fn default() -> Self {
-		Self {}
-	}
-}
 
 struct InboundJITChannel {
 	payment_size_msat: Option<u64>,
