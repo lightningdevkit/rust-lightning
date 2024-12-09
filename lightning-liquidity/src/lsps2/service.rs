@@ -10,7 +10,9 @@
 //! Contains the main LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
 use crate::events::{Event, EventQueue};
-use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
+use crate::lsps0::ser::{
+	ProtocolMessageHandler, RequestId, ResponseError, LSPS0_CLIENT_REJECTED_ERROR_CODE,
+};
 use crate::lsps2::event::LSPS2ServiceEvent;
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
 use crate::lsps2::utils::{compute_opening_fee, is_valid_opening_fee_params};
@@ -39,6 +41,8 @@ use crate::lsps2::msgs::{
 	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
 	LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
 };
+
+const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 
 /// Server-side configuration options for JIT channels.
 #[derive(Clone, Debug)]
@@ -982,21 +986,49 @@ where
 	fn handle_get_info_request(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetInfoRequest,
 	) -> Result<(), LightningError> {
-		let mut outer_state_lock = self.per_peer_state.write().unwrap();
-		let inner_state_lock: &mut Mutex<PeerState> =
-			outer_state_lock.entry(*counterparty_node_id).or_insert(Mutex::new(PeerState::new()));
-		let mut peer_state_lock = inner_state_lock.lock().unwrap();
-		peer_state_lock
-			.pending_requests
-			.insert(request_id.clone(), LSPS2Request::GetInfo(params.clone()));
+		let (result, response) = {
+			let mut outer_state_lock = self.per_peer_state.write().unwrap();
+			let inner_state_lock: &mut Mutex<PeerState> = outer_state_lock
+				.entry(*counterparty_node_id)
+				.or_insert(Mutex::new(PeerState::new()));
+			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			if peer_state_lock.pending_requests.len() < MAX_PENDING_REQUESTS_PER_PEER {
+				peer_state_lock
+					.pending_requests
+					.insert(request_id.clone(), LSPS2Request::GetInfo(params.clone()));
 
-		let event = Event::LSPS2Service(LSPS2ServiceEvent::GetInfo {
-			request_id,
-			counterparty_node_id: *counterparty_node_id,
-			token: params.token,
-		});
-		self.pending_events.enqueue(event);
-		Ok(())
+				let event = Event::LSPS2Service(LSPS2ServiceEvent::GetInfo {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					token: params.token,
+				});
+				self.pending_events.enqueue(event);
+				(Ok(()), None)
+			} else {
+				let response = LSPS2Response::GetInfoError(ResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				});
+				let msg = Some(LSPS2Message::Response(request_id, response).into());
+
+				let err = format!(
+					"Peer {} reached maximum number of pending requests: {}",
+					counterparty_node_id, MAX_PENDING_REQUESTS_PER_PEER
+				);
+
+				let result =
+					Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Debug) });
+				(result, msg)
+			}
+		};
+
+		if let Some(msg) = response {
+			self.pending_messages.enqueue(counterparty_node_id, msg);
+		}
+
+		result
 	}
 
 	fn handle_buy_request(
@@ -1070,7 +1102,6 @@ where
 		}
 
 		// TODO: if payment_size_msat is specified, make sure our node has sufficient incoming liquidity from public network to receive it.
-
 		if !is_valid_opening_fee_params(&params.opening_fee_params, &self.config.promise_secret) {
 			let response = LSPS2Response::BuyError(ResponseError {
 				code: LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
@@ -1085,26 +1116,52 @@ where
 			});
 		}
 
-		{
+		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
 			let inner_state_lock = outer_state_lock
 				.entry(*counterparty_node_id)
 				.or_insert(Mutex::new(PeerState::new()));
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
-			peer_state_lock
-				.pending_requests
-				.insert(request_id.clone(), LSPS2Request::Buy(params.clone()));
+
+			if peer_state_lock.pending_requests.len() < MAX_PENDING_REQUESTS_PER_PEER {
+				peer_state_lock
+					.pending_requests
+					.insert(request_id.clone(), LSPS2Request::Buy(params.clone()));
+
+				let event = Event::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					opening_fee_params: params.opening_fee_params,
+					payment_size_msat: params.payment_size_msat,
+				});
+				self.pending_events.enqueue(event);
+
+				(Ok(()), None)
+			} else {
+				let response = LSPS2Response::BuyError(ResponseError {
+					code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+					message: "Reached maximum number of pending requests. Please try again later."
+						.to_string(),
+					data: None,
+				});
+				let msg = Some(LSPS2Message::Response(request_id, response).into());
+
+				let err = format!(
+					"Peer {} reached maximum number of pending requests: {}",
+					counterparty_node_id, MAX_PENDING_REQUESTS_PER_PEER
+				);
+				let result =
+					Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Debug) });
+
+				(result, msg)
+			}
+		};
+
+		if let Some(msg) = response {
+			self.pending_messages.enqueue(counterparty_node_id, msg);
 		}
 
-		let event = Event::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
-			request_id,
-			counterparty_node_id: *counterparty_node_id,
-			opening_fee_params: params.opening_fee_params,
-			payment_size_msat: params.payment_size_msat,
-		});
-		self.pending_events.enqueue(event);
-
-		Ok(())
+		result
 	}
 }
 
