@@ -62,6 +62,8 @@ pub mod lsps1;
 pub mod lsps2;
 mod manager;
 pub mod message_queue;
+#[allow(dead_code)]
+#[allow(unused_imports)]
 mod sync;
 #[cfg(test)]
 mod tests;
