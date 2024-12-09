@@ -786,7 +786,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		for req in requests {
 			let package_locktime = req.package_locktime(cur_height);
-			if package_locktime > cur_height + 1 {
+			if package_locktime > cur_height {
 				log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
 				for outpoint in req.outpoints() {
 					log_info!(logger, "  Outpoint {}", outpoint);
@@ -1274,5 +1274,180 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use bitcoin::hash_types::Txid;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::Hash;
+	use bitcoin::Network;
+	use bitcoin::{key::Secp256k1, secp256k1::PublicKey, secp256k1::SecretKey, ScriptBuf};
+	use types::features::ChannelTypeFeatures;
+
+	use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator};
+	use crate::chain::package::{HolderHTLCOutput, PackageSolvingData, PackageTemplate};
+	use crate::chain::transaction::OutPoint;
+	use crate::ln::chan_utils::{
+		ChannelPublicKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters,
+		HTLCOutputInCommitment, HolderCommitmentTransaction,
+	};
+	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
+	use crate::ln::functional_test_utils::create_dummy_block;
+	use crate::sign::InMemorySigner;
+	use crate::types::payment::{PaymentHash, PaymentPreimage};
+	use crate::util::test_utils::{TestBroadcaster, TestFeeEstimator, TestLogger};
+
+	use super::OnchainTxHandler;
+
+	// Test that all claims with locktime equal to or less than the current height are broadcast
+	// immediately while claims with locktime greater than the current height are only broadcast
+	// once the locktime is reached.
+	#[test]
+	fn test_broadcast_height() {
+		let secp_ctx = Secp256k1::new();
+		let signer = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			0,
+			[0; 32],
+			[0; 32],
+		);
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[44; 32]).unwrap(),
+			),
+			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[45; 32]).unwrap(),
+			)),
+			payment_point: PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[46; 32]).unwrap(),
+			),
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[47; 32]).unwrap(),
+			)),
+			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(&[48; 32]).unwrap(),
+			)),
+		};
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+
+		// Use non-anchor channels so that HTLC-Timeouts are broadcast immediately instead of sent
+		// to the user for external funding.
+		let chan_params = ChannelTransactionParameters {
+			holder_pubkeys: signer.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+		};
+
+		// Create an OnchainTxHandler for a commitment containing HTLCs with CLTV expiries of 0, 1,
+		// and 2 blocks.
+		let mut htlcs = Vec::new();
+		for i in 0..3 {
+			let preimage = PaymentPreimage([i; 32]);
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
+			htlcs.push((
+				HTLCOutputInCommitment {
+					offered: true,
+					amount_msat: 10000,
+					cltv_expiry: i as u32,
+					payment_hash: hash,
+					transaction_output_index: Some(i as u32),
+				},
+				(),
+			));
+		}
+		let holder_commit = HolderCommitmentTransaction::dummy(&mut htlcs);
+		let mut tx_handler = OnchainTxHandler::new(
+			1000000,
+			[0; 32],
+			ScriptBuf::new(),
+			signer,
+			chan_params,
+			holder_commit,
+			secp_ctx,
+		);
+
+		// Create a broadcaster with current block height 1.
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			let genesis_hash = blocks[0].0.block_hash();
+			blocks.push((create_dummy_block(genesis_hash, 0, Vec::new()), 1));
+		}
+
+		let fee_estimator = TestFeeEstimator::new(253);
+		let fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
+		let logger = TestLogger::new();
+
+		// Request claiming of each HTLC on the holder's commitment, with current block height 1.
+		let holder_commit_txid = tx_handler.get_unsigned_holder_commitment_tx().compute_txid();
+		let mut requests = Vec::new();
+		for (htlc, _) in htlcs {
+			requests.push(PackageTemplate::build_package(
+				holder_commit_txid,
+				htlc.transaction_output_index.unwrap(),
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(
+					htlc.amount_msat,
+					htlc.cltv_expiry,
+					ChannelTypeFeatures::only_static_remote_key(),
+				)),
+				0,
+			));
+		}
+		tx_handler.update_claims_view_from_requests(
+			requests,
+			1,
+			1,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&fee_estimator,
+			&logger,
+		);
+
+		// HTLC-Timeouts should be broadcast for the HTLCs with expiries at heights 0 and 1. The
+		// HTLC with expiry at height 2 should not be claimed yet.
+		let txs_broadcasted = broadcaster.txn_broadcast();
+		assert_eq!(txs_broadcasted.len(), 2);
+		assert!(txs_broadcasted[0].lock_time.to_consensus_u32() <= 1);
+		assert!(txs_broadcasted[1].lock_time.to_consensus_u32() <= 1);
+
+		// Advance to block height 2, and reprocess pending claims.
+		{
+			let mut blocks = broadcaster.blocks.lock().unwrap();
+			let block1_hash = blocks[1].0.block_hash();
+			blocks.push((create_dummy_block(block1_hash, 0, Vec::new()), 2));
+		}
+		tx_handler.update_claims_view_from_requests(
+			Vec::new(),
+			2,
+			2,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&fee_estimator,
+			&logger,
+		);
+
+		// The final HTLC-Timeout should now be broadcast.
+		let txs_broadcasted = broadcaster.txn_broadcast();
+		assert_eq!(txs_broadcasted.len(), 1);
+		assert_eq!(txs_broadcasted[0].lock_time.to_consensus_u32(), 2);
 	}
 }
