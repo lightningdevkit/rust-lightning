@@ -1091,7 +1091,7 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 
-	// Check that our maps have been updated after async signng channel closure.
+	// Check that our maps have been updated after async signing channel closure.
 	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert!(nodes[0].node().outpoint_to_peer.lock().unwrap().get(&funding_outpoint).is_none());
 	assert!(nodes[1].node().outpoint_to_peer.lock().unwrap().get(&funding_outpoint).is_none());
