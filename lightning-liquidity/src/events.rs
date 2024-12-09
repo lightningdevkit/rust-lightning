@@ -24,6 +24,9 @@ use crate::sync::{Arc, Mutex};
 use core::future::Future;
 use core::task::{Poll, Waker};
 
+/// The maximum queue size we allow before starting to drop events.
+pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
+
 pub(crate) struct EventQueue {
 	queue: Arc<Mutex<VecDeque<Event>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
@@ -47,7 +50,11 @@ impl EventQueue {
 	pub fn enqueue(&self, event: Event) {
 		{
 			let mut queue = self.queue.lock().unwrap();
-			queue.push_back(event);
+			if queue.len() < MAX_EVENT_QUEUE_SIZE {
+				queue.push_back(event);
+			} else {
+				return;
+			}
 		}
 
 		if let Some(waker) = self.waker.lock().unwrap().take() {

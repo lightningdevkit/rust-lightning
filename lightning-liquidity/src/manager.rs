@@ -378,6 +378,12 @@ where {
 	/// Blocks the current thread until next event is ready and returns it.
 	///
 	/// Typically you would spawn a thread or task that calls this in a loop.
+	///
+	/// **Note**: Users must handle events as soon as possible to avoid an increased event queue
+	/// memory footprint. We will start dropping any generated events after
+	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
+	///
+	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	#[cfg(feature = "std")]
 	pub fn wait_next_event(&self) -> Event {
 		self.pending_events.wait_next_event()
@@ -386,6 +392,12 @@ where {
 	/// Returns `Some` if an event is ready.
 	///
 	/// Typically you would spawn a thread or task that calls this in a loop.
+	///
+	/// **Note**: Users must handle events as soon as possible to avoid an increased event queue
+	/// memory footprint. We will start dropping any generated events after
+	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
+	///
+	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	pub fn next_event(&self) -> Option<Event> {
 		self.pending_events.next_event()
 	}
@@ -393,6 +405,12 @@ where {
 	/// Asynchronously polls the event queue and returns once the next event is ready.
 	///
 	/// Typically you would spawn a thread or task that calls this in a loop.
+	///
+	/// **Note**: Users must handle events as soon as possible to avoid an increased event queue
+	/// memory footprint. We will start dropping any generated events after
+	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
+	///
+	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	pub async fn next_event_async(&self) -> Event {
 		self.pending_events.next_event_async().await
 	}
@@ -400,6 +418,12 @@ where {
 	/// Returns and clears all events without blocking.
 	///
 	/// Typically you would spawn a thread or task that calls this in a loop.
+	///
+	/// **Note**: Users must handle events as soon as possible to avoid an increased event queue
+	/// memory footprint. We will start dropping any generated events after
+	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
+	///
+	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		self.pending_events.get_and_clear_pending_events()
 	}
