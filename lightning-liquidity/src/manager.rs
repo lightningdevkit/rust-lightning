@@ -612,7 +612,11 @@ where
 		features
 	}
 
-	fn peer_disconnected(&self, _: bitcoin::secp256k1::PublicKey) {}
+	fn peer_disconnected(&self, counterparty_node_id: bitcoin::secp256k1::PublicKey) {
+		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
+			lsps2_service_handler.peer_disconnected(counterparty_node_id);
+		}
+	}
 	fn peer_connected(
 		&self, _: bitcoin::secp256k1::PublicKey, _: &lightning::ln::msgs::Init, _: bool,
 	) -> Result<(), ()> {
