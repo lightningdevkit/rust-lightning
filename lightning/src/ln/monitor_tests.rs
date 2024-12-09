@@ -161,7 +161,7 @@ fn revoked_output_htlc_resolution_timing() {
 
 #[test]
 fn archive_fully_resolved_monitors() {
-	// Test we can archive fully resolved channel monitor.
+	// Test we archive fully resolved channel monitors at the right time.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
@@ -171,46 +171,130 @@ fn archive_fully_resolved_monitors() {
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
 
-	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
-	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
-	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-	let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
-	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
-	let (_, _) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), "".to_owned()).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	check_closed_broadcast!(nodes[0], true);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 1_000_000);
 
-	let shutdown_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(commitment_tx.len(), 1);
 
-	mine_transaction(&nodes[0], &shutdown_tx[0]);
-	mine_transaction(&nodes[1], &shutdown_tx[0]);
+	mine_transaction(&nodes[0], &commitment_tx[0]);
+	mine_transaction(&nodes[1], &commitment_tx[0]);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event!(nodes[1], 1, reason, [nodes[0].node.get_our_node_id()], 1_000_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
 
-	connect_blocks(&nodes[0], 6);
+	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
 	connect_blocks(&nodes[1], 6);
 
-	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 1000000);
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 1000000);
+	// After the commitment transaction reaches enough confirmations for nodes[0] to claim its
+	// balance, both nodes should still have a pending `Balance` as the HTLC has not yet resolved.
+	assert!(!nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	assert!(!nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
 
+	let spendable_event = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(spendable_event.len(), 1);
+	if let Event::SpendableOutputs { .. } = spendable_event[0] {} else { panic!(); }
+
+	// Until the `Balance` set of both monitors goes empty, calling
+	// `archive_fully_resolved_channel_monitors` will do nothing (though we don't bother to observe
+	// that except later by checking that the monitors are archived at the exact correct block
+	// height).
+	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
-	// First archive should set balances_empty_height to current block height
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
+
+	nodes[1].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
+	let htlc_claim_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(htlc_claim_tx.len(), 1);
+
+	mine_transaction(&nodes[0], &htlc_claim_tx[0]);
+	mine_transaction(&nodes[1], &htlc_claim_tx[0]);
+
+	// Both nodes should retain the pending `Balance` until the HTLC resolution transaction has six
+	// confirmations
+	assert!(!nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	assert!(!nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+
+	// Until the `Balance` set of both monitors goes empty, calling
+	// `archive_fully_resolved_channel_monitors` will do nothing (though we don't bother to observe
+	// that except later by checking that the monitors are archived at the exact correct block
+	// height).
+	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
+
+	connect_blocks(&nodes[0], 5);
+	connect_blocks(&nodes[1], 5);
+
+	assert!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+
+	// At this point, both nodes have no more `Balance`s, but nodes[0]'s `ChannelMonitor` still
+	// hasn't had the `MonitorEvent` that contains the preimage claimed by the `ChannelManager`.
+	// Thus, calling `archive_fully_resolved_channel_monitors` and waiting 4032 blocks will not
+	// result in the `ChannelMonitor` being archived.
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	connect_blocks(&nodes[0], 4032);
-	// Second call after 4032 blocks, should archive the monitor
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
-	// Should have no monitors left
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
+
+	// ...however, nodes[1]'s `ChannelMonitor` is ready to be archived, and will be in exactly 4032
+	// blocks.
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
+	connect_blocks(&nodes[1], 4031);
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
+	connect_blocks(&nodes[1], 1);
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 0);
+
+	// Finally, we process the pending `MonitorEvent` from nodes[0], allowing the `ChannelMonitor`
+	// to be archived 4032 blocks later.
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
+	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
+	connect_blocks(&nodes[0], 4031);
+	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
+	connect_blocks(&nodes[0], 1);
+	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 0);
+
 	// Remove the corresponding outputs and transactions the chain source is
 	// watching. This is to make sure the `Drop` function assertions pass.
-	nodes.get_mut(0).unwrap().chain_source.remove_watched_txn_and_outputs(
-		OutPoint { txid: funding_tx.compute_txid(), index: 0 },
-		funding_tx.output[0].script_pubkey.clone()
-	);
+	for node in nodes {
+		node.chain_source.remove_watched_txn_and_outputs(
+			OutPoint { txid: funding_tx.compute_txid(), index: 0 },
+			funding_tx.output[0].script_pubkey.clone()
+		);
+		node.chain_source.remove_watched_txn_and_outputs(
+			OutPoint { txid: commitment_tx[0].compute_txid(), index: 0 },
+			commitment_tx[0].output[0].script_pubkey.clone()
+		);
+		node.chain_source.remove_watched_txn_and_outputs(
+			OutPoint { txid: commitment_tx[0].compute_txid(), index: 1 },
+			commitment_tx[0].output[1].script_pubkey.clone()
+		);
+		node.chain_source.remove_watched_txn_and_outputs(
+			OutPoint { txid: commitment_tx[0].compute_txid(), index: 2 },
+			commitment_tx[0].output[2].script_pubkey.clone()
+		);
+		node.chain_source.remove_watched_txn_and_outputs(
+			OutPoint { txid: htlc_claim_tx[0].compute_txid(), index: 0 },
+			htlc_claim_tx[0].output[0].script_pubkey.clone()
+		);
+	}
 }
 
 fn do_chanmon_claim_value_coop_close(anchors: bool) {
