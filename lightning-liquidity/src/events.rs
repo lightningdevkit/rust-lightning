@@ -28,7 +28,7 @@ pub(crate) struct EventQueue {
 	queue: Arc<Mutex<VecDeque<Event>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
-	condvar: std::sync::Condvar,
+	condvar: crate::sync::Condvar,
 }
 
 impl EventQueue {
@@ -37,7 +37,7 @@ impl EventQueue {
 		let waker = Arc::new(Mutex::new(None));
 		#[cfg(feature = "std")]
 		{
-			let condvar = std::sync::Condvar::new();
+			let condvar = crate::sync::Condvar::new();
 			Self { queue, waker, condvar }
 		}
 		#[cfg(not(feature = "std"))]
@@ -67,8 +67,10 @@ impl EventQueue {
 
 	#[cfg(feature = "std")]
 	pub fn wait_next_event(&self) -> Event {
-		let mut queue =
-			self.condvar.wait_while(self.queue.lock().unwrap(), |queue| queue.is_empty()).unwrap();
+		let mut queue = self
+			.condvar
+			.wait_while(self.queue.lock().unwrap(), |queue: &mut VecDeque<Event>| queue.is_empty())
+			.unwrap();
 
 		let event = queue.pop_front().expect("non-empty queue");
 		let should_notify = !queue.is_empty();
