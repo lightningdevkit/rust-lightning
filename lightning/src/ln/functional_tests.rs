@@ -49,7 +49,7 @@ use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::transaction::Version;
 
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
@@ -90,7 +90,9 @@ fn test_channel_resumption_fail_post_funding() {
 	// After ddf75afd16 we'd panic on reconnection if we exchanged funding info, so test that
 	// explicitly here.
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
-		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, true).unwrap();
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 }
@@ -129,7 +131,7 @@ fn test_insane_channel_opens() {
 			match action {
 				&ErrorAction::SendErrorMessage { .. } => {
 					nodes[1].logger.assert_log_regex("lightning::ln::channelmanager", expected_regex, 1);
-				},
+				}
 				_ => panic!("unexpected event!"),
 			}
 		} else { assert!(false); }
@@ -138,22 +140,49 @@ fn test_insane_channel_opens() {
 	use crate::ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
 	// Test all mutations that would make the channel open message insane
-	insane_open_helper(format!("Per our config, funding must be at most {}. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1, TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2).as_str(), |mut msg| { msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2; msg });
-	insane_open_helper(format!("Funding must be smaller than the total bitcoin supply. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS).as_str(), |mut msg| { msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS; msg });
+	insane_open_helper(format!("Per our config, funding must be at most {}. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1, TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2).as_str(), |mut msg| {
+		msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2;
+		msg
+	});
+	insane_open_helper(format!("Funding must be smaller than the total bitcoin supply. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS).as_str(), |mut msg| {
+		msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS;
+		msg
+	});
 
-	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.common_fields.funding_satoshis + 1; msg });
+	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| {
+		msg.channel_reserve_satoshis = msg.common_fields.funding_satoshis + 1;
+		msg
+	});
 
-	insane_open_helper(r"push_msat \d+ was larger than channel amount minus reserve \(\d+\)", |mut msg| { msg.push_msat = (msg.common_fields.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
+	insane_open_helper(r"push_msat \d+ was larger than channel amount minus reserve \(\d+\)", |mut msg| {
+		msg.push_msat = (msg.common_fields.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1;
+		msg
+	});
 
-	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.common_fields.dust_limit_satoshis = msg.common_fields.funding_satoshis + 1 ; msg });
+	insane_open_helper("Peer never wants payout outputs?", |mut msg| {
+		msg.common_fields.dust_limit_satoshis = msg.common_fields.funding_satoshis + 1;
+		msg
+	});
 
-	insane_open_helper(r"Minimum htlc value \(\d+\) was larger than full channel value \(\d+\)", |mut msg| { msg.common_fields.htlc_minimum_msat = (msg.common_fields.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
+	insane_open_helper(r"Minimum htlc value \(\d+\) was larger than full channel value \(\d+\)", |mut msg| {
+		msg.common_fields.htlc_minimum_msat = (msg.common_fields.funding_satoshis - msg.channel_reserve_satoshis) * 1000;
+		msg
+	});
 
-	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| { msg.common_fields.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1; msg });
+	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| {
+		msg.common_fields.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1;
+		msg
+	});
 
-	insane_open_helper("0 max_accepted_htlcs makes for a useless channel", |mut msg| { msg.common_fields.max_accepted_htlcs = 0; msg });
+	insane_open_helper("0 max_accepted_htlcs makes for a useless channel", |mut msg| {
+		msg.common_fields.max_accepted_htlcs = 0;
+		msg
+	});
 
-	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| { msg.common_fields.max_accepted_htlcs = 484; msg });
+	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| {
+		msg.common_fields.max_accepted_htlcs = 484;
+		msg
+	});
 }
 
 #[test]
@@ -170,7 +199,7 @@ fn test_funding_exceeds_no_wumbo_limit() {
 	match nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), MAX_FUNDING_SATOSHIS_NO_WUMBO + 1, 0, 42, None, None) {
 		Err(APIError::APIMisuseError { err }) => {
 			assert_eq!(format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, MAX_FUNDING_SATOSHIS_NO_WUMBO + 1), err);
-		},
+		}
 		_ => panic!()
 	}
 }
@@ -220,7 +249,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 				let chan_context = channel_phase.context_mut();
 				chan_context.holder_selected_channel_reserve_satoshis = 0;
 				chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
-			},
+			}
 			_ => assert!(false),
 		}
 	}
@@ -289,7 +318,7 @@ fn test_async_inbound_update_fee() {
 	let (update_msg, commitment_signed) = match events_0[0] { // (1)
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -298,7 +327,7 @@ fn test_async_inbound_update_fee() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	let payment_event = {
@@ -355,7 +384,7 @@ fn test_async_inbound_update_fee() {
 	let events_2 = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		Event::PendingHTLCsForwardable {..} => {}, // If we actually processed we'd receive the payment
+		Event::PendingHTLCsForwardable { .. } => {} // If we actually processed we'd receive the payment
 		_ => panic!("Unexpected event"),
 	}
 
@@ -389,7 +418,7 @@ fn test_update_fee_unordered_raa() {
 	let update_msg = match events_0[0] { // (1)
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
 			update_fee.as_ref()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -398,7 +427,7 @@ fn test_update_fee_unordered_raa() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	let payment_event = {
@@ -464,7 +493,7 @@ fn test_multi_flight_update_fee() {
 	let (update_msg_1, commitment_signed_1) = match events_0[0] { // (1)
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			(update_fee.as_ref().unwrap(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -548,7 +577,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	if steps & 0b1000_0000 != 0{
+	if steps & 0b1000_0000 != 0 {
 		let block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
 		connect_block(&nodes[0], &block);
 		connect_block(&nodes[1], &block);
@@ -647,9 +676,9 @@ fn test_update_fee_vanilla() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { update_add_htlcs: _, update_fulfill_htlcs: _, update_fail_htlcs: _, update_fail_malformed_htlcs: _, ref update_fee, ref commitment_signed } } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), update_msg.unwrap());
@@ -757,7 +786,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
 	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
-		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
+																&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	let res = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
@@ -775,7 +804,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
 			&mut htlcs,
-			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
+			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable(),
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
@@ -828,9 +857,9 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { update_add_htlcs: _, update_fulfill_htlcs: _, update_fail_htlcs: _, update_fail_malformed_htlcs: _, ref update_fee, ref commitment_signed } } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), update_msg.unwrap());
@@ -842,7 +871,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 
 	// nothing happens since node[1] is in AwaitingRemoteRevoke
 	nodes[1].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	{
 		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 0);
@@ -894,7 +923,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentClaimable { .. } => { },
+		Event::PaymentClaimable { .. } => {}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -943,9 +972,9 @@ fn test_update_fee() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { update_add_htlcs: _, update_fulfill_htlcs: _, update_fail_htlcs: _, update_fail_malformed_htlcs: _, ref update_fee, ref commitment_signed } } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), update_msg.unwrap());
@@ -970,9 +999,9 @@ fn test_update_fee() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { update_add_htlcs: _, update_fulfill_htlcs: _, update_fail_htlcs: _, update_fail_malformed_htlcs: _, ref update_fee, ref commitment_signed } } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -1093,8 +1122,8 @@ fn fake_network_test() {
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
 	let payment_preimage_1 = send_along_route(&nodes[1],
-		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: None },
-			&vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
+											  Route { paths: vec![Path { hops, blinded_tail: None }], route_params: None },
+											  &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
@@ -1127,8 +1156,8 @@ fn fake_network_test() {
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
 	let payment_hash_2 = send_along_route(&nodes[1],
-		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: None },
-			&vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
+										  Route { paths: vec![Path { hops, blinded_tail: None }], route_params: None },
+										  &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
@@ -1168,7 +1197,7 @@ fn holding_cell_htlc_counting() {
 	for _ in 0..50 {
 		let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
 		nodes[1].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		payments.push((payment_preimage, payment_hash));
 	}
 	check_added_monitors!(nodes[1], 1);
@@ -1192,7 +1221,7 @@ fn holding_cell_htlc_counting() {
 	let (route, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], 100000);
 	{
 		nodes[0].node.send_payment_with_route(route, payment_hash_2,
-			RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1255,7 +1284,7 @@ fn holding_cell_htlc_counting() {
 		match event {
 			&Event::PaymentClaimable { ref payment_hash, .. } => {
 				assert_eq!(*payment_hash, *hash);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		};
 	}
@@ -1370,18 +1399,18 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	assert_eq!(events.len(), 3);
 	for e in events {
 		match e {
-			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::DisconnectPeer { ref msg } } => {
 				assert_eq!(node_id, nodes[1].node.get_our_node_id());
 				assert_eq!(msg.as_ref().unwrap().data, "Channel closed because commitment or closing transaction was confirmed on chain.");
-			},
+			}
 			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert!(update_fail_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);
 				assert!(update_fail_malformed_htlcs.is_empty());
 				assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -1405,12 +1434,11 @@ fn test_basic_channel_reserve() {
 		get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 	route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 	let err = nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
+													RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
 	match err {
 		PaymentSendFailure::AllFailedResendSafe(ref fails) => {
-			if let &APIError::ChannelUnavailable { .. } = &fails[0] {}
-			else { panic!("Unexpected error variant"); }
-		},
+			if let &APIError::ChannelUnavailable { .. } = &fails[0] {} else { panic!("Unexpected error variant"); }
+		}
 		_ => panic!("Unexpected error variant"),
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1438,7 +1466,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
-		3460001, &recipient_onion_fields, cur_height, &None, None).unwrap();
+																				   3460001, &recipient_onion_fields, cur_height, &None, None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1494,7 +1522,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
 	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
-		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
+																&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
@@ -1525,7 +1553,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			commit_tx_keys.clone(),
 			feerate_per_kw,
 			&mut vec![(accepted_htlc_info, ())],
-			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
+			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable(),
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
@@ -1560,11 +1588,11 @@ fn test_fee_spike_violation_fails_htlc() {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. }, .. } => {
 			assert_eq!(update_fail_htlcs.len(), 1);
 			update_fail_htlcs[0].clone()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].logger.assert_log("lightning::ln::channel",
-		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
+							   format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
 
 	check_added_monitors!(nodes[1], 2);
 }
@@ -1637,7 +1665,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
-		700_000, &recipient_onion_fields, cur_height, &None, None).unwrap();
+																				   700_000, &recipient_onion_fields, cur_height, &None, None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1720,7 +1748,7 @@ fn test_chan_init_feerate_unaffordability() {
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, &channel_type_features);
 	assert_eq!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt + 1, 42, None, None).unwrap_err(),
-		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
+			   APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.
@@ -1735,7 +1763,7 @@ fn test_chan_init_feerate_unaffordability() {
 	match msg_events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
 			assert_eq!(msg.data, "Insufficient funding amount for initial reserve");
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 }
@@ -1786,15 +1814,15 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan.2);
 
 	// Add a 2* and +1 for the fee spike reserve.
-	let commit_tx_fee_2_htlc = 2*commit_tx_fee_msat(feerate, 2 + 1, &channel_type_features);
-	let recv_value_1 = (chan_stat.value_to_self_msat - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlc)/2;
+	let commit_tx_fee_2_htlc = 2 * commit_tx_fee_msat(feerate, 2 + 1, &channel_type_features);
+	let recv_value_1 = (chan_stat.value_to_self_msat - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlc) / 2;
 	let amt_msat_1 = recv_value_1 + total_routing_fee_msat;
 
 	// Add a pending HTLC.
 	let (route_1, our_payment_hash_1, _, our_payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_1);
 	let payment_event_1 = {
 		nodes[0].node.send_payment_with_route(route_1.clone(), our_payment_hash_1,
-			RecipientOnionFields::secret_only(our_payment_secret_1), PaymentId(our_payment_hash_1.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret_1), PaymentId(our_payment_hash_1.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1855,11 +1883,11 @@ fn test_inbound_outbound_capacity_is_not_zero() {
 	assert_eq!(channels1.len(), 1);
 
 	let reserve = get_holder_selected_channel_reserve_satoshis(100_000, &default_config);
-	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve*1000);
-	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve*1000);
+	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve * 1000);
+	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve * 1000);
 
-	assert_eq!(channels0[0].outbound_capacity_msat, 100000 * 1000 - 95000000 - reserve*1000);
-	assert_eq!(channels1[0].inbound_capacity_msat, 100000 * 1000 - 95000000 - reserve*1000);
+	assert_eq!(channels0[0].outbound_capacity_msat, 100000 * 1000 - 95000000 - reserve * 1000);
+	assert_eq!(channels1[0].inbound_capacity_msat, 100000 * 1000 - 95000000 - reserve * 1000);
 }
 
 fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64, channel_type_features: &ChannelTypeFeatures) -> u64 {
@@ -1923,7 +1951,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		// 3 for the 3 HTLCs that will be sent, 2* and +1 for the fee spike reserve.
 		// Also, ensure that each payment has enough to be over the dust limit to
 		// ensure it'll be included in each commit tx fee calculation.
-		let commit_tx_fee_all_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1, &channel_type_features);
+		let commit_tx_fee_all_htlcs = 2 * commit_tx_fee_msat(feerate, 3 + 1, &channel_type_features);
 		let ensure_htlc_amounts_above_dust_buffer = 3 * (stat01.counterparty_dust_limit_msat + 1000);
 		if stat01.value_to_self_msat < stat01.channel_reserve_msat + commit_tx_fee_all_htlcs + ensure_htlc_amounts_above_dust_buffer + amt_msat {
 			break;
@@ -1946,7 +1974,10 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		assert_eq!(stat11_.value_to_self_msat, stat11.value_to_self_msat + amt_msat);
 		assert_eq!(stat12_.value_to_self_msat, stat12.value_to_self_msat - (amt_msat - feemsat));
 		assert_eq!(stat22_.value_to_self_msat, stat22.value_to_self_msat + (amt_msat - feemsat));
-		stat01 = stat01_; stat11 = stat11_; stat12 = stat12_; stat22 = stat22_;
+		stat01 = stat01_;
+		stat11 = stat11_;
+		stat12 = stat12_;
+		stat22 = stat22_;
 	}
 
 	// adding pending output.
@@ -1960,14 +1991,14 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// the amount of the first of these aforementioned 3 payments. The reason we split into 3 payments
 	// is to test the behavior of the holding cell with respect to channel reserve and commit tx fee
 	// policy.
-	let commit_tx_fee_2_htlcs = 2*commit_tx_fee_msat(feerate, 2 + 1, &channel_type_features);
-	let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs)/2;
+	let commit_tx_fee_2_htlcs = 2 * commit_tx_fee_msat(feerate, 2 + 1, &channel_type_features);
+	let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs) / 2;
 	let amt_msat_1 = recv_value_1 + total_fee_msat;
 
 	let (route_1, our_payment_hash_1, our_payment_preimage_1, our_payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_1);
 	let payment_event_1 = {
 		nodes[0].node.send_payment_with_route(route_1.clone(), our_payment_hash_1,
-			RecipientOnionFields::secret_only(our_payment_secret_1), PaymentId(our_payment_hash_1.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret_1), PaymentId(our_payment_hash_1.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1989,9 +2020,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	}
 
 	// split the rest to test holding cell
-	let commit_tx_fee_3_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1, &channel_type_features);
+	let commit_tx_fee_3_htlcs = 2 * commit_tx_fee_msat(feerate, 3 + 1, &channel_type_features);
 	let additional_htlc_cost_msat = commit_tx_fee_3_htlcs - commit_tx_fee_2_htlcs;
-	let recv_value_21 = recv_value_2/2 - additional_htlc_cost_msat/2;
+	let recv_value_21 = recv_value_2 / 2 - additional_htlc_cost_msat / 2;
 	let recv_value_22 = recv_value_2 - recv_value_21 - total_fee_msat - additional_htlc_cost_msat;
 	{
 		let stat = get_channel_value_stat!(nodes[0], nodes[1], chan_1.2);
@@ -2002,7 +2033,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let (route_21, our_payment_hash_21, our_payment_preimage_21, our_payment_secret_21) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_21);
 	// but this will stuck in the holding cell
 	nodes[0].node.send_payment_with_route(route_21, our_payment_hash_21,
-		RecipientOnionFields::secret_only(our_payment_secret_21), PaymentId(our_payment_hash_21.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret_21), PaymentId(our_payment_hash_21.0)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 0);
@@ -2021,7 +2052,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let (route_22, our_payment_hash_22, our_payment_preimage_22, our_payment_secret_22) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
 	// this will also stuck in the holding cell
 	nodes[0].node.send_payment_with_route(route_22, our_payment_hash_22,
-		RecipientOnionFields::secret_only(our_payment_secret_22), PaymentId(our_payment_hash_22.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret_22), PaymentId(our_payment_hash_22.0)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -2081,10 +2112,10 @@ fn test_channel_reserve_holding_cell_htlcs() {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(our_payment_secret_21, *payment_secret);
-				},
+				}
 				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
@@ -2097,10 +2128,10 @@ fn test_channel_reserve_holding_cell_htlcs() {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(our_payment_secret_22, *payment_secret);
-				},
+				}
 				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -2108,11 +2139,11 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_21);
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_22);
 
-	let commit_tx_fee_0_htlcs = 2*commit_tx_fee_msat(feerate, 1, &channel_type_features);
+	let commit_tx_fee_0_htlcs = 2 * commit_tx_fee_msat(feerate, 1, &channel_type_features);
 	let recv_value_3 = commit_tx_fee_2_htlcs - commit_tx_fee_0_htlcs - total_fee_msat;
 	send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_3);
 
-	let commit_tx_fee_1_htlc = 2*commit_tx_fee_msat(feerate, 1 + 1, &channel_type_features);
+	let commit_tx_fee_1_htlc = 2 * commit_tx_fee_msat(feerate, 1 + 1, &channel_type_features);
 	let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_21 + total_fee_msat) - (recv_value_22 + total_fee_msat) - (recv_value_3 + total_fee_msat);
 	let stat0 = get_channel_value_stat!(nodes[0], nodes[1], chan_1.2);
 	assert_eq!(stat0.value_to_self_msat, expected_value_to_self);
@@ -2162,7 +2193,7 @@ fn channel_reserve_in_flight_removes() {
 	let (route, payment_hash_3, payment_preimage_3, payment_secret_3) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	let send_1 = {
 		nodes[0].node.send_payment_with_route(route, payment_hash_3,
-			RecipientOnionFields::secret_only(payment_secret_3), PaymentId(payment_hash_3.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret_3), PaymentId(payment_hash_3.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -2237,7 +2268,7 @@ fn channel_reserve_in_flight_removes() {
 	let (route, payment_hash_4, payment_preimage_4, payment_secret_4) = get_route_and_payment_hash!(nodes[1], nodes[0], 10000);
 	let send_2 = {
 		nodes[1].node.send_payment_with_route(route, payment_hash_4,
-			RecipientOnionFields::secret_only(payment_secret_4), PaymentId(payment_hash_4.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret_4), PaymentId(payment_hash_4.0)).unwrap();
 		check_added_monitors!(nodes[1], 1);
 		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -2293,11 +2324,11 @@ fn channel_monitor_network_test() {
 	let chan_4 = create_announced_chan_between_nodes(&nodes, 3, 4);
 
 	// Make sure all nodes are at the same starting height
-	connect_blocks(&nodes[0], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
-	connect_blocks(&nodes[1], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
-	connect_blocks(&nodes[2], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
-	connect_blocks(&nodes[3], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
-	connect_blocks(&nodes[4], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[4].best_block_info().1);
+	connect_blocks(&nodes[0], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
+	connect_blocks(&nodes[4], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[4].best_block_info().1);
 
 	// Rebalance the network a bit by relaying one payment through all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3], &nodes[4])[..], 8000000);
@@ -2365,7 +2396,7 @@ fn channel_monitor_network_test() {
 						assert!(update_add_htlcs.is_empty());
 						assert!(update_fail_htlcs.is_empty());
 						assert_eq!(*node_id, $prev_node.node.get_our_node_id());
-					},
+					}
 					_ => panic!("Unexpected event"),
 				};
 			}
@@ -2413,13 +2444,13 @@ fn channel_monitor_network_test() {
 		let close_chan_update_1 = match events[1] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				msg.clone()
-			},
+			}
 			_ => panic!("Unexpected event"),
 		};
 		match events[0] {
 			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[4].node.get_our_node_id());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 		check_added_monitors!(nodes[3], 1);
@@ -2445,13 +2476,13 @@ fn channel_monitor_network_test() {
 		let close_chan_update_2 = match events[1] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				msg.clone()
-			},
+			}
 			_ => panic!("Unexpected event"),
 		};
 		match events[0] {
 			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[3].node.get_our_node_id());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 		check_added_monitors!(nodes[4], 1);
@@ -2470,7 +2501,7 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
 	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.compute_txid(), index: 0 }, chan_3_mon),
-		Ok(ChannelMonitorUpdateStatus::Completed));
+			   Ok(ChannelMonitorUpdateStatus::Completed));
 	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [node_id_4], 100000);
 }
 
@@ -2642,7 +2673,7 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap();
 	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
 	let persisters = vec![WatchtowerPersister::new(destination_script0),
-		WatchtowerPersister::new(destination_script1)];
+						  WatchtowerPersister::new(destination_script1)];
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2671,12 +2702,12 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false,
-		&[nodes[0].node.get_our_node_id()], 100_000);
+					   &[nodes[0].node.get_our_node_id()], 100_000);
 	get_announce_close_broadcast_events(&nodes, 1, 0);
 
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false,
-		&[nodes[1].node.get_our_node_id()], 100_000);
+					   &[nodes[1].node.get_our_node_id()], 100_000);
 
 	// Check that the justice tx has sent the revoked output value to nodes[1]
 	let monitor = get_monitor!(nodes[1], channel_id);
@@ -2930,7 +2961,8 @@ fn test_htlc_on_chain_success() {
 	}
 	let chan_id = Some(chan_1.2);
 	match forwarded_events[1] {
-		Event::PaymentForwarded { total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
+		Event::PaymentForwarded {
+			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
 			next_channel_id, outbound_amount_forwarded_msat, ..
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
@@ -2938,11 +2970,12 @@ fn test_htlc_on_chain_success() {
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_channel_id, Some(chan_2.2));
 			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
-		},
+		}
 		_ => panic!()
 	}
 	match forwarded_events[2] {
-		Event::PaymentForwarded { total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
+		Event::PaymentForwarded {
+			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
 			next_channel_id, outbound_amount_forwarded_msat, ..
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
@@ -2950,7 +2983,7 @@ fn test_htlc_on_chain_success() {
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_channel_id, Some(chan_2.2));
 			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
-		},
+		}
 		_ => panic!()
 	}
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -2967,7 +3000,7 @@ fn test_htlc_on_chain_success() {
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -2978,13 +3011,13 @@ fn test_htlc_on_chain_success() {
 			assert_eq!(update_fulfill_htlcs.len(), 1);
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
 	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
 	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -3071,9 +3104,9 @@ fn test_htlc_on_chain_success() {
 					assert_eq!(payment_preimage, our_payment_preimage_2);
 					assert_eq!(payment_hash, payment_hash_2);
 				}
-			},
-			Event::PaymentPathSuccessful { .. } => {},
-			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {},
+			}
+			Event::PaymentPathSuccessful { .. } => {}
+			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -3124,7 +3157,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 			assert!(update_fulfill_htlcs.is_empty());
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	mine_transaction(&nodes[2], &commitment_tx[0]);
@@ -3140,12 +3173,12 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	check_closed_event!(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false
 		, [nodes[2].node.get_our_node_id()], 100000);
 	let htlc_expiry = get_monitor!(nodes[1], chan_2.2).get_claimable_balances().iter().filter_map(|bal|
-			if let Balance::MaybeTimeoutClaimableHTLC { claimable_height, .. } = bal {
-				Some(*claimable_height)
-			} else {
-				None
-			}
-		).next().unwrap();
+	if let Balance::MaybeTimeoutClaimableHTLC { claimable_height, .. } = bal {
+		Some(*claimable_height)
+	} else {
+		None
+	}
+	).next().unwrap();
 	connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1);
 	let timeout_tx = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
@@ -3178,7 +3211,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 			assert!(update_fulfill_htlcs.is_empty());
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -3248,7 +3281,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 			nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 			expect_payment_failed_with_update!(nodes[0], payment_hash, false, chan_2.0.contents.short_channel_id, true);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 }
@@ -3349,7 +3382,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	// on nodes[2]'s RAA.
 	let (route, fourth_payment_hash, _, fourth_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 1000000);
 	nodes[1].node.send_payment_with_route(route, fourth_payment_hash,
-		RecipientOnionFields::secret_only(fourth_payment_secret), PaymentId(fourth_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(fourth_payment_secret), PaymentId(fourth_payment_hash.0)).unwrap();
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	check_added_monitors!(nodes[1], 0);
@@ -3362,11 +3395,11 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
-			Event::HTLCHandlingFailed { .. } => { },
+			Event::HTLCHandlingFailed { .. } => {}
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
-			Event::PendingHTLCsForwardable { .. } => { },
+			Event::PendingHTLCsForwardable { .. } => {}
 			_ => panic!("Unexpected event"),
 		};
 		// Deliberately don't process the pending fail-back so they all fail back at once after
@@ -3410,7 +3443,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				assert!(update_fulfill_htlcs.is_empty());
 				assert!(update_fail_htlcs.is_empty());
 				assert!(update_fail_malformed_htlcs.is_empty());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -3420,7 +3453,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { msg: Some(msgs::ErrorMessage { channel_id, ref data }) }, node_id: _ } => {
 			assert_eq!(channel_id, chan_2.2);
 			assert_eq!(data.as_str(), "Channel closed because commitment or closing transaction was confirmed on chain.");
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -3447,48 +3480,48 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 					// If we delivered B's RAA we got an unknown preimage error, not something
 					// that we should update our routing table for.
 					if !deliver_bs_raa {
-						if let PathFailure::OnPath { network_update: Some(_) } = failure { } else { panic!("Unexpected path failure") }
+						if let PathFailure::OnPath { network_update: Some(_) } = failure {} else { panic!("Unexpected path failure") }
 					}
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
 					assert_eq!(*payment_hash, Some(first_payment_hash));
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 			match events[2] {
 				Event::PaymentPathFailed { ref payment_hash, failure: PathFailure::OnPath { network_update: Some(_) }, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 			match events[3] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
 					assert_eq!(*payment_hash, Some(second_payment_hash));
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 			match events[4] {
 				Event::PaymentPathFailed { ref payment_hash, failure: PathFailure::OnPath { network_update: Some(_) }, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 			match events[5] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
 					assert_eq!(*payment_hash, Some(third_payment_hash));
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
 	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
 	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
+		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -3525,7 +3558,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	{
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 50_000);
 		nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0)).unwrap();
+											  PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let payment_event = {
@@ -3541,7 +3574,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	let (route, failed_payment_hash, _, failed_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 50_000);
 	{
 		nodes[0].node.send_payment_with_route(route, failed_payment_hash,
-			RecipientOnionFields::secret_only(failed_payment_secret), PaymentId(failed_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(failed_payment_secret), PaymentId(failed_payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 0);
 
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -3579,19 +3612,19 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, failed_payment_hash);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		Event::PaymentFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, Some(failed_payment_hash));
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match events[2] {
 		Event::ChannelClosed { reason: ClosureReason::ProcessingError { ref err }, .. } => {
 			assert_eq!(err, "Remote side tried to send a 0-msat HTLC");
-		},
+		}
 		_ => panic!("Unexpected event {:?}", events[1]),
 	}
 	check_closed_broadcast!(nodes[0], true);
@@ -3651,7 +3684,7 @@ fn test_force_close_fail_back() {
 
 	let mut payment_event = {
 		nodes[0].node.send_payment_with_route(route, our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -3704,7 +3737,7 @@ fn test_force_close_fail_back() {
 		get_monitor!(nodes[2], payment_event.commitment_msg.channel_id)
 			.provide_payment_preimage_unsafe_legacy(
 				&our_payment_hash, &our_payment_preimage, &node_cfgs[2].tx_broadcaster,
-				&LowerBoundedFeeEstimator::new(node_cfgs[2].fee_estimator), &node_cfgs[2].logger
+				&LowerBoundedFeeEstimator::new(node_cfgs[2].fee_estimator), &node_cfgs[2].logger,
 			);
 	}
 	mine_transaction(&nodes[2], &commitment_tx);
@@ -3850,24 +3883,24 @@ fn test_simple_peer_disconnect() {
 			Event::PaymentSent { payment_preimage, payment_hash, .. } => {
 				assert_eq!(payment_preimage, payment_preimage_3);
 				assert_eq!(payment_hash, payment_hash_3);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
-			Event::PaymentPathSuccessful { .. } => {},
+			Event::PaymentPathSuccessful { .. } => {}
 			_ => panic!("Unexpected event"),
 		}
 		match events[2] {
 			Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } => {
 				assert_eq!(payment_hash, payment_hash_5);
 				assert!(payment_failed_permanently);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 		match events[3] {
 			Event::PaymentFailed { payment_hash, .. } => {
 				assert_eq!(payment_hash, Some(payment_hash_5));
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -3900,7 +3933,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 
 	let payment_event = {
 		nodes[0].node.send_payment_with_route(route, payment_hash_1,
-			RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -3984,17 +4017,17 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	if messages_delivered == 0 {
 		assert_eq!(events_1.len(), 2);
 		match events_1[0] {
-			Event::ChannelReady { .. } => { },
+			Event::ChannelReady { .. } => {}
 			_ => panic!("Unexpected event"),
 		};
 		match events_1[1] {
-			Event::PendingHTLCsForwardable { .. } => { },
+			Event::PendingHTLCsForwardable { .. } => {}
 			_ => panic!("Unexpected event"),
 		};
 	} else {
 		assert_eq!(events_1.len(), 1);
 		match events_1[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
+			Event::PendingHTLCsForwardable { .. } => {}
 			_ => panic!("Unexpected event"),
 		};
 	}
@@ -4017,10 +4050,10 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_1, *payment_secret);
-				},
+				}
 				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -4039,7 +4072,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			assert!(updates.update_fail_malformed_htlcs.is_empty());
 			assert!(updates.update_fee.is_none());
 			(updates.update_fulfill_htlcs[0].clone(), updates.commitment_signed.clone())
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -4052,7 +4085,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 				assert_eq!(payment_preimage_1, *payment_preimage);
 				assert_eq!(payment_hash_1, *payment_hash);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 
@@ -4257,13 +4290,13 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	// Now try to send a second payment which will fail to send
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);
 	match events_1[0] {
-		MessageSendEvent::UpdateHTLCs { .. } => {},
+		MessageSendEvent::UpdateHTLCs { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -4289,7 +4322,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 				Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 					assert_eq!(*payment_preimage, payment_preimage_1);
 					assert_eq!(*payment_hash, payment_hash_1);
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 
@@ -4297,7 +4330,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 			let _ = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 			// No commitment_signed so get_event_msg's assert(len == 1) passes
 			check_added_monitors!(nodes[0], 1);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -4305,12 +4338,16 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
-		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
 	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
-		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
@@ -4382,10 +4419,10 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_2, *payment_secret);
-				},
+				}
 				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -4414,10 +4451,10 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let payment_id = PaymentId([42; 32]);
 		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), payment_id, &route).unwrap();
+																	   RecipientOnionFields::secret_only(payment_secret), payment_id, &route).unwrap();
 		nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id,
-			&None, session_privs[0]).unwrap();
+												   RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id,
+												   &None, session_privs[0]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -4472,14 +4509,14 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Make sure all nodes are at the same starting height
-	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
-	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
-	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[0], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
 	// Route a first payment to get the 1 -> 2 channel in awaiting_raa...
 	let (route, first_payment_hash, _, first_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
 	nodes[1].node.send_payment_with_route(route, first_payment_hash,
-		RecipientOnionFields::secret_only(first_payment_secret), PaymentId(first_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(first_payment_secret), PaymentId(first_payment_hash.0)).unwrap();
 	assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 	check_added_monitors!(nodes[1], 1);
 
@@ -4487,7 +4524,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let sending_node = if forwarded_htlc { &nodes[0] } else { &nodes[1] };
 	let (route, second_payment_hash, _, second_payment_secret) = get_route_and_payment_hash!(sending_node, nodes[2], 100000);
 	sending_node.node.send_payment_with_route(route, second_payment_hash,
-		RecipientOnionFields::secret_only(second_payment_secret), PaymentId(second_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(second_payment_secret), PaymentId(second_payment_hash.0)).unwrap();
 	if forwarded_htlc {
 		check_added_monitors!(nodes[0], 1);
 		let payment_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -4511,7 +4548,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fail_htlcs, ref commitment_signed, .. }, .. } => {
 				nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
 				commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, true, true);
-			},
+			}
 			_ => unreachable!(),
 		}
 		expect_payment_failed_with_update!(nodes[0], second_payment_hash, false, chan_2.0.contents.short_channel_id, false);
@@ -4540,7 +4577,7 @@ macro_rules! check_spendable_outputs {
 							txn.push($keysinterface.backing.spend_spendable_outputs(&[&outp], Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, None, &secp_ctx).unwrap());
 							all_outputs.push(outp);
 						}
-					},
+					}
 					_ => panic!("Unexpected event"),
 				};
 			}
@@ -4672,11 +4709,11 @@ fn test_static_spendable_outputs_preimage_tx() {
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
-		MessageSendEvent::UpdateHTLCs { .. } => {},
+		MessageSendEvent::UpdateHTLCs { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	match events[2] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 		_ => panic!("Unexepected event"),
 	}
 
@@ -4719,7 +4756,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[1] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
@@ -4982,7 +5019,8 @@ fn test_onchain_to_onchain_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentForwarded { total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
+		Event::PaymentForwarded {
+			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
 			next_channel_id, outbound_amount_forwarded_msat, ..
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
@@ -4990,7 +5028,7 @@ fn test_onchain_to_onchain_claim() {
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_channel_id, Some(chan_2.2));
 			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors!(nodes[1], 1);
@@ -5000,7 +5038,7 @@ fn test_onchain_to_onchain_claim() {
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut msg_events);
 
 	match nodes_2_event {
-		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {},
+		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id: _ } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -5011,13 +5049,13 @@ fn test_onchain_to_onchain_claim() {
 			assert_eq!(update_fulfill_htlcs.len(), 1);
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
 	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
 	match msg_events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -5050,7 +5088,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	let mut config = test_default_channel_config();
 	config.channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
-		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
+											 &[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -5131,11 +5169,11 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	match events[0] {
-		MessageSendEvent::UpdateHTLCs { .. } => {},
+		MessageSendEvent::UpdateHTLCs { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	match events[2] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 		_ => panic!("Unexepected event"),
 	}
 	let htlc_success_txn: Vec<_> = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
@@ -5209,11 +5247,11 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
-		MessageSendEvent::UpdateHTLCs { .. } => {},
+		MessageSendEvent::UpdateHTLCs { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	match events[2] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {}
 		_ => panic!("Unexepected event"),
 	}
 	let node_tx = {
@@ -5256,14 +5294,14 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut config = test_default_channel_config();
 	config.channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs,
-		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
+											 &[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
 	let _chan_0_2 = create_announced_chan_between_nodes(&nodes, 0, 2);
 	let _chan_1_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 	let chan_2_3 = create_announced_chan_between_nodes(&nodes, 2, 3);
 	let chan_3_4 = create_announced_chan_between_nodes(&nodes, 3, 4);
-	let chan_3_5  = create_announced_chan_between_nodes(&nodes, 3, 5);
+	let chan_3_5 = create_announced_chan_between_nodes(&nodes, 3, 5);
 
 	// Rebalance and check output sanity...
 	send_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 500000);
@@ -5273,14 +5311,14 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let ds_dust_limit = nodes[3].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan_2_3.2).unwrap().context().holder_dust_limit_satoshis;
 	// 0th HTLC:
-	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit * 1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
-	let (_, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit * 1000); // not added < dust limit + HTLC tx fee
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
 	// 2nd HTLC:
-	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit * 1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 	// 3rd HTLC:
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit * 1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 	// 4th HTLC:
 	let (_, payment_hash_3, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 5th HTLC:
@@ -5295,10 +5333,10 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let (_, payment_hash_5, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 9th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit * 1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 
 	// 10th HTLC:
-	let (_, payment_hash_6, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_6, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit * 1000); // not added < dust limit + HTLC tx fee
 	// 11th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200, None).unwrap());
@@ -5461,7 +5499,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 					}
 				}
 				commitment_signed_dance!(target, nodes[2], updates.commitment_signed, false, true);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -5481,8 +5519,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 			if let PathFailure::OnPath { network_update: Some(_) } = failure {
 				as_updates += 1;
 			}
-		} else if let &Event::PaymentFailed { .. } = event {
-		} else { panic!("Unexpected event"); }
+		} else if let &Event::PaymentFailed { .. } = event {} else { panic!("Unexpected event"); }
 	}
 	assert!(as_faileds.contains(&payment_hash_1));
 	assert!(as_faileds.contains(&payment_hash_2));
@@ -5507,8 +5544,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 			if let PathFailure::OnPath { network_update: Some(_) } = failure {
 				bs_updates += 1;
 			}
-		} else if let &Event::PaymentFailed { .. } = event {
-		} else { panic!("Unexpected event"); }
+		} else if let &Event::PaymentFailed { .. } = event {} else { panic!("Unexpected event"); }
 	}
 	assert!(bs_faileds.contains(&payment_hash_1));
 	assert!(bs_faileds.contains(&payment_hash_2));
@@ -5587,7 +5623,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn[0], htlc_timeout);
 	assert!(spend_txn[2].input[0].sequence.0 == BREAKDOWN_TIMEOUT as u32 ||
-	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
+		spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]
@@ -5638,9 +5674,9 @@ fn test_key_derivation_params() {
 	let (from_0_funding_key_0, from_0_funding_key_1) = (PublicKey::from_slice(&local_txn_0[0].input[0].witness.to_vec()[3][2..35]), PublicKey::from_slice(&local_txn_0[0].input[0].witness.to_vec()[3][36..69]));
 	let (from_1_funding_key_0, from_1_funding_key_1) = (PublicKey::from_slice(&local_txn_1[0].input[0].witness.to_vec()[3][2..35]), PublicKey::from_slice(&local_txn_1[0].input[0].witness.to_vec()[3][36..69]));
 	if from_0_funding_key_0 == from_1_funding_key_0
-	    || from_0_funding_key_0 == from_1_funding_key_1
-	    || from_0_funding_key_1 == from_1_funding_key_0
-	    || from_0_funding_key_1 == from_1_funding_key_1 {
+		|| from_0_funding_key_0 == from_1_funding_key_1
+		|| from_0_funding_key_1 == from_1_funding_key_0
+		|| from_0_funding_key_1 == from_1_funding_key_1 {
 		panic!("Funding pubkeys aren't unique");
 	}
 
@@ -5675,7 +5711,7 @@ fn test_key_derivation_params() {
 	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn_1[0], htlc_timeout);
 	assert!(spend_txn[2].input[0].sequence.0 == BREAKDOWN_TIMEOUT as u32 ||
-	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
+		spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]
@@ -5753,7 +5789,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], if use_dust { 50000 } else { 3000000 });
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let _as_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -5865,8 +5901,8 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	}
 
 	// BOLT #2 spec: Sending node must ensure temporary_channel_id is unique from any other channel ID with the same peer.
-	let channel_value_satoshis=10000;
-	let push_msat=10001;
+	let channel_value_satoshis = 10000;
+	let push_msat = 10001;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).unwrap();
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &node0_to_1_send_open_channel);
@@ -5885,30 +5921,30 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// BOLT #2 spec: Sending node must set funding_satoshis to less than 2^24 satoshis
-	let channel_value_satoshis=2^24;
-	let push_msat=10001;
+	let channel_value_satoshis = 2 ^ 24;
+	let push_msat = 10001;
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).is_err());
 
 	// BOLT #2 spec: Sending node must set push_msat to equal or less than 1000 * funding_satoshis
-	let channel_value_satoshis=10000;
+	let channel_value_satoshis = 10000;
 	// Test when push_msat is equal to 1000 * funding_satoshis.
-	let push_msat=1000*channel_value_satoshis+1;
+	let push_msat = 1000 * channel_value_satoshis + 1;
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).is_err());
 
 	// BOLT #2 spec: Sending node must set set channel_reserve_satoshis greater than or equal to dust_limit_satoshis
-	let channel_value_satoshis=10000;
-	let push_msat=10001;
+	let channel_value_satoshis = 10000;
+	let push_msat = 10001;
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).is_ok()); //Create a valid channel
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis>=node0_to_1_send_open_channel.common_fields.dust_limit_satoshis);
+	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis >= node0_to_1_send_open_channel.common_fields.dust_limit_satoshis);
 
 	// BOLT #2 spec: Sending node must set undefined bits in channel_flags to 0
 	// Only the least-significant bit of channel_flags is currently defined resulting in channel_flags only having one of two possible states 0 or 1
-	assert!(node0_to_1_send_open_channel.common_fields.channel_flags<=1);
+	assert!(node0_to_1_send_open_channel.common_fields.channel_flags <= 1);
 
 	// BOLT #2 spec: Sending node should set to_self_delay sufficient to ensure the sender can irreversibly spend a commitment transaction output, in case of misbehaviour by the receiver.
-	assert!(BREAKDOWN_TIMEOUT>0);
-	assert!(node0_to_1_send_open_channel.common_fields.to_self_delay==BREAKDOWN_TIMEOUT);
+	assert!(BREAKDOWN_TIMEOUT > 0);
+	assert!(node0_to_1_send_open_channel.common_fields.to_self_delay == BREAKDOWN_TIMEOUT);
 
 	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
 	let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
@@ -5929,8 +5965,8 @@ fn bolt2_open_channel_sane_dust_limit() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let channel_value_satoshis=1000000;
-	let push_msat=10001;
+	let channel_value_satoshis = 1000000;
+	let push_msat = 10001;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).unwrap();
 	let mut node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	node0_to_1_send_open_channel.common_fields.dust_limit_satoshis = 547;
@@ -5941,7 +5977,7 @@ fn bolt2_open_channel_sane_dust_limit() {
 	let err_msg = match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
 			msg.clone()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	assert_eq!(err_msg.data, "dust_limit_satoshis (547) is greater than the implementation limit (546)");
@@ -5973,7 +6009,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let (update_msg, commitment_signed) = match events[0] {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -5985,12 +6021,12 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan.2);
 
 	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
-	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, &channel_type_features);
+	let max_can_send = 5000000 - channel_reserve - 2 * commit_tx_fee_msat(feerate, 1 + 1, &channel_type_features);
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
 
@@ -6017,13 +6053,13 @@ fn test_fail_holding_cell_htlc_upon_free() {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
 			assert_eq!(*short_channel_id, Some(route.paths[0].hops[0].short_channel_id));
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match &events[1] {
 		&Event::PaymentFailed { ref payment_hash, .. } => {
 			assert_eq!(Some(our_payment_hash), *payment_hash);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 }
@@ -6053,7 +6089,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let (update_msg, commitment_signed) = match events[0] {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -6066,18 +6102,18 @@ fn test_free_and_fail_holding_cell_htlcs() {
 
 	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
 	let amt_1 = 20000;
-	let amt_2 = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 2 + 1, &channel_type_features) - amt_1;
+	let amt_2 = 5000000 - channel_reserve - 2 * commit_tx_fee_msat(feerate, 2 + 1, &channel_type_features) - amt_1;
 	let (route_1, payment_hash_1, payment_preimage_1, payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[1], amt_1);
 	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], amt_2);
 
 	// Send 2 payments which pass reserve checks but get stuck in the holding cell.
 	nodes[0].node.send_payment_with_route(route_1, payment_hash_1,
-		RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
 	let payment_id_2 = PaymentId(nodes[0].keys_manager.get_secure_random_bytes());
 	nodes[0].node.send_payment_with_route(route_2.clone(), payment_hash_2,
-		RecipientOnionFields::secret_only(payment_secret_2), payment_id_2).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret_2), payment_id_2).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
 
@@ -6105,13 +6141,13 @@ fn test_free_and_fail_holding_cell_htlcs() {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
 			assert_eq!(*short_channel_id, Some(route_2.paths[0].hops[0].short_channel_id));
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match &events[1] {
 		&Event::PaymentFailed { ref payment_hash, .. } => {
 			assert_eq!(Some(payment_hash_2), *payment_hash);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -6132,14 +6168,14 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => {},
+		Event::PendingHTLCsForwardable { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	nodes[1].node.process_pending_htlc_forwards();
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentClaimable { .. } => {},
+		Event::PaymentClaimable { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	nodes[1].node.claim_funds(payment_preimage_1);
@@ -6183,7 +6219,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let (update_msg, commitment_signed) = match events[0] {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			(update_fee.as_ref(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -6195,11 +6231,11 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_0_1.2);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, &channel_type_features);
+	let max_can_send = 5000000 - channel_reserve - 2 * commit_tx_fee_msat(feerate, 1 + 1, &channel_type_features);
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], max_can_send);
 	let payment_event = {
 		nodes[0].node.send_payment_with_route(route, our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6230,7 +6266,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let raa_msg = match &events[0] {
 		&MessageSendEvent::SendRevokeAndACK { ref msg, .. } => {
 			msg.clone()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -6242,7 +6278,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let process_htlc_forwards_event = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(process_htlc_forwards_event.len(), 2);
 	match &process_htlc_forwards_event[1] {
-		&Event::PendingHTLCsForwardable { .. } => {},
+		&Event::PendingHTLCsForwardable { .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -6260,7 +6296,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 			assert_eq!(updates.update_fail_malformed_htlcs.len(), 0);
 			assert_eq!(updates.update_fail_htlcs.len(), 1);
 			(updates.update_fail_htlcs[0].clone(), updates.commitment_signed.clone())
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -6362,7 +6398,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = 0;
@@ -6414,12 +6450,12 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 		let payment_event = {
 			nodes[0].node.send_payment_with_route(route, our_payment_hash,
-				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+												  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 			check_added_monitors!(nodes[0], 1);
 
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
-			if let MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate{ update_add_htlcs: ref htlcs, .. }, } = events[0] {
+			if let MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { update_add_htlcs: ref htlcs, .. }, } = events[0] {
 				assert_eq!(htlcs[0].htlc_id, i);
 			} else {
 				assert!(false);
@@ -6456,7 +6492,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_in_flight);
 	// Manually create a route over our max in flight (which our router normally automatically
 	// limits us to.
-	route.paths[0].hops[0].fee_msat =  max_in_flight + 1;
+	route.paths[0].hops[0].fee_msat = max_in_flight + 1;
 	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { .. }, {});
@@ -6484,10 +6520,10 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], htlc_minimum_msat);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat-1;
+	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat - 1;
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
@@ -6515,7 +6551,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let max_can_send = 5000000 - channel_reserve - commit_tx_fee_outbound;
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
@@ -6590,7 +6626,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], nodes[0], chan.2).counterparty_max_htlc_value_in_flight_msat + 1;
@@ -6614,7 +6650,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].cltv_expiry = 500000000;
@@ -6622,7 +6658,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data,"Remote provided CLTV expiry in seconds instead of block height");
+	assert_eq!(err_msg.data, "Remote provided CLTV expiry in seconds instead of block height");
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 100000);
 }
@@ -6640,7 +6676,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -6649,12 +6685,16 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
-		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
 	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
-		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
@@ -6690,13 +6730,13 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
-	let update_msg = msgs::UpdateFulfillHTLC{
+	let update_msg = msgs::UpdateFulfillHTLC {
 		channel_id: chan.2,
 		htlc_id: 0,
 		payment_preimage: our_payment_preimage,
@@ -6723,15 +6763,15 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
-	let update_msg = msgs::UpdateFailHTLC{
+	let update_msg = msgs::UpdateFailHTLC {
 		channel_id: chan.2,
 		htlc_id: 0,
-		reason: msgs::OnionErrorPacket { data: Vec::new()},
+		reason: msgs::OnionErrorPacket { data: Vec::new() },
 	};
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_msg);
@@ -6755,11 +6795,11 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	let update_msg = msgs::UpdateFailMalformedHTLC{
+	let update_msg = msgs::UpdateFailMalformedHTLC {
 		channel_id: chan.2,
 		htlc_id: 0,
 		sha256_of_onion: [1; 32],
@@ -6795,14 +6835,14 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	assert_eq!(events.len(), 1);
 	let mut update_fulfill_msg: msgs::UpdateFulfillHTLC = {
 		match events[0] {
-			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+			MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);
 				assert!(update_fail_htlcs.is_empty());
 				assert!(update_fail_malformed_htlcs.is_empty());
 				assert!(update_fee.is_none());
 				update_fulfill_htlcs[0].clone()
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	};
@@ -6838,14 +6878,14 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	assert_eq!(events.len(), 1);
 	let mut update_fulfill_msg: msgs::UpdateFulfillHTLC = {
 		match events[0] {
-			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+			MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);
 				assert!(update_fail_htlcs.is_empty());
 				assert!(update_fail_malformed_htlcs.is_empty());
 				assert!(update_fee.is_none());
 				update_fulfill_htlcs[0].clone()
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	};
@@ -6873,7 +6913,7 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -6887,14 +6927,14 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 
 	let mut update_msg: msgs::UpdateFailMalformedHTLC = {
 		match events[0] {
-			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+			MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert!(update_fulfill_htlcs.is_empty());
 				assert!(update_fail_htlcs.is_empty());
 				assert_eq!(update_fail_malformed_htlcs.len(), 1);
 				assert!(update_fee.is_none());
 				update_fail_malformed_htlcs[0].clone()
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	};
@@ -6925,7 +6965,7 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	//First hop
 	let mut payment_event = {
 		nodes[0].node.send_payment_with_route(route, our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -6949,16 +6989,16 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 
 	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_3.len(), 1);
-	let update_msg : (msgs::UpdateFailMalformedHTLC, msgs::CommitmentSigned) = {
+	let update_msg: (msgs::UpdateFailMalformedHTLC, msgs::CommitmentSigned) = {
 		match events_3[0] {
-			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert!(update_fulfill_htlcs.is_empty());
 				assert!(update_fail_htlcs.is_empty());
 				assert_eq!(update_fail_malformed_htlcs.len(), 1);
 				assert!(update_fee.is_none());
 				(update_fail_malformed_htlcs[0].clone(), commitment_signed.clone())
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	};
@@ -6973,13 +7013,13 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 
 	//Confirm that handlinge the update_malformed_htlc message produces an update_fail_htlc message to be forwarded back along the route
 	match events_4[0] {
-		MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(update_fulfill_htlcs.is_empty());
 			assert_eq!(update_fail_htlcs.len(), 1);
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert!(update_fee.is_none());
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -7000,7 +7040,7 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	// First hop
 	let mut payment_event = {
 		nodes[0].node.send_payment_with_route(route, our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		SendEvent::from_node(&nodes[0])
 	};
@@ -7028,7 +7068,7 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 
 			nodes[1].node.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), &update_msg);
 			commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -7043,7 +7083,7 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
 			nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 			commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -7053,18 +7093,19 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	// Expect a PaymentPathFailed event with a ChannelFailure network update for the channel between
 	// the node originating the error to its next hop.
 	match events_5[0] {
-		Event::PaymentPathFailed { error_code, failure: PathFailure::OnPath { network_update: Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) }, ..
+		Event::PaymentPathFailed {
+			error_code, failure: PathFailure::OnPath { network_update: Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) }, ..
 		} => {
 			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
 			assert!(is_permanent);
-			assert_eq!(error_code, Some(0x8000|0x4000|0x2000|4));
-		},
+			assert_eq!(error_code, Some(0x8000 | 0x4000 | 0x2000 | 4));
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match events_5[1] {
 		Event::PaymentFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, Some(our_payment_hash));
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -7081,14 +7122,14 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan =create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
 
 	// We route 2 dust-HTLCs between A and B
-	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
-	let (_, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit * 1000);
+	let (_, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit * 1000);
 	route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Cache one local commitment tx as previous
@@ -7112,13 +7153,13 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	match events[0] {
 		MessageSendEvent::SendRevokeAndACK { node_id, .. } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		MessageSendEvent::UpdateHTLCs { node_id, .. } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 
@@ -7149,7 +7190,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 				} else {
 					assert_eq!(payment_hash, payment_hash_2);
 				}
-			},
+			}
 			Event::PaymentFailed { .. } => {}
 			_ => panic!("Unexpected event"),
 		}
@@ -7179,7 +7220,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
 		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
 
-	let (_payment_preimage_1, dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_payment_preimage_1, dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit * 1000);
 	let (_payment_preimage_2, non_dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
@@ -7263,11 +7304,11 @@ fn test_user_configurable_csv_delay() {
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in OutboundV1Channel::new()
 	if let Err(error) = OutboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator::new(253)),
-		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), 1000000, 1000000, 0,
-		&low_our_to_self_config, 0, 42, None, &logger)
+											   &nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), 1000000, 1000000, 0,
+											   &low_our_to_self_config, 0, 42, None, &logger)
 	{
 		match error {
-			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
+			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); }
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false) }
@@ -7277,14 +7318,14 @@ fn test_user_configurable_csv_delay() {
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.common_fields.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator::new(253)),
-		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
-		&low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
+											  &nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
+											  &low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
 			ChannelError::Close((err, _)) => {
 				let regex = regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap();
 				assert!(regex.is_match(err.as_str()));
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
@@ -7301,7 +7342,7 @@ fn test_user_configurable_csv_delay() {
 			&ErrorAction::SendErrorMessage { ref msg } => {
 				assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(msg.data.as_str()));
 				reason_msg = msg.data.clone();
-			},
+			}
 			_ => { panic!(); }
 		}
 	} else { panic!(); }
@@ -7312,14 +7353,14 @@ fn test_user_configurable_csv_delay() {
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.common_fields.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator::new(253)),
-		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
-		&high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
+											  &nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
+											  &high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
 			ChannelError::Close((err, _)) => {
 				let regex = regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap();
 				assert!(regex.is_match(err.as_str()));
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
@@ -7345,11 +7386,11 @@ fn test_check_htlc_underpaying() {
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 10_000);
 	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(),
-		None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
+						  None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None).unwrap();
 	nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -7370,14 +7411,14 @@ fn test_check_htlc_underpaying() {
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let (update_fail_htlc, commitment_signed) = match events[0] {
-		MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(update_fulfill_htlcs.is_empty());
 			assert_eq!(update_fail_htlcs.len(), 1);
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert!(update_fee.is_none());
 			(update_fail_htlcs[0].clone(), commitment_signed)
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	check_added_monitors!(nodes[1], 1);
@@ -7421,23 +7462,27 @@ fn test_announce_disable_channels() {
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.channel_flags & (1<<1), 1<<1); // The "channel disabled" bit should be set
+				assert_eq!(msg.contents.channel_flags & (1 << 1), 1 << 1); // The "channel disabled" bit should be set
 				// Check that each channel gets updated exactly once
 				if chans_disabled.insert(msg.contents.short_channel_id, msg.contents.timestamp).is_some() {
 					panic!("Generated ChannelUpdate for wrong chan!");
 				}
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
 	// Reconnect peers
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
-		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 3);
 	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
-		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 3);
@@ -7468,14 +7513,14 @@ fn test_announce_disable_channels() {
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.channel_flags & (1<<1), 0); // The "channel disabled" bit should be off
+				assert_eq!(msg.contents.channel_flags & (1 << 1), 0); // The "channel disabled" bit should be off
 				match chans_disabled.remove(&msg.contents.short_channel_id) {
 					// Each update should have a higher timestamp than the previous one, replacing
 					// the old one.
 					Some(prev_timestamp) => assert!(msg.contents.timestamp > prev_timestamp),
 					None => panic!("Generated ChannelUpdate for wrong chan!"),
 				}
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -7498,7 +7543,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 30)
 		.with_bolt11_features(nodes[0].node.bolt11_invoice_features()).unwrap();
-	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000);
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000);
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
 
 	let revoked_txn = get_local_commitment_txn!(nodes[0], chan.2);
@@ -7606,13 +7651,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
 	let route = get_route(&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(), None,
-		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
+						  nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
 	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50)
 		.with_bolt11_features(nodes[0].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
 	let route = get_route(&nodes[1].node.get_our_node_id(), &route_params, &nodes[1].network_graph.read_only(), None,
-		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
+						  nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
 	let failed_payment_hash = send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000).1;
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
@@ -7883,17 +7928,17 @@ fn test_counterparty_raa_skip_no_crash() {
 
 		keys.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
 		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-			&SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap()).unwrap());
+															   &SecretKey::from_slice(&keys.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap()).unwrap());
 	}
 
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(),
-		&msgs::RevokeAndACK {
-			channel_id,
-			per_commitment_secret,
-			next_per_commitment_point,
-			#[cfg(taproot)]
-			next_local_nonce: None,
-		});
+										&msgs::RevokeAndACK {
+											channel_id,
+											per_commitment_secret,
+											next_per_commitment_point,
+											#[cfg(taproot)]
+											next_local_nonce: None,
+										});
 	assert_eq!(check_closed_broadcast!(nodes[1], true).unwrap().data, "Received an unexpected revoke_and_ack");
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Received an unexpected revoke_and_ack".to_string() }
@@ -7981,7 +8026,7 @@ fn test_channel_conf_timeout() {
 		MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { ref msg }, ref node_id } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			assert_eq!(msg.as_ref().unwrap().data, "Channel closed because funding transaction failed to confirm within 2016 blocks");
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 }
@@ -8055,8 +8100,8 @@ fn test_channel_update_has_correct_htlc_maximum_msat() {
 	let channel_value_50_percent_msat = (channel_value_msat as f64 * 0.5) as u64;
 	let channel_value_90_percent_msat = (channel_value_msat as f64 * 0.9) as u64;
 
-	let (node_0_chan_update, node_1_chan_update, _, _)  = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value_satoshis, 10001);
-	let (node_2_chan_update, node_3_chan_update, _, _)  = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, channel_value_satoshis, 10001);
+	let (node_0_chan_update, node_1_chan_update, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value_satoshis, 10001);
+	let (node_2_chan_update, node_3_chan_update, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, channel_value_satoshis, 10001);
 
 	// Assert that `node[0]`'s `ChannelUpdate` is capped at 50 percent of the `channel_value`, as
 	// that's the value of `node[1]`'s `holder_max_htlc_value_in_flight_msat`.
@@ -8191,7 +8236,7 @@ fn test_can_not_accept_inbound_channel_twice() {
 			match api_res {
 				Err(APIError::APIMisuseError { err }) => {
 					assert_eq!(err, "No such channel awaiting to be accepted.");
-				},
+				}
 				Ok(_) => panic!("Channel shouldn't be possible to be accepted twice"),
 				Err(e) => panic!("Unexpected Error {:?}", e),
 			}
@@ -8223,7 +8268,7 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	match api_res {
 		Err(APIError::APIMisuseError { err }) => {
 			assert_eq!(err, "No such channel awaiting to be accepted.");
-		},
+		}
 		Ok(_) => panic!("It shouldn't be possible to accept an unkown channel"),
 		Err(e) => panic!("Unexpected Error: {:?}", e),
 	}
@@ -8271,9 +8316,9 @@ fn test_onion_value_mpp_set_calculation() {
 	// Send payment
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	let onion_session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), payment_id, &route).unwrap();
+																		 RecipientOnionFields::secret_only(our_payment_secret), payment_id, &route).unwrap();
 	nodes[0].node.test_send_payment_internal(&route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
+											 RecipientOnionFields::secret_only(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
 	check_added_monitors!(nodes[0], expected_paths.len());
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -8294,7 +8339,7 @@ fn test_onion_value_mpp_set_calculation() {
 			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 			let recipient_onion_fields = RecipientOnionFields::secret_only(our_payment_secret);
 			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], 100_000,
-				&recipient_onion_fields, height + 1, &None, None).unwrap();
+																			   &recipient_onion_fields, height + 1, &None, None).unwrap();
 			// Edit amt_to_forward to simulate the sender having set
 			// the final amount and the routing node taking less fee
 			if let msgs::OutboundOnionPayload::Receive {
@@ -8335,7 +8380,6 @@ fn test_onion_value_mpp_set_calculation() {
 }
 
 fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
-
 	let routing_node_count = msat_amounts.len();
 	let node_count = routing_node_count + 2;
 
@@ -8380,9 +8424,9 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 	// Send payment with manually set total_msat
 	let payment_id = PaymentId(nodes[src_idx].keys_manager.backing.get_secure_random_bytes());
 	let onion_session_privs = nodes[src_idx].node.test_add_new_pending_payment(our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), payment_id, &route).unwrap();
+																			   RecipientOnionFields::secret_only(our_payment_secret), payment_id, &route).unwrap();
 	nodes[src_idx].node.test_send_payment_internal(&route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
+												   RecipientOnionFields::secret_only(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
 	check_added_monitors!(nodes[src_idx], expected_paths.len());
 
 	let mut events = nodes[src_idx].node.get_and_clear_pending_msg_events();
@@ -8450,7 +8494,7 @@ fn test_preimage_storage() {
 		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200, None).unwrap();
 		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 		nodes[0].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		let mut payment_event = SendEvent::from_event(events.pop().unwrap());
@@ -8467,10 +8511,10 @@ fn test_preimage_storage() {
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. } => {
 					claim_payment(&nodes[0], &[&nodes[1]], payment_preimage.unwrap());
-				},
+				}
 				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 }
@@ -8512,31 +8556,31 @@ fn test_bad_secret_hash() {
 				MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. } } => {
 					nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
 					commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
-				},
+				}
 				_ => panic!("Unexpected event"),
 			}
 		}
 	}
 
-	let expected_error_code = 0x4000|15; // incorrect_or_unknown_payment_details
+	let expected_error_code = 0x4000 | 15; // incorrect_or_unknown_payment_details
 	// Error data is the HTLC value (100,000) and current block height
 	let expected_error_data = [0, 0, 0, 0, 0, 1, 0x86, 0xa0, 0, 0, 0, CHAN_CONFIRM_DEPTH as u8];
 
 	// Send a payment with the right payment hash but the wrong payment secret
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash,
-		RecipientOnionFields::secret_only(random_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(random_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	handle_unknown_invalid_payment_data!(our_payment_hash);
 	expect_payment_failed!(nodes[0], our_payment_hash, true, expected_error_code, expected_error_data);
 
 	// Send a payment with a random payment hash, but the right payment secret
 	nodes[0].node.send_payment_with_route(route.clone(), random_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(random_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(random_payment_hash.0)).unwrap();
 	handle_unknown_invalid_payment_data!(random_payment_hash);
 	expect_payment_failed!(nodes[0], random_payment_hash, true, expected_error_code, expected_error_data);
 
 	// Send a payment with a random payment hash and random payment secret
 	nodes[0].node.send_payment_with_route(route, random_payment_hash,
-		RecipientOnionFields::secret_only(random_payment_secret), PaymentId(random_payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(random_payment_secret), PaymentId(random_payment_hash.0)).unwrap();
 	handle_unknown_invalid_payment_data!(random_payment_hash);
 	expect_payment_failed!(nodes[0], random_payment_hash, true, expected_error_code, expected_error_data);
 }
@@ -8575,7 +8619,7 @@ fn test_update_err_monitor_lockdown() {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8648,7 +8692,7 @@ fn test_concurrent_monitor_claim() {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8680,7 +8724,7 @@ fn test_concurrent_monitor_claim() {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8693,7 +8737,7 @@ fn test_concurrent_monitor_claim() {
 	// Route another payment to generate another update with still previous HTLC pending
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 3000000);
 	nodes[1].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -8918,7 +8962,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		match events[0] {
 			MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		};
 	}
@@ -8933,14 +8977,14 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[2].node.get_our_node_id());
 			(*msg).clone()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	let bob_updates = match events[1] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 			assert_eq!(*node_id, nodes[2].node.get_our_node_id());
 			(*updates).clone()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -8955,7 +8999,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			(*msg).clone()
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_revoke_and_ack(nodes[2].node.get_our_node_id(), &carol_revocation);
@@ -9052,7 +9096,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
 				assert_eq!(node_id, &nodes[1].node.get_our_node_id());
 				assert_eq!(msg.common_fields.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -9065,7 +9109,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
 				assert_eq!(node_id, &nodes[2].node.get_our_node_id());
 				assert_eq!(msg.common_fields.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -9118,7 +9162,7 @@ fn test_peer_funding_sidechannel() {
 	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &as_funding_created);
 	check_added_monitors!(nodes[1], 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
-	let reason = ClosureReason::ProcessingError { err: format!("An existing channel using outpoint {} is open with peer {}", funding_output, nodes[2].node.get_our_node_id()), };
+	let reason = ClosureReason::ProcessingError { err: format!("An existing channel using outpoint {} is open with peer {}", funding_output, nodes[2].node.get_our_node_id()) };
 	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(ChannelId::v1_from_funding_outpoint(funding_output), true, reason)]);
 
 	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
@@ -9248,7 +9292,7 @@ fn test_duplicate_chan_id() {
 				// move forward with it.
 				assert_eq!(msg.channel_id, open_chan_msg.common_fields.temporary_channel_id);
 				assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -9291,7 +9335,7 @@ fn test_duplicate_chan_id() {
 				// channels are closed, but currently we do not, so we just move forward with it.
 				assert_eq!(msg.channel_id, open_chan_msg.common_fields.temporary_channel_id);
 				assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -9314,7 +9358,7 @@ fn test_duplicate_chan_id() {
 			ChannelPhase::UnfundedOutboundV1(mut chan) => {
 				let logger = test_utils::TestLogger::new();
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
-			},
+			}
 			_ => panic!("Unexpected ChannelPhase variant"),
 		}.unwrap()
 	};
@@ -9340,7 +9384,7 @@ fn test_duplicate_chan_id() {
 				// channels are closed, but currently we do not, so we just move forward with it.
 				assert_eq!(msg.channel_id, channel_id);
 				assert_eq!(node_id, nodes[0].node.get_our_node_id());
-			},
+			}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -9415,13 +9459,13 @@ fn test_error_chans_closed() {
 	match events[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			assert_eq!(msg.contents.channel_flags & 2, 2);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			assert_eq!(msg.contents.channel_flags & 2, 2);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	// Note that at this point users of a standard PeerHandler will end up calling
@@ -9503,7 +9547,8 @@ fn test_invalid_funding_tx() {
 	// long the ChannelMonitor will try to read 32 bytes from the second-to-last element, panicing
 	// as its not 32 bytes long.
 	let mut spend_tx = Transaction {
-		version: Version::TWO, lock_time: LockTime::ZERO,
+		version: Version::TWO,
+		lock_time: LockTime::ZERO,
 		input: tx.output.iter().enumerate().map(|(idx, _)| TxIn {
 			previous_output: BitcoinOutPoint {
 				txid: tx.compute_txid(),
@@ -9511,12 +9556,12 @@ fn test_invalid_funding_tx() {
 			},
 			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			witness: Witness::from_slice(&channelmonitor::deliberately_bogus_accepted_htlc_witness())
+			witness: Witness::from_slice(&channelmonitor::deliberately_bogus_accepted_htlc_witness()),
 		}).collect(),
 		output: vec![TxOut {
 			value: Amount::from_sat(1000),
 			script_pubkey: ScriptBuf::new(),
-		}]
+		}],
 	};
 	check_spends!(spend_tx, tx);
 	mine_transaction(&nodes[1], &spend_tx);
@@ -9686,7 +9731,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 
 	{
 		nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -9700,7 +9745,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 	{
 		// Note that we use a different PaymentId here to allow us to duplicativly pay
 		nodes[0].node.send_payment_with_route(route, our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_secret.0)).unwrap();
+											  RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_secret.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -9785,7 +9830,7 @@ fn test_inconsistent_mpp_params() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 100_000, 0);
-	let chan_2_3 =create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
+	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
 
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
@@ -9794,7 +9839,8 @@ fn test_inconsistent_mpp_params() {
 	route.paths.sort_by(|path_a, _| {
 		// Sort the path so that the path through nodes[1] comes first
 		if path_a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
-			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
+			core::cmp::Ordering::Less
+		} else { core::cmp::Ordering::Greater }
 	});
 
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[3]);
@@ -9808,11 +9854,11 @@ fn test_inconsistent_mpp_params() {
 		let mut dup_route = route.clone();
 		dup_route.paths.push(route.paths[1].clone());
 		nodes[0].node.test_add_new_pending_payment(our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), payment_id, &dup_route).unwrap()
+												   RecipientOnionFields::secret_only(our_payment_secret), payment_id, &dup_route).unwrap()
 	};
 	nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), 15_000_000, cur_height, payment_id,
-		&None, session_privs[0]).unwrap();
+											   RecipientOnionFields::secret_only(our_payment_secret), 15_000_000, cur_height, payment_id,
+											   &None, session_privs[0]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	{
@@ -9823,7 +9869,7 @@ fn test_inconsistent_mpp_params() {
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 
 	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), 14_000_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+											   RecipientOnionFields::secret_only(our_payment_secret), 14_000_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	{
@@ -9870,8 +9916,8 @@ fn test_inconsistent_mpp_params() {
 	expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
 
 	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), 15_000_000, cur_height, payment_id,
-		&None, session_privs[2]).unwrap();
+											   RecipientOnionFields::secret_only(our_payment_secret), 15_000_000, cur_height, payment_id,
+											   &None, session_privs[2]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -9905,7 +9951,8 @@ fn test_double_partial_claim() {
 	route.paths.sort_by(|path_a, _| {
 		// Sort the path so that the path through nodes[1] comes first
 		if path_a.hops[0].pubkey == nodes[1].node.get_our_node_id() {
-			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
+			core::cmp::Ordering::Less
+		} else { core::cmp::Ordering::Greater }
 	});
 
 	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 15_000_000, payment_hash, payment_secret);
@@ -9926,7 +9973,7 @@ fn test_double_partial_claim() {
 
 	// nodes[1] now retries one of the two paths...
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -9972,9 +10019,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	// If the values ever change below these constants should simply be updated.
 	const AT_FEE_OUTBOUND_HTLCS: u64 = 20;
 	let nondust_htlc_count_in_limit =
-	if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound  {
-		AT_FEE_OUTBOUND_HTLCS
-	} else { 0 };
+		if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
+			AT_FEE_OUTBOUND_HTLCS
+		} else { 0 };
 	let initial_feerate = if apply_excess_fee { 253 * 2 } else { 253 };
 	let expected_dust_buffer_feerate = initial_feerate + 2530;
 	let mut commitment_tx_cost = commit_tx_fee_msat(initial_feerate - 253, nondust_htlc_count_in_limit, &ChannelTypeFeatures::empty());
@@ -10019,7 +10066,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		match get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id) {
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				chan.context.holder_dust_limit_satoshis = 546;
-			},
+			}
 			_ => panic!("Unexpected ChannelPhase variant"),
 		}
 	}
@@ -10051,7 +10098,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
 		(chan.context().get_dust_buffer_feerate(None) as u64,
-		chan.context().get_max_dust_htlc_exposure_msat(253))
+		 chan.context().get_max_dust_htlc_exposure_msat(253))
 	};
 	assert_eq!(dust_buffer_feerate, expected_dust_buffer_feerate as u64);
 	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
@@ -10079,7 +10126,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			for _ in 0..dust_outbound_htlc_on_holder_tx {
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_outbound_htlc_on_holder_tx_msat);
 				nodes[0].node.send_payment_with_route(route, payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+													  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 			}
 		} else {
 			// Inbound dust threshold: 2324 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
@@ -10096,7 +10143,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
 				nodes[0].node.send_payment_with_route(route, payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+													  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 			}
 		} else {
 			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
@@ -10123,7 +10170,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	} else if exposure_breach_event == ExposureEvent::AtHTLCReception {
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat + 4 });
 		nodes[1].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+											  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[1], 1);
 		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -10138,9 +10185,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		} else {
 			// Outbound dust balance: 5200 sats
 			nodes[0].logger.assert_log("lightning::ln::channel",
-				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					dust_htlc_on_counterparty_tx_msat * dust_htlc_on_counterparty_tx + commitment_tx_cost + 4,
-					max_dust_htlc_exposure_msat), 1);
+									   format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+											   dust_htlc_on_counterparty_tx_msat * dust_htlc_on_counterparty_tx + commitment_tx_cost + 4,
+											   max_dust_htlc_exposure_msat), 1);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
 		route.paths[0].hops.last_mut().unwrap().fee_msat = 2_500_000;
@@ -10150,7 +10197,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		for _ in 0..AT_FEE_OUTBOUND_HTLCS {
 			let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(1_000), None);
 			nodes[0].node.send_payment_with_route(route.clone(), payment_hash,
-				RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+												  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		}
 		{
 			let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
@@ -10228,14 +10275,14 @@ fn test_nondust_htlc_fees_are_dust() {
 		route_payment(&nodes[0], &[&nodes[1]], HTLC_VALUE);
 	}
 	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat, 0,
-		"We don't want to run out of ability to send because of some non-dust limit");
+			   "We don't want to run out of ability to send because of some non-dust limit");
 	assert!(nodes[0].node.list_channels()[0].pending_outbound_htlcs.len() < 10,
-		"We should be able to fill our dust limit without too many HTLCs");
+			"We should be able to fill our dust limit without too many HTLCs");
 
 	let dust_limit = nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat;
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat, 0,
-		"Make sure we are able to send once we clear one HTLC");
+			   "Make sure we are able to send once we clear one HTLC");
 
 	// At this point we have somewhere between dust_limit and dust_limit * 2 left in our dust
 	// exposure limit, and we want to max that out using non-dust HTLCs.
@@ -10243,7 +10290,7 @@ fn test_nondust_htlc_fees_are_dust() {
 		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * 253;
 	let max_htlcs_remaining = dust_limit * 2 / commitment_tx_per_htlc_cost;
 	assert!(max_htlcs_remaining < 30,
-		"We should be able to fill our dust limit without too many HTLCs");
+			"We should be able to fill our dust limit without too many HTLCs");
 	for i in 0..max_htlcs_remaining + 1 {
 		assert_ne!(i, max_htlcs_remaining);
 		if nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat < dust_limit {
@@ -10305,17 +10352,23 @@ fn test_non_final_funding_tx() {
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction _beyond_ the best client height + 1.
-			Transaction { version: Version(chan_id as i32), lock_time: LockTime::from_height(best_height + 2).unwrap(), input: vec![input], output: vec![TxOut {
-				value: Amount::from_sat(*channel_value_satoshis), script_pubkey: output_script.clone(),
-			}]}
-		},
+			Transaction {
+				version: Version(chan_id as i32),
+				lock_time: LockTime::from_height(best_height + 2).unwrap(),
+				input: vec![input],
+				output: vec![TxOut {
+					value: Amount::from_sat(*channel_value_satoshis),
+					script_pubkey: output_script.clone(),
+				}],
+			}
+		}
 		_ => panic!("Unexpected event"),
 	};
 	// Transaction should fail as it's evaluated as non-final for propagation.
 	match nodes[0].node.funding_transaction_generated(temp_channel_id, nodes[1].node.get_our_node_id(), tx.clone()) {
 		Err(APIError::APIMisuseError { err }) => {
 			assert_eq!(format!("Funding transaction absolute timelock is non-final"), err);
-		},
+		}
 		_ => panic!()
 	}
 	let err = "Error in transaction funding: Misuse error: Funding transaction absolute timelock is non-final".to_owned();
@@ -10345,10 +10398,16 @@ fn test_non_final_funding_tx_within_headroom() {
 	let mut tx = match events[0] {
 		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
 			// Timelock the transaction within a +1 headroom from the best block.
-			Transaction { version: Version(chan_id as i32), lock_time: LockTime::from_consensus(best_height + 1), input: vec![input], output: vec![TxOut {
-				value: Amount::from_sat(*channel_value_satoshis), script_pubkey: output_script.clone(),
-			}]}
-		},
+			Transaction {
+				version: Version(chan_id as i32),
+				lock_time: LockTime::from_consensus(best_height + 1),
+				input: vec![input],
+				output: vec![TxOut {
+					value: Amount::from_sat(*channel_value_satoshis),
+					script_pubkey: output_script.clone(),
+				}],
+			}
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -10389,7 +10448,7 @@ fn accept_busted_but_better_fee() {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
 			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -10408,7 +10467,7 @@ fn accept_busted_but_better_fee() {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
 			nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
 			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
@@ -10431,7 +10490,7 @@ fn accept_busted_but_better_fee() {
 			}, [nodes[0].node.get_our_node_id()], 100000);
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors!(nodes[1], 1);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 }
@@ -10443,7 +10502,8 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let min_final_cltv_expiry_delta = 120;
 	let final_cltv_expiry_delta = if valid_delta { min_final_cltv_expiry_delta + 2 } else {
-		min_final_cltv_expiry_delta - 2 };
+		min_final_cltv_expiry_delta - 2
+	};
 	let recv_value = 100_000;
 
 	create_chan_between_nodes(&nodes[0], &nodes[1]);
@@ -10459,7 +10519,7 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 	};
 	let route = get_route!(nodes[0], payment_parameters, recv_value).unwrap();
 	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -10506,15 +10566,15 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 	// Asserts a disconnect event is queued to the user.
 	let check_disconnect_event = |node: &Node, should_disconnect: bool| {
 		let disconnect_event = node.node.get_and_clear_pending_msg_events().iter().find_map(|event|
-			if let MessageSendEvent::HandleError { action, .. } = event {
-				if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
-					Some(())
-				} else {
-					None
-				}
+		if let MessageSendEvent::HandleError { action, .. } = event {
+			if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
+				Some(())
 			} else {
 				None
 			}
+		} else {
+			None
+		}
 		);
 		assert_eq!(disconnect_event.is_some(), should_disconnect);
 	};
@@ -10571,11 +10631,15 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 	let bob_init = msgs::Init {
-		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	};
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &bob_init, true).unwrap();
 	let alice_init = msgs::Init {
-		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	};
 	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &alice_init, true).unwrap();
 
@@ -10590,12 +10654,12 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 
 	// Bob now sends his `ChannelReestablish` to Alice to resume the channel and consider it "live".
 	let bob_channel_reestablish = nodes[1].node.get_and_clear_pending_msg_events().iter().find_map(|event|
-		if let MessageSendEvent::SendChannelReestablish { node_id, msg } = event {
-			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			Some(msg.clone())
-		} else {
-			None
-		}
+	if let MessageSendEvent::SendChannelReestablish { node_id, msg } = event {
+		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		Some(msg.clone())
+	} else {
+		None
+	}
 	).unwrap();
 	nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &bob_channel_reestablish);
 
@@ -10668,7 +10732,7 @@ fn test_remove_expired_outbound_unfunded_channels() {
 	match msg_events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
 			assert_eq!(msg.data, "Force-closing pending channel due to timeout awaiting establishment handshake");
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, false, &[nodes[1].node.get_our_node_id()], 100000);
@@ -10719,7 +10783,7 @@ fn test_remove_expired_inbound_unfunded_channels() {
 	match msg_events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
 			assert_eq!(msg.data, "Force-closing pending channel due to timeout awaiting establishment handshake");
-		},
+		}
 		_ => panic!("Unexpected event"),
 	}
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, false, &[nodes[0].node.get_our_node_id()], 100000);
@@ -10794,10 +10858,14 @@ fn test_rebroadcast_open_channel_when_reconnect_mid_handshake() {
 
 	// The peers now reconnect
 	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
-		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, true).unwrap();
 	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
-		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	}, false).unwrap();
 
 	// Make sure the SendOpenChannel message is added to node_0 pending message events
@@ -10852,7 +10920,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 		get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
 	let payment_id = PaymentId(payment_hash_3.0);
 	nodes[1].node.send_payment_with_route(route, payment_hash_3,
-		RecipientOnionFields::secret_only(payment_secret_3), payment_id).unwrap();
+										  RecipientOnionFields::secret_only(payment_secret_3), payment_id).unwrap();
 	check_added_monitors(&nodes[1], 1);
 
 	let send_event = SendEvent::from_node(&nodes[1]);
@@ -11163,7 +11231,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let mut msg_events = closing_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	match msg_events.pop().unwrap() {
-		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {},
+		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {}
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors(closing_node, 1);
@@ -11224,7 +11292,7 @@ fn test_accept_inbound_channel_errors_queued() {
 		_ => panic!("Unexpected event"),
 	}
 	assert_eq!(get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id()).channel_id,
-		open_channel_msg.common_fields.temporary_channel_id);
+			   open_channel_msg.common_fields.temporary_channel_id);
 }
 
 #[test]
@@ -11303,13 +11371,13 @@ fn test_funding_signed_event() {
 		crate::events::Event::FundingTxBroadcastSafe { funding_txo, .. } => {
 			assert_eq!(funding_txo.txid, funding_outpoint.txid);
 			assert_eq!(funding_txo.vout, funding_outpoint.index.into());
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 	match &events[1] {
 		crate::events::Event::ChannelPending { counterparty_node_id, .. } => {
 			assert_eq!(*&nodes[1].node.get_our_node_id(), *counterparty_node_id);
-		},
+		}
 		_ => panic!("Unexpected event"),
 	};
 
