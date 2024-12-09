@@ -1427,7 +1427,9 @@ where
 			for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
 				if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
 					if let Some(addresses) = addresses.take() {
-						let future = ResultFuture::Pending(handler(Event::ConnectionNeeded { node_id: *node_id, addresses }));
+						let event = Event::ConnectionNeeded { node_id: *node_id, addresses };
+						log_trace!(self.logger, "Handling event {:?} async...", event);
+						let future = ResultFuture::Pending(handler(event));
 						futures.push(future);
 					}
 				}
@@ -1439,11 +1441,13 @@ where
 
 			for ev in intercepted_msgs {
 				if let Event::OnionMessageIntercepted { .. } = ev {} else { debug_assert!(false); }
+				log_trace!(self.logger, "Handling event {:?} async...", ev);
 				let future = ResultFuture::Pending(handler(ev));
 				futures.push(future);
 			}
 			// Let the `OnionMessageIntercepted` events finish before moving on to peer_connecteds
 			let res = MultiResultFuturePoller::new(futures).await;
+			log_trace!(self.logger, "Done handling events async, results: {:?}", res);
 			let mut res_iter = res.iter().skip(intercepted_msgs_offset);
 			drop_handled_events_and_abort!(self, res_iter, self.pending_intercepted_msgs_events);
 		}
@@ -1464,10 +1468,12 @@ where
 			} else {
 				let mut futures = Vec::new();
 				for event in peer_connecteds {
+					log_trace!(self.logger, "Handling event {:?} async...", event);
 					let future = ResultFuture::Pending(handler(event));
 					futures.push(future);
 				}
 				let res = MultiResultFuturePoller::new(futures).await;
+				log_trace!(self.logger, "Done handling events async, results: {:?}", res);
 				let mut res_iter = res.iter();
 				drop_handled_events_and_abort!(self, res_iter, self.pending_peer_connected_events);
 			}
@@ -1520,7 +1526,10 @@ where
 		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
 			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
 				if let Some(addresses) = addresses.take() {
-					let _ = handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
+					let event = Event::ConnectionNeeded { node_id: *node_id, addresses };
+					log_trace!(self.logger, "Handling event {:?}...", event);
+					let res = handler.handle_event(event);
+					log_trace!(self.logger, "Done handling event, ignoring result: {:?}", res);
 				}
 			}
 		}
@@ -1544,7 +1553,10 @@ where
 		let mut handling_intercepted_msgs_failed = false;
 		let mut num_handled_intercepted_events = 0;
 		for ev in intercepted_msgs {
-			match handler.handle_event(ev) {
+			log_trace!(self.logger, "Handling event {:?}...", ev);
+			let res = handler.handle_event(ev);
+			log_trace!(self.logger, "Done handling event, result: {:?}", res);
+			match res {
 				Ok(()) => num_handled_intercepted_events += 1,
 				Err(ReplayEvent ()) => {
 					handling_intercepted_msgs_failed = true;
@@ -1566,7 +1578,10 @@ where
 
 		let mut num_handled_peer_connecteds = 0;
 		for ev in peer_connecteds {
-			match handler.handle_event(ev) {
+			log_trace!(self.logger, "Handling event {:?}...", ev);
+			let res = handler.handle_event(ev);
+			log_trace!(self.logger, "Done handling event, result: {:?}", res);
+			match res {
 				Ok(()) => num_handled_peer_connecteds += 1,
 				Err(ReplayEvent ()) => {
 					self.event_notifier.notify();

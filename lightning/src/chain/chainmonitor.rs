@@ -573,7 +573,7 @@ where C::Target: chain::Filter,
 		for funding_txo in mons_to_process {
 			let mut ev;
 			match super::channelmonitor::process_events_body!(
-				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), ev, handler(ev).await) {
+				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), self.logger, ev, handler(ev).await) {
 				Ok(()) => {},
 				Err(ReplayEvent ()) => {
 					self.event_notifier.notify();
@@ -914,7 +914,7 @@ impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, 
 	/// [`BumpTransaction`]: events::Event::BumpTransaction
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		for monitor_state in self.monitors.read().unwrap().values() {
-			match monitor_state.monitor.process_pending_events(&handler) {
+			match monitor_state.monitor.process_pending_events(&handler, &self.logger) {
 				Ok(()) => {},
 				Err(ReplayEvent ()) => {
 					self.event_notifier.notify();

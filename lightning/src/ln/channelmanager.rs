@@ -3390,8 +3390,11 @@ macro_rules! process_events_body {
 
 			let mut num_handled_events = 0;
 			for (event, action_opt) in pending_events {
+				log_trace!($self.logger, "Handling event {:?}...", event);
 				$event_to_handle = event;
-				match $handle_event {
+				let event_handling_result = $handle_event;
+				log_trace!($self.logger, "Done handling event, result: {:?}", event_handling_result);
+				match event_handling_result {
 					Ok(()) => {
 						if let Some(action) = action_opt {
 							post_event_actions.push(action);
