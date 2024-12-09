@@ -4213,6 +4213,63 @@ where
 		}
 	}
 
+	/// Initiate a splice, to change the channel capacity of an existing funded channel.
+	/// After completion of splicing, the funding transaction will be replaced by a new one, spending the old funding transaction,
+	/// with optional extra inputs (splice-in) and/or extra outputs (splice-out or change).
+	/// TODO(splicing): Implementation is currently incomplete.
+	/// Note: Currently only splice-in is supported (increase in channel capacity), splice-out is not.
+	/// - our_funding_contribution_satoshis: the amount contributed by us to the channel. This will increase our channel balance.
+	/// - our_funding_inputs: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
+	#[cfg(splicing)]
+	pub fn splice_channel(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
+		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32,
+	) -> Result<(), APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(*channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
+					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_perkw, locktime)
+						.map_err(|err| APIError::APIMisuseError {
+							err: format!(
+								"Cannot initiate Splicing, {}, channel ID {}", err, channel_id
+							)
+						})?;
+
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
+						node_id: *counterparty_node_id,
+						msg,
+					});
+
+					Ok(())
+				} else {
+					Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} is not funded, cannot splice it",
+							channel_id
+						)
+					})
+				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				return Err(APIError::ChannelUnavailable {
+					err: format!(
+						"Channel with id {} not found for the passed counterparty node_id {}",
+						channel_id, counterparty_node_id,
+					)
+				});
+			},
+		}
+	}
+
 	fn can_forward_htlc_to_outgoing_channel(
 		&self, chan: &mut Channel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
 	) -> Result<(), (&'static str, u16)> {
@@ -9350,6 +9407,94 @@ where
 		Ok(NotifyOption::SkipPersistHandleEvents)
 	}
 
+	/// Handle incoming splice request, transition channel to splice-pending (unless some check fails).
+	#[cfg(splicing)]
+	fn internal_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) -> Result<(), MsgHandleErrInternal> {
+		// TODO(splicing): if we accept splicing, quiescence
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}, channel_id {}",
+					counterparty_node_id, msg.channel_id,
+				), msg.channel_id)),
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let ChannelPhase::Funded(chan) = chan_entry.get_mut() {
+					match chan.splice_init(msg) {
+						Ok(splice_ack_msg) => {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
+								node_id: *counterparty_node_id,
+								msg: splice_ack_msg,
+							});
+						},
+						Err(err) => {
+							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
+						}
+					}
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot be spliced".to_owned(), msg.channel_id));
+				}
+			},
+		};
+
+		// TODO(splicing):
+		//  Change channel, change phase (remove and add)
+		//  Create new post-splice channel
+		//  etc.
+
+		Ok(())
+	}
+
+	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
+	#[cfg(splicing)]
+	fn internal_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+					counterparty_node_id
+				), msg.channel_id)),
+			hash_map::Entry::Occupied(mut chan) => {
+				if let ChannelPhase::Funded(chan) = chan.get_mut() {
+					match chan.splice_ack(msg) {
+						Ok(_) => {}
+						Err(err) => {
+							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
+						}
+					}
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
+				}
+			},
+		};
+
+		// TODO(splicing):
+		//  Change channel, change phase (remove and add)
+		//  Create new post-splice channel
+		//  Start splice funding transaction negotiation
+		//  etc.
+
+		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_ack)".to_owned(), msg.channel_id))
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
@@ -11345,28 +11490,42 @@ where
 	fn handle_stfu(&self, counterparty_node_id: PublicKey, msg: &msgs::Stfu) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Quiescence not supported".to_owned(),
-			msg.channel_id.clone())), counterparty_node_id);
+			msg.channel_id)), counterparty_node_id);
 	}
 
 	#[cfg(splicing)]
 	fn handle_splice_init(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceInit) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Splicing not supported".to_owned(),
-			msg.channel_id.clone())), counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_splice_init(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistNoEvents,
+			};
+			let _ = handle_error!(self, res, counterparty_node_id);
+			persist
+		});
 	}
 
 	#[cfg(splicing)]
 	fn handle_splice_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceAck) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Splicing not supported (splice_ack)".to_owned(),
-			msg.channel_id.clone())), counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_splice_ack(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistNoEvents,
+			};
+			let _ = handle_error!(self, res, counterparty_node_id);
+			persist
+		});
 	}
 
 	#[cfg(splicing)]
 	fn handle_splice_locked(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceLocked) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Splicing not supported (splice_locked)".to_owned(),
-			msg.channel_id.clone())), counterparty_node_id);
+			msg.channel_id)), counterparty_node_id);
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: PublicKey, msg: &msgs::Shutdown) {
