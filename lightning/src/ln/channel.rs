@@ -8430,17 +8430,20 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = if let Some(holder_commitment_point) = self.unfunded_context.holder_commitment_point {
-			self.signer_pending_open_channel = false;
-			holder_commitment_point.current_point()
-		} else {
-			#[cfg(not(async_signing))] {
-				panic!("Failed getting commitment point for open_channel message");
-			}
-			#[cfg(async_signing)] {
-				log_trace!(_logger, "Unable to generate open_channel message, waiting for commitment point");
-				self.signer_pending_open_channel = true;
-				return None;
+		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
+			Some(holder_commitment_point) if holder_commitment_point.is_available() => {
+				self.signer_pending_open_channel = false;
+				holder_commitment_point.current_point()
+			},
+			_ => {
+				#[cfg(not(async_signing))] {
+					panic!("Failed getting commitment point for open_channel message");
+				}
+				#[cfg(async_signing)] {
+					log_trace!(_logger, "Unable to generate open_channel message, waiting for commitment point");
+					self.signer_pending_open_channel = true;
+					return None;
+				}
 			}
 		};
 		let keys = self.context.get_holder_pubkeys();
@@ -8541,13 +8544,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 			}
 		}
-		let open_channel = match self.unfunded_context.holder_commitment_point {
-			Some(ref mut point) if point.is_available() && self.signer_pending_open_channel => {
-				log_trace!(logger, "Attempting to generate open_channel...");
-				self.get_open_channel(chain_hash, logger)
-			}
-			_ => None
-		};
+		let open_channel = if self.signer_pending_open_channel {
+			log_trace!(logger, "Attempting to generate open_channel...");
+			self.get_open_channel(chain_hash, logger)
+		} else { None };
 		let funding_created = if self.context.signer_pending_funding && self.context.is_outbound() {
 			log_trace!(logger, "Attempting to generate pending funding created...");
 			self.context.signer_pending_funding = false;
