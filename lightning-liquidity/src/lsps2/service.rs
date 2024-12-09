@@ -15,7 +15,9 @@ use crate::lsps0::ser::{
 };
 use crate::lsps2::event::LSPS2ServiceEvent;
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
-use crate::lsps2::utils::{compute_opening_fee, is_valid_opening_fee_params};
+use crate::lsps2::utils::{
+	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
+};
 use crate::message_queue::MessageQueue;
 use crate::prelude::{new_hash_map, HashMap, String, ToString, Vec};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -461,8 +463,15 @@ impl PeerState {
 	}
 
 	fn peer_disconnected(&mut self) {
-		// Clean any pending `get_info` requests.
-		self.pending_requests.retain(|_, entry| !matches!(entry, LSPS2Request::GetInfo(_)));
+		self.pending_requests.retain(|_, entry| {
+			match entry {
+				LSPS2Request::GetInfo(_) => false,
+				LSPS2Request::Buy(request) => {
+					// Prune any expired buy requests.
+					!is_expired_opening_fee_params(&request.opening_fee_params)
+				},
+			}
+		});
 	}
 }
 
