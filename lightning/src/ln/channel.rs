@@ -1501,7 +1501,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// The `next_funding_txid` field allows peers to finalize the signing steps of an interactive
 	// transaction construction, or safely abort that transaction if it was not signed by one of the
 	// peers, who has thus already removed it from its state.
-	// 
+	//
 	// If we've sent `commtiment_signed` for an interactively constructed transaction
 	// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
 	// to the txid of that interactive transaction, else we MUST NOT set it.
@@ -4368,10 +4368,12 @@ impl<SP: Deref> Channel<SP> where
 			total_fee_satoshis += (-value_to_counterparty) as u64;
 		}
 
+		debug_assert!(value_to_counterparty >= 0);
 		if skip_remote_output || value_to_counterparty as u64 <= self.context.holder_dust_limit_satoshis {
 			value_to_counterparty = 0;
 		}
 
+		debug_assert!(value_to_holder >= 0);
 		if value_to_holder as u64 <= self.context.holder_dust_limit_satoshis {
 			value_to_holder = 0;
 		}
