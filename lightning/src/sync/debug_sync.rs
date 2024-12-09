@@ -67,6 +67,7 @@ impl Condvar {
 		self.inner.notify_all();
 	}
 
+	#[allow(unused)]
 	pub fn notify_one(&self) {
 		self.inner.notify_one();
 	}
