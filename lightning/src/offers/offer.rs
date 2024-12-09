@@ -72,10 +72,10 @@
 //! # Note
 //!
 //! If constructing an [`Offer`] for use with a [`ChannelManager`], use
-//! [`ChannelManager::create_offer_builder`] instead of [`OfferBuilder::new`].
+//! [`OffersMessageFlow::create_offer_builder`] instead of [`OfferBuilder::new`].
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-//! [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
+//! [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 
 use core::borrow::Borrow;
 use bitcoin::constants::ChainHash;
@@ -229,10 +229,10 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	/// # Note
 	///
 	/// If constructing an [`Offer`] for use with a [`ChannelManager`], use
-	/// [`ChannelManager::create_offer_builder`] instead of [`OfferBuilder::new`].
+	/// [`OffersMessageFlow::create_offer_builder`] instead of [`OfferBuilder::new`].
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
+	/// [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 	pub fn new(signing_pubkey: PublicKey) -> Self {
 		Self {
 			offer: OfferContents {

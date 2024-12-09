@@ -47,6 +47,14 @@ pub trait OffersMessageHandler {
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
 	) -> Option<(OffersMessage, ResponseInstruction)>;
 
+	/// Indicates that a message was received from any peer for any handler.
+	/// Called before the message is passed to the appropriate handler.
+	/// Useful for indicating that a network connection is active.
+	///
+	/// Note: Since this function is called frequently, it should be as
+	/// efficient as possible for its intended purpose.
+	fn message_received(&self) {}
+
 	/// Releases any [`OffersMessage`]s that need to be sent.
 	///
 	/// Typically, this is used for messages initiating a payment flow rather than in response to
