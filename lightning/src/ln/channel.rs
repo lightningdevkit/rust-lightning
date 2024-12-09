@@ -2035,29 +2035,29 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		extra_input: Option<(TxIn, TransactionU16LenLimited)>,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, APIError>
 	where ES::Target: EntropySource
 	{
-		let mut funding_inputs_with_extra = self.dual_funding_context.our_funding_inputs.take().unwrap_or_else(|| vec![]);
+		let mut funding_inputs = self.dual_funding_context.our_funding_inputs.take().unwrap_or_else(|| vec![]);
 
-		if let Some(extra_input) = extra_input {
-			funding_inputs_with_extra.push(extra_input);
+		if let Some(prev_funding_input) = prev_funding_input {
+			funding_inputs.push(prev_funding_input);
 		}
 
-		let mut funding_inputs_prev_outputs: Vec<&TxOut> = Vec::with_capacity(funding_inputs_with_extra.len());
+		let mut funding_inputs_prev_outputs: Vec<&TxOut> = Vec::with_capacity(funding_inputs.len());
 		// Check that vouts exist for each TxIn in provided transactions.
-		for (idx, input) in funding_inputs_with_extra.iter().enumerate() {
+		for (idx, input) in funding_inputs.iter().enumerate() {
 			if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
 				funding_inputs_prev_outputs.push(&output);
 			} else {
 				return Err(APIError::APIMisuseError {
-					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs_with_extra[{}]",
+					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
 						input.1.as_transaction().compute_txid(), input.0.previous_output.vout, idx) });
 			}
 		}
 
-		let total_input_satoshis: u64 = funding_inputs_with_extra.iter().map(
+		let total_input_satoshis: u64 = funding_inputs.iter().map(
 			|input| input.1.as_transaction().output.get(input.0.previous_output.vout as usize).map(|out| out.value.to_sat()).unwrap_or(0)
 		).sum();
 		if total_input_satoshis < self.dual_funding_context.our_funding_satoshis {
@@ -2112,7 +2112,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			feerate_sat_per_kw: self.dual_funding_context.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.context.is_outbound(),
 			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
-			inputs_to_contribute: funding_inputs_with_extra,
+			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
 			expected_remote_shared_funding_output,
 		};
