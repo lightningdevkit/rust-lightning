@@ -83,7 +83,8 @@ fn create_jit_invoice(
 #[test]
 fn invoice_generation_flow() {
 	let promise_secret = [42; 32];
-	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
+	let service_limits = Default::default();
+	let lsps2_service_config = LSPS2ServiceConfig { promise_secret, service_limits };
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
