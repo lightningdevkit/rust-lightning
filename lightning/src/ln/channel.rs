@@ -3931,6 +3931,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			&self.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
+		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
 		let signature = match &self.holder_signer {
 			// TODO (arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_counterparty_commitment(
@@ -3954,15 +3955,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		let funding_signed = signature.map(|(signature, _)| msgs::FundingSigned {
+		signature.map(|(signature, _)| msgs::FundingSigned {
 			channel_id: self.channel_id(),
 			signature,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
-		});
-
-		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
-		funding_signed
+		})
 	}
 
 	/// If we receive an error message when attempting to open a channel, it may only be a rejection
