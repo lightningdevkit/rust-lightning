@@ -459,6 +459,11 @@ impl PeerState {
 	fn insert_outbound_channel(&mut self, intercept_scid: u64, channel: OutboundJITChannel) {
 		self.outbound_channels_by_intercept_scid.insert(intercept_scid, channel);
 	}
+
+	fn peer_disconnected(&mut self) {
+		// Clean any pending `get_info` requests.
+		self.pending_requests.retain(|_, entry| !matches!(entry, LSPS2Request::GetInfo(_)));
+	}
 }
 
 /// The main object allowing to send and receive LSPS2 messages.
@@ -1231,6 +1236,14 @@ where
 			self.total_pending_requests.load(Ordering::Relaxed),
 			"total_pending_requests counter out-of-sync! This should never happen!"
 		);
+	}
+
+	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
+		let outer_state_lock = self.per_peer_state.write().unwrap();
+		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
+			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			peer_state_lock.peer_disconnected();
+		}
 	}
 }
 
