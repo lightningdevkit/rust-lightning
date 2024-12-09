@@ -8252,9 +8252,9 @@ impl<SP: Deref> Channel<SP> where
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	/// We tried to send a `open_channel` message but our commitment point wasn't ready.
+	/// We tried to send an `open_channel` message but our commitment point wasn't ready.
 	/// This flag tells us we need to send it when we are retried once the
-	/// commiment point is ready.
+	/// commitment point is ready.
 	pub signer_pending_open_channel: bool,
 }
 
