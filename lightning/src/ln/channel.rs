@@ -8681,17 +8681,20 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn generate_accept_channel_message<L: Deref>(&mut self, _logger: &L) -> Option<msgs::AcceptChannel>
 	where L::Target: Logger
 	{
-		let first_per_commitment_point = if let Some(holder_commitment_point) = self.unfunded_context.holder_commitment_point {
-			self.signer_pending_accept_channel = false;
-			holder_commitment_point.current_point()
-		} else {
-			#[cfg(not(async_signing))] {
-				panic!("Failed getting commitment point for accept_channel message");
-			}
-			#[cfg(async_signing)] {
-				log_trace!(_logger, "Unable to generate accept_channel message, waiting for commitment point");
-				self.signer_pending_accept_channel = true;
-				return None;
+		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
+			Some(holder_commitment_point) if holder_commitment_point.is_available() => {
+				self.signer_pending_accept_channel = false;
+				holder_commitment_point.current_point()
+			},
+			_ => {
+				#[cfg(not(async_signing))] {
+					panic!("Failed getting commitment point for accept_channel message");
+				}
+				#[cfg(async_signing)] {
+					log_trace!(_logger, "Unable to generate accept_channel message, waiting for commitment point");
+					self.signer_pending_accept_channel = true;
+					return None;
+				}
 			}
 		};
 		let keys = self.context.get_holder_pubkeys();
@@ -8805,13 +8808,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 			}
 		}
-		match self.unfunded_context.holder_commitment_point {
-			Some(ref mut point) if point.is_available() && self.signer_pending_accept_channel => {
-				log_trace!(logger, "Attempting to generate accept_channel...");
-				self.generate_accept_channel_message(logger)
-			}
-			_ => None
-		}
+		if self.signer_pending_accept_channel {
+			log_trace!(logger, "Attempting to generate accept_channel...");
+			self.generate_accept_channel_message(logger)
+		} else { None }
 	}
 }
 
