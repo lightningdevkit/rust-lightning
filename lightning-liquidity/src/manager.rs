@@ -226,6 +226,9 @@ where {
 	}
 
 	/// Returns a reference to the LSPS1 client-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS1 client-side flow, i.e., allows to request
+	/// channels from the configured LSP.
 	pub fn lsps1_client_handler(&self) -> Option<&LSPS1ClientHandler<ES>> {
 		self.lsps1_client_handler.as_ref()
 	}
@@ -237,11 +240,17 @@ where {
 	}
 
 	/// Returns a reference to the LSPS2 client-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS2 client-side flow. That is, it allows to
+	/// retrieve all necessary data to create 'just-in-time' invoices that, when paid, will have
+	/// the configured LSP open a 'just-in-time' channel.
 	pub fn lsps2_client_handler(&self) -> Option<&LSPS2ClientHandler<ES>> {
 		self.lsps2_client_handler.as_ref()
 	}
 
 	/// Returns a reference to the LSPS2 server-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS2 service-side flow.
 	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
 		self.lsps2_service_handler.as_ref()
 	}
