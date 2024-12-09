@@ -13,7 +13,7 @@ use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
-use crate::prelude::{HashMap, HashSet, String};
+use crate::prelude::{HashMap, HashSet, String, ToString};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -174,7 +174,8 @@ where
 				.is_some()
 			{
 				return Err(APIError::APIMisuseError {
-					err: format!("Failed due to duplicate request_id. This should never happen!"),
+					err: "Failed due to duplicate request_id. This should never happen!"
+						.to_string(),
 				});
 			}
 		}

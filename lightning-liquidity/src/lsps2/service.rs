@@ -145,7 +145,7 @@ impl OutboundJITChannelState {
 						debug_assert_eq!(num_htlcs, 1);
 						if num_htlcs != 1 {
 							return Err(ChannelStateError(
-								format!("Paying via multiple HTLCs is disallowed in \"no-MPP+var-invoice\" mode.")
+								"Paying via multiple HTLCs is disallowed in \"no-MPP+var-invoice\" mode.".to_string()
 							));
 						}
 						(total_expected_outbound_amount_msat, false)

@@ -547,7 +547,7 @@ where
 			.filter_map(|(public_key, msg)| {
 				serde_json::to_string(&msg)
 					.ok()
-					.and_then(|payload| Some((public_key, RawLSPSMessage { payload })))
+					.map(|payload| (public_key, RawLSPSMessage { payload }))
 			})
 			.collect()
 	}
