@@ -163,6 +163,19 @@ pub trait KVStore {
 	) -> Result<Vec<String>, io::Error>;
 }
 
+/// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
+/// data migration.
+pub trait MigratableKVStore: KVStore {
+	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
+	///
+	/// This is useful for migrating data from [`KVStore`] implementation to [`KVStore`]
+	/// implementation.
+	///
+	/// Must exhaustively return all entries known to the store to ensure no data is missed, but
+	/// may return the items in arbitrary order.
+	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
+}
+
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
