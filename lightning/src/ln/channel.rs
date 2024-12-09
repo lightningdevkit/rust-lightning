@@ -6144,19 +6144,27 @@ impl<SP: Deref> Channel<SP> where
 			if let Some((fee, skip_remote_output, fee_range, holder_sig)) = self.context.last_sent_closing_fee.clone() {
 				debug_assert!(holder_sig.is_none());
 				log_trace!(logger, "Attempting to generate pending closing_signed...");
-				let (closing_tx, fee) = self.build_closing_transaction(fee, skip_remote_output)?;
-				let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output,
-					fee, fee_range.min_fee_satoshis, fee_range.max_fee_satoshis, logger);
-				let signed_tx = if let (Some(ClosingSigned { signature, .. }), Some(counterparty_sig)) =
-					(closing_signed.as_ref(), self.context.last_received_closing_sig) {
-					let funding_redeemscript = self.context.get_funding_redeemscript();
-					let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
-					debug_assert!(self.context.secp_ctx.verify_ecdsa(&sighash, &counterparty_sig,
-						&self.context.get_counterparty_pubkeys().funding_pubkey).is_ok());
-					Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
-				} else { None };
-				let shutdown_result = signed_tx.as_ref().map(|_| self.shutdown_result_coop_close());
-				(closing_signed, signed_tx, shutdown_result)
+				let closing_transaction_result = self.build_closing_transaction(fee, skip_remote_output);
+				match closing_transaction_result {
+					Ok((closing_tx, fee)) => {
+						let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output,
+																		 fee, fee_range.min_fee_satoshis, fee_range.max_fee_satoshis, logger);
+						let signed_tx = if let (Some(ClosingSigned { signature, .. }), Some(counterparty_sig)) =
+							(closing_signed.as_ref(), self.context.last_received_closing_sig) {
+							let funding_redeemscript = self.context.get_funding_redeemscript();
+							let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
+							debug_assert!(self.context.secp_ctx.verify_ecdsa(&sighash, &counterparty_sig,
+																			 &self.context.get_counterparty_pubkeys().funding_pubkey).is_ok());
+							Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
+						} else { None };
+						let shutdown_result = signed_tx.as_ref().map(|_| self.shutdown_result_coop_close());
+						(closing_signed, signed_tx, shutdown_result)
+					}
+					Err(err) => {
+						let shutdown = self.context.force_shutdown(true, ClosureReason::ProcessingError {err: err.to_string()});
+						(None, None, Some(shutdown))
+					}
+				}
 			} else { (None, None, None) }
 		} else { (None, None, None) };
 
