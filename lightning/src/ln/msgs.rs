@@ -821,6 +821,18 @@ pub struct ChannelReestablish {
 	/// The sender's per-commitment point for their current commitment transaction
 	pub my_current_per_commitment_point: PublicKey,
 	/// The next funding transaction ID
+	///
+	/// Allows peers to finalize the signing steps of an interactive transaction construction, or
+	/// safely abort that transaction if it was not signed by one of the peers, who has thus already
+	/// removed it from its state.
+	///
+	/// If we've sent `commtiment_signed` for an interactively constructed transaction
+	/// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
+	/// to the txid of that interactive transaction, else we MUST NOT set it.
+	///
+	/// See the spec for further details on this:
+	///   * `channel_reestablish`-sending node: https:///github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2466-L2470
+	///   * `channel_reestablish`-receiving node: https:///github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2520-L2531
 	pub next_funding_txid: Option<Txid>,
 }
 
