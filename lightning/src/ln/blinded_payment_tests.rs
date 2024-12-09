@@ -1235,7 +1235,7 @@ fn blinded_keysend() {
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2], &chanmon_cfgs[2].keys_manager);
 
-	let payment_hash = nodes[0].node.send_spontaneous_payment_with_retry(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
+	let payment_hash = nodes[0].node.send_spontaneous_payment(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
@@ -1289,7 +1289,7 @@ fn blinded_mpp_keysend() {
 		RouteParameters::from_payment_params_and_value(pay_params, amt_msat)
 	};
 
-	let payment_hash = nodes[0].node.send_spontaneous_payment_with_retry(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
+	let payment_hash = nodes[0].node.send_spontaneous_payment(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
@@ -1327,7 +1327,7 @@ fn invalid_keysend_payment_secret() {
 		&chanmon_cfgs[2].keys_manager
 	);
 
-	let payment_hash = nodes[0].node.send_spontaneous_payment_with_retry(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
+	let payment_hash = nodes[0].node.send_spontaneous_payment(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
