@@ -176,6 +176,72 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 	Ok(res)
 }
 
+#[inline]
+pub(super) fn construct_trampoline_onion_keys_callback<T, FType>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, mut callback: FType,
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing,
+	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&TrampolineHop>, usize),
+{
+	let mut blinded_priv = session_priv.clone();
+	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+	let unblinded_hops_iter = path.trampoline_hops.iter().map(|h| (&h.pubkey, Some(h)));
+	let blinded_pks_iter = path
+		.blinded_tail
+		.as_ref()
+		.map(|t| t.hops.iter())
+		.unwrap_or([].iter())
+		.skip(1) // Skip the intro node because it's included in the unblinded hops
+		.map(|h| (&h.blinded_node_id, None));
+	for (idx, (pubkey, route_hop_opt)) in unblinded_hops_iter.chain(blinded_pks_iter).enumerate() {
+		let shared_secret = SharedSecret::new(pubkey, &blinded_priv);
+
+		let mut sha = Sha256::engine();
+		sha.input(&blinded_pub.serialize()[..]);
+		sha.input(shared_secret.as_ref());
+		let blinding_factor = Sha256::from_engine(sha).to_byte_array();
+
+		let ephemeral_pubkey = blinded_pub;
+
+		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
+		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+		callback(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx);
+	}
+
+	Ok(())
+}
+
+// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
+pub(super) fn construct_trampoline_onion_keys<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey,
+) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+	let mut res = Vec::with_capacity(path.trampoline_hops.len());
+
+	construct_trampoline_onion_keys_callback(
+		secp_ctx,
+		&path,
+		session_priv,
+		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
+			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
+
+			res.push(OnionKeys {
+				#[cfg(test)]
+				shared_secret,
+				#[cfg(test)]
+				blinding_factor: _blinding_factor,
+				ephemeral_pubkey,
+				rho,
+				mu,
+			});
+		},
+	)?;
+
+	Ok(res)
+}
+
 fn build_trampoline_onion_payloads<'a>(
 	path: &'a Path, total_msat: u64, recipient_onion: &'a RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
