@@ -756,7 +756,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				}
 
 				let package_locktime = req.package_locktime(cur_height);
-				if package_locktime > cur_height + 1 {
+				if package_locktime > cur_height {
 					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
 					for outpoint in req.outpoints() {
 						log_info!(logger, "  Outpoint {}", outpoint);
