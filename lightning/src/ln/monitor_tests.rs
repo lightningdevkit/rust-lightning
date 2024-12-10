@@ -346,12 +346,6 @@ fn sorted_vec<T: Ord>(mut v: Vec<T>) -> Vec<T> {
 	v
 }
 
-fn verify_claimable_balances(mut balances_1: Vec<Balance>, mut balances_2: Vec<Balance>) {
-	balances_1.sort();
-	balances_2.sort();
-	assert_eq!(balances_1, balances_2);
-}
-
 /// Asserts that `a` and `b` are close, but maybe off by up to 5.
 /// This is useful when checking fees and weights on transactions as things may vary by a few based
 /// on signature size and signature size estimation being non-exact.
@@ -1356,31 +1350,33 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 	// Prior to channel closure, B considers the preimage HTLC as its own, and otherwise only
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
-	verify_claimable_balances(
-		vec![Balance::ClaimableOnChannelClose {
-			amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000 - 1 /* rounded up msat parts of HTLCs */,
-			transaction_fee_satoshis: 0,
-			outbound_payment_htlc_rounded_msat: 3200,
-			outbound_forwarded_htlc_rounded_msat: 0,
-			inbound_claiming_htlc_rounded_msat: 100,
-			inbound_htlc_rounded_msat: 0,
-		}, Balance::MaybeTimeoutClaimableHTLC {
-			amount_satoshis: 2_000,
-			claimable_height: missing_htlc_cltv_timeout,
-			payment_hash: missing_htlc_payment_hash,
-			outbound_payment: true,
-		}, Balance::MaybeTimeoutClaimableHTLC {
-			amount_satoshis: 4_000,
-			claimable_height: htlc_cltv_timeout,
-			payment_hash: timeout_payment_hash,
-			outbound_payment: true,
-		}, Balance::MaybeTimeoutClaimableHTLC {
-			amount_satoshis: 5_000,
-			claimable_height: live_htlc_cltv_timeout,
-			payment_hash: live_payment_hash,
-			outbound_payment: true,
-		}],
-		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
+	assert_eq!(
+		sorted_vec(vec![
+			Balance::ClaimableOnChannelClose {
+				amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000 - 1 /* rounded up msat parts of HTLCs */,
+				transaction_fee_satoshis: 0,
+				outbound_payment_htlc_rounded_msat: 3200,
+				outbound_forwarded_htlc_rounded_msat: 0,
+				inbound_claiming_htlc_rounded_msat: 100,
+				inbound_htlc_rounded_msat: 0,
+			}, Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 2_000,
+				claimable_height: missing_htlc_cltv_timeout,
+				payment_hash: missing_htlc_payment_hash,
+				outbound_payment: true,
+			}, Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 4_000,
+				claimable_height: htlc_cltv_timeout,
+				payment_hash: timeout_payment_hash,
+				outbound_payment: true,
+			}, Balance::MaybeTimeoutClaimableHTLC {
+				amount_satoshis: 5_000,
+				claimable_height: live_htlc_cltv_timeout,
+				payment_hash: live_payment_hash,
+				outbound_payment: true,
+			},
+		]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()),
 	);
 
 	mine_transaction(&nodes[1], &as_revoked_txn[0]);
@@ -1427,15 +1423,15 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 	// Once the channel has been closed by A, B now considers all of the commitment transactions'
 	// outputs as `CounterpartyRevokedOutputClaimable`.
-	verify_claimable_balances(
-		vec![
+	assert_eq!(
+		sorted_vec(vec![
 			to_remote_balance.clone(),
 			to_self_unclaimed_balance.clone(),
 			htlc_unclaimed_balance(3_000),
 			htlc_unclaimed_balance(4_000),
 			htlc_unclaimed_balance(5_000),
-		],
-		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
+		]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()),
 	);
 
 	if confirm_htlc_spend_first {
@@ -1461,24 +1457,24 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	};
 
 	if confirm_htlc_spend_first {
-		verify_claimable_balances(
-			vec![
+		assert_eq!(
+			sorted_vec(vec![
 				to_remote_balance.clone(),
 				pinnable_claimed_balance.clone(),
 				to_self_unclaimed_balance.clone(),
-			],
-			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
+			]),
+			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()),
 		);
 	} else {
-		verify_claimable_balances(
-			vec![
+		assert_eq!(
+			sorted_vec(vec![
 				to_remote_balance.clone(),
 				unpinnable_claimed_balance.clone(),
 				htlc_unclaimed_balance(3_000),
 				htlc_unclaimed_balance(4_000),
 				htlc_unclaimed_balance(5_000),
-			],
-			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
+			]),
+			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()),
 		);
 	}
 
@@ -1487,13 +1483,13 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	} else {
 		mine_transaction(&nodes[1], &claim_txn[0]);
 	}
-	verify_claimable_balances(
-		vec![
+	assert_eq!(
+		sorted_vec(vec![
 			to_remote_balance.clone(),
 			pinnable_claimed_balance.clone(),
 			unpinnable_claimed_balance.clone(),
-		],
-		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
+		]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()),
 	);
 
 	connect_blocks(&nodes[1], 3);
