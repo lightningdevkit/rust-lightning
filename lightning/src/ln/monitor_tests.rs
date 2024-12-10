@@ -909,10 +909,21 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		// Aggregated HTLC timeouts.
 		assert_eq!(timeout_htlc_txn.len(), 1);
 		check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
+		// One input from the commitment transaction for each HTLC, and one input to provide fees.
+		assert_eq!(timeout_htlc_txn[0].input.len(), 3);
+		// HTLC timeout witnesses for anchor channels contain 284 bytes. Note that DER-encoded ECDSA
+		// signatures vary in size.
+		// https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-htlc-timeout-and-htlc-success-transactions
+		assert_eq!(timeout_htlc_txn[0].input[0].witness.size(), 284);
+		assert_eq!(timeout_htlc_txn[0].input[1].witness.size(), 284);
 	} else {
 		assert_eq!(timeout_htlc_txn.len(), 2);
-		check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
-		check_spends!(timeout_htlc_txn[1], commitment_tx, coinbase_tx);
+		check_spends!(timeout_htlc_txn[0], commitment_tx);
+		check_spends!(timeout_htlc_txn[1], commitment_tx);
+		// HTLC timeout witnesses for non-anchor channels contain 281 bytes. Note that DER-encoded
+		// ECDSA signatures vary in size.
+		assert_eq!(timeout_htlc_txn[0].input[0].witness.size(), 281);
+		assert_eq!(timeout_htlc_txn[1].input[0].witness.size(), 281);
 	}
 
 	// Now confirm nodes[1]'s HTLC claim, giving nodes[0] the preimage. Note that the "maybe
@@ -931,6 +942,13 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		// aggregated package.
 		handle_bump_htlc_event(&nodes[0], 1);
 		timeout_htlc_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(timeout_htlc_txn.len(), 1);
+		check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
+		// One input from the commitment transaction for the HTLC, and one input to provide fees.
+		assert_eq!(timeout_htlc_txn[0].input.len(), 2);
+		// HTLC timeout witnesses for anchor channels contain 284 bytes. Note that DER-encoded ECDSA
+		// signatures vary in size.
+		assert_eq!(timeout_htlc_txn[0].input[0].witness.size(), 284);
 	}
 
 	// Now confirm nodes[0]'s HTLC-Timeout transaction, which changes the claimable balance to an
