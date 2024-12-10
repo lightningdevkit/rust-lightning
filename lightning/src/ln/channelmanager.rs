@@ -36,7 +36,7 @@ use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -477,7 +477,7 @@ impl Verification for PaymentHash {
 	}
 }
 
-impl Verification for ReceiveTlvs {
+impl Verification for UnauthenticatedReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
@@ -10480,18 +10480,16 @@ where
 		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
 			+ LATENCY_GRACE_PERIOD_BLOCKS;
 
-		let mut payee_tlvs = ReceiveTlvs {
+		let payee_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
 			payment_context,
-			authentication: None,
 		};
 		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = payee_tlvs.hmac_for_offer_payment(nonce, expanded_key);
-		payee_tlvs.authentication = Some((hmac, nonce));
+		let payee_tlvs = payee_tlvs.authenticate(nonce, expanded_key);
 
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx

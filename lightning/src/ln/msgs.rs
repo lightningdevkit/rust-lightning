@@ -31,7 +31,7 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
-use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
 use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -2908,19 +2908,16 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						next_blinding_override,
 					})
 				},
-				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(mut receive_tlvs) } => {
-					if let Some((hmac, nonce)) = receive_tlvs.authentication.take() {
-						let expanded_key = node_signer.get_inbound_payment_key();
-						if receive_tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
-							return Err(DecodeError::InvalidValue);
-						}
-					} else {
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(receive_tlvs) } => {
+					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
+					let expanded_key = node_signer.get_inbound_payment_key();
+					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
 						return Err(DecodeError::InvalidValue);
 					}
 
-					let ReceiveTlvs {
-						payment_secret, payment_constraints, payment_context, authentication: _,
-					} = receive_tlvs;
+					let UnauthenticatedReceiveTlvs {
+						payment_secret, payment_constraints, payment_context,
+					} = tlvs;
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
