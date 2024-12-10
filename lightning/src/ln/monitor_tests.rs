@@ -1667,7 +1667,9 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	let revoked_to_self_claim = {
 		let mut as_commitment_claim_txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(as_commitment_claim_txn.len(), 2);
+		// One unpinnable revoked to_self output.
 		assert_eq!(as_commitment_claim_txn[0].input.len(), 1);
+		// Two pinnable revoked HTLC outputs.
 		assert_eq!(as_commitment_claim_txn[1].input.len(), 2);
 		check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
 		check_spends!(as_commitment_claim_txn[1], revoked_local_txn[0]);
@@ -1955,7 +1957,9 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	let mut claim_txn = nodes[1].tx_broadcaster.txn_broadcast();
 	assert_eq!(claim_txn.len(), 2);
+	// One unpinnable revoked to_self output.
 	assert_eq!(claim_txn[0].input.len(), 1);
+	// Two pinnable revoked HTLC outputs.
 	assert_eq!(claim_txn[1].input.len(), 2);
 	check_spends!(claim_txn[0], as_revoked_txn[0]);
 	check_spends!(claim_txn[1], as_revoked_txn[0]);
