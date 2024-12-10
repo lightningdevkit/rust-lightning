@@ -435,6 +435,18 @@ impl OutboundJITChannel {
 		self.state = new_state;
 		Ok(action)
 	}
+
+	fn is_prunable(&self) -> bool {
+		// We deem an OutboundJITChannel prunable if our offer expired and we haven't intercepted
+		// any HTLCs initiating the flow yet.
+		let is_pending_initial_payment = match self.state {
+			OutboundJITChannelState::PendingInitialPayment { .. } => true,
+			_ => false,
+		};
+
+		let is_expired = is_expired_opening_fee_params(&self.opening_fee_params);
+		is_pending_initial_payment && is_expired
+	}
 }
 
 struct PeerState {
@@ -471,6 +483,16 @@ impl PeerState {
 					!is_expired_opening_fee_params(&request.opening_fee_params)
 				},
 			}
+		});
+
+		self.outbound_channels_by_intercept_scid.retain(|intercept_scid, entry| {
+			if entry.is_prunable() {
+				// We abort the flow, and prune any data kept.
+				self.intercept_scid_by_channel_id.retain(|_, iscid| intercept_scid != iscid);
+				self.intercept_scid_by_user_channel_id.retain(|_, iscid| intercept_scid != iscid);
+				return false;
+			}
+			true
 		});
 	}
 }
