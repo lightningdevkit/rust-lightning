@@ -45,6 +45,45 @@ pub trait BroadcasterInterface {
 	fn broadcast_transactions(&self, txs: &[&Transaction]);
 }
 
+/// Transaction broadcaster that does not broadcast transactions, but accumulates
+/// them in a Vec instead. This could be used to delay broadcasts until the system
+/// is ready.
+pub struct VecBroadcaster {
+    channel_id: ChannelId,
+    transactions: Mutex<Vec<Transaction>>,
+}
+
+impl VecBroadcaster {
+    /// Create a new broadcaster for a channel
+    pub fn new(channel_id: ChannelId) -> Self {
+        Self {
+            channel_id,
+            transactions: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Used to actually broadcast stored transactions to the network.
+    #[instrument(skip_all, fields(channel = %self.channel_id))]
+    pub fn release_transactions(&self, broadcaster: Arc<dyn BroadcasterInterface>) {
+        let transactions = self.transactions.lock();
+        info!(
+            "Releasing transactions for channel_id={}, len={}",
+            self.channel_id,
+            transactions.len()
+        );
+        broadcaster.broadcast_transactions(&transactions.iter().collect::<Vec<&Transaction>>())
+    }
+}
+
+impl BroadcasterInterface for VecBroadcaster {
+    fn broadcast_transactions(&self, txs: &[&Transaction]) {
+        let mut tx_storage = self.transactions.lock();
+        for tx in txs {
+            tx_storage.push((*tx).to_owned())
+        }
+    }
+}
+
 /// An enum that represents the priority at which we want a transaction to confirm used for feerate
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
