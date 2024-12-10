@@ -873,13 +873,13 @@ impl PackageTemplate {
 		signed_locktime
 	}
 	pub(crate) fn package_locktime(&self, current_height: u32) -> u32 {
-		let minimum_locktime = self.inputs.iter().filter_map(|(_, outp)| outp.minimum_locktime()).max().unwrap_or(0);
+		let minimum_locktime = self.inputs.iter().filter_map(|(_, outp)| outp.minimum_locktime()).max();
 
 		if let Some(signed_locktime) = self.signed_locktime() {
-			debug_assert!(signed_locktime >= minimum_locktime);
+			debug_assert!(minimum_locktime.is_none());
 			signed_locktime
 		} else {
-			core::cmp::max(current_height, minimum_locktime)
+			core::cmp::max(current_height, minimum_locktime.unwrap_or(0))
 		}
 	}
 	pub(crate) fn package_weight(&self, destination_script: &Script) -> u64 {
