@@ -1,7 +1,7 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
-use lightning::util::persist::KVStore;
+use lightning::util::persist::{KVStore, MigratableKVStore};
 use lightning::util::string::PrintableString;
 
 use std::collections::HashMap;
@@ -422,6 +422,72 @@ fn get_key_from_dir_entry(p: &Path, base_path: &Path) -> Result<String, lightnin
 			);
 			return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
 		},
+	}
+}
+
+impl MigratableKVStore for FilesystemStore {
+	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
+		let prefixed_dest = &self.data_dir;
+		if !prefixed_dest.exists() {
+			return Ok(Vec::new());
+		}
+
+		let mut keys = Vec::new();
+
+		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
+			let primary_path = primary_entry?.path();
+
+			if dir_entry_is_key(&primary_path)? {
+				let primary_namespace = String::new();
+				let secondary_namespace = String::new();
+				let key = get_key_from_dir_entry(&primary_path, prefixed_dest)?;
+				keys.push((primary_namespace, secondary_namespace, key));
+				continue 'primary_loop;
+			}
+
+			// The primary_entry is actually also a directory.
+			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
+				let secondary_path = secondary_entry?.path();
+
+				if dir_entry_is_key(&secondary_path)? {
+					let primary_namespace = get_key_from_dir_entry(&primary_path, prefixed_dest)?;
+					let secondary_namespace = String::new();
+					let key = get_key_from_dir_entry(&secondary_path, &primary_path)?;
+					keys.push((primary_namespace, secondary_namespace, key));
+					continue 'secondary_loop;
+				}
+
+				// The secondary_entry is actually also a directory.
+				for tertiary_entry in fs::read_dir(&secondary_path)? {
+					let tertiary_entry = tertiary_entry?;
+					let tertiary_path = tertiary_entry.path();
+
+					if dir_entry_is_key(&tertiary_path)? {
+						let primary_namespace =
+							get_key_from_dir_entry(&primary_path, prefixed_dest)?;
+						let secondary_namespace =
+							get_key_from_dir_entry(&secondary_path, &primary_path)?;
+						let key = get_key_from_dir_entry(&tertiary_path, &secondary_path)?;
+						keys.push((primary_namespace, secondary_namespace, key));
+					} else {
+						debug_assert!(
+							false,
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						let msg = format!(
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						return Err(lightning::io::Error::new(
+							lightning::io::ErrorKind::Other,
+							msg,
+						));
+					}
+				}
+			}
+		}
+		Ok(keys)
 	}
 }
 
