@@ -3769,6 +3769,7 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	// the `Event::PaymentForwarded`.
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
