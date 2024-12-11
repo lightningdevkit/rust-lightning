@@ -31,6 +31,9 @@ use crate::onion_message::offers::OffersMessage;
 use crate::sync::MutexGuard;
 use crate::util::logger::Logger;
 
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
+
 /// Functions commonly shared in usage between [`ChannelManager`] & `OffersMessageFlow`
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
@@ -132,6 +135,12 @@ pub trait OffersMessageCommons {
 
 	/// Get the current time determined by highest seen timestamp
 	fn get_current_blocktime(&self) -> Duration;
+
+	/// Initiate a new async payment
+	#[cfg(async_payments)]
+	fn initiate_async_payment(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId,
+	) -> Result<(), Bolt12PaymentError>;
 }
 
 /// Facilitates the handling, communication, and management of Offers messages within a Lightning
