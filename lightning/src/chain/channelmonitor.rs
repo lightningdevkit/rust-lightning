@@ -2000,7 +2000,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Checks if the monitor is fully resolved. Resolved monitor is one that has claimed all of
-	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set).
+	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set) and
+	/// which does not have any payment preimages for HTLCs which are still pending on other
+	/// channels.
+	///
 	/// Additionally may update state to track when the balances set became empty.
 	///
 	/// This function returns a tuple of two booleans, the first indicating whether the monitor is
@@ -2019,33 +2022,41 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			is_all_funds_claimed = false;
 		}
 
+		// As long as HTLCs remain unresolved, they'll be present as a `Balance`. After that point,
+		// if they contained a preimage, an event will appear in `pending_monitor_events` which,
+		// once processed, implies the preimage exists in the corresponding inbound channel.
+		let preimages_not_needed_elsewhere = inner.pending_monitor_events.is_empty();
+
 		const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
-		match (inner.balances_empty_height, is_all_funds_claimed) {
-			(Some(balances_empty_height), true) => {
+		match (inner.balances_empty_height, is_all_funds_claimed, preimages_not_needed_elsewhere) {
+			(Some(balances_empty_height), true, true) => {
 				// Claimed all funds, check if reached the blocks threshold.
 				(current_height >= balances_empty_height + BLOCKS_THRESHOLD, false)
 			},
-			(Some(_), false) => {
-				// previously assumed we claimed all funds, but we have new funds to claim.
-				// Should not happen in practice.
-				debug_assert!(false, "Thought we were done claiming funds, but claimable_balances now has entries");
+			(Some(_), false, _)|(Some(_), _, false) => {
+				// previously assumed we claimed all funds, but we have new funds to claim or
+				// preimages are suddenly needed (because of a duplicate-hash HTLC).
+				// This should never happen as once the `Balance`s and preimages are clear, we
+				// should never create new ones.
+				debug_assert!(false,
+					"Thought we were done claiming funds, but claimable_balances now has entries");
 				log_error!(logger,
 					"WARNING: LDK thought it was done claiming all the available funds in the ChannelMonitor for channel {}, but later decided it had more to claim. This is potentially an important bug in LDK, please report it at https://github.com/lightningdevkit/rust-lightning/issues/new",
 					inner.get_funding_txo().0);
 				inner.balances_empty_height = None;
 				(false, true)
 			},
-			(None, true) => {
-				// Claimed all funds but `balances_empty_height` is None. It is set to the
-				// current block height.
+			(None, true, true) => {
+				// Claimed all funds and preimages can be deleted, but `balances_empty_height` is
+				// None. It is set to the current block height.
 				log_debug!(logger,
 					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
 					inner.get_funding_txo().0, BLOCKS_THRESHOLD);
 				inner.balances_empty_height = Some(current_height);
 				(false, true)
 			},
-			(None, false) => {
-				// Have funds to claim.
+			(None, false, _)|(None, _, false) => {
+				// Have funds to claim or our preimages are still needed.
 				(false, false)
 			},
 		}
