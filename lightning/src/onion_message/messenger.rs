@@ -1640,8 +1640,16 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(msg)) => {
+						let context = match context {
+							Some(MessageContext::AsyncPayments(context)) => context,
+							Some(_) => {
+								debug_assert!(false, "Checked in peel_onion_message");
+								return
+							},
+							None => return,
+						};
 						let response_instructions = self.async_payments_handler.handle_held_htlc_available(
-							msg, responder
+							msg, context, responder
 						);
 						if let Some((msg, instructions)) = response_instructions {
 							let _ = self.handle_onion_message_response(msg, instructions);

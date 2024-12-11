@@ -28,6 +28,7 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
@@ -180,29 +181,41 @@ impl PaymentPurpose {
 
 	pub(crate) fn from_parts(
 		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
-		payment_context: Option<PaymentContext>,
-	) -> Self {
+		payment_context: Option<PaymentContext>, invreq_fields: Option<InvoiceRequestFields>,
+	) -> Result<Self, ()> {
 		match payment_context {
 			Some(PaymentContext::Unknown(_)) | None => {
-				PaymentPurpose::Bolt11InvoicePayment {
+				Ok(PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage,
 					payment_secret,
-				}
+				})
 			},
 			Some(PaymentContext::Bolt12Offer(context)) => {
-				PaymentPurpose::Bolt12OfferPayment {
+				Ok(PaymentPurpose::Bolt12OfferPayment {
 					payment_preimage,
 					payment_secret,
 					payment_context: context,
-				}
+				})
 			},
 			Some(PaymentContext::Bolt12Refund(context)) => {
-				PaymentPurpose::Bolt12RefundPayment {
+				Ok(PaymentPurpose::Bolt12RefundPayment {
 					payment_preimage,
 					payment_secret,
 					payment_context: context,
-				}
+				})
 			},
+			Some(PaymentContext::AsyncBolt12Offer(context)) => {
+				let invoice_request = invreq_fields.ok_or(())?;
+				if payment_preimage.is_none() { return Err(()) }
+				Ok(PaymentPurpose::Bolt12OfferPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: Bolt12OfferContext {
+						offer_id: context.offer_id,
+						invoice_request,
+					},
+				})
+			}
 		}
 	}
 }
@@ -1865,7 +1878,8 @@ impl MaybeReadable for Event {
 						(13, payment_id, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context),
+						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context, None)
+							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
