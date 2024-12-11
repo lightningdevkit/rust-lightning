@@ -7188,7 +7188,7 @@ where
 
 		let mut preimage_update = ChannelMonitorUpdate {
 			update_id: 0, // set below
-			counterparty_node_id: None,
+			counterparty_node_id: Some(counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage,
 				payment_info,
