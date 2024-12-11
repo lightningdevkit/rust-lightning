@@ -9,7 +9,7 @@
 
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
-use crate::ln::channel_keys::{HtlcKey};
+use crate::ln::channel_keys::HtlcKey;
 use crate::ln::msgs;
 use crate::types::payment::PaymentPreimage;
 use crate::sign::{InMemorySigner, ChannelSigner};
@@ -35,8 +35,6 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 #[cfg(taproot)]
 use musig2::types::{PartialSignature, PublicNonce};
 use crate::sign::HTLCDescriptor;
-use crate::util::ser::{Writeable, Writer};
-use crate::io::Error;
 use crate::types::features::ChannelTypeFeatures;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
@@ -399,17 +397,6 @@ impl TaprootChannelSigner for TestChannelSigner {
 
 	fn sign_holder_anchor_input(&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>) -> Result<secp256k1::schnorr::Signature, ()> {
 		todo!()
-	}
-}
-
-impl Writeable for TestChannelSigner {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		// TestChannelSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
-		// ([`EnforcementState`]). `inner` is serialized here and deserialized by
-		// [`SignerProvider::read_chan_signer`]. `state` is managed by [`SignerProvider`]
-		// and will be serialized as needed by the implementation of that trait.
-		self.inner.write(writer)?;
-		Ok(())
 	}
 }
 
