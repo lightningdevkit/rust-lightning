@@ -8418,9 +8418,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.unfunded_context.transaction_number() == INITIAL_COMMITMENT_NUMBER
 	}
 
-	pub fn get_open_channel<L: Deref>(&mut self, chain_hash: ChainHash, _logger: &L) -> Option<msgs::OpenChannel>
-	where L::Target: Logger
-	{
+	pub fn get_open_channel<L: Deref>(
+		&mut self, chain_hash: ChainHash, _logger: &L
+	) -> Option<msgs::OpenChannel> where L::Target: Logger {
 		if !self.context.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -8533,9 +8533,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[cfg(async_signing)]
-	pub fn signer_maybe_unblocked<L: Deref>(&mut self, chain_hash: ChainHash, logger: &L) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>)
-	where L::Target: Logger
-	{
+	pub fn signer_maybe_unblocked<L: Deref>(
+		&mut self, chain_hash: ChainHash, logger: &L
+	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) where L::Target: Logger {
 		// If we were pending a commitment point, retry the signer and advance to an
 		// available state.
 		if self.unfunded_context.holder_commitment_point.is_none() {
