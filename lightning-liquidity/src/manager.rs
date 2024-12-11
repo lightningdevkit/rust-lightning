@@ -684,6 +684,9 @@ where
 
 	fn best_block_updated(&self, _header: &bitcoin::block::Header, _height: u32) {
 		// TODO: Call best_block_updated on all sub-modules that require it, e.g., LSPS1MessageHandler.
+		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
+			lsps2_service_handler.prune_peer_state();
+		}
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(bitcoin::Txid, u32, Option<bitcoin::BlockHash>)> {

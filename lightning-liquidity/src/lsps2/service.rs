@@ -474,7 +474,7 @@ impl PeerState {
 		self.outbound_channels_by_intercept_scid.insert(intercept_scid, channel);
 	}
 
-	fn peer_disconnected(&mut self) {
+	fn prune_expired_request_state(&mut self) {
 		self.pending_requests.retain(|_, entry| {
 			match entry {
 				LSPS2Request::GetInfo(_) => false,
@@ -494,6 +494,11 @@ impl PeerState {
 			}
 			true
 		});
+	}
+
+	fn is_prunable(&self) -> bool {
+		// Return whether the entire state is empty.
+		self.pending_requests.is_empty() && self.outbound_channels_by_intercept_scid.is_empty()
 	}
 }
 
@@ -1270,11 +1275,28 @@ where
 	}
 
 	pub(crate) fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let outer_state_lock = self.per_peer_state.write().unwrap();
-		if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
-			peer_state_lock.peer_disconnected();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let is_prunable =
+			if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
+				let mut peer_state_lock = inner_state_lock.lock().unwrap();
+				peer_state_lock.prune_expired_request_state();
+				peer_state_lock.is_prunable()
+			} else {
+				return;
+			};
+		if is_prunable {
+			outer_state_lock.remove(&counterparty_node_id);
 		}
+	}
+
+	#[allow(clippy::bool_comparison)]
+	pub(crate) fn prune_peer_state(&self) {
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		outer_state_lock.retain(|_, inner_state_lock| {
+			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+			peer_state_lock.prune_expired_request_state();
+			peer_state_lock.is_prunable() == false
+		});
 	}
 }
 
