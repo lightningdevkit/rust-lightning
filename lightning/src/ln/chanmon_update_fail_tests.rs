@@ -3294,10 +3294,6 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 	if !close_chans_before_reload {
 		check_closed_broadcast(&nodes[1], 1, true);
 		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
-	} else {
-		// While we forwarded the payment a while ago, we don't want to process events too early or
-		// we'll run background tasks we wanted to test individually.
-		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, !close_only_a);
 	}
 
 	mine_transactions(&nodes[0], &[&as_closing_tx[0], bs_preimage_tx]);
@@ -3308,24 +3304,33 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 		// Make sure the B<->C channel is still alive and well by sending a payment over it.
 		let mut reconnect_args = ReconnectArgs::new(&nodes[1], &nodes[2]);
 		reconnect_args.pending_responding_commitment_signed.1 = true;
-		if !close_chans_before_reload {
-			// TODO: If the A<->B channel was closed before we reloaded, the `ChannelManager`
-			// will consider the forwarded payment complete and allow the B<->C
-			// `ChannelMonitorUpdate` to complete, wiping the payment preimage. This should not
-			// be allowed, and needs fixing.
-			reconnect_args.pending_responding_commitment_signed_dup_monitor.1 = true;
-		}
+		// The B<->C `ChannelMonitorUpdate` shouldn't be allowed to complete, which is the
+		// equivalent to the responding `commitment_signed` being a duplicate for node B, thus we
+		// need to set the `pending_responding_commitment_signed_dup` flag.
+		reconnect_args.pending_responding_commitment_signed_dup_monitor.1 = true;
 		reconnect_args.pending_raa.1 = true;
 
 		reconnect_nodes(reconnect_args);
+
+		// Once the blocked `ChannelMonitorUpdate` *finally* completes, the pending
+		// `PaymentForwarded` event will finally be released.
 		let (outpoint, ab_update_id, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_ab).unwrap().clone();
 		nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, ab_update_id);
-		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), true, false);
-		if !close_chans_before_reload {
-			// Once we call `process_pending_events` the final `ChannelMonitor` for the B<->C
-			// channel will fly, removing the payment preimage from it.
-			check_added_monitors(&nodes[1], 1);
+
+		// If the A<->B channel was closed before we reload, we'll replay the claim against it on
+		// reload, causing the `PaymentForwarded` event to get replayed.
+		let evs = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 });
+		for ev in evs {
+			if let Event::PaymentForwarded { .. } = ev { }
+			else {
+				panic!();
+			}
 		}
+
+		// Once we call `process_pending_events` the final `ChannelMonitor` for the B<->C channel
+		// will fly, removing the payment preimage from it.
+		check_added_monitors(&nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		send_payment(&nodes[1], &[&nodes[2]], 100_000);
 	}

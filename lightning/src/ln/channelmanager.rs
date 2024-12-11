@@ -3945,11 +3945,10 @@ where
 	}
 
 	/// Applies a [`ChannelMonitorUpdate`] which may or may not be for a channel which is closed.
-	#[must_use]
 	fn apply_post_close_monitor_update(
 		&self, counterparty_node_id: PublicKey, channel_id: ChannelId, funding_txo: OutPoint,
 		monitor_update: ChannelMonitorUpdate,
-	) -> ChannelMonitorUpdateStatus {
+	) {
 		// Note that there may be some post-close updates which need to be well-ordered with
 		// respect to the `update_id`, so we hold the `peer_state` lock here.
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -3960,16 +3959,21 @@ where
 		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase) => {
 				if let ChannelPhase::Funded(chan) = chan_phase.get_mut() {
-					let completed = handle_new_monitor_update!(self, funding_txo,
+					handle_new_monitor_update!(self, funding_txo,
 						monitor_update, peer_state_lock, peer_state, per_peer_state, chan);
-					return if completed { ChannelMonitorUpdateStatus::Completed } else { ChannelMonitorUpdateStatus::InProgress };
+					return;
 				} else {
 					debug_assert!(false, "We shouldn't have an update for a non-funded channel");
 				}
 			},
 			hash_map::Entry::Vacant(_) => {},
 		}
-		self.chain_monitor.update_channel(funding_txo, &monitor_update)
+		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
+
+		handle_new_monitor_update!(
+			self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state,
+			logger, channel_id, POST_CHANNEL_CLOSE
+		);
 	}
 
 	/// When a channel is removed, two things need to happen:
@@ -3998,7 +4002,7 @@ where
 		}
 		if let Some((_, funding_txo, _channel_id, monitor_update)) = shutdown_res.monitor_update {
 			debug_assert!(false, "This should have been handled in `locked_close_channel`");
-			let _ = self.apply_post_close_monitor_update(shutdown_res.counterparty_node_id, shutdown_res.channel_id, funding_txo, monitor_update);
+			self.apply_post_close_monitor_update(shutdown_res.counterparty_node_id, shutdown_res.channel_id, funding_txo, monitor_update);
 		}
 		if self.background_events_processed_since_startup.load(Ordering::Acquire) {
 			// If a `ChannelMonitorUpdate` was applied (i.e. any time we have a funding txo and are
@@ -6293,9 +6297,7 @@ where
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
 				},
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, channel_id, update } => {
-					// The monitor update will be replayed on startup if it doesnt complete, so no
-					// use bothering to care about the monitor update completing.
-					let _ = self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
+					self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
 				},
 				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, channel_id } => {
 					let per_peer_state = self.per_peer_state.read().unwrap();
@@ -7226,20 +7228,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let payment_hash = payment_preimage.into();
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(chan_id), Some(payment_hash));
 
-		if !during_init {
-			if let Some(action) = action_opt {
-				log_trace!(logger, "Tracking monitor update completion action for closed channel {}: {:?}",
-					chan_id, action);
-				peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
-			}
+		if let Some(action) = action_opt {
+			log_trace!(logger, "Tracking monitor update completion action for closed channel {}: {:?}",
+				chan_id, action);
+			peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+		}
 
+		if !during_init {
 			handle_new_monitor_update!(self, prev_hop.funding_txo, preimage_update, peer_state, peer_state, per_peer_state, logger, chan_id, POST_CHANNEL_CLOSE);
 		} else {
 			// If we're running during init we cannot update a monitor directly - they probably
 			// haven't actually been loaded yet. Instead, push the monitor update as a background
 			// event.
-			// TODO: Track this update as pending and only complete the completion action when it
-			// finishes.
+
+			let in_flight_updates = peer_state.in_flight_monitor_updates
+				.entry(prev_hop.funding_txo)
+				.or_insert_with(Vec::new);
+			in_flight_updates.push(preimage_update.clone());
+
 			let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 				counterparty_node_id,
 				funding_txo: prev_hop.funding_txo,
@@ -7247,11 +7253,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				update: preimage_update,
 			};
 			self.pending_background_events.lock().unwrap().push(event);
-
-			mem::drop(peer_state);
-			mem::drop(per_peer_state);
-
-			self.handle_monitor_update_completion_actions(action_opt);
 		}
 	}
 
