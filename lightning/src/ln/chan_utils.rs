@@ -1104,24 +1104,25 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 impl HolderCommitmentTransaction {
 	#[cfg(test)]
 	pub fn dummy(htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
+		use crate::sign::{InMemorySigner, ChannelSigner};
 		let secp_ctx = Secp256k1::new();
-		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sec = SecretKey::from_slice(&[42; 32]).unwrap();
+		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &dummy_sec);
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
 
-		let keys = TxCreationKeys {
-			per_commitment_point: dummy_key.clone(),
-			revocation_key: RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(dummy_key), &dummy_key),
-			broadcaster_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
-			countersignatory_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
-			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(&secp_ctx, &DelayedPaymentBasepoint::from(dummy_key), &dummy_key),
-		};
-		let channel_pubkeys = ChannelPublicKeys {
-			funding_pubkey: dummy_key.clone(),
-			revocation_basepoint: RevocationBasepoint::from(dummy_key),
-			payment_point: dummy_key.clone(),
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key.clone()),
-			htlc_basepoint: HtlcBasepoint::from(dummy_key.clone())
-		};
+		let mut signer = InMemorySigner::new(
+			&secp_ctx,
+			dummy_sec,
+			dummy_sec,
+			dummy_sec,
+			dummy_sec,
+			dummy_sec,
+			[42; 32],
+			0,
+			[42; 32],
+			[42; 32],
+		);
+		let channel_pubkeys = signer.pubkeys();
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: channel_pubkeys.clone(),
 			holder_selected_contest_delay: 0,
@@ -1130,17 +1131,18 @@ impl HolderCommitmentTransaction {
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 		};
+		signer.provide_channel_parameters(&channel_parameters);
+		let keys = TxCreationKeys::from_channel_static_keys(&dummy_key.clone(), &signer.pubkeys(), signer.counterparty_pubkeys().unwrap(), &secp_ctx);
 		let mut counterparty_htlc_sigs = Vec::new();
 		for _ in 0..htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let channel_parameters = channel_parameters.as_counterparty_broadcastable();
-		let counterparty_payment_script = get_counterparty_payment_script(&channel_parameters.channel_type_features(), &channel_parameters.countersignatory_pubkeys().payment_point);
+		let counterparty_payment_script = signer.get_counterparty_payment_script(true);
 		let counterparty_txout = TxOut {
 			script_pubkey: counterparty_payment_script,
 			value: Amount::ZERO,
 		};
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, counterparty_txout, dummy_key.clone(), dummy_key.clone(), keys, 0, htlcs, &channel_parameters);
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, counterparty_txout, dummy_key.clone(), dummy_key.clone(), keys, 0, htlcs, &channel_parameters.as_counterparty_broadcastable());
 		htlcs.sort_by_key(|htlc| htlc.0.transaction_output_index);
 		HolderCommitmentTransaction {
 			inner,
