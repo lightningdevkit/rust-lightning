@@ -1162,9 +1162,6 @@ where
 			return Err(Bolt12SemanticError::UnsupportedChain);
 		}
 
-		// TODO: Add persistance through `commons` internal function. Shouldn't be exposed here.
-		// let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&*self.commons);
-
 		match self.commons.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
 				let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
