@@ -183,7 +183,7 @@ impl PaymentPurpose {
 		payment_context: Option<PaymentContext>,
 	) -> Self {
 		match payment_context {
-			Some(PaymentContext::Unknown(_)) | None => {
+			None => {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage,
 					payment_secret,

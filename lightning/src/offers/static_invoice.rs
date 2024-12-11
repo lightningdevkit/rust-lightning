@@ -720,7 +720,6 @@ mod tests {
 		SIGNATURE_TAG,
 	};
 	use crate::offers::test_utils::*;
-	use crate::sign::KeyMaterial;
 	use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::util::ser::{BigSize, Iterable, Writeable};
 	use bitcoin::constants::ChainHash;
@@ -776,7 +775,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let payment_paths = payment_paths();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -816,7 +815,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let payment_paths = payment_paths();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -913,7 +912,7 @@ mod tests {
 	fn builds_invoice_from_offer_with_expiration() {
 		let node_id = recipient_pubkey();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -971,7 +970,7 @@ mod tests {
 	fn builds_invoice_from_offer_using_derived_key() {
 		let node_id = recipient_pubkey();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -997,7 +996,7 @@ mod tests {
 			panic!("error building invoice: {:?}", e);
 		}
 
-		let expanded_key = ExpandedKey::new(&KeyMaterial([41; 32]));
+		let expanded_key = ExpandedKey::new([41; 32]);
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
 			payment_paths(),
@@ -1017,7 +1016,7 @@ mod tests {
 	fn fails_build_with_missing_paths() {
 		let node_id = recipient_pubkey();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1084,7 +1083,7 @@ mod tests {
 	fn fails_building_with_missing_issuer_signing_pubkey() {
 		let node_id = recipient_pubkey();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1120,7 +1119,7 @@ mod tests {
 	#[test]
 	fn fails_building_with_invalid_metadata() {
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1150,7 +1149,7 @@ mod tests {
 	fn fails_building_with_extra_offer_chains() {
 		let node_id = recipient_pubkey();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1183,7 +1182,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let payment_paths = payment_paths();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1225,7 +1224,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let payment_paths = payment_paths();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1362,7 +1361,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let payment_paths = payment_paths();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1462,7 +1461,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let payment_paths = payment_paths();
 		let now = now();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
