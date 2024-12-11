@@ -1669,7 +1669,7 @@ impl InteractiveTxConstructor {
 /// or None if a change is not needed/possible.
 #[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 pub(super) fn calculate_change_output_value(
-	is_initiator: bool, our_contribution: u64, funding_inputs_prev_outputs: &Vec<TxOut>,
+	is_initiator: bool, our_contribution: u64, funding_inputs_prev_outputs: &Vec<&TxOut>,
 	funding_outputs: &Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
 	holder_dust_limit_satoshis: u64,
 ) -> Option<u64> {
@@ -2640,10 +2640,11 @@ mod tests {
 
 	#[test]
 	fn test_calculate_change_output_value_open() {
-		let input_prevouts = vec![
+		let input_prevouts_owned = vec![
 			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
 			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
 		];
+		let input_prevouts: Vec<&TxOut> = input_prevouts_owned.iter().collect();
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(128_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![OutputOwned::SharedControlFullyOwned(txout)];
@@ -2729,10 +2730,11 @@ mod tests {
 
 	#[test]
 	fn test_calculate_change_output_value_splice() {
-		let input_prevouts = vec![
+		let input_prevouts_owned = vec![
 			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
 			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
 		];
+		let input_prevouts: Vec<&TxOut> = input_prevouts_owned.iter().collect();
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(148_000), script_pubkey: ScriptBuf::new() };
 		let outputs = vec![OutputOwned::Shared(SharedOwnedOutput::new(txout, our_contributed))];
