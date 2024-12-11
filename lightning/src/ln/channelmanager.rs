@@ -3922,39 +3922,6 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
-	fn set_closed_chan_next_monitor_update_id(
-		peer_state: &mut PeerState<SP>, channel_id: ChannelId, monitor_update: &mut ChannelMonitorUpdate,
-	) {
-		match peer_state.closed_channel_monitor_update_ids.entry(channel_id) {
-			btree_map::Entry::Vacant(entry) => {
-				let is_closing_unupdated_monitor = monitor_update.update_id == 1
-					&& monitor_update.updates.len() == 1
-					&& matches!(&monitor_update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. });
-				// If the ChannelMonitorUpdate is closing a channel that never got past initial
-				// funding (to have any commitment updates), we'll skip inserting in
-				// `locked_close_channel`, allowing us to avoid keeping around the PeerState for
-				// that peer. In that specific case we expect no entry in the map here. In any
-				// other cases, this is a bug, but in production we go ahead and recover by
-				// inserting the update_id and hoping its right.
-				debug_assert!(is_closing_unupdated_monitor, "Expected closing monitor against an unused channel, got {:?}", monitor_update);
-				if !is_closing_unupdated_monitor {
-					entry.insert(monitor_update.update_id);
-				}
-			},
-			btree_map::Entry::Occupied(entry) => {
-				// If we're running in a threaded environment its possible we generate updates for
-				// a channel that is closing, then apply some preimage update, then go back and
-				// apply the close monitor update here. In order to ensure the updates are still
-				// well-ordered, we have to use the `closed_channel_monitor_update_ids` map to
-				// override the `update_id`, taking care to handle old monitors where the
-				// `latest_update_id` is already `u64::MAX`.
-				let latest_update_id = entry.into_mut();
-				*latest_update_id = latest_update_id.saturating_add(1);
-				monitor_update.update_id = *latest_update_id;
-			}
-		}
-	}
-
 	/// Applies a [`ChannelMonitorUpdate`] which may or may not be for a channel which is closed.
 	#[must_use]
 	fn apply_post_close_monitor_update(
@@ -7220,7 +7187,7 @@ where
 		let mut peer_state = peer_state_opt.expect("peer_state_opt is always Some when the counterparty_node_id is Some");
 
 		let mut preimage_update = ChannelMonitorUpdate {
-			update_id: 0, // set in set_closed_chan_next_monitor_update_id
+			update_id: 0, // set below
 			counterparty_node_id: None,
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage,
@@ -7228,7 +7195,17 @@ where
 			}],
 			channel_id: Some(prev_hop.channel_id),
 		};
-		Self::set_closed_chan_next_monitor_update_id(&mut *peer_state, prev_hop.channel_id, &mut preimage_update);
+
+		if let Some(latest_update_id) = peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id) {
+			*latest_update_id = latest_update_id.saturating_add(1);
+			preimage_update.update_id = *latest_update_id;
+		} else {
+			let err = "We need the latest ChannelMonitorUpdate ID to build a new update.
+This should have been checked for availability on startup but somehow it is no longer available.
+This indicates a bug inside LDK. Please report this error at https://github.com/lightningdevkit/rust-lightning/issues/new";
+			log_error!(self.logger, "{}", err);
+			panic!("{}", err);
+		}
 
 		// Note that we do process the completion action here. This totally could be a
 		// duplicate claim, but we have no way of knowing without interrogating the
