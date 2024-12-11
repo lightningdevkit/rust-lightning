@@ -13687,7 +13687,7 @@ where
 				}
 				if updated_id {
 					per_peer_state.get(counterparty_node_id)
-						.expect("If we have pending updates for a channel it has to have an entry")
+						.expect("If we have pending updates for a channel it must have an entry")
 						.lock().unwrap()
 						.closed_channel_monitor_update_ids.entry(*channel_id)
 						.and_modify(|v| *v = cmp::max(update.update_id, *v))
