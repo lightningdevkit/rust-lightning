@@ -1,0 +1,7 @@
+API Updates
+===========
+
+To improve clarity and uniqueness in identifying forwarded payments, the `PaymentForwarded` 
+event now includes counterparty node IDs alongside `ChannelIds`. This change resolves 
+potential ambiguity in cases like v1 0conf channel opens, where `ChannelIds` alone may not 
+be unique.

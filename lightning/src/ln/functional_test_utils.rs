@@ -2360,7 +2360,8 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 	match event {
 		Event::PaymentForwarded {
 			prev_channel_id, next_channel_id, prev_user_channel_id, next_user_channel_id,
-			total_fee_earned_msat, skimmed_fee_msat, claim_from_onchain_tx, ..
+			prev_node_id, next_node_id, total_fee_earned_msat,
+			skimmed_fee_msat, claim_from_onchain_tx, ..
 		} => {
 			if allow_1_msat_fee_overpay {
 				// Aggregating fees for blinded paths may result in a rounding error, causing slight
@@ -2379,6 +2380,7 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 				// Is the event prev_channel_id in one of the channels between the two nodes?
 				assert!(node.node().list_channels().iter().any(|x|
 					x.counterparty.node_id == prev_node.node().get_our_node_id() &&
+					prev_node.node().get_our_node_id() == prev_node_id.unwrap() &&
 					x.channel_id == prev_channel_id.unwrap() &&
 					x.user_channel_id == prev_user_channel_id.unwrap()
 				));
@@ -2393,11 +2395,13 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 				if total_fee_earned_msat.is_none() {
 					assert!(node.node().list_channels().iter().any(|x|
 						x.counterparty.node_id == next_node.node().get_our_node_id() &&
+						next_node.node().get_our_node_id() == next_node_id.unwrap() &&
 						x.channel_id == next_channel_id.unwrap()
 					));
 				} else {
 					assert!(node.node().list_channels().iter().any(|x|
 						x.counterparty.node_id == next_node.node().get_our_node_id() &&
+						next_node.node().get_our_node_id() == next_node_id.unwrap() &&
 						x.channel_id == next_channel_id.unwrap() &&
 						x.user_channel_id == next_user_channel_id.unwrap()
 					));

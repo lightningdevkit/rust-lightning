@@ -7309,6 +7309,7 @@ where
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_channel_id = hop_data.channel_id;
 				let prev_user_channel_id = hop_data.user_channel_id;
+				let prev_node_id = hop_data.counterparty_node_id;
 				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 				self.claim_funds_from_hop(hop_data, payment_preimage, None,
 					|htlc_claim_value_msat, definitely_duplicate| {
@@ -7358,6 +7359,8 @@ where
 									next_channel_id: Some(next_channel_id),
 									prev_user_channel_id,
 									next_user_channel_id,
+									prev_node_id,
+									next_node_id: next_channel_counterparty_node_id,
 									total_fee_earned_msat,
 									skimmed_fee_msat,
 									claim_from_onchain_tx: from_onchain,
