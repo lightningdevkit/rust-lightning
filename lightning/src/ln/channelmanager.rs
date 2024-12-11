@@ -1320,11 +1320,12 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// entry here to note that the channel with the key's ID is blocked on a set of actions.
 	actions_blocking_raa_monitor_updates: BTreeMap<ChannelId, Vec<RAAMonitorUpdateBlockingAction>>,
 	/// The latest [`ChannelMonitor::get_latest_update_id`] value for all closed channels as they
-	/// exist on-disk/in our [`chain::Watch`]. This *ignores* all pending updates not yet applied
-	/// in [`ChannelManager::pending_background_events`].
+	/// exist on-disk/in our [`chain::Watch`].
 	///
 	/// If there are any updates pending in [`Self::in_flight_monitor_updates`] this will contain
-	/// the highest `update_id` of all the pending in-flight updates.
+	/// the highest `update_id` of all the pending in-flight updates (note that any pending updates
+	/// not yet applied sitting in [`ChannelManager::pending_background_events`] will also be
+	/// considered as they are also in [`Self::in_flight_monitor_updates`]).
 	closed_channel_monitor_update_ids: BTreeMap<ChannelId, u64>,
 	/// The peer is currently connected (i.e. we've seen a
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
