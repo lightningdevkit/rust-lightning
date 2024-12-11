@@ -32,6 +32,7 @@ use lightning_types::payment::PaymentHash;
 use bitcoin::secp256k1::PublicKey;
 
 use core::ops::Deref;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::lsps2::msgs::{
 	BuyRequest, BuyResponse, GetInfoRequest, GetInfoResponse, LSPS2Message, LSPS2Request,
@@ -43,6 +44,7 @@ use crate::lsps2::msgs::{
 };
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
+const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 
 /// Server-side configuration options for JIT channels.
 #[derive(Clone, Debug)]
@@ -470,6 +472,7 @@ where
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	peer_by_intercept_scid: RwLock<HashMap<u64, PublicKey>>,
 	peer_by_channel_id: RwLock<HashMap<ChannelId, PublicKey>>,
+	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
 }
 
@@ -488,6 +491,7 @@ where
 			per_peer_state: RwLock::new(new_hash_map()),
 			peer_by_intercept_scid: RwLock::new(new_hash_map()),
 			peer_by_channel_id: RwLock::new(new_hash_map()),
+			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
 			config,
 		}
@@ -1145,8 +1149,27 @@ where
 		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: RequestId,
 		counterparty_node_id: PublicKey, request: LSPS2Request,
 	) -> (Result<(), LightningError>, Option<LSPSMessage>) {
+		if self.total_pending_requests.load(Ordering::Relaxed) >= MAX_TOTAL_PENDING_REQUESTS {
+			let response = LSPS2Response::BuyError(ResponseError {
+				code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
+				message: "Reached maximum number of pending requests. Please try again later."
+					.to_string(),
+				data: None,
+			});
+			let msg = Some(LSPS2Message::Response(request_id, response).into());
+
+			let err = format!(
+				"Peer {} reached maximum number of total pending requests: {}",
+				counterparty_node_id, MAX_TOTAL_PENDING_REQUESTS
+			);
+			let result =
+				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Debug) });
+			return (result, msg);
+		}
+
 		if peer_state_lock.pending_requests.len() < MAX_PENDING_REQUESTS_PER_PEER {
 			peer_state_lock.pending_requests.insert(request_id, request);
+			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
 			(Ok(()), None)
 		} else {
 			let response = LSPS2Response::BuyError(ResponseError {
@@ -1171,7 +1194,43 @@ where
 	fn remove_pending_request<'a>(
 		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: &RequestId,
 	) -> Option<LSPS2Request> {
-		peer_state_lock.pending_requests.remove(request_id)
+		match peer_state_lock.pending_requests.remove(request_id) {
+			Some(req) => {
+				let res = self.total_pending_requests.fetch_update(
+					Ordering::Relaxed,
+					Ordering::Relaxed,
+					|x| Some(x.saturating_sub(1)),
+				);
+				match res {
+					Ok(previous_value) if previous_value == 0 => debug_assert!(
+						false,
+						"total_pending_requests counter out-of-sync! This should never happen!"
+					),
+					Err(previous_value) if previous_value == 0 => debug_assert!(
+						false,
+						"total_pending_requests counter out-of-sync! This should never happen!"
+					),
+					_ => {},
+				}
+				Some(req)
+			},
+			res => res,
+		}
+	}
+
+	#[cfg(debug_assertions)]
+	fn verify_pending_request_counter(&self) {
+		let mut num_requests = 0;
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		for (_, inner) in outer_state_lock.iter() {
+			let inner_state_lock = inner.lock().unwrap();
+			num_requests += inner_state_lock.pending_requests.len();
+		}
+		debug_assert_eq!(
+			num_requests,
+			self.total_pending_requests.load(Ordering::Relaxed),
+			"total_pending_requests counter out-of-sync! This should never happen!"
+		);
 	}
 }
 
@@ -1186,13 +1245,18 @@ where
 		&self, message: Self::ProtocolMessage, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
 		match message {
-			LSPS2Message::Request(request_id, request) => match request {
-				LSPS2Request::GetInfo(params) => {
-					self.handle_get_info_request(request_id, counterparty_node_id, params)
-				},
-				LSPS2Request::Buy(params) => {
-					self.handle_buy_request(request_id, counterparty_node_id, params)
-				},
+			LSPS2Message::Request(request_id, request) => {
+				let res = match request {
+					LSPS2Request::GetInfo(params) => {
+						self.handle_get_info_request(request_id, counterparty_node_id, params)
+					},
+					LSPS2Request::Buy(params) => {
+						self.handle_buy_request(request_id, counterparty_node_id, params)
+					},
+				};
+				#[cfg(debug_assertions)]
+				self.verify_pending_request_counter();
+				res
 			},
 			_ => {
 				debug_assert!(
