@@ -316,89 +316,112 @@ impl KVStore for FilesystemStore {
 			let entry = entry?;
 			let p = entry.path();
 
-			if let Some(ext) = p.extension() {
-				#[cfg(target_os = "windows")]
-				{
-					// Clean up any trash files lying around.
-					if ext == "trash" {
-						fs::remove_file(p).ok();
-						continue;
-					}
-				}
-				if ext == "tmp" {
-					continue;
-				}
-			}
-
-			let metadata = p.metadata()?;
-
-			// We allow the presence of directories in the empty primary namespace and just skip them.
-			if metadata.is_dir() {
+			if !dir_entry_is_key(&p)? {
 				continue;
 			}
 
-			// If we otherwise don't find a file at the given path something went wrong.
-			if !metadata.is_file() {
-				debug_assert!(
-					false,
-					"Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(primary_namespace),
-					PrintableString(secondary_namespace)
-				);
-				let msg = format!(
-					"Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(primary_namespace),
-					PrintableString(secondary_namespace)
-				);
-				return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
-			}
+			let key = get_key_from_dir_entry(&p, &prefixed_dest)?;
 
-			match p.strip_prefix(&prefixed_dest) {
-				Ok(stripped_path) => {
-					if let Some(relative_path) = stripped_path.to_str() {
-						if is_valid_kvstore_str(relative_path) {
-							keys.push(relative_path.to_string())
-						}
-					} else {
-						debug_assert!(
-							false,
-							"Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(primary_namespace),
-							PrintableString(secondary_namespace)
-						);
-						let msg = format!(
-							"Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(primary_namespace),
-							PrintableString(secondary_namespace)
-						);
-						return Err(lightning::io::Error::new(
-							lightning::io::ErrorKind::Other,
-							msg,
-						));
-					}
-				},
-				Err(e) => {
-					debug_assert!(
-						false,
-						"Failed to list keys of {}/{}: {}",
-						PrintableString(primary_namespace),
-						PrintableString(secondary_namespace),
-						e
-					);
-					let msg = format!(
-						"Failed to list keys of {}/{}: {}",
-						PrintableString(primary_namespace),
-						PrintableString(secondary_namespace),
-						e
-					);
-					return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
-				},
-			}
+			keys.push(key);
 		}
 
 		self.garbage_collect_locks();
 
 		Ok(keys)
+	}
+}
+
+fn dir_entry_is_key(p: &Path) -> Result<bool, lightning::io::Error> {
+	if let Some(ext) = p.extension() {
+		#[cfg(target_os = "windows")]
+		{
+			// Clean up any trash files lying around.
+			if ext == "trash" {
+				fs::remove_file(p).ok();
+				return Ok(false);
+			}
+		}
+		if ext == "tmp" {
+			return Ok(false);
+		}
+	}
+
+	let metadata = p.metadata().map_err(|e| {
+		let msg = format!(
+			"Failed to list keys at path {}: {}",
+			PrintableString(p.to_str().unwrap_or_default()),
+			e
+		);
+		lightning::io::Error::new(lightning::io::ErrorKind::Other, msg)
+	})?;
+
+	// We allow the presence of directories in the empty primary namespace and just skip them.
+	if metadata.is_dir() {
+		return Ok(false);
+	}
+
+	// If we otherwise don't find a file at the given path something went wrong.
+	if !metadata.is_file() {
+		debug_assert!(
+			false,
+			"Failed to list keys at path {}: file couldn't be accessed.",
+			PrintableString(p.to_str().unwrap_or_default())
+		);
+		let msg = format!(
+			"Failed to list keys at path {}: file couldn't be accessed.",
+			PrintableString(p.to_str().unwrap_or_default())
+		);
+		return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+	}
+
+	Ok(true)
+}
+
+fn get_key_from_dir_entry(p: &Path, base_path: &Path) -> Result<String, lightning::io::Error> {
+	match p.strip_prefix(&base_path) {
+		Ok(stripped_path) => {
+			if let Some(relative_path) = stripped_path.to_str() {
+				if is_valid_kvstore_str(relative_path) {
+					return Ok(relative_path.to_string());
+				} else {
+					debug_assert!(
+						false,
+						"Failed to list keys of path {}: file path is not valid key",
+						PrintableString(p.to_str().unwrap_or_default())
+					);
+					let msg = format!(
+						"Failed to list keys of path {}: file path is not valid key",
+						PrintableString(p.to_str().unwrap_or_default())
+					);
+					return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+				}
+			} else {
+				debug_assert!(
+					false,
+					"Failed to list keys of path {}: file path is not valid UTF-8",
+					PrintableString(p.to_str().unwrap_or_default())
+				);
+				let msg = format!(
+					"Failed to list keys of path {}: file path is not valid UTF-8",
+					PrintableString(p.to_str().unwrap_or_default())
+				);
+				return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+			}
+		},
+		Err(e) => {
+			debug_assert!(
+				false,
+				"Failed to list keys of path {}: {}",
+				PrintableString(p.to_str().unwrap_or_default()),
+				e
+			);
+			let msg = format!(
+				"Failed to list keys of path {}: {}",
+				PrintableString(p.to_str().unwrap_or_default()),
+				e
+			);
+			return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+		},
 	}
 }
 
