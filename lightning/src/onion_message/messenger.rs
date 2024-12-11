@@ -156,7 +156,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH> where
 /// # use bitcoin::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::EmptyNodeIdLookUp;
-/// # use lightning::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext};
+/// # use lightning::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext, ReceiveTlvs};
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions, OnionMessagePath, OnionMessenger};
@@ -183,7 +183,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH> where
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _receive_tlvs: ReceiveTlvs, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedMessagePath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -238,8 +238,11 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH> where
 /// 	MessageForwardNode { node_id: hop_node_id3, short_channel_id: None },
 /// 	MessageForwardNode { node_id: hop_node_id4, short_channel_id: None },
 /// ];
-/// let context = MessageContext::Custom(Vec::new());
-/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, context, &keys_manager, &secp_ctx).unwrap();
+/// let receive_tlvs = ReceiveTlvs {
+/// 	context: Some(MessageContext::Custom(Vec::new())),
+/// 	custom_data: None,
+/// };
+/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, receive_tlvs, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -380,17 +383,17 @@ impl Responder {
 	pub fn respond(self) -> ResponseInstruction {
 		ResponseInstruction {
 			destination: Destination::BlindedPath(self.reply_path),
-			context: None,
+			reply_data: None,
 		}
 	}
 
 	/// Creates a [`ResponseInstruction`] for responding including a reply path.
 	///
 	/// Use when the recipient needs to send back a reply to us.
-	pub fn respond_with_reply_path(self, context: MessageContext) -> ResponseInstruction {
+	pub fn respond_with_reply_path(self, context: MessageContext, custom_data: Option<Vec<u8>>) -> ResponseInstruction {
 		ResponseInstruction {
 			destination: Destination::BlindedPath(self.reply_path),
-			context: Some(context),
+			reply_data: Some((context, custom_data.unwrap_or_default())),
 		}
 	}
 }
@@ -402,7 +405,7 @@ pub struct ResponseInstruction {
 	/// [`Destination`] rather than an explicit [`BlindedMessagePath`] simplifies the logic in
 	/// [`OnionMessenger::send_onion_message_internal`] somewhat.
 	destination: Destination,
-	context: Option<MessageContext>,
+	reply_data: Option<(MessageContext, Vec<u8>)>,
 }
 
 impl ResponseInstruction {
@@ -432,6 +435,9 @@ pub enum MessageSendInstructions {
 		/// The context to include in the reply path we'll give the recipient so they can respond
 		/// to us.
 		context: MessageContext,
+		/// The custom data we include with the reply path, which we intend to receive back
+		/// when the reply path is used to respond to us.
+		custom_data: Vec<u8>,
 	},
 	/// Indicates that a message should be sent without including a reply path, preventing the
 	/// recipient from responding.
@@ -458,7 +464,7 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, receive_tlvs: ReceiveTlvs, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()>;
 
 	/// Creates compact [`BlindedMessagePath`]s to the `recipient` node. The nodes in `peers` are
@@ -477,14 +483,14 @@ pub trait MessageRouter {
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, context: MessageContext,
+		&self, recipient: PublicKey, receive_tlvs: ReceiveTlvs,
 		peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let peers = peers
 			.into_iter()
 			.map(|MessageForwardNode { node_id, short_channel_id: _ }| node_id)
 			.collect();
-		self.create_blinded_paths(recipient, context, peers, secp_ctx)
+		self.create_blinded_paths(recipient, receive_tlvs, peers, secp_ctx)
 	}
 }
 
@@ -519,8 +525,8 @@ where
 		I: ExactSizeIterator<Item = MessageForwardNode>,
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: I,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>, compact_paths: bool,
+		network_graph: &G, recipient: PublicKey, receive_tlvs: ReceiveTlvs,
+		peers: I, entropy_source: &ES, secp_ctx: &Secp256k1<T>, compact_paths: bool,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -559,7 +565,7 @@ where
 
 		let paths = peer_info.into_iter()
 			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(&[peer], recipient, context.clone(), &**entropy_source, secp_ctx)
+				BlindedMessagePath::new(&[peer], recipient, receive_tlvs.clone(), &**entropy_source, secp_ctx)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -568,7 +574,7 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
-					BlindedMessagePath::new(&[], recipient, context, &**entropy_source, secp_ctx)
+					BlindedMessagePath::new(&[], recipient, receive_tlvs, &**entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
 					Err(())
@@ -621,22 +627,22 @@ where
 	pub(crate) fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext,
+		network_graph: &G, recipient: PublicKey, receive_tlvs: ReceiveTlvs,
 		peers: Vec<PublicKey>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let peers = peers
 			.into_iter()
 			.map(|node_id| MessageForwardNode { node_id, short_channel_id: None });
-		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, false)
+		Self::create_blinded_paths_from_iter(network_graph, recipient, receive_tlvs, peers.into_iter(), entropy_source, secp_ctx, false)
 	}
 
 	pub(crate) fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext,
+		network_graph: &G, recipient: PublicKey, receive_tlvs: ReceiveTlvs,
 		peers: Vec<MessageForwardNode>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, true)
+		Self::create_blinded_paths_from_iter(network_graph, recipient, receive_tlvs, peers.into_iter(), entropy_source, secp_ctx, true)
 	}
 }
 
@@ -654,17 +660,17 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, receive_tlvs: ReceiveTlvs, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
+		Self::create_blinded_paths(&self.network_graph, recipient, receive_tlvs, peers, &self.entropy_source, secp_ctx)
 	}
 
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, receive_tlvs: ReceiveTlvs, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_compact_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
+		Self::create_compact_blinded_paths(&self.network_graph, recipient, receive_tlvs, peers, &self.entropy_source, secp_ctx)
 	}
 
 }
@@ -834,7 +840,7 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
 	Forward(NextMessageHop, OnionMessage),
 	/// Received onion message, with decrypted contents, context, and reply path
-	Receive(ParsedOnionMessageContents<T>, Option<MessageContext>, Option<BlindedMessagePath>)
+	Receive(ParsedOnionMessageContents<T>, Option<MessageContext>, Option<Vec<u8>>, Option<BlindedMessagePath>)
 }
 
 
@@ -984,24 +990,24 @@ where
 		(control_tlvs_ss, custom_handler.deref(), logger.deref())
 	) {
 		Ok((Payload::Receive::<ParsedOnionMessageContents<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage>> {
-			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }), reply_path,
+			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context, custom_data }), reply_path,
 		}, None)) => {
 			match (&message, &context) {
 				(_, None) => {
-					Ok(PeeledOnion::Receive(message, None, reply_path))
+					Ok(PeeledOnion::Receive(message, None, custom_data, reply_path))
 				}
 				(ParsedOnionMessageContents::Offers(_), Some(MessageContext::Offers(_))) => {
-					Ok(PeeledOnion::Receive(message, context, reply_path))
+					Ok(PeeledOnion::Receive(message, context, custom_data, reply_path))
 				}
 				#[cfg(async_payments)]
 				(ParsedOnionMessageContents::AsyncPayments(_), Some(MessageContext::AsyncPayments(_))) => {
-					Ok(PeeledOnion::Receive(message, context, reply_path))
+					Ok(PeeledOnion::Receive(message, context, custom_data, reply_path))
 				}
 				(ParsedOnionMessageContents::Custom(_), Some(MessageContext::Custom(_))) => {
-					Ok(PeeledOnion::Receive(message, context, reply_path))
+					Ok(PeeledOnion::Receive(message, context, custom_data, reply_path))
 				}
 				(ParsedOnionMessageContents::DNSResolver(_), Some(MessageContext::DNSResolver(_))) => {
-					Ok(PeeledOnion::Receive(message, context, reply_path))
+					Ok(PeeledOnion::Receive(message, context, custom_data, reply_path))
 				}
 				_ => {
 					log_trace!(logger, "Received message was sent on a blinded path with the wrong context.");
@@ -1190,10 +1196,10 @@ where
 		let (destination, reply_path) = match instructions {
 			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } =>
 				(destination, Some(reply_path)),
-			MessageSendInstructions::WithReplyPath { destination, context }
-				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, context: Some(context) } } =>
+			MessageSendInstructions::WithReplyPath { destination, context, custom_data }
+				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, reply_data: Some((context, custom_data)) } } =>
 			{
-				match self.create_blinded_path(context) {
+				match self.create_blinded_path(context, custom_data) {
 					Ok(reply_path) => (destination, Some(reply_path)),
 					Err(err) => {
 						log_trace!(
@@ -1206,7 +1212,7 @@ where
 				}
 			},
 			MessageSendInstructions::WithoutReplyPath { destination }
-				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, context: None } } =>
+				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, reply_data: None } } =>
 				(destination, None),
 		};
 
@@ -1258,7 +1264,7 @@ where
 			.map_err(|_| SendError::PathNotFound)
 	}
 
-	fn create_blinded_path(&self, context: MessageContext) -> Result<BlindedMessagePath, SendError> {
+	fn create_blinded_path(&self, context: MessageContext, custom_data: Vec<u8>) -> Result<BlindedMessagePath, SendError> {
 		let recipient = self.node_signer
 			.get_node_id(Recipient::Node)
 			.map_err(|_| SendError::GetNodeIdFailed)?;
@@ -1270,8 +1276,13 @@ where
 			.map(|(node_id, _ )| *node_id)
 			.collect::<Vec<_>>();
 
+		let receive_tlvs = ReceiveTlvs {
+			context: Some(context),
+			custom_data: Some(custom_data)
+		};
+
 		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.create_blinded_paths(recipient, receive_tlvs, peers, secp_ctx)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| SendError::PathNotFound)
 	}
@@ -1616,7 +1627,7 @@ where
 	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
 		match self.peel_onion_message(msg) {
-			Ok(PeeledOnion::Receive(message, context, reply_path)) => {
+			Ok(PeeledOnion::Receive(message, context, custom_data, reply_path)) => {
 				log_trace!(
 					logger,
 					"Received an onion message with {} reply_path: {:?}",
@@ -1633,7 +1644,7 @@ where
 								return
 							}
 						};
-						let response_instructions = self.offers_handler.handle_message(msg, context, responder);
+						let response_instructions = self.offers_handler.handle_message(msg, context, custom_data, responder);
 						if let Some((msg, instructions)) = response_instructions {
 							let _ = self.handle_onion_message_response(msg, instructions);
 						}
@@ -2013,7 +2024,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 		}, prev_control_tlvs_ss.unwrap()));
 	} else {
 		payloads.push((Payload::Receive {
-			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
+			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None, custom_data: None }),
 			reply_path: reply_path.take(),
 			message,
 		}, prev_control_tlvs_ss.unwrap()));

@@ -260,6 +260,15 @@ pub struct ReceiveTlvs {
 	pub payment_constraints: PaymentConstraints,
 	/// Context for the receiver of this payment.
 	pub payment_context: PaymentContext,
+	/// Custom data set by the user. And is returned back when the blinded path is used.
+	/// 
+	/// ## Note on Forward Compatibility:
+	/// Users can encode any kind of data into the `Vec<u8>` bytes here. However, they should ensure
+	/// that the data is structured in a forward-compatible manner. This is especially important as
+	/// `ReceiveTlvs` created in one version of the software may still appear in payments received
+	/// shortly after a software upgrade. Proper forward compatibility helps prevent data loss or
+	/// misinterpretation in future versions.
+	pub custom_data: Vec<u8>,
 }
 
 /// Data to construct a [`BlindedHop`] for sending a payment over.
@@ -404,7 +413,8 @@ impl Writeable for ReceiveTlvs {
 		encode_tlv_stream!(w, {
 			(12, self.payment_constraints, required),
 			(65536, self.payment_secret, required),
-			(65537, self.payment_context, required)
+			(65537, self.payment_context, required),
+			(65539, self.custom_data, (default_value, Vec::new())),
 		});
 		Ok(())
 	}
@@ -432,6 +442,7 @@ impl Readable for BlindedPaymentTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, (default_value, PaymentContext::unknown())),
+			(65539, custom_data, (default_value, Vec::new()))
 		});
 		let _padding: Option<utils::Padding> = _padding;
 
@@ -452,6 +463,7 @@ impl Readable for BlindedPaymentTlvs {
 				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
 				payment_context: payment_context.0.unwrap(),
+				custom_data: custom_data.0.unwrap(),
 			}))
 		}
 	}
@@ -683,6 +695,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			custom_data: Vec::new(),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12).unwrap();
@@ -702,6 +715,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			custom_data: Vec::new(),
 		};
 		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
@@ -758,6 +772,7 @@ mod tests {
 				htlc_minimum_msat: 3,
 			},
 			payment_context: PaymentContext::unknown(),
+			custom_data: Vec::new(),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
@@ -811,6 +826,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			custom_data: Vec::new(),
 		};
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1, TEST_FINAL_CLTV as u16).is_err());
@@ -868,6 +884,7 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::unknown(),
+			custom_data: Vec::new()
 		};
 
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();
