@@ -7354,9 +7354,9 @@ impl<SP: Deref> Channel<SP> where
 		self.get_channel_ready(logger)
 	}
 
-	fn get_channel_ready<L: Deref>(&mut self, logger: &L) -> Option<msgs::ChannelReady>
-	where L::Target: Logger
-	{
+	fn get_channel_ready<L: Deref>(
+		&mut self, logger: &L
+	) -> Option<msgs::ChannelReady> where L::Target: Logger {
 		if let HolderCommitmentPoint::Available { current, .. } = self.holder_commitment_point {
 			self.context.signer_pending_channel_ready = false;
 			Some(msgs::ChannelReady {
