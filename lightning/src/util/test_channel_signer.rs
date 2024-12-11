@@ -162,6 +162,11 @@ impl TestChannelSigner {
 	fn is_signer_available(&self, signer_op: SignerOp) -> bool {
 		!self.get_enforcement_state().disabled_signer_ops.contains(&signer_op)
 	}
+
+	#[cfg(test)]
+	pub(crate) fn overwrite_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		self.inner.overwrite_channel_parameters(channel_parameters)
+	}
 }
 
 impl ChannelSigner for TestChannelSigner {
