@@ -2983,25 +2983,8 @@ macro_rules! locked_close_channel {
 		// channel, we need to store the last update_id of it. However, we don't want to insert
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
 		// never even got confirmations (which would open us up to DoS attacks).
-		let mut update_id = $channel_context.get_latest_monitor_update_id();
+		let update_id = $channel_context.get_latest_monitor_update_id();
 		if $channel_context.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth() == Some(0) || update_id > 1 {
-			// There may be some pending background events which we have to ignore when setting the
-			// latest update ID.
-			for event in $self.pending_background_events.lock().unwrap().iter() {
-				match event {
-					BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, channel_id, update, .. } => {
-						if *channel_id == $channel_context.channel_id() && *counterparty_node_id == $channel_context.get_counterparty_node_id() {
-							update_id = cmp::min(update_id, update.update_id - 1);
-						}
-					},
-					BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup(..) => {
-						// This is only generated for very old channels which were already closed
-						// on startup, so it should never be present for a channel that is closing
-						// here.
-					},
-					BackgroundEvent::MonitorUpdatesComplete { .. } => {},
-				}
-			}
 			let chan_id = $channel_context.channel_id();
 			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
