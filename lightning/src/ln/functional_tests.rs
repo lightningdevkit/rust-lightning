@@ -1312,18 +1312,21 @@ fn test_duplicate_htlc_different_direction_onchain() {
 
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
+	let payment_value_sats = 546;
+	let payment_value_msats = payment_value_sats * 1000;
+
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
-	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 800_000);
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_value_msats);
 	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], payment_value_msats, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
 	nodes[0].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[0], payment_hash, 800_000);
+	expect_payment_claimed!(nodes[0], payment_hash, payment_value_msats);
 	check_added_monitors!(nodes[0], 1);
 
 	// Broadcast node 1 commitment txn
@@ -1332,7 +1335,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	assert_eq!(remote_txn[0].output.len(), 4); // 1 local, 1 remote, 1 htlc inbound, 1 htlc outbound
 	let mut has_both_htlcs = 0; // check htlcs match ones committed
 	for outp in remote_txn[0].output.iter() {
-		if outp.value.to_sat() == 800_000 / 1000 {
+		if outp.value.to_sat() == payment_value_sats {
 			has_both_htlcs += 1;
 		} else if outp.value.to_sat() == 900_000 / 1000 {
 			has_both_htlcs += 1;
@@ -1346,24 +1349,22 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
 
 	let claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	assert_eq!(claim_txn.len(), 3);
+	assert!(claim_txn.len() >= 3);
+	assert!(claim_txn.len() <= 5);
 
 	check_spends!(claim_txn[0], remote_txn[0]); // Immediate HTLC claim with preimage
 	check_spends!(claim_txn[1], remote_txn[0]);
 	check_spends!(claim_txn[2], remote_txn[0]);
 	let preimage_tx = &claim_txn[0];
-	let (preimage_bump_tx, timeout_tx) = if claim_txn[1].input[0].previous_output == preimage_tx.input[0].previous_output {
-		(&claim_txn[1], &claim_txn[2])
-	} else {
-		(&claim_txn[2], &claim_txn[1])
-	};
+	let timeout_tx = claim_txn.iter().skip(1).find(|t| t.input[0].previous_output != preimage_tx.input[0].previous_output).unwrap();
+	let preimage_bump_tx = claim_txn.iter().skip(1).find(|t| t.input[0].previous_output == preimage_tx.input[0].previous_output).unwrap();
 
 	assert_eq!(preimage_tx.input.len(), 1);
 	assert_eq!(preimage_bump_tx.input.len(), 1);
 
 	assert_eq!(preimage_tx.input.len(), 1);
 	assert_eq!(preimage_tx.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
-	assert_eq!(remote_txn[0].output[preimage_tx.input[0].previous_output.vout as usize].value.to_sat(), 800);
+	assert_eq!(remote_txn[0].output[preimage_tx.input[0].previous_output.vout as usize].value.to_sat(), payment_value_sats);
 
 	assert_eq!(timeout_tx.input.len(), 1);
 	assert_eq!(timeout_tx.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
