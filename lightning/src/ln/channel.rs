@@ -8654,9 +8654,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
-	where L::Target: Logger
-	{
+	pub fn accept_inbound_channel<L: Deref>(
+		&mut self, logger: &L
+	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
 		if self.context.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -8678,9 +8678,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// [`InboundV1Channel::accept_inbound_channel`] instead.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	fn generate_accept_channel_message<L: Deref>(&mut self, _logger: &L) -> Option<msgs::AcceptChannel>
-	where L::Target: Logger
-	{
+	fn generate_accept_channel_message<L: Deref>(
+		&mut self, _logger: &L
+	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
 		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
 			Some(holder_commitment_point) if holder_commitment_point.is_available() => {
 				self.signer_pending_accept_channel = false;
@@ -8731,9 +8731,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	#[cfg(test)]
-	pub fn get_accept_channel_message<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
-	where L::Target: Logger
-	{
+	pub fn get_accept_channel_message<L: Deref>(
+		&mut self, logger: &L
+	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
 		self.generate_accept_channel_message(logger)
 	}
 
@@ -8797,9 +8797,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[allow(unused)]
-	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
-	where L::Target: Logger
-	{
+	pub fn signer_maybe_unblocked<L: Deref>(
+		&mut self, logger: &L
+	) -> Option<msgs::AcceptChannel> where L::Target: Logger {
 		if self.unfunded_context.holder_commitment_point.is_none() {
 			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
 		}
