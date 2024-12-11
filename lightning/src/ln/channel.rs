@@ -10272,6 +10272,14 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
+	impl crate::ln::channel::ChannelContext<&Keys> {
+		fn overwrite_channel_features(&mut self, channel_type_features: ChannelTypeFeatures) {
+			self.channel_transaction_parameters.channel_type_features = channel_type_features;
+			self.holder_signer.as_mut_ecdsa().unwrap().overwrite_channel_parameters(&self.channel_transaction_parameters);
+		}
+	}
+
+	#[cfg(ldk_test_vectors)]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		assert!(cfg!(not(feature = "grind_signatures")));
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap())
@@ -10867,7 +10875,6 @@ mod tests {
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-		use crate::sign::type_resolver::ChannelSignerType;
 		use crate::util::logger::Logger;
 		use crate::sync::Arc;
 		use core::str::FromStr;
@@ -10940,20 +10947,14 @@ mod tests {
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
-				let mut holder_signer = keys_provider.derive_channel_signer(chan.context.channel_value_satoshis, chan.context.channel_keys_id);
-				holder_signer.provide_channel_parameters(&chan.context.channel_transaction_parameters);
-				chan.context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+				chan.context.overwrite_channel_features(ChannelTypeFeatures::only_static_remote_key());
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
 
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
-				let mut holder_signer = keys_provider.derive_channel_signer(chan.context.channel_value_satoshis, chan.context.channel_keys_id);
-				holder_signer.provide_channel_parameters(&chan.context.channel_transaction_parameters);
-				chan.context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+				chan.context.overwrite_channel_features(ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}

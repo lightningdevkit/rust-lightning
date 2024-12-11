@@ -1328,6 +1328,14 @@ impl InMemorySigner {
 			witness_script.as_bytes(),
 		]))
 	}
+
+	#[cfg(test)]
+	pub(crate) fn overwrite_channel_parameters(
+		&mut self, channel_parameters: &ChannelTransactionParameters,
+	) {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		self.channel_parameters = Some(channel_parameters.clone());
+	}
 }
 
 impl EntropySource for InMemorySigner {
