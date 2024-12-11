@@ -8304,6 +8304,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 
+		// We initialize `signer_pending_open_channel` to false, and leave setting the flag
+		// for when we try to generate the open_channel message.
 		let chan = Self { context, unfunded_context, signer_pending_open_channel: false };
 		Ok(chan)
 	}
