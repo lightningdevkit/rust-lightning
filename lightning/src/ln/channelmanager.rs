@@ -9629,23 +9629,6 @@ where
 		self.pending_outbound_payments.release_invoice_requests_awaiting_invoice()
 	}
 
-	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
-		let recipient = self.get_our_node_id();
-		let secp_ctx = &self.secp_ctx;
-
-		let peers = self.per_peer_state.read().unwrap()
-			.iter()
-			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
-			.filter(|(_, peer)| peer.is_connected)
-			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, _)| *node_id)
-			.collect::<Vec<_>>();
-
-		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
-			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
-	}
-
 	fn enqueue_invoice_request(
 		&self,
 		invoice_request: InvoiceRequest,
@@ -9860,6 +9843,29 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
+	}
+
+	/// Creates a collection of blinded paths by delegating to
+	/// [`MessageRouter::create_blinded_paths`].
+	///
+	/// Errors if the `MessageRouter` errors.
+	///
+	/// [`MessageRouter::create_blinded_paths`]: crate::onion_message::messenger::MessageRouter::create_blinded_paths
+	pub fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
+		let recipient = self.get_our_node_id();
+		let secp_ctx = &self.secp_ctx;
+
+		let peers = self.per_peer_state.read().unwrap()
+			.iter()
+			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
+			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
+			.map(|(node_id, _)| *node_id)
+			.collect::<Vec<_>>();
+
+		self.message_router
+			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids

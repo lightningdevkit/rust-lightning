@@ -172,14 +172,6 @@ pub trait OffersMessageCommons {
 		&self,
 	) -> Vec<(PaymentId, RetryableInvoiceRequest)>;
 
-	/// Creates a collection of blinded paths by delegating to
-	/// [`MessageRouter::create_blinded_paths`].
-	///
-	/// Errors if the `MessageRouter` errors.
-	///
-	/// [`MessageRouter::create_blinded_paths`]: crate::onion_message::messenger::MessageRouter::create_blinded_paths
-	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()>;
-
 	/// Enqueue invoice request
 	fn enqueue_invoice_request(
 		&self, invoice_request: InvoiceRequest, reply_paths: Vec<BlindedMessagePath>,
@@ -674,7 +666,7 @@ where
 		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
 			self.create_compact_blinded_paths(context)
 		} else {
-			self.commons.create_blinded_paths(MessageContext::Offers(context))
+			self.create_blinded_paths(MessageContext::Offers(context))
 		}
 	}
 
@@ -687,6 +679,26 @@ where
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		now
+	}
+
+	/// Creates a collection of blinded paths by delegating to
+	/// [`MessageRouter::create_blinded_paths`].
+	///
+	/// Errors if the `MessageRouter` errors.
+	///
+	/// [`MessageRouter::create_blinded_paths`]: crate::onion_message::messenger::MessageRouter::create_blinded_paths
+	pub fn create_blinded_paths(
+		&self, context: MessageContext,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let recipient = self.get_our_node_id();
+		let secp_ctx = &self.secp_ctx;
+
+		let peers =
+			self.commons.get_peer_for_blinded_path().into_iter().map(|node| node.node_id).collect();
+
+		self.message_router
+			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
 	/// Creates a collection of blinded paths by delegating to
@@ -759,10 +771,8 @@ where
 			nonce,
 			hmac: Some(hmac),
 		});
-		let reply_paths = self
-			.commons
-			.create_blinded_paths(context)
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let reply_paths =
+			self.create_blinded_paths(context).map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		create_pending_payment(&invoice_request, nonce)?;
 
@@ -1032,7 +1042,7 @@ where
 				nonce,
 				hmac: Some(hmac),
 			});
-			match self.commons.create_blinded_paths(context) {
+			match self.create_blinded_paths(context) {
 				Ok(reply_paths) => {
 					match self.commons.enqueue_invoice_request(invoice_request, reply_paths) {
 						Ok(_) => {},
@@ -1385,7 +1395,6 @@ where
 					hmac,
 				});
 				let reply_paths = self
-					.commons
 					.create_blinded_paths(context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -1473,8 +1482,7 @@ where
 			name,
 			&*self.entropy_source,
 		)?;
-		let reply_paths =
-			self.commons.create_blinded_paths(MessageContext::DNSResolver(context))?;
+		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
 		let expiration = StaleExpiration::TimerTicks(1);
 		self.commons.add_new_awaiting_offer(
 			payment_id,
