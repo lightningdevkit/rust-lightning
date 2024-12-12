@@ -176,6 +176,27 @@ pub trait MigratableKVStore: KVStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
 }
 
+/// Migrates all data from one store to another.
+///
+/// This operation assumes that `target_store` is empty, i.e., any data present under copied keys
+/// might get overriden. User must ensure `source_store` is not modified during operation,
+/// otherwise no consistency guarantees can be given.
+///
+/// Will abort and return an error if any IO operation fails. Note that in this case the
+/// `target_store` might get left in an intermediate state.
+pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
+	source_store: &mut S, target_store: &mut T,
+) -> Result<(), io::Error> {
+	let keys_to_migrate = source_store.list_all_keys()?;
+
+	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
+		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
+		target_store.write(primary_namespace, secondary_namespace, key, &data)?;
+	}
+
+	Ok(())
+}
+
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
