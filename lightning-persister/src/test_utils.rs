@@ -3,7 +3,10 @@ use lightning::ln::functional_test_utils::{
 	connect_block, create_announced_chan_between_nodes, create_chanmon_cfgs, create_dummy_block,
 	create_network, create_node_cfgs, create_node_chanmgrs, send_payment,
 };
-use lightning::util::persist::{read_channel_monitors, KVStore, KVSTORE_NAMESPACE_KEY_MAX_LEN};
+use lightning::util::persist::{
+	migrate_kv_store_data, read_channel_monitors, KVStore, MigratableKVStore,
+	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+};
 use lightning::util::test_utils;
 use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event};
 
@@ -57,6 +60,41 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStore + RefUnwindSafe>(kv_s
 
 	let listed_keys = kv_store.list(&max_chars, &max_chars).unwrap();
 	assert_eq!(listed_keys.len(), 0);
+}
+
+pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>(
+	source_store: &mut S, target_store: &mut T,
+) {
+	// We fill the source with some bogus keys.
+	let dummy_data = [42u8; 32];
+	let num_primary_namespaces = 2;
+	let num_secondary_namespaces = 2;
+	let num_keys = 3;
+	for i in 0..num_primary_namespaces {
+		let primary_namespace =
+			format!("testspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(i).unwrap());
+		for j in 0..num_secondary_namespaces {
+			let secondary_namespace =
+				format!("testsubspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(j).unwrap());
+			for k in 0..num_keys {
+				let key =
+					format!("testkey{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(k).unwrap());
+				source_store
+					.write(&primary_namespace, &secondary_namespace, &key, &dummy_data)
+					.unwrap();
+			}
+		}
+	}
+	let total_num_entries = num_primary_namespaces * num_secondary_namespaces * num_keys;
+	let all_keys = source_store.list_all_keys().unwrap();
+	assert_eq!(all_keys.len(), total_num_entries);
+
+	migrate_kv_store_data(source_store, target_store).unwrap();
+
+	assert_eq!(target_store.list_all_keys().unwrap().len(), total_num_entries);
+	for (p, s, k) in &all_keys {
+		assert_eq!(target_store.read(p, s, k).unwrap(), dummy_data);
+	}
 }
 
 // Integration-test the given KVStore implementation. Test relaying a few payments and check that

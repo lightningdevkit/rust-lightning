@@ -494,7 +494,9 @@ impl MigratableKVStore for FilesystemStore {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::test_utils::{do_read_write_remove_list_persist, do_test_store};
+	use crate::test_utils::{
+		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
+	};
 
 	use bitcoin::Txid;
 
@@ -525,6 +527,19 @@ mod tests {
 		temp_path.push("test_read_write_remove_list_persist");
 		let fs_store = FilesystemStore::new(temp_path);
 		do_read_write_remove_list_persist(&fs_store);
+	}
+
+	#[test]
+	fn test_data_migration() {
+		let mut source_temp_path = std::env::temp_dir();
+		source_temp_path.push("test_data_migration_source");
+		let mut source_store = FilesystemStore::new(source_temp_path);
+
+		let mut target_temp_path = std::env::temp_dir();
+		target_temp_path.push("test_data_migration_target");
+		let mut target_store = FilesystemStore::new(target_temp_path);
+
+		do_test_data_migration(&mut source_store, &mut target_store);
 	}
 
 	#[test]
