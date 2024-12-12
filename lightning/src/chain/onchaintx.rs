@@ -502,15 +502,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		for (claim_id, request) in bump_requests {
 			self.generate_claim(current_height, &request, &feerate_strategy, conf_target, fee_estimator, logger)
 				.map(|(_, new_feerate, claim)| {
-					let mut bumped_feerate = false;
+					let mut feerate_was_bumped = false;
 					if let Some(mut_request) = self.pending_claim_requests.get_mut(&claim_id) {
-						bumped_feerate = request.previous_feerate() > new_feerate;
+						feerate_was_bumped = new_feerate > request.previous_feerate();
 						mut_request.set_feerate(new_feerate);
 					}
 					match claim {
 						OnchainClaim::Tx(tx) => {
 							if tx.is_fully_signed() {
-								let log_start = if bumped_feerate { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
+								let log_start = if feerate_was_bumped { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
 								log_info!(logger, "{} onchain {}", log_start, log_tx!(tx.0));
 								broadcaster.broadcast_transactions(&[&tx.0]);
 							} else {
@@ -518,7 +518,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							}
 						},
 						OnchainClaim::Event(event) => {
-							let log_start = if bumped_feerate { "Yielding fee-bumped" } else { "Replaying" };
+							let log_start = if feerate_was_bumped { "Yielding fee-bumped" } else { "Replaying" };
 							log_info!(logger, "{} onchain event to spend inputs {:?}", log_start,
 								request.outpoints());
 							#[cfg(debug_assertions)] {
