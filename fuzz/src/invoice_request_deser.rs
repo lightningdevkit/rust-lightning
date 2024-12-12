@@ -99,6 +99,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 			htlc_minimum_msat: 1,
 		},
 		payment_context,
+		custom_data: Vec::new(),
 	};
 	let intermediate_nodes = [PaymentForwardNode {
 		tlvs: ForwardTlvs {

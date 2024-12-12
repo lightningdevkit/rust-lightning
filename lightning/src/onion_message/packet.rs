@@ -347,6 +347,7 @@ impl Readable for ControlTlvs {
 			(4, next_node_id, option),
 			(8, next_blinding_override, option),
 			(65537, context, option),
+			(65539, custom_data, option),
 		});
 		let _padding: Option<Padding> = _padding;
 
@@ -368,6 +369,7 @@ impl Readable for ControlTlvs {
 		} else if valid_recv_fmt {
 			ControlTlvs::Receive(ReceiveTlvs {
 				context,
+				custom_data,
 			})
 		} else {
 			return Err(DecodeError::InvalidValue)

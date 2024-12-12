@@ -33,7 +33,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence, Weight};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
+use crate::blinded_path::message::{self, AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
@@ -197,8 +197,14 @@ pub enum PendingHTLCRouting {
 		///
 		/// For HTLCs received by LDK, this will ultimately be exposed in
 		/// [`Event::PaymentClaimable::onion_fields`] as
-		/// [`RecipientOnionFields::custom_tlvs`].
-		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// [`RecipientOnionFields::sender_custom_tlvs`].
+		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Custom data set by the receiver in the blinded path used to reach them.
+		///
+		/// For HTLCs received by LDK, this will be exposed in
+		/// [`Event::PaymentClaimable::onion_fields`] as
+		/// [`RecipientOnionFields::user_custom_data`].
+		user_custom_data: Vec<u8>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
 	},
@@ -227,8 +233,13 @@ pub enum PendingHTLCRouting {
 		/// Custom TLVs which were set by the sender.
 		///
 		/// For HTLCs received by LDK, these will ultimately bubble back up as
-		/// [`RecipientOnionFields::custom_tlvs`].
-		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// [`RecipientOnionFields::sender_custom_tlvs`].
+		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Custom data set by the receiver in the blinded path used to reach them.
+		///
+		/// For HTLCs received by LDK, these will ultimately bubble back up as
+		/// [`RecipientOnionFields::user_custom_data`].
+		user_custom_data: Vec<u8>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
 		/// Set if we are receiving a keysend to a blinded path, meaning we created the
@@ -943,10 +954,10 @@ impl ClaimablePayments {
 					}
 				}
 
-				if let Some(RecipientOnionFields { custom_tlvs, .. }) = &payment.onion_fields {
-					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+				if let Some(RecipientOnionFields { sender_custom_tlvs, .. }) = &payment.onion_fields {
+					if !custom_tlvs_known && sender_custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
 						log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
-							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+							&payment_hash, log_iter!(sender_custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
 						return Err(payment.htlcs);
 					}
 				}
@@ -6035,25 +6046,26 @@ where
 								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
-										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
+										incoming_cltv_expiry, phantom_shared_secret, sender_custom_tlvs, user_custom_data,
 										requires_blinded_error: _
 									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
-												payment_metadata, custom_tlvs };
+												payment_metadata, sender_custom_tlvs, user_custom_data };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
 											true)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
-										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _,
+										incoming_cltv_expiry, sender_custom_tlvs, user_custom_data, requires_blinded_error: _,
 										has_recipient_created_payment_secret,
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata,
-											custom_tlvs,
+											sender_custom_tlvs,
+											user_custom_data,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, None, None, onion_fields, has_recipient_created_payment_secret)
@@ -10168,7 +10180,7 @@ where
 			Ok((payment_hash, payment_secret)) => {
 				let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 				let payment_paths = self.create_blinded_payment_paths(
-					amount_msats, payment_secret, payment_context
+					amount_msats, payment_secret, payment_context, None
 				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10439,8 +10451,13 @@ where
 			.map(|(node_id, _)| *node_id)
 			.collect::<Vec<_>>();
 
+		let receive_tlvs = message::ReceiveTlvs {
+			context: Some(context),
+			custom_data: None,
+		};
+
 		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.create_blinded_paths(recipient, receive_tlvs, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
@@ -10467,15 +10484,20 @@ where
 			})
 			.collect::<Vec<_>>();
 
+		let receive_tlvs = message::ReceiveTlvs {
+			context: Some(MessageContext::Offers(context)),
+			custom_data: None,
+		};
+
 		self.message_router
-			.create_compact_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
+			.create_compact_blinded_paths(recipient, receive_tlvs, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
-		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
+		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext, custom_data: Option<Vec<u8>>
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let secp_ctx = &self.secp_ctx;
 
@@ -10490,6 +10512,7 @@ where
 				htlc_minimum_msat: 1,
 			},
 			payment_context,
+			custom_data: custom_data.unwrap_or_default()
 		};
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
@@ -11939,7 +11962,7 @@ where
 	L::Target: Logger,
 {
 	fn handle_message(
-		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
+		&self, message: OffersMessage, context: Option<OffersContext>, custom_data: Option<Vec<u8>>, responder: Option<Responder>,
 	) -> Option<(OffersMessage, ResponseInstruction)> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
@@ -12028,7 +12051,7 @@ where
 					invoice_request: invoice_request.fields(),
 				});
 				let payment_paths = match self.create_blinded_payment_paths(
-					amount_msats, payment_secret, payment_context
+					amount_msats, payment_secret, payment_context, custom_data.clone()
 				) {
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
@@ -12082,7 +12105,7 @@ where
 						let nonce = Nonce::from_entropy_source(&*self.entropy_source);
 						let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
 						let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash, nonce, hmac });
-						Some((OffersMessage::Invoice(invoice), responder.respond_with_reply_path(context)))
+						Some((OffersMessage::Invoice(invoice), responder.respond_with_reply_path(context, custom_data)))
 					},
 					Err(error) => Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
 				}
@@ -12362,9 +12385,10 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
-		(5, custom_tlvs, optional_vec),
+		(5, sender_custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
+		(11, user_custom_data, optional_vec),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -12372,8 +12396,9 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
-		(5, custom_tlvs, optional_vec),
+		(5, sender_custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
+		(9, user_custom_data, optional_vec),
 	},
 );
 
@@ -15341,7 +15366,8 @@ mod tests {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
 			}),
-			custom_tlvs: Vec::new(),
+			sender_custom_tlvs: Vec::new(),
+			user_custom_data: Vec::new(),
 		};
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
@@ -15363,7 +15389,8 @@ mod tests {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
 			}),
-			custom_tlvs: Vec::new(),
+			sender_custom_tlvs: Vec::new(),
+			user_custom_data: Vec::new(),
 		};
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
@@ -15387,7 +15414,8 @@ mod tests {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret: PaymentSecret([0; 32]), total_msat: 100,
 			}),
-			custom_tlvs: Vec::new(),
+			sender_custom_tlvs: Vec::new(),
+			user_custom_data: Vec::new(),
 		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
 
 		// Should not return an error as this condition:
