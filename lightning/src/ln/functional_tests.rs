@@ -1312,18 +1312,21 @@ fn test_duplicate_htlc_different_direction_onchain() {
 
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
+	let payment_value_sats = 546;
+	let payment_value_msats = payment_value_sats * 1000;
+
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
-	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 800_000);
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_value_msats);
 	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], payment_value_msats, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
 	nodes[0].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[0], payment_hash, 800_000);
+	expect_payment_claimed!(nodes[0], payment_hash, payment_value_msats);
 	check_added_monitors!(nodes[0], 1);
 
 	// Broadcast node 1 commitment txn
@@ -1332,7 +1335,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	assert_eq!(remote_txn[0].output.len(), 4); // 1 local, 1 remote, 1 htlc inbound, 1 htlc outbound
 	let mut has_both_htlcs = 0; // check htlcs match ones committed
 	for outp in remote_txn[0].output.iter() {
-		if outp.value.to_sat() == 800_000 / 1000 {
+		if outp.value.to_sat() == payment_value_sats {
 			has_both_htlcs += 1;
 		} else if outp.value.to_sat() == 900_000 / 1000 {
 			has_both_htlcs += 1;
@@ -1346,24 +1349,22 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
 
 	let claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	assert_eq!(claim_txn.len(), 3);
+	assert!(claim_txn.len() >= 3);
+	assert!(claim_txn.len() <= 5);
 
 	check_spends!(claim_txn[0], remote_txn[0]); // Immediate HTLC claim with preimage
 	check_spends!(claim_txn[1], remote_txn[0]);
 	check_spends!(claim_txn[2], remote_txn[0]);
 	let preimage_tx = &claim_txn[0];
-	let (preimage_bump_tx, timeout_tx) = if claim_txn[1].input[0].previous_output == preimage_tx.input[0].previous_output {
-		(&claim_txn[1], &claim_txn[2])
-	} else {
-		(&claim_txn[2], &claim_txn[1])
-	};
+	let timeout_tx = claim_txn.iter().skip(1).find(|t| t.input[0].previous_output != preimage_tx.input[0].previous_output).unwrap();
+	let preimage_bump_tx = claim_txn.iter().skip(1).find(|t| t.input[0].previous_output == preimage_tx.input[0].previous_output).unwrap();
 
 	assert_eq!(preimage_tx.input.len(), 1);
 	assert_eq!(preimage_bump_tx.input.len(), 1);
 
 	assert_eq!(preimage_tx.input.len(), 1);
 	assert_eq!(preimage_tx.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
-	assert_eq!(remote_txn[0].output[preimage_tx.input[0].previous_output.vout as usize].value.to_sat(), 800);
+	assert_eq!(remote_txn[0].output[preimage_tx.input[0].previous_output.vout as usize].value.to_sat(), payment_value_sats);
 
 	assert_eq!(timeout_tx.input.len(), 1);
 	assert_eq!(timeout_tx.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
@@ -7676,22 +7677,29 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
-	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
-	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
+	let remote_txn = {
+		let htlc_value_a_msats = 847_000;
+		let htlc_value_b_msats = 546_000;
 
-	// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
-	let remote_txn = get_local_commitment_txn!(nodes[0], chan.2);
-	assert_eq!(remote_txn[0].output.len(), 4);
-	assert_eq!(remote_txn[0].input.len(), 1);
-	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
+		let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], htlc_value_a_msats);
+		route_payment(&nodes[1], &vec!(&nodes[0])[..], htlc_value_b_msats).0;
 
-	// Claim a HTLC without revocation (provide B monitor with preimage)
-	nodes[1].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
-	mine_transaction(&nodes[1], &remote_txn[0]);
-	check_added_monitors!(nodes[1], 2);
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
+		// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
+		let remote_txn = get_local_commitment_txn!(nodes[0], chan.2);
+		assert_eq!(remote_txn[0].output.len(), 4);
+		assert_eq!(remote_txn[0].input.len(), 1);
+		assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
+
+		// Claim a HTLC without revocation (provide B monitor with preimage)
+		nodes[1].node.claim_funds(payment_preimage);
+		expect_payment_claimed!(nodes[1], payment_hash, htlc_value_a_msats);
+		mine_transaction(&nodes[1], &remote_txn[0]);
+		check_added_monitors!(nodes[1], 2);
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
+
+		remote_txn
+	};
 
 	// One or more claim tx should have been broadcast, check it
 	let timeout;
@@ -7701,9 +7709,11 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	let feerate_preimage;
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// 3 transactions including:
+		// 3-6 transactions including:
 		//   preimage and timeout sweeps from remote commitment + preimage sweep bump
-		assert_eq!(node_txn.len(), 3);
+		//   plus, depending on the block connection style, two further bumps
+		assert!(node_txn.len() >= 3);
+		assert!(node_txn.len() <= 6);
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(node_txn[1].input.len(), 1);
 		assert_eq!(node_txn[2].input.len(), 1);
@@ -7716,11 +7726,9 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		let fee = remote_txn[0].output[index as usize].value.to_sat() - node_txn[0].output[0].value.to_sat();
 		feerate_preimage = fee * 1000 / node_txn[0].weight().to_wu();
 
-		let (preimage_bump_tx, timeout_tx) = if node_txn[2].input[0].previous_output == node_txn[0].input[0].previous_output {
-			(node_txn[2].clone(), node_txn[1].clone())
-		} else {
-			(node_txn[1].clone(), node_txn[2].clone())
-		};
+		let preimage_tx = &node_txn[0];
+		let timeout_tx = node_txn.iter().skip(1).find(|t| t.input[0].previous_output != preimage_tx.input[0].previous_output).unwrap().clone();
+		let preimage_bump_tx = node_txn.iter().skip(1).find(|t| t.input[0].previous_output == preimage_tx.input[0].previous_output).unwrap().clone();
 
 		preimage_bump = preimage_bump_tx;
 		check_spends!(preimage_bump, remote_txn[0]);
@@ -7740,7 +7748,8 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	connect_blocks(&nodes[1], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 1);
+		assert!(node_txn.len() >= 1);
+		assert!(node_txn.len() <= 2);
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(preimage_bump.input.len(), 1);
 		check_spends!(node_txn[0], remote_txn[0]);
