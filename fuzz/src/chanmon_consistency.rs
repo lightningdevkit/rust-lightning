@@ -55,6 +55,7 @@ use lightning::ln::msgs::{
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
+use lightning::offers::flow::OffersMessageCommons;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{

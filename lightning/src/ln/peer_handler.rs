@@ -398,8 +398,6 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_tx_abort(&self, their_node_id: PublicKey, msg: &msgs::TxAbort) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-
-	fn message_received(&self) {}
 }
 
 impl Deref for ErroringMessageHandler {
@@ -1638,7 +1636,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		let unprocessed_message = self.do_handle_message_holding_peer_lock(peer_lock, message, their_node_id, &logger)?;
 
-		self.message_handler.chan_handler.message_received();
+		self.message_handler.onion_message_handler.message_received();
 
 		if let Some(message) = unprocessed_message {
 			self.do_handle_message_without_peer_lock(peer_mutex, message, their_node_id, &logger)

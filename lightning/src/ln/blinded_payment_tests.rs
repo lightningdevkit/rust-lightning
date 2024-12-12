@@ -1225,7 +1225,7 @@ fn blinded_keysend() {
 		&nodes[2].keys_manager.get_inbound_payment_key_material()
 	);
 	let payment_secret = inbound_payment::create_for_spontaneous_payment(
-		&inbound_payment_key, None, u32::MAX, nodes[2].node.duration_since_epoch().as_secs(), None
+		&inbound_payment_key, None, u32::MAX, nodes[2].offers_handler.duration_since_epoch().as_secs(), None
 	).unwrap();
 
 	let amt_msat = 5000;
@@ -1266,7 +1266,7 @@ fn blinded_mpp_keysend() {
 		&nodes[3].keys_manager.get_inbound_payment_key_material()
 	);
 	let payment_secret = inbound_payment::create_for_spontaneous_payment(
-		&inbound_payment_key, None, u32::MAX, nodes[3].node.duration_since_epoch().as_secs(), None
+		&inbound_payment_key, None, u32::MAX, nodes[3].offers_handler.duration_since_epoch().as_secs(), None
 	).unwrap();
 
 	let amt_msat = 15_000_000;
