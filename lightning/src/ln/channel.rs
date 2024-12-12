@@ -7788,6 +7788,12 @@ impl<SP: Deref> Channel<SP> where
 	pub fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
 		assert!(self.context.channel_state.is_peer_disconnected());
 		assert_ne!(self.context.cur_counterparty_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
+		// This is generally the first function which gets called on any given channel once we're
+		// up and running normally. Thus, we take this opportunity to attempt to resolve the
+		// `holder_commitment_point` to get any keys which we are currently missing.
+		self.context.holder_commitment_point.try_resolve_pending(
+			&self.context.holder_signer, &self.context.secp_ctx, logger,
+		);
 		// Prior to static_remotekey, my_current_per_commitment_point was critical to claiming
 		// current to_remote balances. However, it no longer has any use, and thus is now simply
 		// set to a dummy (but valid, as required by the spec) public key.
@@ -10004,8 +10010,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				// TODO(async_signing): remove this expect with the Uninitialized variant
 				let current = holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx)
 					.expect("Must be able to derive the current commitment point upon channel restoration");
-				HolderCommitmentPoint::PendingNext {
-					transaction_number: cur_holder_commitment_transaction_number, current,
+				let next = holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number - 1, &secp_ctx)
+					.expect("Must be able to derive the next commitment point upon channel restoration");
+				HolderCommitmentPoint::Available {
+					transaction_number: cur_holder_commitment_transaction_number, current, next,
 				}
 			},
 		};
