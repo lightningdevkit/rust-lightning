@@ -3629,7 +3629,7 @@ where
 			}
 		}
 
-		let channel = {
+		let mut channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
@@ -3644,7 +3644,8 @@ where
 				},
 			}
 		};
-		let res = channel.get_open_channel(self.chain_hash);
+		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+		let res = channel.get_open_channel(self.chain_hash, &&logger);
 
 		let temporary_channel_id = channel.context.channel_id();
 		match peer_state.channel_by_id.entry(temporary_channel_id) {
@@ -3658,10 +3659,12 @@ where
 			hash_map::Entry::Vacant(entry) => { entry.insert(ChannelPhase::UnfundedOutboundV1(channel)); }
 		}
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-			node_id: their_network_key,
-			msg: res,
-		});
+		if let Some(msg) = res {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+				node_id: their_network_key,
+				msg,
+			});
+		}
 		Ok(temporary_channel_id)
 	}
 
@@ -7720,11 +7723,14 @@ where
 							&self.channel_type_features(), &peer_state.latest_features, &open_channel_msg,
 							user_channel_id, &self.default_configuration, best_block_height, &self.logger, accept_0conf
 						).map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id)
-						).map(|channel| {
-							let message_send_event = events::MessageSendEvent::SendAcceptChannel {
-								node_id: *counterparty_node_id,
-								msg: channel.accept_inbound_channel(),
-							};
+						).map(|mut channel| {
+							let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+							let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
+								events::MessageSendEvent::SendAcceptChannel {
+									node_id: *counterparty_node_id,
+									msg,
+								}
+							});
 							(*temporary_channel_id, ChannelPhase::UnfundedInboundV1(channel), message_send_event)
 						})
 					},
@@ -7745,7 +7751,7 @@ where
 								node_id: channel.context.get_counterparty_node_id(),
 								msg: channel.accept_inbound_dual_funded_channel()
 							};
-							(channel.context.channel_id(), ChannelPhase::UnfundedInboundV2(channel), message_send_event)
+							(channel.context.channel_id(), ChannelPhase::UnfundedInboundV2(channel), Some(message_send_event))
 						})
 					},
 				}
@@ -7813,7 +7819,9 @@ where
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel_phase.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(message_send_event);
+		if let Some(message_send_event) = message_send_event {
+			peer_state.pending_msg_events.push(message_send_event);
+		}
 		peer_state.channel_by_id.insert(channel_id, channel_phase);
 
 		Ok(())
@@ -7989,15 +7997,18 @@ where
 
 		let (mut channel_phase, message_send_event) = match msg {
 			OpenChannelMessageRef::V1(msg) => {
-				let channel = InboundV1Channel::new(
+				let mut channel = InboundV1Channel::new(
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
 					&self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
 					&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
-				let message_send_event = events::MessageSendEvent::SendAcceptChannel {
-					node_id: *counterparty_node_id,
-					msg: channel.accept_inbound_channel(),
-				};
+				let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+				let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
+					events::MessageSendEvent::SendAcceptChannel {
+						node_id: *counterparty_node_id,
+						msg,
+					}
+				});
 				(ChannelPhase::UnfundedInboundV1(channel), message_send_event)
 			},
 			OpenChannelMessageRef::V2(msg) => {
@@ -8010,14 +8021,16 @@ where
 					node_id: *counterparty_node_id,
 					msg: channel.accept_inbound_dual_funded_channel(),
 				};
-				(ChannelPhase::UnfundedInboundV2(channel), message_send_event)
+				(ChannelPhase::UnfundedInboundV2(channel), Some(message_send_event))
 			},
 		};
 
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel_phase.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(message_send_event);
+		if let Some(message_send_event) = message_send_event {
+			peer_state.pending_msg_events.push(message_send_event);
+		}
 		peer_state.channel_by_id.insert(channel_phase.context().channel_id(), channel_phase);
 
 		Ok(())
@@ -9548,7 +9561,14 @@ where
 					msgs.shutdown_result
 				}
 				ChannelPhase::UnfundedOutboundV1(chan) => {
-					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
+					let (open_channel, funding_created) = chan.signer_maybe_unblocked(self.chain_hash.clone(), &self.logger);
+					if let Some(msg) = open_channel {
+						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = funding_created {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 							node_id,
 							msg,
@@ -9556,7 +9576,17 @@ where
 					}
 					None
 				}
-				ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => None,
+				ChannelPhase::UnfundedInboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					if let Some(msg) = chan.signer_maybe_unblocked(&&logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+							node_id,
+							msg,
+						});
+					}
+					None
+				},
+				ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => None,
 			}
 		};
 
@@ -11669,10 +11699,13 @@ where
 						}
 
 						ChannelPhase::UnfundedOutboundV1(chan) => {
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-								node_id: chan.context.get_counterparty_node_id(),
-								msg: chan.get_open_channel(self.chain_hash),
-							});
+							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+							if let Some(msg) = chan.get_open_channel(self.chain_hash, &&logger) {
+								pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+									node_id: chan.context.get_counterparty_node_id(),
+									msg,
+								});
+							}
 						}
 
 						ChannelPhase::UnfundedOutboundV2(chan) => {
@@ -11776,7 +11809,8 @@ where
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					Some(ChannelPhase::UnfundedOutboundV1(ref mut chan)) => {
-						if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator, &&logger) {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 								node_id: counterparty_node_id,
 								msg,
