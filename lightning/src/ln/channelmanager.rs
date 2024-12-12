@@ -54,7 +54,7 @@ use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelType
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, Router};
-#[cfg(any(test, fuzzing))]
+#[cfg(test)]
 use crate::routing::router::Route;
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
