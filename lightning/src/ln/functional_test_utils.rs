@@ -17,17 +17,17 @@ use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageS
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::types::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::outbound_payment::Retry;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::onion_message::messenger::OnionMessenger;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
-use crate::util::errors::APIError;
 #[cfg(test)]
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
@@ -2604,8 +2604,11 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
 	let payment_id = PaymentId(origin_node.keys_manager.backing.get_secure_random_bytes());
-	origin_node.node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), payment_id).unwrap();
+	origin_node.router.expect_find_route(route.route_params.clone().unwrap(), Ok(route.clone()));
+	origin_node.node.send_payment(
+		our_payment_hash, RecipientOnionFields::secret_only(our_payment_secret), payment_id,
+		route.route_params.unwrap(), Retry::Attempts(0)
+	).unwrap();
 	check_added_monitors!(origin_node, expected_paths.len());
 	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
 	payment_id
@@ -3105,30 +3108,6 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 	let res = send_along_route(origin_node, route, expected_route, recv_value);
 	(res.0, res.1, res.2, res.3)
-}
-
-pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
-		.with_bolt11_features(expected_route.last().unwrap().node.bolt11_invoice_features()).unwrap();
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
-	let network_graph = origin_node.network_graph.read_only();
-	let scorer = test_utils::TestScorer::new();
-	let seed = [0u8; 32];
-	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-	let random_seed_bytes = keys_manager.get_secure_random_bytes();
-	let route = router::get_route(&origin_node.node.get_our_node_id(), &route_params, &network_graph,
-		None, origin_node.logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
-	assert_eq!(route.paths.len(), 1);
-	assert_eq!(route.paths[0].hops.len(), expected_route.len());
-	for (node, hop) in expected_route.iter().zip(route.paths[0].hops.iter()) {
-		assert_eq!(hop.pubkey, node.node.get_our_node_id());
-	}
-
-	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(expected_route.last().unwrap());
-	unwrap_send_err!(origin_node.node.send_payment_with_route(route, our_payment_hash,
-			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)),
-		true, APIError::ChannelUnavailable { ref err },
-		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 }
 
 pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {

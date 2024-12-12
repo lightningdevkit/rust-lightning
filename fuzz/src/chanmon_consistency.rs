@@ -47,8 +47,7 @@ use lightning::events::MessageSendEventsProvider;
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
-	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, PaymentSendFailure,
-	RecipientOnionFields,
+	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, Retry,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs::{
@@ -58,7 +57,9 @@ use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
-use lightning::routing::router::{InFlightHtlcs, Path, Route, RouteHop, RouteParameters, Router};
+use lightning::routing::router::{
+	InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router,
+};
 use lightning::sign::{
 	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
 };
@@ -82,6 +83,7 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::io::Cursor;
 use std::cmp::{self, Ordering};
+use std::collections::VecDeque;
 use std::mem;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
@@ -112,13 +114,18 @@ impl FeeEstimator for FuzzEstimator {
 	}
 }
 
-struct FuzzRouter {}
+struct FuzzRouter {
+	pub next_routes: Mutex<VecDeque<Route>>,
+}
 
 impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters,
 		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
 	) -> Result<Route, msgs::LightningError> {
+		if let Some(route) = self.next_routes.lock().unwrap().pop_front() {
+			return Ok(route);
+		}
 		Err(msgs::LightningError {
 			err: String::from("Not implemented"),
 			action: msgs::ErrorAction::IgnoreError,
@@ -434,6 +441,34 @@ impl KeyProvider {
 	}
 }
 
+// Returns a bool indicating whether the payment failed.
+#[inline]
+fn check_payment_send_events(
+	source: &ChanMan, amt: u64, min_sendable: u64, max_sendable: u64,
+) -> bool {
+	let mut payment_failed = false;
+	let events = source.get_and_clear_pending_events();
+	assert!(events.len() == 2 || events.len() == 0);
+	for ev in events {
+		match ev {
+			events::Event::PaymentPathFailed {
+				failure: events::PathFailure::InitialSend { err },
+				..
+			} => {
+				check_api_err(err, amt > max_sendable || amt < min_sendable);
+			},
+			events::Event::PaymentFailed { .. } => {},
+			_ => panic!(),
+		};
+		payment_failed = true;
+	}
+	// Note that while the max is a strict upper-bound, we can occasionally send substantially
+	// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
+	// we don't check against min_value_sendable here.
+	assert!(payment_failed || (amt <= max_sendable));
+	payment_failed
+}
+
 #[inline]
 fn check_api_err(api_err: APIError, sendable_bounds_violated: bool) {
 	match api_err {
@@ -458,34 +493,6 @@ fn check_api_err(api_err: APIError, sendable_bounds_violated: bool) {
 		APIError::IncompatibleShutdownScript { .. } => {
 			panic!("Cannot send an incompatible shutdown script")
 		},
-	}
-}
-#[inline]
-fn check_payment_err(send_err: PaymentSendFailure, sendable_bounds_violated: bool) {
-	match send_err {
-		PaymentSendFailure::ParameterError(api_err) => {
-			check_api_err(api_err, sendable_bounds_violated)
-		},
-		PaymentSendFailure::PathParameterError(per_path_results) => {
-			for res in per_path_results {
-				if let Err(api_err) = res {
-					check_api_err(api_err, sendable_bounds_violated);
-				}
-			}
-		},
-		PaymentSendFailure::AllFailedResendSafe(per_path_results) => {
-			for api_err in per_path_results {
-				check_api_err(api_err, sendable_bounds_violated);
-			}
-		},
-		PaymentSendFailure::PartialFailure { results, .. } => {
-			for res in results {
-				if let Err(api_err) = res {
-					check_api_err(api_err, sendable_bounds_violated);
-				}
-			}
-		},
-		PaymentSendFailure::DuplicatePayment => panic!(),
 	}
 }
 
@@ -546,34 +553,36 @@ fn send_payment(
 		.find(|chan| chan.short_channel_id == Some(dest_chan_id))
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
-	if let Err(err) = source.send_payment_with_route(
-		Route {
-			paths: vec![Path {
-				hops: vec![RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: dest_chan_id,
-					channel_features: dest.channel_features(),
-					fee_msat: amt,
-					cltv_expiry_delta: 200,
-					maybe_announced_channel: true,
-				}],
-				blinded_tail: None,
+	let mut next_routes = source.router.next_routes.lock().unwrap();
+	next_routes.push_back(Route {
+		paths: vec![Path {
+			hops: vec![RouteHop {
+				pubkey: dest.get_our_node_id(),
+				node_features: dest.node_features(),
+				short_channel_id: dest_chan_id,
+				channel_features: dest.channel_features(),
+				fee_msat: amt,
+				cltv_expiry_delta: 200,
+				maybe_announced_channel: true,
 			}],
-			route_params: None,
-		},
+			blinded_tail: None,
+		}],
+		route_params: None,
+	});
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
+	if let Err(err) = source.send_payment(
 		payment_hash,
 		RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_id),
+		route_params,
+		Retry::Attempts(0),
 	) {
-		check_payment_err(err, amt > max_value_sendable || amt < min_value_sendable);
-		false
+		panic!("Errored with {:?} on initial payment send", err);
 	} else {
-		// Note that while the max is a strict upper-bound, we can occasionally send substantially
-		// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
-		// we don't check against min_value_sendable here.
-		assert!(amt <= max_value_sendable);
-		true
+		check_payment_send_events(source, amt, min_value_sendable, max_value_sendable)
 	}
 }
 
@@ -615,46 +624,48 @@ fn send_hop_payment(
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
 	let first_hop_fee = 50_000;
-	if let Err(err) = source.send_payment_with_route(
-		Route {
-			paths: vec![Path {
-				hops: vec![
-					RouteHop {
-						pubkey: middle.get_our_node_id(),
-						node_features: middle.node_features(),
-						short_channel_id: middle_chan_id,
-						channel_features: middle.channel_features(),
-						fee_msat: first_hop_fee,
-						cltv_expiry_delta: 100,
-						maybe_announced_channel: true,
-					},
-					RouteHop {
-						pubkey: dest.get_our_node_id(),
-						node_features: dest.node_features(),
-						short_channel_id: dest_chan_id,
-						channel_features: dest.channel_features(),
-						fee_msat: amt,
-						cltv_expiry_delta: 200,
-						maybe_announced_channel: true,
-					},
-				],
-				blinded_tail: None,
-			}],
-			route_params: None,
-		},
+	let mut next_routes = source.router.next_routes.lock().unwrap();
+	next_routes.push_back(Route {
+		paths: vec![Path {
+			hops: vec![
+				RouteHop {
+					pubkey: middle.get_our_node_id(),
+					node_features: middle.node_features(),
+					short_channel_id: middle_chan_id,
+					channel_features: middle.channel_features(),
+					fee_msat: first_hop_fee,
+					cltv_expiry_delta: 100,
+					maybe_announced_channel: true,
+				},
+				RouteHop {
+					pubkey: dest.get_our_node_id(),
+					node_features: dest.node_features(),
+					short_channel_id: dest_chan_id,
+					channel_features: dest.channel_features(),
+					fee_msat: amt,
+					cltv_expiry_delta: 200,
+					maybe_announced_channel: true,
+				},
+			],
+			blinded_tail: None,
+		}],
+		route_params: None,
+	});
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
+	if let Err(err) = source.send_payment(
 		payment_hash,
 		RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_id),
+		route_params,
+		Retry::Attempts(0),
 	) {
-		let sent_amt = amt + first_hop_fee;
-		check_payment_err(err, sent_amt < min_value_sendable || sent_amt > max_value_sendable);
-		false
+		panic!("Errored with {:?} on initial payment send", err);
 	} else {
-		// Note that while the max is a strict upper-bound, we can occasionally send substantially
-		// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
-		// we don't check against min_value_sendable here.
-		assert!(amt + first_hop_fee <= max_value_sendable);
-		true
+		let sent_amt = amt + first_hop_fee;
+		check_payment_send_events(source, sent_amt, min_value_sendable, max_value_sendable)
 	}
 }
 
@@ -662,7 +673,7 @@ fn send_hop_payment(
 pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster {});
-	let router = FuzzRouter {};
+	let router = FuzzRouter { next_routes: Mutex::new(VecDeque::new()) };
 
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => {{
