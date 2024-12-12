@@ -238,6 +238,34 @@ pub enum PendingHTLCRouting {
 	},
 }
 
+/// Represents the types of [`BlindedMessagePath`] that can be created.
+pub enum BlindedPathType {
+	/// A compact version of [`BlindedMessagePath`].
+	///
+	/// Compact blinded paths use a [`ShortChannelId`] instead of a [`NodeId`] to represent forward nodes.
+	/// This approach drastically reduces the size of each individual forward packet but requires
+	/// knowledge of the local channel graph to find the corresponding channel for each node.
+	///
+	/// Compact blinded paths are especially useful when size is a constraint, such as when offers
+	/// and refund information must be represented in QR code form.
+	///
+	/// [`ShortChannelId`]: crate::blinded_path::message::NextMessageHop::ShortChannelId
+	/// [`NodeId`]: crate::blinded_path::message::NextMessageHop::NodeId
+	Compact,
+
+	/// A full-length version of [`BlindedMessagePath`].
+	///
+	/// Unlike compact blinded paths, full-length paths use each individual forward node's [`NodeId`] for representation.
+	/// This increases the size of each forward packet as more space is required for representation.
+	/// However, it does not require knowledge of the local channel graph to create the path.
+	///
+	/// Full-length blinded paths are useful when onion messages are communicated over the wire and size constraints are not an issue,
+	/// such as when sending a response to an onion message.
+	///
+	/// [`NodeId`]: crate::blinded_path::message::NextMessageHop::NodeId
+	Full,
+}
+
 /// Information used to forward or fail this HTLC that is being forwarded within a blinded path.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedForward {
@@ -2027,14 +2055,14 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
-/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::ln::channelmanager::{AChannelManager, BlindedPathType};
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
-/// # let absolute_expiry = None;
+/// # let blinded_path = BlindedPathType::Full;
 /// let offer = channel_manager
-///     .create_offer_builder(absolute_expiry)?
+///     .create_offer_builder(Some(blinded_path))?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
@@ -2130,7 +2158,7 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, BlindedPathType, PaymentId, RecentPaymentDetails, Retry};
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2139,9 +2167,10 @@ where
 /// # ) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
+/// let blinded_path = Some(BlindedPathType::Full);
 /// let refund = channel_manager
 ///     .create_refund_builder(
-///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat
+///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat, blinded_path
 ///     )?
 /// # ;
 /// # // Needed for compiling for c_bindings
@@ -9835,7 +9864,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
-		&$self, absolute_expiry: Option<Duration>
+		&$self, blinded_path: Option<BlindedPathType>,
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -9844,17 +9873,21 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::InvoiceRequest { nonce };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-			.chain_hash($self.chain_hash)
-			.path(path);
 
-		let builder = match absolute_expiry {
-			None => builder,
-			Some(absolute_expiry) => builder.absolute_expiry(absolute_expiry),
-		};
+		let mut builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
+			.chain_hash($self.chain_hash);
+
+		if let Some(path_type) = blinded_path {
+			let paths = match path_type {
+				BlindedPathType::Compact => $self.create_compact_blinded_paths(context),
+				BlindedPathType::Full => $self.create_blinded_paths(MessageContext::Offers(context)),
+			}
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+			builder = paths.into_iter().fold(builder, |builder, path| {
+				builder.path(path)
+			});
+		}
 
 		Ok(builder.into())
 	}
@@ -9908,7 +9941,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
-		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>, blinded_path: Option<BlindedPathType>
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -9917,16 +9950,25 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
+
+		let mut builder = RefundBuilder::deriving_signing_pubkey(
+			node_id, expanded_key, nonce, secp_ctx,
+			amount_msats, payment_id,
+		)?
+		.chain_hash($self.chain_hash)
+		.absolute_expiry(absolute_expiry);
+
+		if let Some(path_type) = blinded_path {
+			let paths = match path_type {
+				BlindedPathType::Compact => $self.create_compact_blinded_paths(context),
+				BlindedPathType::Full => $self.create_blinded_paths(MessageContext::Offers(context)),
+			}
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		let builder = RefundBuilder::deriving_signing_pubkey(
-			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
-		)?
-			.chain_hash($self.chain_hash)
-			.absolute_expiry(absolute_expiry)
-			.path(path);
+			builder = paths.into_iter().fold(builder, |builder, path| {
+				builder.path(path)
+			})
+		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
 
@@ -10391,25 +10433,7 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
-	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
-	/// the path's intended lifetime.
-	///
-	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
-	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
-	fn create_blinded_paths_using_absolute_expiry(
-		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let now = self.duration_since_epoch();
-		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
-
-		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
-			self.create_compact_blinded_paths(context)
-		} else {
-			self.create_blinded_paths(MessageContext::Offers(context))
-		}
-	}
-
+	#[cfg(test)]
 	pub(super) fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(
