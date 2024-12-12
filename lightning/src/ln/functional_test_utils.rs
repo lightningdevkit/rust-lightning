@@ -1502,7 +1502,7 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(nodes:
 }
 
 pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64) -> (msgs::ChannelReady, Transaction) {
-	let mut no_announce_cfg = test_default_channel_config();
+	let mut no_announce_cfg = nodes[a].node.get_current_default_configuration().clone();
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
 	nodes[a].node.create_channel(nodes[b].node.get_our_node_id(), channel_value, push_msat, 42, None, Some(no_announce_cfg)).unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, nodes[b].node.get_our_node_id());
@@ -2741,6 +2741,9 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 							PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
 								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								if let Some(secret) = our_payment_secret {
+									assert_eq!(secret, *payment_secret);
+								}
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {
