@@ -15,7 +15,7 @@ use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
-use bitcoin::Weight;
+use bitcoin::{TxOut, Weight};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1609,8 +1609,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_point, &context.get_counterparty_pubkeys().payment_point, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&context.channel_transaction_parameters);
+		let monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
 		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, context.get_holder_selected_contest_delay(),
 		                                          &context.destination_script, (funding_txo, funding_txo_script),
@@ -3165,9 +3164,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let channel_parameters =
 			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
 			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
+		let counterparty_payment_script = self.holder_signer.as_ref().get_counterparty_payment_script(!local);
+		let counterparty_txout = TxOut {
+			script_pubkey: counterparty_payment_script,
+			value: Amount::from_sat(value_to_b as u64),
+		};
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
-		                                                             value_to_b as u64,
+		                                                             counterparty_txout,
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
@@ -10260,6 +10264,14 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
+	impl crate::ln::channel::ChannelContext<&Keys> {
+		fn overwrite_channel_features(&mut self, channel_type_features: ChannelTypeFeatures) {
+			self.channel_transaction_parameters.channel_type_features = channel_type_features;
+			self.holder_signer.as_mut_ecdsa().unwrap().overwrite_channel_parameters(&self.channel_transaction_parameters);
+		}
+	}
+
+	#[cfg(ldk_test_vectors)]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		assert!(cfg!(not(feature = "grind_signatures")));
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap())
@@ -10927,14 +10939,14 @@ mod tests {
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+				chan.context.overwrite_channel_features(ChannelTypeFeatures::only_static_remote_key());
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
 
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				chan.context.overwrite_channel_features(ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}

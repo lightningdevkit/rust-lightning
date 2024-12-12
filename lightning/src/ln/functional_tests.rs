@@ -766,11 +766,16 @@ fn test_update_fee_that_funder_cannot_afford() {
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
 		let local_chan_signer = local_chan.get_signer();
+		let counterparty_payment_script = local_chan_signer.as_ref().get_counterparty_payment_script(true);
+		let counterparty_txout = TxOut {
+			script_pubkey: counterparty_payment_script,
+			value: Amount::from_sat(channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000),
+		};
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			push_sats,
-			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
+			counterparty_txout,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
@@ -1521,10 +1526,15 @@ fn test_fee_spike_violation_fails_htlc() {
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
 		let local_chan_signer = local_chan.get_signer();
+		let counterparty_payment_script = local_chan_signer.as_ref().get_counterparty_payment_script(true);
+		let counterparty_txout = TxOut {
+			script_pubkey: counterparty_payment_script,
+			value: Amount::from_sat(local_chan_balance),
+		};
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
 			95000,
-			local_chan_balance,
+			counterparty_txout,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			feerate_per_kw,
