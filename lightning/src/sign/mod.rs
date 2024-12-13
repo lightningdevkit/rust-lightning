@@ -65,6 +65,7 @@ use crate::crypto::chacha20::ChaCha20;
 use crate::io::{self, Error};
 use crate::ln::msgs::DecodeError;
 use crate::prelude::*;
+use crate::sign::chan_utils::TxCreationKeys;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
@@ -827,6 +828,38 @@ pub trait ChannelSigner {
 		};
 		let payment_point = &params.countersignatory_pubkeys().payment_point;
 		get_counterparty_payment_script(params.channel_type_features(), payment_point)
+	}
+
+	/// Returns the script pubkey that should be placed in the `to_local` output of commitment
+	/// transactions, and in the output of second level HTLC transactions.
+	///
+	/// Assumes the signer has already been given the channel parameters via
+	/// `provide_channel_parameters`.
+	///
+	/// If `is_holder_tx` is set, return the revokeable script pubkey for local party's
+	/// commitment / htlc transaction, otherwise, for the remote party's.
+	fn get_revokeable_spk(
+		&self, is_holder_tx: bool, _commitment_number: u64, per_commitment_point: &PublicKey,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ScriptBuf {
+		let params = if is_holder_tx {
+			self.get_channel_parameters().unwrap().as_holder_broadcastable()
+		} else {
+			self.get_channel_parameters().unwrap().as_counterparty_broadcastable()
+		};
+		let contest_delay = params.contest_delay();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		get_revokeable_redeemscript(
+			&keys.revocation_key,
+			contest_delay,
+			&keys.broadcaster_delayed_payment_key,
+		)
+		.to_p2wsh()
 	}
 }
 
