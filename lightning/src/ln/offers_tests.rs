@@ -132,7 +132,7 @@ fn announce_node_address<'a, 'b, 'c>(
 		excess_data: Vec::new(),
 	};
 	let signature = node.keys_manager.sign_gossip_message(
-		UnsignedGossipMessage::NodeAnnouncement(&announcement)
+		UnsignedGossipMessage::NodeAnnouncement(announcement.clone())
 	).unwrap();
 
 	let msg = NodeAnnouncement {
