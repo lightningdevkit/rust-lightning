@@ -7199,7 +7199,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let preimage_update = ChannelMonitorUpdate {
 			update_id,
-			counterparty_node_id: prev_hop.counterparty_node_id,
+			counterparty_node_id: Some(counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage,
 				payment_info,
@@ -7207,28 +7207,33 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			channel_id: Some(prev_hop.channel_id),
 		};
 
-		// Note that the below is race-y - we set the `update_id` above and then drop the peer_state
-		// lock before applying the update in `apply_post_close_monitor_update` (or via the
-		// background events pipeline). During that time, some other update could be created and
-		// then applied, resultin in `ChannelMonitorUpdate`s being applied out of order and causing
-		// a panic.
+		// Note that we do process the completion action here. This totally could be a
+		// duplicate claim, but we have no way of knowing without interrogating the
+		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
+		// generally always allowed to be duplicative (and it's specifically noted in
+		// `PaymentForwarded`).
+		let (action_opt, raa_blocker_opt) = completion_action(None, false);
 
-		mem::drop(peer_state);
-		mem::drop(per_peer_state);
+		if let Some(raa_blocker) = raa_blocker_opt {
+			peer_state.actions_blocking_raa_monitor_updates
+				.entry(prev_hop.channel_id)
+				.or_default()
+				.push(raa_blocker);
+		}
+
+		// Given the fact that we're in a bit of a weird edge case, its worth hashing the preimage
+		// to include the `payment_hash` in the log metadata here.
+		let payment_hash = payment_preimage.into();
+		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(chan_id), Some(payment_hash));
 
 		if !during_init {
-			// We update the ChannelMonitor on the backward link, after
-			// receiving an `update_fulfill_htlc` from the forward link.
-			let update_res = self.apply_post_close_monitor_update(counterparty_node_id, prev_hop.channel_id, prev_hop.funding_txo, preimage_update);
-			if update_res != ChannelMonitorUpdateStatus::Completed {
-				// TODO: This needs to be handled somehow - if we receive a monitor update
-				// with a preimage we *must* somehow manage to propagate it to the upstream
-				// channel, or we must have an ability to receive the same event and try
-				// again on restart.
-				log_error!(WithContext::from(&self.logger, None, Some(prev_hop.channel_id), None),
-					"Critical error: failed to update channel monitor with preimage {:?}: {:?}",
-					payment_preimage, update_res);
+			if let Some(action) = action_opt {
+				log_trace!(logger, "Tracking monitor update completion action for closed channel {}: {:?}",
+					chan_id, action);
+				peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
 			}
+
+			handle_new_monitor_update!(self, prev_hop.funding_txo, preimage_update, peer_state, peer_state, per_peer_state, logger, chan_id, POST_CHANNEL_CLOSE);
 		} else {
 			// If we're running during init we cannot update a monitor directly - they probably
 			// haven't actually been loaded yet. Instead, push the monitor update as a background
@@ -7242,39 +7247,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				update: preimage_update,
 			};
 			self.pending_background_events.lock().unwrap().push(event);
+
+			mem::drop(peer_state);
+			mem::drop(per_peer_state);
+
+			self.handle_monitor_update_completion_actions(action_opt);
 		}
-
-		// Note that we do process the completion action here. This totally could be a
-		// duplicate claim, but we have no way of knowing without interrogating the
-		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
-		// generally always allowed to be duplicative (and it's specifically noted in
-		// `PaymentForwarded`).
-		let (action_opt, raa_blocker_opt) = completion_action(None, false);
-
-		if let Some(raa_blocker) = raa_blocker_opt {
-			// TODO: Avoid always blocking the world for the write lock here.
-			let mut per_peer_state = self.per_peer_state.write().unwrap();
-			let peer_state_mutex = per_peer_state.entry(counterparty_node_id).or_insert_with(||
-				Mutex::new(PeerState {
-					channel_by_id: new_hash_map(),
-					inbound_channel_request_by_id: new_hash_map(),
-					latest_features: InitFeatures::empty(),
-					pending_msg_events: Vec::new(),
-					in_flight_monitor_updates: BTreeMap::new(),
-					monitor_update_blocked_actions: BTreeMap::new(),
-					actions_blocking_raa_monitor_updates: BTreeMap::new(),
-					closed_channel_monitor_update_ids: BTreeMap::new(),
-					is_connected: false,
-				}));
-			let mut peer_state = peer_state_mutex.lock().unwrap();
-
-			peer_state.actions_blocking_raa_monitor_updates
-				.entry(prev_hop.channel_id)
-				.or_default()
-				.push(raa_blocker);
-		}
-
-		self.handle_monitor_update_completion_actions(action_opt);
 	}
 
 	fn finalize_claims(&self, sources: Vec<HTLCSource>) {

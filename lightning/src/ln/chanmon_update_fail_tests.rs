@@ -3713,3 +3713,111 @@ fn test_partial_claim_mon_update_compl_actions() {
 	send_payment(&nodes[2], &[&nodes[3]], 100_000);
 	assert!(!get_monitor!(nodes[3], chan_4_id).get_stored_preimages().contains_key(&payment_hash));
 }
+
+
+#[test]
+fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
+	// One of the last features for async persistence we implemented was the correct blocking of
+	// RAA(s) which remove a preimage from an outbound channel for a forwarded payment until the
+	// preimage write makes it durably to the closed inbound channel.
+	// This tests that behavior.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// First open channels, route a payment, and force-close the first hop.
+	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+	let chan_b = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000);
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_a.2, &nodes[1].node.get_our_node_id(), String::new()).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event!(nodes[0], 1, a_reason, [nodes[1].node.get_our_node_id()], 1000000);
+	check_closed_broadcast!(nodes[0], true);
+
+	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(as_commit_tx.len(), 1);
+
+	mine_transaction(&nodes[1], &as_commit_tx[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_broadcast!(nodes[1], true);
+
+	// Now that B has a pending forwarded payment across it with the inbound edge on-chain, claim
+	// the payment on C and give B the preimage for it.
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[1].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	check_added_monitors!(nodes[1], 1);
+	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+
+	// At this point nodes[1] has the preimage and is waiting for the `ChannelMonitorUpdate` for
+	// channel A to hit disk. Until it does so, it shouldn't ever let the preimage dissapear from
+	// channel B's `ChannelMonitor`
+	assert!(get_monitor!(nodes[1], chan_b.2).get_all_current_outbound_htlcs().iter().any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+
+	// Once we complete the `ChannelMonitorUpdate` on channel A, and the `ChannelManager` processes
+	// background events (via `get_and_clear_pending_msg_events`), the final `ChannelMonitorUpdate`
+	// will fly and we'll drop the preimage from channel B's `ChannelMonitor`. We'll also release
+	// the `Event::PaymentForwarded`.
+	check_added_monitors!(nodes[1], 0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(nodes[1], 1);
+	assert!(!get_monitor!(nodes[1], chan_b.2).get_all_current_outbound_htlcs().iter().any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+}
+
+#[test]
+fn test_claim_to_closed_channel_blocks_claimed_event() {
+	// One of the last features for async persistence we implemented was the correct blocking of
+	// event(s) until the preimage for a claimed HTLC is durably on disk in a ChannelMonitor for a
+	// closed channel.
+	// This tests that behavior.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// First open channels, route a payment, and force-close the first hop.
+	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_a.2, &nodes[1].node.get_our_node_id(), String::new()).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+	check_closed_event!(nodes[0], 1, a_reason, [nodes[1].node.get_our_node_id()], 1000000);
+	check_closed_broadcast!(nodes[0], true);
+
+	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(as_commit_tx.len(), 1);
+
+	mine_transaction(&nodes[1], &as_commit_tx[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_broadcast!(nodes[1], true);
+
+	// Now that B has a pending payment with the inbound HTLC on a closed channel, claim the
+	// payment on disk, but don't let the `ChannelMonitorUpdate` complete. This should prevent the
+	// `Event::PaymentClaimed` from being generated.
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[1].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Once we complete the `ChannelMonitorUpdate` the `Event::PaymentClaimed` will become
+	// available.
+	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
+	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
+}
