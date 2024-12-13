@@ -51,7 +51,6 @@ use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFail
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
-use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
@@ -2218,7 +2217,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let payment_paths = invoice.payment_paths().to_vec();
 	let payment_hash = invoice.payment_hash();
 
-	let expanded_key = ExpandedKey::new(&alice.keys_manager.get_inbound_payment_key_material());
+	let expanded_key = alice.keys_manager.get_inbound_payment_key();
 	let secp_ctx = Secp256k1::new();
 
 	let created_at = alice.node.duration_since_epoch();

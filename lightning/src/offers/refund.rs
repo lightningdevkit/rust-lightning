@@ -999,7 +999,6 @@ mod tests {
 
 	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
-	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1100,7 +1099,7 @@ mod tests {
 	#[test]
 	fn builds_refund_with_metadata_derived() {
 		let node_id = payer_pubkey();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
@@ -1161,7 +1160,7 @@ mod tests {
 	#[test]
 	fn builds_refund_with_derived_signing_pubkey() {
 		let node_id = payer_pubkey();
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();

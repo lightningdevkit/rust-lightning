@@ -309,7 +309,6 @@ mod tests {
 	use crate::offers::parse::Bech32Encode;
 	use crate::offers::signer::Metadata;
 	use crate::offers::test_utils::recipient_pubkey;
-	use crate::sign::KeyMaterial;
 	use crate::util::ser::Writeable;
 
 	#[test]
@@ -334,7 +333,7 @@ mod tests {
 
 	#[test]
 	fn calculates_merkle_root_hash_from_invoice_request() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
@@ -378,7 +377,7 @@ mod tests {
 
 	#[test]
 	fn compute_tagged_hash() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
@@ -401,7 +400,7 @@ mod tests {
 
 	#[test]
 	fn skips_encoding_signature_tlv_records() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
@@ -433,7 +432,7 @@ mod tests {
 
 	#[test]
 	fn iterates_over_tlv_stream_range() {
-		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);

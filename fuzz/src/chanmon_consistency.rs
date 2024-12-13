@@ -50,6 +50,7 @@ use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, Retry,
 };
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
@@ -60,9 +61,7 @@ use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessa
 use lightning::routing::router::{
 	InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router,
 };
-use lightning::sign::{
-	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
-};
+use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
@@ -334,10 +333,10 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		#[rustfmt::skip]
 		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_secret[31]];
-		KeyMaterial(random_bytes)
+		ExpandedKey::new(random_bytes)
 	}
 
 	fn sign_invoice(
