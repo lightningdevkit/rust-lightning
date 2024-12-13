@@ -436,16 +436,15 @@ impl OutboundJITChannel {
 		Ok(action)
 	}
 
+	fn is_pending_initial_payment(&self) -> bool {
+		matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. })
+	}
+
 	fn is_prunable(&self) -> bool {
 		// We deem an OutboundJITChannel prunable if our offer expired and we haven't intercepted
 		// any HTLCs initiating the flow yet.
-		let is_pending_initial_payment = match self.state {
-			OutboundJITChannelState::PendingInitialPayment { .. } => true,
-			_ => false,
-		};
-
 		let is_expired = is_expired_opening_fee_params(&self.opening_fee_params);
-		is_pending_initial_payment && is_expired
+		self.is_pending_initial_payment() && is_expired
 	}
 }
 
@@ -494,6 +493,16 @@ impl PeerState {
 			}
 			true
 		});
+	}
+
+	fn pending_requests_and_channels(&self) -> usize {
+		let pending_requests = self.pending_requests.len();
+		let pending_outbound_channels = self
+			.outbound_channels_by_intercept_scid
+			.iter()
+			.filter(|(_, v)| v.is_pending_initial_payment())
+			.count();
+		pending_requests + pending_outbound_channels
 	}
 
 	fn is_prunable(&self) -> bool {
@@ -1208,7 +1217,7 @@ where
 			return (result, msg);
 		}
 
-		if peer_state_lock.pending_requests.len() < MAX_PENDING_REQUESTS_PER_PEER {
+		if peer_state_lock.pending_requests_and_channels() < MAX_PENDING_REQUESTS_PER_PEER {
 			peer_state_lock.pending_requests.insert(request_id, request);
 			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
 			(Ok(()), None)
