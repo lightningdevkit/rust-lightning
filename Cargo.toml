@@ -65,4 +65,5 @@ check-cfg = [
     "cfg(require_route_graph_test)",
     "cfg(splicing)",
     "cfg(async_payments)",
+    "cfg(dual_funding)",
 ]

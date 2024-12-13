@@ -340,6 +340,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features.set_basic_mpp_optional();
 		features.set_wumbo_optional();
 		features.set_shutdown_any_segwit_optional();
+		#[cfg(dual_funding)]
 		features.set_dual_fund_optional();
 		features.set_channel_type_optional();
 		features.set_scid_privacy_optional();
@@ -1820,8 +1821,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::OpenChannel(msg) => {
 				self.message_handler.chan_handler.handle_open_channel(their_node_id, &msg);
 			},
-			wire::Message::OpenChannelV2(msg) => {
-				self.message_handler.chan_handler.handle_open_channel_v2(their_node_id, &msg);
+			wire::Message::OpenChannelV2(_msg) => {
+				self.message_handler.chan_handler.handle_open_channel_v2(their_node_id, &_msg);
 			},
 			wire::Message::AcceptChannel(msg) => {
 				self.message_handler.chan_handler.handle_accept_channel(their_node_id, &msg);

@@ -9,32 +9,36 @@
 
 //! Tests that test the creation of dual-funded channels in ChannelManager.
 
-use bitcoin::Weight;
-
-use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::chan_utils::{
-	make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
-	CounterpartyChannelTransactionParameters,
+#[cfg(dual_funding)]
+use {
+	crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator},
+	crate::events::{Event, MessageSendEvent, MessageSendEventsProvider},
+	crate::ln::chan_utils::{
+		make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
+		CounterpartyChannelTransactionParameters,
+	},
+	crate::ln::channel::{
+		calculate_our_funding_satoshis, OutboundV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	},
+	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
+	crate::ln::functional_test_utils::*,
+	crate::ln::msgs::ChannelMessageHandler,
+	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete},
+	crate::ln::types::ChannelId,
+	crate::prelude::*,
+	crate::sign::{ChannelSigner as _, P2WPKH_WITNESS_WEIGHT},
+	crate::util::ser::TransactionU16LenLimited,
+	crate::util::test_utils,
+	bitcoin::Weight,
 };
-use crate::ln::channel::{
-	calculate_our_funding_satoshis, OutboundV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS,
-};
-use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
-use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::ChannelMessageHandler;
-use crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete};
-use crate::ln::types::ChannelId;
-use crate::prelude::*;
-use crate::sign::{ChannelSigner as _, P2WPKH_WITNESS_WEIGHT};
-use crate::util::ser::TransactionU16LenLimited;
-use crate::util::test_utils;
 
+#[cfg(dual_funding)]
 // Dual-funding: V2 Channel Establishment Tests
 struct V2ChannelEstablishmentTestSession {
 	initiator_input_value_satoshis: u64,
 }
 
+#[cfg(dual_funding)]
 // TODO(dual_funding): Use real node and API for creating V2 channels as initiator when available,
 // instead of manually constructing messages.
 fn do_test_v2_channel_establishment(
@@ -252,6 +256,7 @@ fn do_test_v2_channel_establishment(
 }
 
 #[test]
+#[cfg(dual_funding)]
 fn test_v2_channel_establishment() {
 	// Only initiator contributes, no persist pending
 	do_test_v2_channel_establishment(

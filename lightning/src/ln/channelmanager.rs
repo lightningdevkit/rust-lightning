@@ -48,7 +48,9 @@ use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFun
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelPhase, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext, InboundV2Channel, InteractivelyFunded as _};
+use crate::ln::channel::{self, Channel, ChannelPhase, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext, InteractivelyFunded as _};
+#[cfg(any(dual_funding, splicing))]
+use crate::ln::channel::InboundV2Channel;
 use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -1376,11 +1378,13 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 #[derive(Clone)]
 pub(super) enum OpenChannelMessage {
 	V1(msgs::OpenChannel),
+	#[cfg(dual_funding)]
 	V2(msgs::OpenChannelV2),
 }
 
 pub(super) enum OpenChannelMessageRef<'a> {
 	V1(&'a msgs::OpenChannel),
+	#[cfg(dual_funding)]
 	V2(&'a msgs::OpenChannelV2),
 }
 
@@ -7686,8 +7690,8 @@ where
 
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128, funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-		total_witness_weight: Weight,
+		user_channel_id: u128, _funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		_total_witness_weight: Weight,
 	) -> Result<(), APIError> {
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(*temporary_channel_id), None);
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -7728,10 +7732,11 @@ where
 							(*temporary_channel_id, ChannelPhase::UnfundedInboundV1(channel), message_send_event)
 						})
 					},
+					#[cfg(dual_funding)]
 					OpenChannelMessage::V2(open_channel_msg) => {
 						InboundV2Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 							self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(), &peer_state.latest_features,
-							&open_channel_msg, funding_inputs, total_witness_weight, user_channel_id,
+							&open_channel_msg, _funding_inputs, _total_witness_weight, user_channel_id,
 							&self.default_configuration, best_block_height, &self.logger
 						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
 							ChannelError::Close(
@@ -7882,6 +7887,7 @@ where
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, msg: OpenChannelMessageRef<'_>) -> Result<(), MsgHandleErrInternal> {
 		let common_fields = match msg {
 			OpenChannelMessageRef::V1(msg) => &msg.common_fields,
+			#[cfg(dual_funding)]
 			OpenChannelMessageRef::V2(msg) => &msg.common_fields,
 		};
 
@@ -7959,6 +7965,7 @@ where
 				funding_satoshis: common_fields.funding_satoshis,
 				channel_negotiation_type: match msg {
 					OpenChannelMessageRef::V1(msg) => InboundChannelFunds::PushMsat(msg.push_msat),
+					#[cfg(dual_funding)]
 					OpenChannelMessageRef::V2(_) => InboundChannelFunds::DualFunded,
 				},
 				channel_type,
@@ -7968,6 +7975,7 @@ where
 			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
 				open_channel_msg: match msg {
 					OpenChannelMessageRef::V1(msg) => OpenChannelMessage::V1(msg.clone()),
+					#[cfg(dual_funding)]
 					OpenChannelMessageRef::V2(msg) => OpenChannelMessage::V2(msg.clone()),
 				},
 				ticks_remaining: UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS,
@@ -8000,6 +8008,7 @@ where
 				};
 				(ChannelPhase::UnfundedInboundV1(channel), message_send_event)
 			},
+			#[cfg(dual_funding)]
 			OpenChannelMessageRef::V2(msg) => {
 				let channel = InboundV2Channel::new(&self.fee_estimator, &self.entropy_source,
 					&self.signer_provider, self.get_our_node_id(), *counterparty_node_id,
@@ -11273,6 +11282,7 @@ where
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
+		#[cfg(dual_funding)]
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_open_channel(&counterparty_node_id, OpenChannelMessageRef::V2(msg));
 			let persist = match &res {
@@ -11285,6 +11295,10 @@ where
 			let _ = handle_error!(self, res, counterparty_node_id);
 			persist
 		});
+		#[cfg(not(dual_funding))]
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Dual-funded channels not supported".to_owned(),
+			msg.common_fields.temporary_channel_id.clone())), counterparty_node_id);
 	}
 
 	fn handle_accept_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::AcceptChannel) {
@@ -12332,6 +12346,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
+	#[cfg(dual_funding)]
 	features.set_dual_fund_optional();
 	features
 }
