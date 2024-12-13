@@ -1,4 +1,4 @@
-# API Updates
+# API Updates (0.2)
  * Accepting dual-funded (V2 establishment) channels (without contibuting) is now supported (#3137).
    Some particulars to be aware of for this feature:
    * Creating dual-funded channels is not yet supported.
