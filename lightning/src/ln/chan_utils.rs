@@ -704,13 +704,12 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
-pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey) -> Transaction {
-	let txins= vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
+pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, revokeable_spk: ScriptBuf) -> Transaction {
+	let txins = vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(build_htlc_output(
-		feerate_per_kw, contest_delay, htlc, channel_type_features,
-		broadcaster_delayed_payment_key, revocation_key
+		feerate_per_kw, htlc, channel_type_features, revokeable_spk,
 	));
 
 	Transaction {
@@ -734,7 +733,7 @@ pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommit
 }
 
 pub(crate) fn build_htlc_output(
-	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey
+	feerate_per_kw: u32, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, revokeable_spk: ScriptBuf
 ) -> TxOut {
 	let weight = if htlc.offered {
 		htlc_timeout_tx_weight(channel_type_features)
@@ -749,7 +748,7 @@ pub(crate) fn build_htlc_output(
 	};
 
 	TxOut {
-		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_p2wsh(),
+		script_pubkey: revokeable_spk,
 		value: output_value,
 	}
 }
@@ -1728,8 +1727,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	///
 	/// This function is only valid in the holder commitment context, it always uses EcdsaSighashType::All.
 	pub fn get_htlc_sigs<T: secp256k1::Signing, ES: Deref>(
-		&self, htlc_base_key: &SecretKey, channel_parameters: &DirectedChannelTransactionParameters,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+		&self, htlc_base_key: &SecretKey, entropy_source: &ES, secp_ctx: &Secp256k1<T>, revokeable_spk: ScriptBuf,
 	) -> Result<Vec<Signature>, ()> where ES::Target: EntropySource {
 		let inner = self.inner;
 		let keys = &inner.keys;
@@ -1739,7 +1737,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 		for this_htlc in inner.htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
-			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &self.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, &this_htlc, &self.channel_type_features, revokeable_spk.clone());
 
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
@@ -1750,11 +1748,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	}
 
 	/// Builds the second-level holder HTLC transaction for the HTLC with index `htlc_index`.
-	pub(crate) fn build_unsigned_htlc_tx(
-		&self, channel_parameters: &DirectedChannelTransactionParameters, htlc_index: usize,
-		preimage: &Option<PaymentPreimage>,
-	) -> Transaction {
-		let keys = &self.inner.keys;
+	pub(crate) fn build_unsigned_htlc_tx(&self, htlc_index: usize, preimage: &Option<PaymentPreimage>, revokeable_spk: ScriptBuf) -> Transaction {
 		let this_htlc = &self.inner.htlcs[htlc_index];
 		assert!(this_htlc.transaction_output_index.is_some());
 		// if we don't have preimage for an HTLC-Success, we can't generate an HTLC transaction.
@@ -1763,8 +1757,8 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		if  this_htlc.offered && preimage.is_some() { unreachable!(); }
 
 		build_htlc_transaction(
-			&self.inner.built.txid, self.inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc,
-			&self.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key
+			&self.inner.built.txid, self.inner.feerate_per_kw, &this_htlc,
+			&self.channel_type_features, revokeable_spk,
 		)
 	}
 
