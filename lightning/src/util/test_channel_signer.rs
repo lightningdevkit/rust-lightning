@@ -308,7 +308,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			}
 		}
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
-		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(secp_ctx));
+		let revokeable_spk = self.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, secp_ctx);
+		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(revokeable_spk));
 		{
 			let witness_script = htlc_descriptor.witness_script(secp_ctx);
 			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {

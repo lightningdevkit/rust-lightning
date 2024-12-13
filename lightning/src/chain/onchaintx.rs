@@ -1210,8 +1210,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				.find(|(_, htlc)| htlc.transaction_output_index.unwrap() == outp.vout)
 				.unwrap();
 			let counterparty_htlc_sig = holder_commitment.counterparty_htlc_sigs[htlc_idx];
+			let revokeable_spk = self.signer.get_revokeable_spk(true, holder_commitment.commitment_number(), &holder_commitment.per_commitment_point(), &self.secp_ctx);
 			let mut htlc_tx = trusted_tx.build_unsigned_htlc_tx(
-				&self.channel_transaction_parameters.as_holder_broadcastable(), htlc_idx, preimage,
+				htlc_idx, preimage, revokeable_spk,
 			);
 
 			let htlc_descriptor = HTLCDescriptor {
@@ -1295,7 +1296,7 @@ mod tests {
 	};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 	use crate::ln::functional_test_utils::create_dummy_block;
-	use crate::sign::InMemorySigner;
+	use crate::sign::{ChannelSigner, InMemorySigner};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::test_utils::{TestBroadcaster, TestFeeEstimator, TestLogger};
 
@@ -1307,7 +1308,7 @@ mod tests {
 	#[test]
 	fn test_broadcast_height() {
 		let secp_ctx = Secp256k1::new();
-		let signer = InMemorySigner::new(
+		let mut signer = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -1356,6 +1357,7 @@ mod tests {
 			funding_outpoint: Some(funding_outpoint),
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 		};
+		signer.provide_channel_parameters(&chan_params);
 
 		// Create an OnchainTxHandler for a commitment containing HTLCs with CLTV expiries of 0, 1,
 		// and 2 blocks.

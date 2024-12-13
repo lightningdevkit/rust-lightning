@@ -631,30 +631,12 @@ impl HTLCDescriptor {
 
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
 	/// transaction.
-	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, secp: &Secp256k1<C>,
-	) -> TxOut {
-		let channel_params =
-			self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		let broadcaster_keys = channel_params.broadcaster_pubkeys();
-		let counterparty_keys = channel_params.countersignatory_pubkeys();
-		let broadcaster_delayed_key = DelayedPaymentKey::from_basepoint(
-			secp,
-			&broadcaster_keys.delayed_payment_basepoint,
-			&self.per_commitment_point,
-		);
-		let counterparty_revocation_key = &RevocationKey::from_basepoint(
-			&secp,
-			&counterparty_keys.revocation_basepoint,
-			&self.per_commitment_point,
-		);
+	pub fn tx_output(&self, revokeable_spk: ScriptBuf) -> TxOut {
 		chan_utils::build_htlc_output(
 			self.feerate_per_kw,
-			channel_params.contest_delay(),
 			&self.htlc,
-			channel_params.channel_type_features(),
-			&broadcaster_delayed_key,
-			&counterparty_revocation_key,
+			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
+			revokeable_spk,
 		)
 	}
 
@@ -1468,19 +1450,21 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let commitment_txid = built_tx.txid;
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
+		let revokeable_spk = self.get_revokeable_spk(
+			false,
+			trusted_tx.commitment_number(),
+			&trusted_tx.per_commitment_point(),
+			secp_ctx,
+		);
 		for htlc in commitment_tx.htlcs() {
 			let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
-			let holder_selected_contest_delay =
-				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
 			let chan_type = &channel_parameters.channel_type_features;
 			let htlc_tx = chan_utils::build_htlc_transaction(
 				&commitment_txid,
 				commitment_tx.feerate_per_kw(),
-				holder_selected_contest_delay,
 				htlc,
 				chan_type,
-				&keys.broadcaster_delayed_payment_key,
-				&keys.revocation_key,
+				revokeable_spk.clone(),
 			);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, chan_type, &keys);
 			let htlc_sighashtype = if chan_type.supports_anchors_zero_fee_htlc_tx() {
