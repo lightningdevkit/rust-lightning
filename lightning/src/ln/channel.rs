@@ -3164,13 +3164,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let channel_parameters =
 			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
 			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
+		let broadcaster_payment_script = self.holder_signer.as_ref().get_revokeable_spk(local, commitment_number, &keys.per_commitment_point, &self.secp_ctx);
+		let broadcaster_txout = TxOut {
+			script_pubkey: broadcaster_payment_script,
+			value: Amount::from_sat(value_to_a as u64),
+		};
 		let counterparty_payment_script = self.holder_signer.as_ref().get_counterparty_payment_script(!local);
 		let counterparty_txout = TxOut {
 			script_pubkey: counterparty_payment_script,
 			value: Amount::from_sat(value_to_b as u64),
 		};
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-		                                                             value_to_a as u64,
+		                                                             broadcaster_txout,
 		                                                             counterparty_txout,
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,

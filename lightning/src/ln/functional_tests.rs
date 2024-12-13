@@ -766,6 +766,11 @@ fn test_update_fee_that_funder_cannot_afford() {
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
 		let local_chan_signer = local_chan.get_signer();
+		let broadcaster_payment_script = local_chan_signer.as_ref().get_revokeable_spk(false, INITIAL_COMMITMENT_NUMBER - 1, &commit_tx_keys.per_commitment_point, &secp_ctx);
+		let broadcaster_txout = TxOut {
+			script_pubkey: broadcaster_payment_script,
+			value: Amount::from_sat(push_sats),
+		};
 		let counterparty_payment_script = local_chan_signer.as_ref().get_counterparty_payment_script(true);
 		let counterparty_txout = TxOut {
 			script_pubkey: counterparty_payment_script,
@@ -774,7 +779,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
-			push_sats,
+			broadcaster_txout,
 			counterparty_txout,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
@@ -1526,6 +1531,11 @@ fn test_fee_spike_violation_fails_htlc() {
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
 		let local_chan_signer = local_chan.get_signer();
+		let broadcaster_payment_script = local_chan_signer.as_ref().get_revokeable_spk(false, commitment_number, &commit_tx_keys.per_commitment_point, &secp_ctx);
+		let broadcaster_txout = TxOut {
+			script_pubkey: broadcaster_payment_script,
+			value: Amount::from_sat(95000),
+		};
 		let counterparty_payment_script = local_chan_signer.as_ref().get_counterparty_payment_script(true);
 		let counterparty_txout = TxOut {
 			script_pubkey: counterparty_payment_script,
@@ -1533,7 +1543,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		};
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
-			95000,
+			broadcaster_txout,
 			counterparty_txout,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
