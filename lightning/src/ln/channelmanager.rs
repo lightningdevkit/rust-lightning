@@ -9512,7 +9512,6 @@ where
 	/// attempted in every channel, or in the specifically provided channel.
 	///
 	/// [`ChannelSigner`]: crate::sign::ChannelSigner
-	#[cfg(async_signing)]
 	pub fn signer_unblocked(&self, channel_opt: Option<(PublicKey, ChannelId)>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 

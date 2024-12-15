@@ -728,8 +728,7 @@ pub trait ChannelSigner {
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
 	///
 	/// If the signer returns `Err`, then the user is responsible for either force-closing the channel
-	/// or calling `ChannelManager::signer_unblocked` (this method is only available when the
-	/// `async_signing` cfg flag is enabled) once the signature is ready.
+	/// or calling `ChannelManager::signer_unblocked` once the signature is ready.
 	///
 	// TODO: link to `signer_unblocked` once the cfg flag is removed
 	fn get_per_commitment_point(
