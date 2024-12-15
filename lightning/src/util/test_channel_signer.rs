@@ -26,6 +26,7 @@ use bitcoin::transaction::Transaction;
 use bitcoin::hashes::Hash;
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
+use bitcoin::Witness;
 
 use bitcoin::secp256k1;
 #[cfg(taproot)]
@@ -220,6 +221,17 @@ impl ChannelSigner for TestChannelSigner {
 
 	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
 		self.inner.get_channel_parameters()
+	}
+
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Witness, ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::SignJusticeRevokedOutput) {
+			return Err(());
+		}
+		self.inner.punish_revokeable_output(justice_tx, input, amount, per_commitment_key, secp_ctx, per_commitment_point)
 	}
 }
 
