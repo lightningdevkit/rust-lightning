@@ -226,6 +226,13 @@ impl ChannelSigner for TestChannelSigner {
 	fn get_revokeable_spk(&self, to_self: bool, commitment_number: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ScriptBuf {
 		self.inner.get_revokeable_spk(to_self, commitment_number, per_commitment_point, secp_ctx)
 	}
+
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Transaction, ()> {
+		self.inner.punish_revokeable_output(justice_tx, input, amount, per_commitment_key, secp_ctx, per_commitment_point)
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {

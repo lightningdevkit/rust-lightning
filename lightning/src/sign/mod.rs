@@ -795,6 +795,34 @@ pub trait ChannelSigner {
 		&self, to_self: bool, commitment_number: u64, per_commitment_point: &PublicKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ScriptBuf;
+
+	/// Finalize the given input in a transaction spending an HTLC transaction output
+	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
+	///
+	/// A justice transaction may claim multiple outputs at the same time if timelocks are
+	/// similar, but only the input at index `input` should be finalized here.
+	/// It may be called multiple times for the same output(s) if a fee-bump is needed with regards
+	/// to an upcoming timelock expiration.
+	///
+	/// Amount is the value of the output spent by this input, committed to in the BIP 143 signature.
+	///
+	/// `per_commitment_key` is revocation secret which was provided by our counterparty when they
+	/// revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
+	/// not allow the spending of any funds by itself (you need our holder `revocation_secret` to do
+	/// so).
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
+	/// monitor.
+	///
+	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	///
+	/// TODO(taproot): pass to the `ChannelSigner` all the `TxOut`'s spent by the justice transaction.
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Transaction, ()>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1420,6 +1448,40 @@ impl ChannelSigner for InMemorySigner {
 			&keys.broadcaster_delayed_payment_key,
 		)
 		.to_p2wsh()
+	}
+
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Transaction, ()> {
+		let params = self.channel_parameters.as_ref().unwrap().as_counterparty_broadcastable();
+		let contest_delay = params.contest_delay();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		let witness_script = get_revokeable_redeemscript(
+			&keys.revocation_key,
+			contest_delay,
+			&keys.broadcaster_delayed_payment_key,
+		);
+		let sig = EcdsaChannelSigner::sign_justice_revoked_output(
+			self,
+			justice_tx,
+			input,
+			amount,
+			per_commitment_key,
+			secp_ctx,
+		)?;
+		let mut justice_tx = justice_tx.clone();
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[input].witness.push(ser_sig);
+		justice_tx.input[input].witness.push(vec![1]);
+		justice_tx.input[input].witness.push(witness_script.into_bytes());
+		Ok(justice_tx)
 	}
 }
 

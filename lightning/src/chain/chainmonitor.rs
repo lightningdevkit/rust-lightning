@@ -96,7 +96,7 @@ use bitcoin::secp256k1::PublicKey;
 /// provided for bulding transactions for a watchtower:
 /// [`ChannelMonitor::initial_counterparty_commitment_tx`],
 /// [`ChannelMonitor::counterparty_commitment_txs_from_update`],
-/// [`ChannelMonitor::sign_to_local_justice_tx`], [`TrustedCommitmentTransaction::revokeable_output_index`],
+/// [`ChannelMonitor::punish_revokeable_output`], [`TrustedCommitmentTransaction::revokeable_output_index`],
 /// [`TrustedCommitmentTransaction::build_to_local_justice_tx`].
 ///
 /// [`TrustedCommitmentTransaction::revokeable_output_index`]: crate::ln::chan_utils::TrustedCommitmentTransaction::revokeable_output_index
