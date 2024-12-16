@@ -1129,6 +1129,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
+	#[allow(dead_code)] // TODO(dual_funding): Remove once accepting V2 channels is enabled.
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	Funded(Channel<SP>),
 }
@@ -4089,7 +4090,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		})
 	}
 
-	#[cfg(test)]
+	#[cfg(all(test, dual_funding))]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, logger: &L, channel_transaction_parameters: ChannelTransactionParameters,
 		counterparty_cur_commitment_point_override: PublicKey,
@@ -4159,6 +4160,7 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
 }
 
+#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 pub(super) fn calculate_our_funding_satoshis(
 	is_initiator: bool, funding_inputs: &[(TxIn, TransactionU16LenLimited)],
 	total_witness_weight: Weight, funding_feerate_sat_per_1000_weight: u32,
@@ -4208,6 +4210,7 @@ pub(super) struct DualFundingChannelContext {
 	/// to the current block height to align incentives against fee-sniping.
 	pub funding_tx_locktime: LockTime,
 	/// The feerate set by the initiator to be used for the funding transaction.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub funding_feerate_sat_per_1000_weight: u32,
 	/// The funding inputs we will be contributing to the channel.
 	///
@@ -8292,6 +8295,7 @@ pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider 
 }
 
 impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
+	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
@@ -9016,6 +9020,7 @@ pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
+	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
@@ -9124,6 +9129,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub fn accept_inbound_dual_funded_channel(&self) -> msgs::AcceptChannelV2 {
 		if self.context.is_outbound() {
 			debug_assert!(false, "Tried to send accept_channel for an outbound channel?");
@@ -9146,6 +9152,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// use [`InboundV1Channel::accept_inbound_channel`] instead.
 	///
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
 			self.unfunded_context.transaction_number(), &self.context.secp_ctx)
