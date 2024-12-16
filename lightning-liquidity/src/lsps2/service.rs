@@ -11,7 +11,9 @@
 
 use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{
-	LSPSMessage, ProtocolMessageHandler, RequestId, ResponseError, LSPS0_CLIENT_REJECTED_ERROR_CODE,
+	LSPSMessage, ProtocolMessageHandler, RequestId, ResponseError,
+	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
+	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
 use crate::lsps2::event::LSPS2ServiceEvent;
 use crate::lsps2::payment_queue::{InterceptedHTLC, PaymentQueue};
@@ -19,6 +21,7 @@ use crate::lsps2::utils::{
 	compute_opening_fee, is_expired_opening_fee_params, is_valid_opening_fee_params,
 };
 use crate::message_queue::MessageQueue;
+use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap, String, ToString, Vec};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 
@@ -47,6 +50,7 @@ use crate::lsps2::msgs::{
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
+const MAX_TOTAL_PEERS: usize = 100000;
 
 /// Server-side configuration options for JIT channels.
 #[derive(Clone, Debug)]
@@ -509,6 +513,40 @@ impl PeerState {
 		// Return whether the entire state is empty.
 		self.pending_requests.is_empty() && self.outbound_channels_by_intercept_scid.is_empty()
 	}
+}
+
+macro_rules! get_or_insert_peer_state_entry {
+	($self: ident, $outer_state_lock: expr, $counterparty_node_id: expr) => {{
+		// Return an internal error and abort if we hit the maximum allowed number of total peers.
+		let is_limited_by_max_total_peers = $outer_state_lock.len() >= MAX_TOTAL_PEERS;
+		match $outer_state_lock.entry(*$counterparty_node_id) {
+			Entry::Vacant(e) => {
+				if is_limited_by_max_total_peers {
+					let error_response = ResponseError {
+						code: JSONRPC_INTERNAL_ERROR_ERROR_CODE,
+						message: JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE.to_string(), data: None,
+					};
+
+					let msg = LSPSMessage::Invalid(error_response);
+					drop($outer_state_lock);
+					$self.pending_messages.enqueue($counterparty_node_id, msg);
+
+					let err = format!(
+						"Dropping request from peer {} due to reaching maximally allowed number of total peers: {}",
+						$counterparty_node_id, MAX_TOTAL_PEERS
+					);
+
+					return Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Error) });
+				} else {
+					e.insert(Mutex::new(PeerState::new()))
+				}
+			}
+			Entry::Occupied(e) => {
+				e.into_mut()
+			}
+		}
+
+	}}
 }
 
 /// The main object allowing to send and receive LSPS2 messages.
@@ -1042,9 +1080,8 @@ where
 	) -> Result<(), LightningError> {
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock: &mut Mutex<PeerState> = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::new()));
+			let inner_state_lock =
+				get_or_insert_peer_state_entry!(self, outer_state_lock, counterparty_node_id);
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			let request = LSPS2Request::GetInfo(params.clone());
 			match self.insert_pending_request(
@@ -1161,9 +1198,8 @@ where
 
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::new()));
+			let inner_state_lock =
+				get_or_insert_peer_state_entry!(self, outer_state_lock, counterparty_node_id);
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
 			let request = LSPS2Request::Buy(params.clone());
