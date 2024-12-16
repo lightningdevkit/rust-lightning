@@ -719,18 +719,20 @@ impl HTLCDescriptor {
 /// A trait to handle Lightning channel key material without concretizing the channel type or
 /// the signature mechanism.
 ///
-/// Several methods allow error types to be returned to support async signing. This feature
-/// is not yet complete, and panics may occur in certain situations when returning errors
-/// for these methods.
+/// Several methods allow errors to be returned to support async signing. In such cases, the
+/// signing operation can be replayed by calling [`ChannelManager::signer_unblocked`] once the
+/// result is ready, at which point the channel operation will resume. Methods which allow for
+/// async results are explicitly documented as such
+///
+/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 pub trait ChannelSigner {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
 	///
-	/// If the signer returns `Err`, then the user is responsible for either force-closing the channel
-	/// or calling `ChannelManager::signer_unblocked` once the signature is ready.
-	///
-	// TODO: link to `signer_unblocked` once the cfg flag is removed
+	/// This method is *not* asynchronous. This method is expected to always return `Ok`
+	/// immediately after we reconnect to peers, and returning an `Err` may lead to an immediate
+	/// `panic`. This method will be made asynchronous in a future release.
 	fn get_per_commitment_point(
 		&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<PublicKey, ()>;
@@ -743,7 +745,12 @@ pub trait ChannelSigner {
 	/// May be called more than once for the same index.
 	///
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
-	// TODO: return a Result so we can signal a validation error
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelManager::signer_unblocked`] must be called.
+	///
+	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()>;
 
 	/// Validate the counterparty's signatures on the holder commitment transaction and HTLCs.
@@ -759,6 +766,10 @@ pub trait ChannelSigner {
 	///
 	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
+	///
+	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
+	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
+	/// and pause future signing operations until this validation completes.
 	fn validate_holder_commitment(
 		&self, holder_tx: &HolderCommitmentTransaction,
 		outbound_htlc_preimages: Vec<PaymentPreimage>,
@@ -768,14 +779,22 @@ pub trait ChannelSigner {
 	///
 	/// This is required in order for the signer to make sure that the state has moved
 	/// forward and it is safe to sign the next counterparty commitment.
+	///
+	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
+	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
+	/// and pause future signing operations until this validation completes.
 	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 
 	/// Returns the holder's channel public keys and basepoints.
+	///
+	/// This method is *not* asynchronous. Instead, the value must be cached locally.
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 
 	/// Returns an arbitrary identifier describing the set of keys which are provided back to you in
 	/// some [`SpendableOutputDescriptor`] types. This should be sufficient to identify this
 	/// [`EcdsaChannelSigner`] object uniquely and lookup or re-derive its keys.
+	///
+	/// This method is *not* asynchronous. Instead, the value must be cached locally.
 	fn channel_keys_id(&self) -> [u8; 32];
 
 	/// Set the counterparty static channel data, including basepoints,
