@@ -47,7 +47,8 @@ use lightning::events::MessageSendEventsProvider;
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
-	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, Retry,
+	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
+	RecipientOnionFields, Retry,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
@@ -64,7 +65,6 @@ use lightning::routing::router::{
 use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
-use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -442,57 +442,19 @@ impl KeyProvider {
 
 // Returns a bool indicating whether the payment failed.
 #[inline]
-fn check_payment_send_events(
-	source: &ChanMan, amt: u64, min_sendable: u64, max_sendable: u64,
-) -> bool {
-	let mut payment_failed = false;
-	let events = source.get_and_clear_pending_events();
-	assert!(events.len() == 2 || events.len() == 0);
-	for ev in events {
-		match ev {
-			events::Event::PaymentPathFailed {
-				failure: events::PathFailure::InitialSend { err },
-				..
-			} => {
-				check_api_err(err, amt > max_sendable || amt < min_sendable);
+fn check_payment_send_events(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
+	for payment in source.list_recent_payments() {
+		match payment {
+			RecentPaymentDetails::Pending { payment_id, .. } if payment_id == sent_payment_id => {
+				return true;
 			},
-			events::Event::PaymentFailed { .. } => {},
-			_ => panic!(),
-		};
-		payment_failed = true;
+			RecentPaymentDetails::Abandoned { payment_id, .. } if payment_id == sent_payment_id => {
+				return false;
+			},
+			_ => {},
+		}
 	}
-	// Note that while the max is a strict upper-bound, we can occasionally send substantially
-	// below the minimum, with some gap which is unusable immediately below the minimum. Thus,
-	// we don't check against min_value_sendable here.
-	assert!(payment_failed || (amt <= max_sendable));
-	payment_failed
-}
-
-#[inline]
-fn check_api_err(api_err: APIError, sendable_bounds_violated: bool) {
-	match api_err {
-		APIError::APIMisuseError { .. } => panic!("We can't misuse the API"),
-		APIError::FeeRateTooHigh { .. } => panic!("We can't send too much fee?"),
-		APIError::InvalidRoute { .. } => panic!("Our routes should work"),
-		APIError::ChannelUnavailable { err } => {
-			// Test the error against a list of errors we can hit, and reject
-			// all others. If you hit this panic, the list of acceptable errors
-			// is probably just stale and you should add new messages here.
-			match err.as_str() {
-				"Peer for first hop currently disconnected" => {},
-				_ if err.starts_with("Cannot send less than our next-HTLC minimum - ") => {},
-				_ if err.starts_with("Cannot send more than our next-HTLC maximum - ") => {},
-				_ => panic!("{}", err),
-			}
-			assert!(sendable_bounds_violated);
-		},
-		APIError::MonitorUpdateInProgress => {
-			// We can (obviously) temp-fail a monitor update
-		},
-		APIError::IncompatibleShutdownScript { .. } => {
-			panic!("Cannot send an incompatible shutdown script")
-		},
-	}
+	return false;
 }
 
 type ChanMan<'a> = ChannelManager<
@@ -571,16 +533,20 @@ fn send_payment(
 		}],
 		route_params: Some(route_params.clone()),
 	});
-	if let Err(err) = source.send_payment(
-		payment_hash,
-		RecipientOnionFields::secret_only(payment_secret),
-		PaymentId(payment_id),
-		route_params,
-		Retry::Attempts(0),
-	) {
-		panic!("Errored with {:?} on initial payment send", err);
-	} else {
-		check_payment_send_events(source, amt, min_value_sendable, max_value_sendable)
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_id);
+	let res =
+		source.send_payment(payment_hash, onion, payment_id, route_params, Retry::Attempts(0));
+	match res {
+		Err(err) => {
+			panic!("Errored with {:?} on initial payment send", err);
+		},
+		Ok(()) => {
+			let expect_failure = amt < min_value_sendable || amt > max_value_sendable;
+			let succeeded = check_payment_send_events(source, payment_id);
+			assert_eq!(succeeded, !expect_failure);
+			succeeded
+		},
 	}
 }
 
@@ -652,17 +618,21 @@ fn send_hop_payment(
 		}],
 		route_params: Some(route_params.clone()),
 	});
-	if let Err(err) = source.send_payment(
-		payment_hash,
-		RecipientOnionFields::secret_only(payment_secret),
-		PaymentId(payment_id),
-		route_params,
-		Retry::Attempts(0),
-	) {
-		panic!("Errored with {:?} on initial payment send", err);
-	} else {
-		let sent_amt = amt + first_hop_fee;
-		check_payment_send_events(source, sent_amt, min_value_sendable, max_value_sendable)
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_id);
+	let res =
+		source.send_payment(payment_hash, onion, payment_id, route_params, Retry::Attempts(0));
+	match res {
+		Err(err) => {
+			panic!("Errored with {:?} on initial payment send", err);
+		},
+		Ok(()) => {
+			let sent_amt = amt + first_hop_fee;
+			let expect_failure = sent_amt < min_value_sendable || sent_amt > max_value_sendable;
+			let succeeded = check_payment_send_events(source, payment_id);
+			assert_eq!(succeeded, !expect_failure);
+			succeeded
+		},
 	}
 }
 
