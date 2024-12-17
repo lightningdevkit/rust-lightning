@@ -10,6 +10,7 @@ use lightning::util::persist::{
 use lightning::util::test_utils;
 use lightning::{check_added_monitors, check_closed_broadcast, check_closed_event};
 
+use std::collections::HashSet;
 use std::panic::RefUnwindSafe;
 
 pub(crate) fn do_read_write_remove_list_persist<K: KVStore + RefUnwindSafe>(kv_store: &K) {
@@ -70,6 +71,8 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 	let num_primary_namespaces = 2;
 	let num_secondary_namespaces = 2;
 	let num_keys = 3;
+	let total_num_entries = num_primary_namespaces * num_secondary_namespaces * num_keys;
+	let mut stored_keys = HashSet::with_capacity(total_num_entries);
 	for i in 0..num_primary_namespaces {
 		let primary_namespace =
 			format!("testspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(i).unwrap());
@@ -79,22 +82,28 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 			for k in 0..num_keys {
 				let key =
 					format!("testkey{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(k).unwrap());
+				stored_keys.insert((
+					primary_namespace.clone(),
+					secondary_namespace.clone(),
+					key.clone(),
+				));
 				source_store
 					.write(&primary_namespace, &secondary_namespace, &key, &dummy_data)
 					.unwrap();
 			}
 		}
 	}
-	let total_num_entries = num_primary_namespaces * num_secondary_namespaces * num_keys;
 	let all_keys = source_store.list_all_keys().unwrap();
 	assert_eq!(all_keys.len(), total_num_entries);
 
 	migrate_kv_store_data(source_store, target_store).unwrap();
 
 	assert_eq!(target_store.list_all_keys().unwrap().len(), total_num_entries);
-	for (p, s, k) in &all_keys {
-		assert_eq!(target_store.read(p, s, k).unwrap(), dummy_data);
+	for (p, s, k) in all_keys {
+		assert_eq!(target_store.read(&p, &s, &k).unwrap(), dummy_data);
+		assert!(stored_keys.remove(&(p, s, k)));
 	}
+	assert!(stored_keys.is_empty());
 }
 
 // Integration-test the given KVStore implementation. Test relaying a few payments and check that
