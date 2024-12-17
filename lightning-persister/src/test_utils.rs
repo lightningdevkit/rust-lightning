@@ -67,32 +67,46 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 ) {
 	// We fill the source with some bogus keys.
 	let dummy_data = [42u8; 32];
-	let num_primary_namespaces = 2;
-	let num_secondary_namespaces = 2;
+	let num_primary_namespaces = 3;
+	let num_secondary_namespaces = 3;
 	let num_keys = 3;
+	let mut expected_keys = Vec::new();
 	for i in 0..num_primary_namespaces {
-		let primary_namespace =
-			format!("testspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(i).unwrap());
+		let primary_namespace = if i == 0 {
+			String::new()
+		} else {
+			format!("testspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(i).unwrap())
+		};
 		for j in 0..num_secondary_namespaces {
-			let secondary_namespace =
-				format!("testsubspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(j).unwrap());
+			let secondary_namespace = if i == 0 || j == 0 {
+				String::new()
+			} else {
+				format!("testsubspace{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(j).unwrap())
+			};
 			for k in 0..num_keys {
 				let key =
 					format!("testkey{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(k).unwrap());
 				source_store
 					.write(&primary_namespace, &secondary_namespace, &key, &dummy_data)
 					.unwrap();
+				expected_keys.push((primary_namespace.clone(), secondary_namespace.clone(), key));
 			}
 		}
 	}
-	let total_num_entries = num_primary_namespaces * num_secondary_namespaces * num_keys;
-	let all_keys = source_store.list_all_keys().unwrap();
-	assert_eq!(all_keys.len(), total_num_entries);
+	expected_keys.sort();
+	expected_keys.dedup();
+
+	let mut source_list = source_store.list_all_keys().unwrap();
+	source_list.sort();
+	assert_eq!(source_list, expected_keys);
 
 	migrate_kv_store_data(source_store, target_store).unwrap();
 
-	assert_eq!(target_store.list_all_keys().unwrap().len(), total_num_entries);
-	for (p, s, k) in &all_keys {
+	let mut target_list = target_store.list_all_keys().unwrap();
+	target_list.sort();
+	assert_eq!(target_list, expected_keys);
+
+	for (p, s, k) in expected_keys.iter() {
 		assert_eq!(target_store.read(p, s, k).unwrap(), dummy_data);
 	}
 }
