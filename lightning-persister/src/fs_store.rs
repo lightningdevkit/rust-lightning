@@ -1,7 +1,7 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
-use lightning::util::persist::KVStore;
+use lightning::util::persist::{KVStore, MigratableKVStore};
 use lightning::util::string::PrintableString;
 
 use std::collections::HashMap;
@@ -316,84 +316,13 @@ impl KVStore for FilesystemStore {
 			let entry = entry?;
 			let p = entry.path();
 
-			if let Some(ext) = p.extension() {
-				#[cfg(target_os = "windows")]
-				{
-					// Clean up any trash files lying around.
-					if ext == "trash" {
-						fs::remove_file(p).ok();
-						continue;
-					}
-				}
-				if ext == "tmp" {
-					continue;
-				}
-			}
-
-			let metadata = p.metadata()?;
-
-			// We allow the presence of directories in the empty primary namespace and just skip them.
-			if metadata.is_dir() {
+			if !dir_entry_is_key(&p)? {
 				continue;
 			}
 
-			// If we otherwise don't find a file at the given path something went wrong.
-			if !metadata.is_file() {
-				debug_assert!(
-					false,
-					"Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(primary_namespace),
-					PrintableString(secondary_namespace)
-				);
-				let msg = format!(
-					"Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(primary_namespace),
-					PrintableString(secondary_namespace)
-				);
-				return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
-			}
+			let key = get_key_from_dir_entry(&p, &prefixed_dest)?;
 
-			match p.strip_prefix(&prefixed_dest) {
-				Ok(stripped_path) => {
-					if let Some(relative_path) = stripped_path.to_str() {
-						if is_valid_kvstore_str(relative_path) {
-							keys.push(relative_path.to_string())
-						}
-					} else {
-						debug_assert!(
-							false,
-							"Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(primary_namespace),
-							PrintableString(secondary_namespace)
-						);
-						let msg = format!(
-							"Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(primary_namespace),
-							PrintableString(secondary_namespace)
-						);
-						return Err(lightning::io::Error::new(
-							lightning::io::ErrorKind::Other,
-							msg,
-						));
-					}
-				},
-				Err(e) => {
-					debug_assert!(
-						false,
-						"Failed to list keys of {}/{}: {}",
-						PrintableString(primary_namespace),
-						PrintableString(secondary_namespace),
-						e
-					);
-					let msg = format!(
-						"Failed to list keys of {}/{}: {}",
-						PrintableString(primary_namespace),
-						PrintableString(secondary_namespace),
-						e
-					);
-					return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
-				},
-			}
+			keys.push(key);
 		}
 
 		self.garbage_collect_locks();
@@ -402,10 +331,172 @@ impl KVStore for FilesystemStore {
 	}
 }
 
+fn dir_entry_is_key(p: &Path) -> Result<bool, lightning::io::Error> {
+	if let Some(ext) = p.extension() {
+		#[cfg(target_os = "windows")]
+		{
+			// Clean up any trash files lying around.
+			if ext == "trash" {
+				fs::remove_file(p).ok();
+				return Ok(false);
+			}
+		}
+		if ext == "tmp" {
+			return Ok(false);
+		}
+	}
+
+	let metadata = p.metadata().map_err(|e| {
+		let msg = format!(
+			"Failed to list keys at path {}: {}",
+			PrintableString(p.to_str().unwrap_or_default()),
+			e
+		);
+		lightning::io::Error::new(lightning::io::ErrorKind::Other, msg)
+	})?;
+
+	// We allow the presence of directories in the empty primary namespace and just skip them.
+	if metadata.is_dir() {
+		return Ok(false);
+	}
+
+	// If we otherwise don't find a file at the given path something went wrong.
+	if !metadata.is_file() {
+		debug_assert!(
+			false,
+			"Failed to list keys at path {}: file couldn't be accessed.",
+			PrintableString(p.to_str().unwrap_or_default())
+		);
+		let msg = format!(
+			"Failed to list keys at path {}: file couldn't be accessed.",
+			PrintableString(p.to_str().unwrap_or_default())
+		);
+		return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+	}
+
+	Ok(true)
+}
+
+fn get_key_from_dir_entry(p: &Path, base_path: &Path) -> Result<String, lightning::io::Error> {
+	match p.strip_prefix(&base_path) {
+		Ok(stripped_path) => {
+			if let Some(relative_path) = stripped_path.to_str() {
+				if is_valid_kvstore_str(relative_path) {
+					return Ok(relative_path.to_string());
+				} else {
+					debug_assert!(
+						false,
+						"Failed to list keys of path {}: file path is not valid key",
+						PrintableString(p.to_str().unwrap_or_default())
+					);
+					let msg = format!(
+						"Failed to list keys of path {}: file path is not valid key",
+						PrintableString(p.to_str().unwrap_or_default())
+					);
+					return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+				}
+			} else {
+				debug_assert!(
+					false,
+					"Failed to list keys of path {}: file path is not valid UTF-8",
+					PrintableString(p.to_str().unwrap_or_default())
+				);
+				let msg = format!(
+					"Failed to list keys of path {}: file path is not valid UTF-8",
+					PrintableString(p.to_str().unwrap_or_default())
+				);
+				return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+			}
+		},
+		Err(e) => {
+			debug_assert!(
+				false,
+				"Failed to list keys of path {}: {}",
+				PrintableString(p.to_str().unwrap_or_default()),
+				e
+			);
+			let msg = format!(
+				"Failed to list keys of path {}: {}",
+				PrintableString(p.to_str().unwrap_or_default()),
+				e
+			);
+			return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
+		},
+	}
+}
+
+impl MigratableKVStore for FilesystemStore {
+	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
+		let prefixed_dest = &self.data_dir;
+		if !prefixed_dest.exists() {
+			return Ok(Vec::new());
+		}
+
+		let mut keys = Vec::new();
+
+		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
+			let primary_path = primary_entry?.path();
+
+			if dir_entry_is_key(&primary_path)? {
+				let primary_namespace = String::new();
+				let secondary_namespace = String::new();
+				let key = get_key_from_dir_entry(&primary_path, prefixed_dest)?;
+				keys.push((primary_namespace, secondary_namespace, key));
+				continue 'primary_loop;
+			}
+
+			// The primary_entry is actually also a directory.
+			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
+				let secondary_path = secondary_entry?.path();
+
+				if dir_entry_is_key(&secondary_path)? {
+					let primary_namespace = get_key_from_dir_entry(&primary_path, prefixed_dest)?;
+					let secondary_namespace = String::new();
+					let key = get_key_from_dir_entry(&secondary_path, &primary_path)?;
+					keys.push((primary_namespace, secondary_namespace, key));
+					continue 'secondary_loop;
+				}
+
+				// The secondary_entry is actually also a directory.
+				for tertiary_entry in fs::read_dir(&secondary_path)? {
+					let tertiary_entry = tertiary_entry?;
+					let tertiary_path = tertiary_entry.path();
+
+					if dir_entry_is_key(&tertiary_path)? {
+						let primary_namespace =
+							get_key_from_dir_entry(&primary_path, prefixed_dest)?;
+						let secondary_namespace =
+							get_key_from_dir_entry(&secondary_path, &primary_path)?;
+						let key = get_key_from_dir_entry(&tertiary_path, &secondary_path)?;
+						keys.push((primary_namespace, secondary_namespace, key));
+					} else {
+						debug_assert!(
+							false,
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						let msg = format!(
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						return Err(lightning::io::Error::new(
+							lightning::io::ErrorKind::Other,
+							msg,
+						));
+					}
+				}
+			}
+		}
+		Ok(keys)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::test_utils::{do_read_write_remove_list_persist, do_test_store};
+	use crate::test_utils::{
+		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
+	};
 
 	use bitcoin::Txid;
 
@@ -436,6 +527,19 @@ mod tests {
 		temp_path.push("test_read_write_remove_list_persist");
 		let fs_store = FilesystemStore::new(temp_path);
 		do_read_write_remove_list_persist(&fs_store);
+	}
+
+	#[test]
+	fn test_data_migration() {
+		let mut source_temp_path = std::env::temp_dir();
+		source_temp_path.push("test_data_migration_source");
+		let mut source_store = FilesystemStore::new(source_temp_path);
+
+		let mut target_temp_path = std::env::temp_dir();
+		target_temp_path.push("test_data_migration_target");
+		let mut target_store = FilesystemStore::new(target_temp_path);
+
+		do_test_data_migration(&mut source_store, &mut target_store);
 	}
 
 	#[test]
