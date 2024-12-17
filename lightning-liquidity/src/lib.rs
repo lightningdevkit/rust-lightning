@@ -14,9 +14,10 @@
 //! - [LSPS0] defines the transport protocol with the LSP over which the other protocols communicate.
 //! - [LSPS1] allows to order Lightning channels from an LSP. This is useful when the client needs
 //! inbound Lightning liquidity for which they are willing and able to pay in bitcoin.
-//! - [LSPS2] allows to generate a special invoice for which, when paid, an LSP will open a "just-in-time".
-//! This is useful for the initial on-boarding of clients as the channel opening fees are deducted
-//! from the incoming payment, i.e., no funds are required client-side to initiate this flow.
+//! - [LSPS2] allows to generate a special invoice for which, when paid, an LSP will open a
+//! "just-in-time" channel. This is useful for the initial on-boarding of clients as the channel
+//! opening fees are deducted from the incoming payment, i.e., no funds are required client-side to
+//! initiate this flow.
 //!
 //! To get started, you'll want to setup a [`LiquidityManager`] and configure it to be the
 //! [`CustomMessageHandler`] of your LDK node. You can then for example call

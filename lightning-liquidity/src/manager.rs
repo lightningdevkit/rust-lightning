@@ -75,13 +75,18 @@ pub struct LiquidityClientConfig {
 /// Users need to continually poll [`LiquidityManager::get_and_clear_pending_events`] in order to surface
 /// [`Event`]'s that likely need to be handled.
 ///
-/// If configured, users must forward the [`Event::HTLCIntercepted`] event parameters to [`LSPS2ServiceHandler::htlc_intercepted`]
-/// and the [`Event::ChannelReady`] event parameters to [`LSPS2ServiceHandler::channel_ready`].
+/// If the LSPS2 service is configured, users must forward the following parameters from LDK events:
+/// - [`Event::HTLCIntercepted`] to [`LSPS2ServiceHandler::htlc_intercepted`]
+/// - [`Event::ChannelReady`] to [`LSPS2ServiceHandler::channel_ready`]
+/// - [`Event::HTLCHandlingFailed`] to [`LSPS2ServiceHandler::htlc_handling_failed`]
+/// - [`Event::PaymentForwarded`] to [`LSPS2ServiceHandler::payment_forwarded`]
 ///
 /// [`PeerManager`]: lightning::ln::peer_handler::PeerManager
 /// [`MessageHandler`]: lightning::ln::peer_handler::MessageHandler
 /// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 /// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
+/// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
+/// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
 pub struct LiquidityManager<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone>
 where
 	ES::Target: EntropySource,
