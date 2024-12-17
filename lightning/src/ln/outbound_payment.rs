@@ -1226,7 +1226,8 @@ impl OutboundPayments {
 
 		if route.route_params.as_ref() != Some(route_params) {
 			debug_assert!(false,
-				"Routers are expected to return a Route which includes the requested RouteParameters");
+				"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {:?}",
+				route.route_params, route_params);
 			route.route_params = Some(route_params.clone());
 		}
 

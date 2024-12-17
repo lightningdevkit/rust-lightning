@@ -552,6 +552,10 @@ fn send_payment(
 		.find(|chan| chan.short_channel_id == Some(dest_chan_id))
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
 	source.router.next_routes.lock().unwrap().push_back(Route {
 		paths: vec![Path {
 			hops: vec![RouteHop {
@@ -565,12 +569,8 @@ fn send_payment(
 			}],
 			blinded_tail: None,
 		}],
-		route_params: None,
+		route_params: Some(route_params.clone()),
 	});
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
-		amt,
-	);
 	if let Err(err) = source.send_payment(
 		payment_hash,
 		RecipientOnionFields::secret_only(payment_secret),
@@ -622,6 +622,10 @@ fn send_hop_payment(
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
 	let first_hop_fee = 50_000;
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+		amt,
+	);
 	source.router.next_routes.lock().unwrap().push_back(Route {
 		paths: vec![Path {
 			hops: vec![
@@ -646,12 +650,8 @@ fn send_hop_payment(
 			],
 			blinded_tail: None,
 		}],
-		route_params: None,
+		route_params: Some(route_params.clone()),
 	});
-	let route_params = RouteParameters::from_payment_params_and_value(
-		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
-		amt,
-	);
 	if let Err(err) = source.send_payment(
 		payment_hash,
 		RecipientOnionFields::secret_only(payment_secret),
