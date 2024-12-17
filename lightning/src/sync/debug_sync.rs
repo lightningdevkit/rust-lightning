@@ -1,4 +1,5 @@
 pub use alloc::sync::Arc;
+use core::fmt;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 
@@ -64,6 +65,11 @@ impl Condvar {
 
 	pub fn notify_all(&self) {
 		self.inner.notify_all();
+	}
+
+	#[allow(unused)]
+	pub fn notify_one(&self) {
+		self.inner.notify_one();
 	}
 }
 
@@ -251,6 +257,21 @@ pub struct Mutex<T: Sized> {
 impl<T: Sized> Mutex<T> {
 	pub(crate) fn into_inner(self) -> LockResult<T> {
 		self.inner.into_inner().map_err(|_| ())
+	}
+}
+
+impl<T: Sized + fmt::Debug> fmt::Debug for Mutex<T> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let mut d = f.debug_struct("Mutex");
+		match self.try_lock() {
+			Ok(guard) => {
+				d.field("data", &&*guard);
+			},
+			Err(()) => {
+				d.field("data", &format_args!("<locked>"));
+			},
+		}
+		d.finish_non_exhaustive()
 	}
 }
 

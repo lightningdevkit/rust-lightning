@@ -5,6 +5,7 @@ use core::ops::{Deref, DerefMut};
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 
+#[derive(Debug)]
 pub struct Mutex<T: ?Sized> {
 	inner: RefCell<T>,
 }
