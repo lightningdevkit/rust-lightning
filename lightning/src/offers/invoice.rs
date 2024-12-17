@@ -122,7 +122,7 @@ use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_me
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test;
 use crate::offers::invoice_request::{EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef, INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE, SIGNATURE_TYPES};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -502,17 +502,32 @@ impl UnsignedBolt12Invoice {
 		let (_, _, _, invoice_tlv_stream, _, _, experimental_invoice_tlv_stream) =
 			contents.as_tlv_stream();
 
+		let mut signature_tlv_stream = TlvStream::new(invreq_bytes)
+			.range(SIGNATURE_TYPES)
+			.peekable();
+		let signature_len = signature_tlv_stream
+			.peek()
+			.map_or(SIGNATURE_TLV_RECORD_SIZE, |record| record.end - record.start);
+		let signature_tlv_stream_start = signature_tlv_stream
+			.peek()
+			.map_or(0, |first_record| first_record.start);
+		let signature_tlv_stream_end = signature_tlv_stream
+			.last()
+			.map_or(0, |last_record| last_record.end);
+		let signature_tlv_stream_len = signature_tlv_stream_end - signature_tlv_stream_start;
+
 		// Allocate enough space for the invoice, which will include:
 		// - all TLV records from `invreq_bytes` except signatures,
 		// - all invoice-specific TLV records, and
 		// - a signature TLV record once the invoice is signed.
 		//
-		// This assumes both the invoice request and the invoice will each only have one signature
-		// using SIGNATURE_TYPES.start as the TLV record. Thus, it is accounted for by invreq_bytes.
+		// This assumes the invoice will only have one signature using the same number of bytes as
+		// the first (and probably only) signature from the invoice request.
 		let mut bytes = Vec::with_capacity(
 			invreq_bytes.len()
+				- signature_tlv_stream_len
 				+ invoice_tlv_stream.serialized_length()
-				+ if contents.is_for_offer() { 0 } else { SIGNATURE_TLV_RECORD_SIZE }
+				+ signature_len
 				+ experimental_invoice_tlv_stream.serialized_length(),
 		);
 
