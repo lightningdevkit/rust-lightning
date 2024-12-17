@@ -15,6 +15,7 @@ pub(crate) mod fuzz_wrappers;
 #[macro_use]
 pub mod ser_macros;
 
+pub mod anchor_channel_reserves;
 #[cfg(fuzzing)]
 pub mod base32;
 #[cfg(not(fuzzing))]
