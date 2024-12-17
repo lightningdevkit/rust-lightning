@@ -166,8 +166,6 @@ fi
 echo -e "\n\nTest cfg-flag builds"
 RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-RUSTFLAGS="--cfg=async_signing" cargo test --verbose --color always -p lightning
-[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=splicing" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=async_payments" cargo test --verbose --color always -p lightning

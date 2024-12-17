@@ -906,7 +906,6 @@ pub(super) struct MonitorRestoreUpdates {
 }
 
 /// The return value of `signer_maybe_unblocked`
-#[allow(unused)]
 pub(super) struct SignerResumeUpdates {
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub revoke_and_ack: Option<msgs::RevokeAndACK>,
@@ -3960,13 +3959,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			log_trace!(logger, "Counterparty commitment signature available for funding_signed message; clearing signer_pending_funding");
 			self.signer_pending_funding = false;
 		} else if signature.is_none() {
-			#[cfg(not(async_signing))] {
-				panic!("Failed to get signature for funding_signed");
-			}
-			#[cfg(async_signing)] {
-				log_trace!(logger, "Counterparty commitment signature not available for funding_signed message; setting signer_pending_funding");
-				self.signer_pending_funding = true;
-			}
+			log_trace!(logger, "Counterparty commitment signature not available for funding_signed message; setting signer_pending_funding");
+			self.signer_pending_funding = true;
 		}
 
 		signature.map(|(signature, _)| msgs::FundingSigned {
@@ -6117,7 +6111,6 @@ impl<SP: Deref> Channel<SP> where
 
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
-	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
 		if !self.holder_commitment_point.is_available() {
 			log_trace!(logger, "Attempting to update holder per-commitment point...");
@@ -6234,21 +6227,16 @@ impl<SP: Deref> Channel<SP> where
 				&self.context.channel_id(), self.holder_commitment_point.transaction_number(),
 				self.holder_commitment_point.transaction_number() + 2);
 		}
-		#[cfg(not(async_signing))] {
-			panic!("Holder commitment point and per commitment secret must be available when generating revoke_and_ack");
-		}
-		#[cfg(async_signing)] {
-			// Technically if we're at HolderCommitmentPoint::PendingNext,
-			// we have a commitment point ready to send in an RAA, however we
-			// choose to wait since if we send RAA now, we could get another
-			// CS before we have any commitment point available. Blocking our
-			// RAA here is a convenient way to make sure that post-funding
-			// we're only ever waiting on one commitment point at a time.
-			log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
-				&self.context.channel_id(), self.holder_commitment_point.transaction_number());
-			self.context.signer_pending_revoke_and_ack = true;
-			None
-		}
+		// Technically if we're at HolderCommitmentPoint::PendingNext,
+		// we have a commitment point ready to send in an RAA, however we
+		// choose to wait since if we send RAA now, we could get another
+		// CS before we have any commitment point available. Blocking our
+		// RAA here is a convenient way to make sure that post-funding
+		// we're only ever waiting on one commitment point at a time.
+		log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
+			&self.context.channel_id(), self.holder_commitment_point.transaction_number());
+		self.context.signer_pending_revoke_and_ack = true;
+		None
 	}
 
 	/// Gets the last commitment update for immediate sending to our peer.
@@ -6319,16 +6307,11 @@ impl<SP: Deref> Channel<SP> where
 			}
 			update
 		} else {
-			#[cfg(not(async_signing))] {
-				panic!("Failed to get signature for new commitment state");
+			if !self.context.signer_pending_commitment_update {
+				log_trace!(logger, "Commitment update awaiting signer: setting signer_pending_commitment_update");
+				self.context.signer_pending_commitment_update = true;
 			}
-			#[cfg(async_signing)] {
-				if !self.context.signer_pending_commitment_update {
-					log_trace!(logger, "Commitment update awaiting signer: setting signer_pending_commitment_update");
-					self.context.signer_pending_commitment_update = true;
-				}
-				return Err(());
-			}
+			return Err(());
 		};
 		Ok(msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
@@ -8366,13 +8349,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			log_trace!(logger, "Counterparty commitment signature ready for funding_created message: clearing signer_pending_funding");
 			self.context.signer_pending_funding = false;
 		} else if signature.is_none() {
-			#[cfg(not(async_signing))] {
-				panic!("Failed to get signature for new funding creation");
-			}
-			#[cfg(async_signing)] {
-				log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
-				self.context.signer_pending_funding = true;
-			}
+			log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
+			self.context.signer_pending_funding = true;
 		};
 
 		signature.map(|signature| msgs::FundingCreated {
@@ -8471,14 +8449,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				holder_commitment_point.current_point()
 			},
 			_ => {
-				#[cfg(not(async_signing))] {
-					panic!("Failed getting commitment point for open_channel message");
-				}
-				#[cfg(async_signing)] {
-					log_trace!(_logger, "Unable to generate open_channel message, waiting for commitment point");
-					self.signer_pending_open_channel = true;
-					return None;
-				}
+				log_trace!(_logger, "Unable to generate open_channel message, waiting for commitment point");
+				self.signer_pending_open_channel = true;
+				return None;
 			}
 		};
 		let keys = self.context.get_holder_pubkeys();
@@ -8566,7 +8539,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
-	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L
 	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) where L::Target: Logger {
@@ -8727,14 +8699,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				holder_commitment_point.current_point()
 			},
 			_ => {
-				#[cfg(not(async_signing))] {
-					panic!("Failed getting commitment point for accept_channel message");
-				}
-				#[cfg(async_signing)] {
-					log_trace!(_logger, "Unable to generate accept_channel message, waiting for commitment point");
-					self.signer_pending_accept_channel = true;
-					return None;
-				}
+				log_trace!(_logger, "Unable to generate accept_channel message, waiting for commitment point");
+				self.signer_pending_accept_channel = true;
+				return None;
 			}
 		};
 		let keys = self.context.get_holder_pubkeys();
@@ -8837,7 +8804,6 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
-	#[allow(unused)]
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, logger: &L
 	) -> Option<msgs::AcceptChannel> where L::Target: Logger {

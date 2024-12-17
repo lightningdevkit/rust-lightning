@@ -24,10 +24,17 @@ use crate::sign::{ChannelSigner, HTLCDescriptor};
 /// policies in order to be secure. Please refer to the [VLS Policy
 /// Controls](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/main/docs/policy-controls.md)
 /// for an example of such policies.
+///
+/// Like [`ChannelSigner`], many of the methods allow errors to be returned to support async
+/// signing. In such cases, the signing operation can be replayed by calling
+/// [`ChannelManager::signer_unblocked`] or [`ChainMonitor::signer_unblocked`] (see individual
+/// method documentation for which method should be called) once the result is ready, at which
+/// point the channel operation will resume.
+///
+/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
+/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 pub trait EcdsaChannelSigner: ChannelSigner {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
-	///
-	/// Note that if signing fails or is rejected, the channel will be force-closed.
 	///
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
@@ -39,8 +46,12 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
-	//
-	// TODO: Document the things someone using this interface should enforce before signing.
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelManager::signer_unblocked`] must be called.
+	///
+	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_counterparty_commitment(
 		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -58,11 +69,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor.
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
-	//
-	// TODO: Document the things someone using this interface should enforce before signing.
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
@@ -70,6 +80,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
 	/// newer state. Thus, needs its own method as [`sign_holder_commitment`] may enforce that we
 	/// only ever get called once.
+	///
+	/// This method is *not* async as it is intended only for testing purposes.
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -92,9 +104,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor.
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_output(
 		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
@@ -121,9 +134,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor.
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_htlc(
 		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -139,11 +153,12 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor.
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
 	/// [`EcdsaSighashType::All`]: bitcoin::sighash::EcdsaSighashType::All
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_holder_htlc_transaction(
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>,
@@ -169,9 +184,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor.
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_counterparty_htlc_transaction(
 		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -180,6 +196,12 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelManager::signer_unblocked`] must be called.
+	///
+	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_closing_transaction(
 		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
@@ -189,9 +211,10 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor.
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_holder_anchor_input(
 		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
@@ -201,9 +224,9 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// Channel announcements also require a signature from each node's network key. Our node
 	/// signature is computed through [`NodeSigner::sign_gossip_message`].
 	///
-	/// Note that if this fails or is rejected, the channel will not be publicly announced and
-	/// our counterparty may (though likely will not) close the channel on us for violating the
-	/// protocol.
+	/// This method is *not* asynchronous. If an `Err` is returned, the channel will not be
+	/// publicly announced and our counterparty may (though likely will not) close the channel on
+	/// us for violating the protocol.
 	///
 	/// [`NodeSigner::sign_gossip_message`]: crate::sign::NodeSigner::sign_gossip_message
 	fn sign_channel_announcement_with_funding_key(
@@ -219,6 +242,9 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///    spending the previous funding transaction's output
 	///
 	/// `input_value`: The value of the previous funding transaction output.
+	///
+	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
+	/// closed.
 	fn sign_splicing_funding_input(
 		&self, tx: &Transaction, input_index: usize, input_value: u64,
 		secp_ctx: &Secp256k1<secp256k1::All>,
