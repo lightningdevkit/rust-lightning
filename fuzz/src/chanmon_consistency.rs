@@ -552,8 +552,7 @@ fn send_payment(
 		.find(|chan| chan.short_channel_id == Some(dest_chan_id))
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
-	let mut next_routes = source.router.next_routes.lock().unwrap();
-	next_routes.push_back(Route {
+	source.router.next_routes.lock().unwrap().push_back(Route {
 		paths: vec![Path {
 			hops: vec![RouteHop {
 				pubkey: dest.get_our_node_id(),
@@ -623,8 +622,7 @@ fn send_hop_payment(
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
 	let first_hop_fee = 50_000;
-	let mut next_routes = source.router.next_routes.lock().unwrap();
-	next_routes.push_back(Route {
+	source.router.next_routes.lock().unwrap().push_back(Route {
 		paths: vec![Path {
 			hops: vec![
 				RouteHop {
