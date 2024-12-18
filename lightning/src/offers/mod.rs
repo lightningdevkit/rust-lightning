@@ -15,6 +15,7 @@
 #[macro_use]
 pub mod offer;
 
+pub(super) mod alloc;
 pub mod invoice;
 pub mod invoice_error;
 mod invoice_macros;
