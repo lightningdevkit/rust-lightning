@@ -770,7 +770,7 @@ pub struct ProbabilisticScoringDecayParameters {
 	/// liquidity bounds are 200,000 sats and 600,000 sats, after this amount of time the upper
 	/// and lower liquidity bounds will be decayed to 100,000 and 800,000 sats.
 	///
-	/// Default value: 6 hours
+	/// Default value: 30 minutes
 	///
 	/// # Note
 	///
@@ -782,7 +782,7 @@ pub struct ProbabilisticScoringDecayParameters {
 impl Default for ProbabilisticScoringDecayParameters {
 	fn default() -> Self {
 		Self {
-			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
+			liquidity_offset_half_life: Duration::from_secs(30 * 60),
 			historical_no_updates_half_life: Duration::from_secs(60 * 60 * 24 * 14),
 		}
 	}
@@ -792,7 +792,7 @@ impl Default for ProbabilisticScoringDecayParameters {
 impl ProbabilisticScoringDecayParameters {
 	fn zero_penalty() -> Self {
 		Self {
-			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
+			liquidity_offset_half_life: Duration::from_secs(30 * 60),
 			historical_no_updates_half_life: Duration::from_secs(60 * 60 * 24 * 14),
 		}
 	}
