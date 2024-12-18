@@ -349,7 +349,9 @@ pub(super) fn build_onion_payloads<'a>(
 		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
 	);
 
-	// don't include blinded tail when Trampoline hops are present
+	// When Trampoline hops are present, they are presumed to follow the non-Trampoline hops, which
+	// means that the blinded path needs not be appended to the regular hops, and is only included
+	// among the Trampoline onion payloads.
 	let blinded_tail_with_hop_iter = path.trampoline_hops.is_empty().then(|| {
 		path.blinded_tail.as_ref().map(|bt| BlindedTailHopIter {
 			hops: bt.hops.iter(),
