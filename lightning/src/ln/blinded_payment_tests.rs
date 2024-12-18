@@ -1763,15 +1763,17 @@ fn route_blinding_spec_test_vector() {
 }
 
 #[test]
-fn combined_trampoline_onion_creation_test() {
+fn test_combined_trampoline_onion_creation_vectors() {
+	// As per https://github.com/lightning/bolts/blob/fa0594ac2af3531d734f1d707a146d6e13679451/bolt04/trampoline-to-blinded-path-payment-onion-test.json#L251
+
 	let mut secp_ctx = Secp256k1::new();
-	let session_priv = SecretKey::from_slice(&<Vec<u8>>::from_hex("a64feb81abd58e473df290e9e1c07dc3e56114495cadf33191f44ba5448ebe99").unwrap()).unwrap();
+	let session_priv = secret_from_hex("a64feb81abd58e473df290e9e1c07dc3e56114495cadf33191f44ba5448ebe99");
 
 	let path = Path {
 		hops: vec![
 			// Bob
 			RouteHop {
-				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()).unwrap(),
+				pubkey: pubkey_from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"),
 				node_features: NodeFeatures::empty(),
 				short_channel_id: 0,
 				channel_features: ChannelFeatures::empty(),
@@ -1782,7 +1784,7 @@ fn combined_trampoline_onion_creation_test() {
 
 			// Carol
 			RouteHop {
-				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+				pubkey: pubkey_from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007"),
 				node_features: NodeFeatures::empty(),
 				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
 				channel_features: ChannelFeatures::empty(),
@@ -1794,14 +1796,14 @@ fn combined_trampoline_onion_creation_test() {
 		trampoline_hops: vec![
 			// Carol's pubkey
 			TrampolineHop {
-				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+				pubkey: pubkey_from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007"),
 				node_features: Features::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
 			},
 			// Dave's pubkey (the intro node needs to be duplicated)
 			TrampolineHop {
-				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()).unwrap(),
+				pubkey: pubkey_from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"),
 				node_features: Features::empty(),
 				fee_msat: 150_500, // incorporate both base and proportional fee
 				cltv_expiry_delta: 36,
@@ -1810,24 +1812,24 @@ fn combined_trampoline_onion_creation_test() {
 		blinded_tail: Some(BlindedTail {
 			hops: vec![
 				BlindedHop {
-					blinded_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be").unwrap()).unwrap(),
-					encrypted_payload: <Vec<u8>>::from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a").unwrap(),
+					blinded_node_id: pubkey_from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be"),
+					encrypted_payload: bytes_from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a"),
 				},
 				BlindedHop {
-					blinded_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22").unwrap()).unwrap(),
-					encrypted_payload: <Vec<u8>>::from_hex("bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c").unwrap(),
+					blinded_node_id: pubkey_from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22"),
+					encrypted_payload: bytes_from_hex("bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c"),
 				}
 			],
-			blinding_point: PublicKey::from_slice(&<Vec<u8>>::from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e").unwrap()).unwrap(),
+			blinding_point: pubkey_from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e"),
 			excess_final_cltv_expiry_delta: 0,
 			final_value_msat: 150_000_000
 		}),
 	};
 
-	let associated_data_slice = SecretKey::from_slice(&<Vec<u8>>::from_hex("e89bc505e84aaca09613833fc58c9069078fb43bfbea0488f34eec9db99b5f82").unwrap()).unwrap();
+	let associated_data_slice = secret_from_hex("e89bc505e84aaca09613833fc58c9069078fb43bfbea0488f34eec9db99b5f82");
 	let associated_data = PaymentHash(associated_data_slice.secret_bytes());
-	let payment_secret = PaymentSecret(SecretKey::from_slice(&<Vec<u8>>::from_hex("7494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da").unwrap()).unwrap().secret_bytes());
-	let outer_session_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4f777e8dac16e6dfe333066d9efb014f7a51d11762ff76eca4d3a95ada99ba3e").unwrap()).unwrap();
+	let payment_secret = PaymentSecret(secret_from_hex("7494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da").secret_bytes());
+	let outer_session_key = secret_from_hex("4f777e8dac16e6dfe333066d9efb014f7a51d11762ff76eca4d3a95ada99ba3e");
 	let outer_onion_prng_seed = onion_utils::gen_pad_from_shared_secret(&outer_session_key.secret_bytes());
 
 	let amt_msat = 150_000_000;
