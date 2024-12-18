@@ -107,7 +107,7 @@ where
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
-	best_block: Option<RwLock<BestBlock>>,
+	best_block: RwLock<Option<BestBlock>>,
 	_chain_source: Option<C>,
 }
 
@@ -215,7 +215,7 @@ where {
 			lsps2_service_handler,
 			service_config,
 			_client_config: client_config,
-			best_block: chain_params.map(|chain_params| RwLock::new(chain_params.best_block)),
+			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
 			_chain_source: chain_source,
 		}
 	}
@@ -642,8 +642,7 @@ where
 		&self, header: &bitcoin::block::Header, txdata: &chain::transaction::TransactionData,
 		height: u32,
 	) {
-		if let Some(best_block) = &self.best_block {
-			let best_block = best_block.read().unwrap();
+		if let Some(best_block) = self.best_block.read().unwrap().as_ref() {
 			assert_eq!(best_block.block_hash, header.prev_blockhash,
 			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
 			assert_eq!(best_block.height, height - 1,
@@ -656,8 +655,7 @@ where
 
 	fn block_disconnected(&self, header: &bitcoin::block::Header, height: u32) {
 		let new_height = height - 1;
-		if let Some(best_block) = &self.best_block {
-			let mut best_block = best_block.write().unwrap();
+		if let Some(best_block) = self.best_block.write().unwrap().as_mut() {
 			assert_eq!(best_block.block_hash, header.block_hash(),
 				"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
 			assert_eq!(best_block.height, height,
@@ -690,7 +688,10 @@ where
 		// confirmed at a height <= the one we now unconfirmed.
 	}
 
-	fn best_block_updated(&self, _header: &bitcoin::block::Header, _height: u32) {
+	fn best_block_updated(&self, header: &bitcoin::block::Header, height: u32) {
+		let new_best_block = BestBlock::new(header.block_hash(), height);
+		*self.best_block.write().unwrap() = Some(new_best_block);
+
 		// TODO: Call best_block_updated on all sub-modules that require it, e.g., LSPS1MessageHandler.
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.prune_peer_state();
