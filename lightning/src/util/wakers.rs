@@ -13,9 +13,9 @@
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
+use crate::sync::Mutex;
 use alloc::sync::Arc;
 use core::mem;
-use crate::sync::Mutex;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -26,9 +26,8 @@ use crate::sync::Condvar;
 use std::time::Duration;
 
 use core::future::Future as StdFuture;
-use core::task::{Context, Poll};
 use core::pin::Pin;
-
+use core::task::{Context, Poll};
 
 /// Used to signal to one of many waiters that the condition they're waiting on has happened.
 pub(crate) struct Notifier {
@@ -37,9 +36,7 @@ pub(crate) struct Notifier {
 
 impl Notifier {
 	pub(crate) fn new() -> Self {
-		Self {
-			notify_pending: Mutex::new((false, None)),
-		}
+		Self { notify_pending: Mutex::new((false, None)) }
 	}
 
 	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
@@ -198,7 +195,9 @@ impl Future {
 		if state.complete {
 			state.callbacks_made = true;
 			true
-		} else { false }
+		} else {
+			false
+		}
 	}
 }
 
@@ -251,11 +250,8 @@ impl Sleeper {
 	// Note that this is the common case - a ChannelManager, a ChainMonitor, and an
 	// OnionMessenger.
 	pub fn from_three_futures(fut_a: &Future, fut_b: &Future, fut_c: &Future) -> Self {
-		let notifiers = vec![
-			Arc::clone(&fut_a.state),
-			Arc::clone(&fut_b.state),
-			Arc::clone(&fut_c.state)
-		];
+		let notifiers =
+			vec![Arc::clone(&fut_a.state), Arc::clone(&fut_b.state), Arc::clone(&fut_c.state)];
 		Self { notifiers }
 	}
 	/// Constructs a new sleeper on many futures, allowing blocking on all at once.
@@ -289,8 +285,11 @@ impl Sleeper {
 	/// Wait until one of the [`Future`]s registered with this [`Sleeper`] has completed.
 	pub fn wait(&self) {
 		let (cv, notified_fut_mtx) = self.setup_wait();
-		let notified_fut = cv.wait_while(notified_fut_mtx.lock().unwrap(), |fut_opt| fut_opt.is_none())
-			.unwrap().take().expect("CV wait shouldn't have returned until the notifying future was set");
+		let notified_fut = cv
+			.wait_while(notified_fut_mtx.lock().unwrap(), |fut_opt| fut_opt.is_none())
+			.unwrap()
+			.take()
+			.expect("CV wait shouldn't have returned until the notifying future was set");
 		notified_fut.lock().unwrap().callbacks_made = true;
 	}
 
@@ -300,10 +299,13 @@ impl Sleeper {
 	pub fn wait_timeout(&self, max_wait: Duration) -> bool {
 		let (cv, notified_fut_mtx) = self.setup_wait();
 		let notified_fut =
-			match cv.wait_timeout_while(notified_fut_mtx.lock().unwrap(), max_wait, |fut_opt| fut_opt.is_none()) {
+			match cv.wait_timeout_while(notified_fut_mtx.lock().unwrap(), max_wait, |fut_opt| {
+				fut_opt.is_none()
+			}) {
 				Ok((_, e)) if e.timed_out() => return false,
-				Ok((mut notified_fut, _)) =>
-					notified_fut.take().expect("CV wait shouldn't have returned until the notifying future was set"),
+				Ok((mut notified_fut, _)) => notified_fut
+					.take()
+					.expect("CV wait shouldn't have returned until the notifying future was set"),
 				Err(_) => panic!("Previous panic while a lock was held led to a lock panic"),
 			};
 		notified_fut.lock().unwrap().callbacks_made = true;
@@ -314,8 +316,8 @@ impl Sleeper {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use core::sync::atomic::{AtomicBool, Ordering};
 	use core::future::Future as FutureTrait;
+	use core::sync::atomic::{AtomicBool, Ordering};
 	use core::task::{RawWaker, RawWakerVTable};
 
 	#[test]
@@ -328,7 +330,9 @@ mod tests {
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier.get_future().register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(callback.load(Ordering::SeqCst));
 	}
 
@@ -343,7 +347,9 @@ mod tests {
 		// a second `notify`.
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier.get_future().register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(!callback.load(Ordering::SeqCst));
 
 		notifier.notify();
@@ -351,7 +357,9 @@ mod tests {
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier.get_future().register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(!callback.load(Ordering::SeqCst));
 
 		notifier.notify();
@@ -365,12 +373,16 @@ mod tests {
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		future.register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(callback.load(Ordering::SeqCst));
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier.get_future().register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(!callback.load(Ordering::SeqCst));
 	}
 
@@ -384,12 +396,16 @@ mod tests {
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier.get_future().register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(callback.load(Ordering::SeqCst));
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier.get_future().register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(!callback.load(Ordering::SeqCst));
 
 		notifier.notify();
@@ -407,12 +423,10 @@ mod tests {
 
 		let exit_thread = Arc::new(AtomicBool::new(false));
 		let exit_thread_clone = exit_thread.clone();
-		thread::spawn(move || {
-			loop {
-				thread_notifier.notify();
-				if exit_thread_clone.load(Ordering::SeqCst) {
-					break
-				}
+		thread::spawn(move || loop {
+			thread_notifier.notify();
+			if exit_thread_clone.load(Ordering::SeqCst) {
+				break;
 			}
 		});
 
@@ -423,7 +437,7 @@ mod tests {
 		// available.
 		loop {
 			if persistence_notifier.get_future().wait_timeout(Duration::from_millis(100)) {
-				break
+				break;
 			}
 		}
 
@@ -433,7 +447,7 @@ mod tests {
 		// are available.
 		loop {
 			if !persistence_notifier.get_future().wait_timeout(Duration::from_millis(100)) {
-				break
+				break;
 			}
 		}
 	}
@@ -493,7 +507,9 @@ mod tests {
 		};
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		future.register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 
 		assert!(!callback.load(Ordering::SeqCst));
 		complete_future(&future.state);
@@ -518,7 +534,9 @@ mod tests {
 
 		let callback = Arc::new(AtomicBool::new(false));
 		let callback_ref = Arc::clone(&callback);
-		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		future.register_callback(Box::new(move || {
+			assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 
 		assert!(callback.load(Ordering::SeqCst));
 		assert!(future.state.lock().unwrap().callbacks.is_empty());
@@ -529,9 +547,18 @@ mod tests {
 	// compared to a raw VTable). Instead, we have to write out a lot of boilerplate to build a
 	// waker, which we do here with a trivial Arc<AtomicBool> data element to track woke-ness.
 	const WAKER_V_TABLE: RawWakerVTable = RawWakerVTable::new(waker_clone, wake, wake_by_ref, drop);
-	unsafe fn wake_by_ref(ptr: *const ()) { let p = ptr as *const Arc<AtomicBool>; assert!(!(*p).fetch_or(true, Ordering::SeqCst)); }
-	unsafe fn drop(ptr: *const ()) { let p = ptr as *mut Arc<AtomicBool>; let _freed = Box::from_raw(p); }
-	unsafe fn wake(ptr: *const ()) { wake_by_ref(ptr); drop(ptr); }
+	unsafe fn wake_by_ref(ptr: *const ()) {
+		let p = ptr as *const Arc<AtomicBool>;
+		assert!(!(*p).fetch_or(true, Ordering::SeqCst));
+	}
+	unsafe fn drop(ptr: *const ()) {
+		let p = ptr as *mut Arc<AtomicBool>;
+		let _freed = Box::from_raw(p);
+	}
+	unsafe fn wake(ptr: *const ()) {
+		wake_by_ref(ptr);
+		drop(ptr);
+	}
 	unsafe fn waker_clone(ptr: *const ()) -> RawWaker {
 		let p = ptr as *const Arc<AtomicBool>;
 		RawWaker::new(Box::into_raw(Box::new(Arc::clone(&*p))) as *const (), &WAKER_V_TABLE)
@@ -539,7 +566,8 @@ mod tests {
 
 	fn create_waker() -> (Arc<AtomicBool>, Waker) {
 		let a = Arc::new(AtomicBool::new(false));
-		let waker = unsafe { Waker::from_raw(waker_clone((&a as *const Arc<AtomicBool>) as *const ())) };
+		let waker =
+			unsafe { Waker::from_raw(waker_clone((&a as *const Arc<AtomicBool>) as *const ())) };
 		(a, waker)
 	}
 
@@ -563,14 +591,20 @@ mod tests {
 		assert!(!woken.load(Ordering::SeqCst));
 
 		let (second_woken, second_waker) = create_waker();
-		assert_eq!(Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)), Poll::Pending);
+		assert_eq!(
+			Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)),
+			Poll::Pending
+		);
 		assert!(!second_woken.load(Ordering::SeqCst));
 
 		complete_future(&future.state);
 		assert!(woken.load(Ordering::SeqCst));
 		assert!(second_woken.load(Ordering::SeqCst));
 		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
-		assert_eq!(Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)), Poll::Ready(()));
+		assert_eq!(
+			Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)),
+			Poll::Ready(())
+		);
 	}
 
 	#[test]
@@ -713,8 +747,12 @@ mod tests {
 		let callback_b = Arc::new(AtomicBool::new(false));
 		let callback_a_ref = Arc::clone(&callback_a);
 		let callback_b_ref = Arc::clone(&callback_b);
-		notifier_a.get_future().register_callback(Box::new(move || assert!(!callback_a_ref.fetch_or(true, Ordering::SeqCst))));
-		notifier_b.get_future().register_callback(Box::new(move || assert!(!callback_b_ref.fetch_or(true, Ordering::SeqCst))));
+		notifier_a.get_future().register_callback(Box::new(move || {
+			assert!(!callback_a_ref.fetch_or(true, Ordering::SeqCst))
+		}));
+		notifier_b.get_future().register_callback(Box::new(move || {
+			assert!(!callback_b_ref.fetch_or(true, Ordering::SeqCst))
+		}));
 		assert!(callback_a.load(Ordering::SeqCst) ^ callback_b.load(Ordering::SeqCst));
 
 		// If we now notify both notifiers again, the other callback will fire, completing the
@@ -739,14 +777,23 @@ mod tests {
 
 		// Test that simply polling a future twice doesn't result in two pending `Waker`s.
 		let mut future_a = notifier.get_future();
-		assert_eq!(Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)), Poll::Pending);
+		assert_eq!(
+			Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)),
+			Poll::Pending
+		);
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 1);
-		assert_eq!(Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)), Poll::Pending);
+		assert_eq!(
+			Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)),
+			Poll::Pending
+		);
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 1);
 
 		// If we poll a second future, however, that will store a second `Waker`.
 		let mut future_b = notifier.get_future();
-		assert_eq!(Pin::new(&mut future_b).poll(&mut Context::from_waker(&create_waker().1)), Poll::Pending);
+		assert_eq!(
+			Pin::new(&mut future_b).poll(&mut Context::from_waker(&create_waker().1)),
+			Poll::Pending
+		);
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 2);
 
 		// but when we drop the `Future`s, the pending Wakers will also be dropped.
@@ -757,13 +804,22 @@ mod tests {
 
 		// Further, after polling a future twice, if the notifier is woken all Wakers are dropped.
 		let mut future_a = notifier.get_future();
-		assert_eq!(Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)), Poll::Pending);
+		assert_eq!(
+			Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)),
+			Poll::Pending
+		);
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 1);
-		assert_eq!(Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)), Poll::Pending);
+		assert_eq!(
+			Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)),
+			Poll::Pending
+		);
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 1);
 		notifier.notify();
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 0);
-		assert_eq!(Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)), Poll::Ready(()));
+		assert_eq!(
+			Pin::new(&mut future_a).poll(&mut Context::from_waker(&create_waker().1)),
+			Poll::Ready(())
+		);
 		assert_eq!(future_state.lock().unwrap().std_future_callbacks.len(), 0);
 	}
 }

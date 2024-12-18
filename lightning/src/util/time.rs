@@ -7,16 +7,16 @@
 //! A simple module which either re-exports [`std::time::Instant`] or a mocked version of it for
 //! tests.
 
-#[cfg(test)]
-pub use test::Instant;
 #[cfg(not(test))]
 pub use std::time::Instant;
+#[cfg(test)]
+pub use test::Instant;
 
 #[cfg(test)]
 mod test {
-	use core::time::Duration;
-	use core::ops::Sub;
 	use core::cell::Cell;
+	use core::ops::Sub;
+	use core::time::Duration;
 
 	/// Time that can be advanced manually in tests.
 	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
