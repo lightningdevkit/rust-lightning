@@ -134,7 +134,7 @@ pub(crate) enum PendingOutboundPayment {
 	},
 }
 
-pub(crate) struct RetryableInvoiceRequest {
+pub struct RetryableInvoiceRequest {
 	pub(crate) invoice_request: InvoiceRequest,
 	pub(crate) nonce: Nonce,
 }
@@ -434,7 +434,7 @@ impl Display for PaymentAttempts {
 /// [`PendingOutboundPayment::AwaitingOffer`] should be considered stale and candidate for removal
 /// in [`OutboundPayments::remove_stale_payments`].
 #[derive(Clone, Copy)]
-pub(crate) enum StaleExpiration {
+pub enum StaleExpiration {
 	/// Number of times [`OutboundPayments::remove_stale_payments`] is called.
 	TimerTicks(u64),
 	/// Duration since the Unix epoch.
@@ -2415,7 +2415,7 @@ mod tests {
 	use crate::sync::{Arc, Mutex, RwLock};
 	use crate::util::errors::APIError;
 	use crate::util::hash_tables::new_hash_map;
-	use crate::util::test_utils;
+	use crate::util::test_utils::{self, FixedEntropy};
 
 	use alloc::collections::VecDeque;
 

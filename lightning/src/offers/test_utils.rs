@@ -15,7 +15,6 @@ use bitcoin::secp256k1::schnorr::Signature;
 use core::time::Duration;
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
-use crate::sign::EntropySource;
 use crate::types::payment::PaymentHash;
 use crate::types::features::BlindedHopFeatures;
 use crate::offers::merkle::TaggedHash;
@@ -111,10 +110,3 @@ pub(crate) fn now() -> Duration {
 		.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH")
 }
 
-pub(crate) struct FixedEntropy;
-
-impl EntropySource for FixedEntropy {
-	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		[42; 32]
-	}
-}
