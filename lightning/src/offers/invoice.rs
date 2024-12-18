@@ -118,6 +118,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
+use crate::offers::alloc::WithRoundedCapacity;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test;
@@ -507,9 +508,9 @@ impl UnsignedBolt12Invoice {
 		// - all invoice-specific TLV records, and
 		// - a signature TLV record once the invoice is signed.
 		//
-		// This assumes both the invoice request and the invoice will each only have one signature
-		// using SIGNATURE_TYPES.start as the TLV record. Thus, it is accounted for by invreq_bytes.
-		let mut bytes = Vec::with_capacity(
+		// This assumes the invoice will only have one signature using the same number of bytes as
+		// the invoice request's signature.
+		let mut bytes = Vec::with_rounded_capacity(
 			invreq_bytes.len()
 				+ invoice_tlv_stream.serialized_length()
 				+ if contents.is_for_offer() { 0 } else { SIGNATURE_TLV_RECORD_SIZE }
@@ -530,7 +531,7 @@ impl UnsignedBolt12Invoice {
 		let mut experimental_tlv_stream = TlvStream::new(remaining_bytes)
 			.range(EXPERIMENTAL_TYPES)
 			.peekable();
-		let mut experimental_bytes = Vec::with_capacity(
+		let mut experimental_bytes = Vec::with_rounded_capacity(
 			remaining_bytes.len()
 				- experimental_tlv_stream
 					.peek()
@@ -543,7 +544,6 @@ impl UnsignedBolt12Invoice {
 		}
 
 		experimental_invoice_tlv_stream.write(&mut experimental_bytes).unwrap();
-		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
 
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
@@ -574,14 +574,6 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
 
 		// Append the experimental bytes after the signature.
-		debug_assert_eq!(
-			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
-			// records with types >= 253.
-			$self.bytes.len()
-				+ $self.experimental_bytes.len()
-				+ if $self.contents.is_for_offer() { 0 } else { 2 },
-			$self.bytes.capacity(),
-		);
 		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
 		Ok(Bolt12Invoice {

@@ -98,6 +98,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::alloc::WithRoundedCapacity;
 use crate::offers::invoice_request::{ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferTlvStream, OfferTlvStreamRef};
@@ -338,7 +339,7 @@ macro_rules! refund_builder_methods { (
 			$self.refund.payer.0 = metadata;
 		}
 
-		let mut bytes = Vec::new();
+		let mut bytes = Vec::with_rounded_capacity($self.refund.serialized_length());
 		$self.refund.write(&mut bytes).unwrap();
 
 		Ok(Refund {

@@ -77,6 +77,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
+use crate::offers::alloc::WithRoundedCapacity;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
@@ -477,7 +478,7 @@ impl UnsignedInvoiceRequest {
 		// - all TLV records from `offer.bytes`,
 		// - all invoice_request-specific TLV records, and
 		// - a signature TLV record once the invoice_request is signed.
-		let mut bytes = Vec::with_capacity(
+		let mut bytes = Vec::with_rounded_capacity(
 			offer.bytes.len()
 				+ payer_tlv_stream.serialized_length()
 				+ invoice_request_tlv_stream.serialized_length()
@@ -498,7 +499,7 @@ impl UnsignedInvoiceRequest {
 		let mut experimental_tlv_stream = TlvStream::new(remaining_bytes)
 			.range(EXPERIMENTAL_OFFER_TYPES)
 			.peekable();
-		let mut experimental_bytes = Vec::with_capacity(
+		let mut experimental_bytes = Vec::with_rounded_capacity(
 			remaining_bytes.len()
 				- experimental_tlv_stream
 					.peek()
@@ -511,7 +512,6 @@ impl UnsignedInvoiceRequest {
 		}
 
 		experimental_invoice_request_tlv_stream.write(&mut experimental_bytes).unwrap();
-		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
 
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
@@ -544,12 +544,6 @@ macro_rules! unsigned_invoice_request_sign_method { (
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
 
 		// Append the experimental bytes after the signature.
-		debug_assert_eq!(
-			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
-			// records with types >= 253.
-			$self.bytes.len() + $self.experimental_bytes.len() + 2,
-			$self.bytes.capacity(),
-		);
 		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
 		Ok(InvoiceRequest {
