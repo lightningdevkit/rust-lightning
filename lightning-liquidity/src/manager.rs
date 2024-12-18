@@ -618,6 +618,9 @@ where
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: bitcoin::secp256k1::PublicKey) {
+		// If the peer was misbehaving, drop it from the ignored list to cleanup the kept state.
+		self.ignored_peers.write().unwrap().remove(&counterparty_node_id);
+
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
 			lsps2_service_handler.peer_disconnected(counterparty_node_id);
 		}
