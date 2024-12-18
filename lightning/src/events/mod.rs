@@ -181,27 +181,32 @@ impl PaymentPurpose {
 	pub(crate) fn from_parts(
 		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
 		payment_context: Option<PaymentContext>,
-	) -> Self {
+	) -> Result<Self, ()> {
 		match payment_context {
 			None => {
-				PaymentPurpose::Bolt11InvoicePayment {
+				Ok(PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage,
 					payment_secret,
-				}
+				})
 			},
 			Some(PaymentContext::Bolt12Offer(context)) => {
-				PaymentPurpose::Bolt12OfferPayment {
+				Ok(PaymentPurpose::Bolt12OfferPayment {
 					payment_preimage,
 					payment_secret,
 					payment_context: context,
-				}
+				})
 			},
 			Some(PaymentContext::Bolt12Refund(context)) => {
-				PaymentPurpose::Bolt12RefundPayment {
+				Ok(PaymentPurpose::Bolt12RefundPayment {
 					payment_preimage,
 					payment_secret,
 					payment_context: context,
-				}
+				})
+			},
+			Some(PaymentContext::AsyncBolt12Offer(_context)) => {
+				// This code will change to return Self::Bolt12OfferPayment when we add support for async
+				// receive.
+				Err(())
 			},
 		}
 	}
@@ -1865,7 +1870,8 @@ impl MaybeReadable for Event {
 						(13, payment_id, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context),
+						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context)
+							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
