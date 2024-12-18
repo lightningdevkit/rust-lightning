@@ -25,6 +25,7 @@ use crate::sync::{Mutex, Arc};
 use bitcoin::transaction::Transaction;
 use bitcoin::hashes::Hash;
 use bitcoin::sighash;
+use bitcoin::ScriptBuf;
 use bitcoin::sighash::EcdsaSighashType;
 
 use bitcoin::secp256k1;
@@ -161,6 +162,11 @@ impl TestChannelSigner {
 	fn is_signer_available(&self, signer_op: SignerOp) -> bool {
 		!self.get_enforcement_state().disabled_signer_ops.contains(&signer_op)
 	}
+
+	#[cfg(test)]
+	pub(crate) fn overwrite_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		self.inner.overwrite_channel_parameters(channel_parameters)
+	}
 }
 
 impl ChannelSigner for TestChannelSigner {
@@ -211,6 +217,21 @@ impl ChannelSigner for TestChannelSigner {
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
 		self.inner.provide_channel_parameters(channel_parameters)
+	}
+
+	fn get_counterparty_payment_script(&self, to_self: bool) -> ScriptBuf {
+		self.inner.get_counterparty_payment_script(to_self)
+	}
+
+	fn get_revokeable_spk(&self, to_self: bool, commitment_number: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ScriptBuf {
+		self.inner.get_revokeable_spk(to_self, commitment_number, per_commitment_point, secp_ctx)
+	}
+
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Transaction, ()> {
+		self.inner.punish_revokeable_output(justice_tx, input, amount, per_commitment_key, secp_ctx, per_commitment_point)
 	}
 }
 
@@ -294,7 +315,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			}
 		}
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
-		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(secp_ctx));
+		let revokeable_spk = self.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, secp_ctx);
+		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(revokeable_spk));
 		{
 			let witness_script = htlc_descriptor.witness_script(secp_ctx);
 			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
@@ -414,17 +436,25 @@ impl Writeable for TestChannelSigner {
 }
 
 impl TestChannelSigner {
-	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
+	fn verify_counterparty_commitment_tx<'a>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> TrustedCommitmentTransaction<'a> {
+		let broadcaster_spk = self.get_revokeable_spk(false, commitment_tx.commitment_number(), &commitment_tx.per_commitment_point(), secp_ctx);
+		let counterparty_spk = self.get_counterparty_payment_script(true);
 		commitment_tx.verify(
 			&self.inner.get_channel_parameters().unwrap().as_counterparty_broadcastable(),
-			self.inner.counterparty_pubkeys().unwrap(), self.inner.pubkeys(), secp_ctx
+			self.inner.counterparty_pubkeys().unwrap(), self.inner.pubkeys(), secp_ctx,
+			broadcaster_spk,
+			counterparty_spk,
 		).expect("derived different per-tx keys or built transaction")
 	}
 
-	fn verify_holder_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
+	fn verify_holder_commitment_tx<'a>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> TrustedCommitmentTransaction<'a> {
+		let broadcaster_spk = self.get_revokeable_spk(true, commitment_tx.commitment_number(), &commitment_tx.per_commitment_point(), secp_ctx);
+		let counterparty_spk = self.get_counterparty_payment_script(false);
 		commitment_tx.verify(
 			&self.inner.get_channel_parameters().unwrap().as_holder_broadcastable(),
-			self.inner.pubkeys(), self.inner.counterparty_pubkeys().unwrap(), secp_ctx
+			self.inner.pubkeys(), self.inner.counterparty_pubkeys().unwrap(), secp_ctx,
+			broadcaster_spk,
+			counterparty_spk,
 		).expect("derived different per-tx keys or built transaction")
 	}
 }

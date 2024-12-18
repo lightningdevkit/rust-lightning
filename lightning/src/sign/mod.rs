@@ -42,8 +42,8 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
-	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
+	get_counterparty_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
+	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
@@ -65,6 +65,7 @@ use crate::crypto::chacha20::ChaCha20;
 use crate::io::{self, Error};
 use crate::ln::msgs::DecodeError;
 use crate::prelude::*;
+use crate::sign::chan_utils::TxCreationKeys;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
@@ -630,30 +631,12 @@ impl HTLCDescriptor {
 
 	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
 	/// transaction.
-	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, secp: &Secp256k1<C>,
-	) -> TxOut {
-		let channel_params =
-			self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		let broadcaster_keys = channel_params.broadcaster_pubkeys();
-		let counterparty_keys = channel_params.countersignatory_pubkeys();
-		let broadcaster_delayed_key = DelayedPaymentKey::from_basepoint(
-			secp,
-			&broadcaster_keys.delayed_payment_basepoint,
-			&self.per_commitment_point,
-		);
-		let counterparty_revocation_key = &RevocationKey::from_basepoint(
-			&secp,
-			&counterparty_keys.revocation_basepoint,
-			&self.per_commitment_point,
-		);
+	pub fn tx_output(&self, revokeable_spk: ScriptBuf) -> TxOut {
 		chan_utils::build_htlc_output(
 			self.feerate_per_kw,
-			channel_params.contest_delay(),
 			&self.htlc,
-			channel_params.channel_type_features(),
-			&broadcaster_delayed_key,
-			&counterparty_revocation_key,
+			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
+			revokeable_spk,
 		)
 	}
 
@@ -807,6 +790,57 @@ pub trait ChannelSigner {
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
+
+	/// Returns the script pubkey that should be placed in the `to_remote` output of commitment
+	/// transactions.
+	///
+	/// Assumes the signer has already been given the channel parameters via
+	/// `provide_channel_parameters`.
+	///
+	/// If `to_self` is set, return the `to_remote` script pubkey for the remote party's commitment
+	/// transaction, otherwise, for the local party's.
+	fn get_counterparty_payment_script(&self, to_self: bool) -> ScriptBuf;
+
+	/// Returns the script pubkey that should be placed in the `to_local` output of commitment
+	/// transactions, and in the output of second level HTLC transactions.
+	///
+	/// Assumes the signer has already been given the channel parameters via
+	/// `provide_channel_parameters`.
+	///
+	/// If `to_self` is set, return the revokeable script pubkey for local party's
+	/// commitment / htlc transaction, otherwise, for the remote party's.
+	fn get_revokeable_spk(
+		&self, to_self: bool, commitment_number: u64, per_commitment_point: &PublicKey,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ScriptBuf;
+
+	/// Finalize the given input in a transaction spending an HTLC transaction output
+	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
+	///
+	/// A justice transaction may claim multiple outputs at the same time if timelocks are
+	/// similar, but only the input at index `input` should be finalized here.
+	/// It may be called multiple times for the same output(s) if a fee-bump is needed with regards
+	/// to an upcoming timelock expiration.
+	///
+	/// Amount is the value of the output spent by this input, committed to in the BIP 143 signature.
+	///
+	/// `per_commitment_key` is revocation secret which was provided by our counterparty when they
+	/// revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
+	/// not allow the spending of any funds by itself (you need our holder `revocation_secret` to do
+	/// so).
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
+	/// monitor.
+	///
+	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	///
+	/// TODO(taproot): pass to the `ChannelSigner` all the `TxOut`'s spent by the justice transaction.
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Transaction, ()>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1338,6 +1372,14 @@ impl InMemorySigner {
 			witness_script.as_bytes(),
 		]))
 	}
+
+	#[cfg(test)]
+	pub(crate) fn overwrite_channel_parameters(
+		&mut self, channel_parameters: &ChannelTransactionParameters,
+	) {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		self.channel_parameters = Some(channel_parameters.clone());
+	}
 }
 
 impl EntropySource for InMemorySigner {
@@ -1391,6 +1433,74 @@ impl ChannelSigner for InMemorySigner {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
 	}
+
+	fn get_counterparty_payment_script(&self, to_self: bool) -> ScriptBuf {
+		let params = if to_self {
+			self.channel_parameters.as_ref().unwrap().as_counterparty_broadcastable()
+		} else {
+			self.channel_parameters.as_ref().unwrap().as_holder_broadcastable()
+		};
+		let payment_point = &params.countersignatory_pubkeys().payment_point;
+		get_counterparty_payment_script(params.channel_type_features(), payment_point)
+	}
+
+	fn get_revokeable_spk(
+		&self, to_self: bool, _commitment_number: u64, per_commitment_point: &PublicKey,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ScriptBuf {
+		let params = if to_self {
+			self.channel_parameters.as_ref().unwrap().as_holder_broadcastable()
+		} else {
+			self.channel_parameters.as_ref().unwrap().as_counterparty_broadcastable()
+		};
+		let contest_delay = params.contest_delay();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		get_revokeable_redeemscript(
+			&keys.revocation_key,
+			contest_delay,
+			&keys.broadcaster_delayed_payment_key,
+		)
+		.to_p2wsh()
+	}
+
+	fn punish_revokeable_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+	) -> Result<Transaction, ()> {
+		let params = self.channel_parameters.as_ref().unwrap().as_counterparty_broadcastable();
+		let contest_delay = params.contest_delay();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		let witness_script = get_revokeable_redeemscript(
+			&keys.revocation_key,
+			contest_delay,
+			&keys.broadcaster_delayed_payment_key,
+		);
+		let sig = EcdsaChannelSigner::sign_justice_revoked_output(
+			self,
+			justice_tx,
+			input,
+			amount,
+			per_commitment_key,
+			secp_ctx,
+		)?;
+		let mut justice_tx = justice_tx.clone();
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[input].witness.push(ser_sig);
+		justice_tx.input[input].witness.push(vec![1]);
+		justice_tx.input[input].witness.push(witness_script.into_bytes());
+		Ok(justice_tx)
+	}
 }
 
 const MISSING_PARAMS_ERR: &'static str =
@@ -1420,19 +1530,21 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let commitment_txid = built_tx.txid;
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
+		let revokeable_spk = self.get_revokeable_spk(
+			false,
+			trusted_tx.commitment_number(),
+			&trusted_tx.per_commitment_point(),
+			secp_ctx,
+		);
 		for htlc in commitment_tx.htlcs() {
 			let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
-			let holder_selected_contest_delay =
-				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
 			let chan_type = &channel_parameters.channel_type_features;
 			let htlc_tx = chan_utils::build_htlc_transaction(
 				&commitment_txid,
 				commitment_tx.feerate_per_kw(),
-				holder_selected_contest_delay,
 				htlc,
 				chan_type,
-				&keys.broadcaster_delayed_payment_key,
-				&keys.revocation_key,
+				revokeable_spk.clone(),
 			);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, chan_type, &keys);
 			let htlc_sighashtype = if chan_type.supports_anchors_zero_fee_htlc_tx() {

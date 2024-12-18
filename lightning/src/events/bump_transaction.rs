@@ -26,7 +26,7 @@ use crate::ln::chan_utils::{
 };
 use crate::prelude::*;
 use crate::sign::{
-	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT
+	ChannelDerivationParameters, ChannelSigner, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sync::Mutex;
@@ -728,6 +728,7 @@ where
 			output: vec![],
 		};
 		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
+		let mut signers_and_revokeable_spks = BTreeMap::new();
 		for htlc_descriptor in htlc_descriptors {
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
@@ -740,7 +741,13 @@ where
 				},
 			});
 			htlc_tx.input.push(htlc_input);
-			let htlc_output = htlc_descriptor.tx_output(&self.secp);
+			let revokeable_spk = signers_and_revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+				.or_insert_with(|| {
+					let signer = htlc_descriptor.derive_channel_signer(&self.signer_provider);
+					let revokeable_spk = signer.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, &self.secp);
+					(signer, revokeable_spk)
+				}).1.clone();
+			let htlc_output = htlc_descriptor.tx_output(revokeable_spk);
 			htlc_tx.output.push(htlc_output);
 		}
 
@@ -789,10 +796,9 @@ where
 		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_psbt.unsigned_tx.compute_txid());
 		htlc_tx = self.utxo_source.sign_psbt(htlc_psbt)?;
 
-		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
-				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
+			// Unwrap because we derived the corresponding signers for all htlc descriptors further above
+			let signer  = &signers_and_revokeable_spks.get(&htlc_descriptor.channel_derivation_parameters.keys_id).unwrap().0;
 			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
 			let witness_script = htlc_descriptor.witness_script(&self.secp);
 			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);

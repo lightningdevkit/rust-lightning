@@ -15,7 +15,7 @@ use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
-use bitcoin::Weight;
+use bitcoin::{TxOut, Weight};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1618,8 +1618,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_point, &context.get_counterparty_pubkeys().payment_point, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&context.channel_transaction_parameters);
+		let monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
 		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, context.get_holder_selected_contest_delay(),
 		                                          &context.destination_script, (funding_txo, funding_txo_script),
@@ -3178,9 +3177,19 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let channel_parameters =
 			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
 			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
+		let broadcaster_payment_script = self.holder_signer.as_ref().get_revokeable_spk(local, commitment_number, &keys.per_commitment_point, &self.secp_ctx);
+		let broadcaster_txout = TxOut {
+			script_pubkey: broadcaster_payment_script,
+			value: Amount::from_sat(value_to_a as u64),
+		};
+		let counterparty_payment_script = self.holder_signer.as_ref().get_counterparty_payment_script(!local);
+		let counterparty_txout = TxOut {
+			script_pubkey: counterparty_payment_script,
+			value: Amount::from_sat(value_to_b as u64),
+		};
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-		                                                             value_to_a as u64,
-		                                                             value_to_b as u64,
+		                                                             broadcaster_txout,
+		                                                             counterparty_txout,
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
@@ -5130,11 +5139,11 @@ impl<SP: Deref> Channel<SP> where
 
 		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
+		let revokeable_spk = self.context.holder_signer.as_ref().get_revokeable_spk(true, commitment_stats.tx.commitment_number(), &commitment_stats.tx.per_commitment_point(), &self.context.secp_ctx);
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
-					self.context.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.context.channel_type,
-					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					&htlc, &self.context.channel_type, revokeable_spk.clone());
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &keys);
 				let htlc_sighashtype = if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
@@ -8092,6 +8101,7 @@ impl<SP: Deref> Channel<SP> where
 						).map_err(|_| ChannelError::Ignore("Failed to get signatures for new commitment_signed".to_owned()))?;
 					signature = res.0;
 					htlc_signatures = res.1;
+					let revokeable_spk = ecdsa.get_revokeable_spk(false, commitment_stats.tx.commitment_number(), &commitment_stats.tx.per_commitment_point(), &self.context.secp_ctx);
 
 					log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {} in channel {}",
 						encode::serialize_hex(&commitment_stats.tx.trust().built_transaction().transaction),
@@ -8100,7 +8110,7 @@ impl<SP: Deref> Channel<SP> where
 
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.context.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, htlc, &self.context.channel_type, revokeable_spk.clone())),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
@@ -10364,6 +10374,14 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
+	impl crate::ln::channel::ChannelContext<&Keys> {
+		fn overwrite_channel_features(&mut self, channel_type_features: ChannelTypeFeatures) {
+			self.channel_transaction_parameters.channel_type_features = channel_type_features;
+			self.holder_signer.as_mut_ecdsa().unwrap().overwrite_channel_parameters(&self.channel_transaction_parameters);
+		}
+	}
+
+	#[cfg(ldk_test_vectors)]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		assert!(cfg!(not(feature = "grind_signatures")));
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap())
@@ -11031,14 +11049,14 @@ mod tests {
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+				chan.context.overwrite_channel_features(ChannelTypeFeatures::only_static_remote_key());
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::only_static_remote_key(), $($remain)*);
 			};
 		}
 
 		macro_rules! test_commitment_with_anchors {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
-				chan.context.channel_transaction_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				chan.context.overwrite_channel_features(ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
 				test_commitment_common!($counterparty_sig_hex, $sig_hex, $tx_hex, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), $($remain)*);
 			};
 		}
@@ -11096,9 +11114,8 @@ mod tests {
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = htlcs[$htlc_idx];
-					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
-						chan.context.get_counterparty_selected_contest_delay().unwrap(),
-						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					let revokeable_spk = signer.get_revokeable_spk(true, holder_commitment_tx.commitment_number(), &holder_commitment_tx.per_commitment_point(), &secp_ctx);
+					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw, &htlc, $opt_anchors, revokeable_spk);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
 					let htlc_sighashtype = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 					let htlc_sighash = Message::from_digest(sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap().as_raw_hash().to_byte_array());
