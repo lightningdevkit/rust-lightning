@@ -10,6 +10,9 @@
 
 //! The goal of this crate is to provide types and primitives to integrate a spec-compliant LSP with an LDK-based node. To this end, this crate provides client-side as well as service-side logic to implement the [LSP specifications].
 //!
+//! **Note**: Service-side support is currently considered "beta", i.e., not fully ready for
+//! production use.
+//!
 //! Currently the following specifications are supported:
 //! - [LSPS0] defines the transport protocol with the LSP over which the other protocols communicate.
 //! - [LSPS1] allows to order Lightning channels from an LSP. This is useful when the client needs
