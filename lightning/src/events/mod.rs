@@ -1736,6 +1736,7 @@ impl Writeable for Event {
 					(2, payment_hash, required),
 					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
+					(8, path.trampoline_hops, optional_vec),
 				})
 			},
 			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
@@ -1746,6 +1747,7 @@ impl Writeable for Event {
 					(4, path.hops, required_vec),
 					(6, short_channel_id, option),
 					(8, path.blinded_tail, option),
+					(10, path.trampoline_hops, optional_vec)
 				})
 			},
 			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
@@ -2166,11 +2168,12 @@ impl MaybeReadable for Event {
 						(2, payment_hash, required),
 						(4, path, required_vec),
 						(6, blinded_tail, option),
+						(8, trampoline_path, optional_vec)
 					});
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, trampoline_hops: vec![], blinded_tail },
+						path: Path { hops: path, trampoline_hops: trampoline_path.unwrap_or(vec![]), blinded_tail },
 					}))
 				};
 				f()
@@ -2183,11 +2186,12 @@ impl MaybeReadable for Event {
 						(4, path, required_vec),
 						(6, short_channel_id, option),
 						(8, blinded_tail, option),
+						(10, trampoline_path, optional_vec)
 					});
 					Ok(Some(Event::ProbeFailed {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, trampoline_hops: vec![], blinded_tail },
+						path: Path { hops: path, trampoline_hops: trampoline_path.unwrap_or(vec![]), blinded_tail },
 						short_channel_id,
 					}))
 				};
