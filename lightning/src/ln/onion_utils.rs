@@ -350,16 +350,14 @@ pub(super) fn build_onion_payloads<'a>(
 	);
 
 	// don't include blinded tail when Trampoline hops are present
-	let blinded_tail_with_hop_iter = if path.trampoline_hops.is_empty() {
+	let blinded_tail_with_hop_iter = path.trampoline_hops.is_empty().then(|| {
 		path.blinded_tail.as_ref().map(|bt| BlindedTailHopIter {
 			hops: bt.hops.iter(),
 			blinding_point: bt.blinding_point,
 			final_value_msat: bt.final_value_msat,
 			excess_final_cltv_expiry_delta: bt.excess_final_cltv_expiry_delta,
 		})
-	} else {
-		None
-	};
+	}).flatten();
 
 	let (value_msat, cltv) = build_onion_payloads_callback(
 		path.hops.iter(),
