@@ -1,4 +1,4 @@
-//! Contains the main LSPS2 client-side object, [`LSPS0ClientHandler`].
+//! Contains the main LSPS0 client-side object, [`LSPS0ClientHandler`].
 //!
 //! Please refer to the [LSPS0
 //! specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0) for more
