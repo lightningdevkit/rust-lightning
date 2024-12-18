@@ -1119,10 +1119,12 @@ const PRECISION_LOWER_BOUND_DENOMINATOR: u64 = log_approx::LOWER_BITS_BOUND;
 const AMOUNT_PENALTY_DIVISOR: u64 = 1 << 20;
 const BASE_AMOUNT_PENALTY_DIVISOR: u64 = 1 << 30;
 
-/// Raises three `f64`s to the 3rd power, without `powi` because it requires `std` (dunno why).
+/// Raises three `f64`s to the 9th power, without `powi` because it requires `std` (dunno why).
 #[inline(always)]
-fn three_f64_pow_3(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
-	(a * a * a, b * b * b, c * c * c)
+fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
+	let (a2, b2, c2) = (a * a, b * b, c * c);
+	let (a4, b4, c4) = (a2 * a2, b2 * b2, c2 * c2);
+	(a * a4 * a4, b * b4 * b4, c * c4 * c4)
 }
 
 /// Given liquidity bounds, calculates the success probability (in the form of a numerator and
@@ -1155,23 +1157,26 @@ fn success_probability(
 			let max = (max_liquidity_msat as f64) / capacity;
 			let amount = (total_inflight_amount_msat as f64) / capacity;
 
-			// Assume the channel has a probability density function of (x - 0.5)^2 for values from
-			// 0 to 1 (where 1 is the channel's full capacity). The success probability given some
-			// liquidity bounds is thus the integral under the curve from the amount to maximum
-			// estimated liquidity, divided by the same integral from the minimum to the maximum
-			// estimated liquidity bounds.
+			// Assume the channel has a probability density function of
+			// `128 * (1/256 + 9*(x - 0.5)^8)` for values from 0 to 1 (where 1 is the channel's
+			// full capacity). The success probability given some liquidity bounds is thus the
+			// integral under the curve from the amount to maximum estimated liquidity, divided by
+			// the same integral from the minimum to the maximum estimated liquidity bounds.
 			//
-			// Because the integral from x to y is simply (y - 0.5)^3 - (x - 0.5)^3, we can
-			// calculate the cumulative density function between the min/max bounds trivially. Note
-			// that we don't bother to normalize the CDF to total to 1, as it will come out in the
-			// division of num / den.
-			let (max_pow, amt_pow, min_pow) = three_f64_pow_3(max - 0.5, amount - 0.5, min - 0.5);
-			let num = max_pow - amt_pow;
-			let den = max_pow - min_pow;
+			// Because the integral from x to y is simply
+			// `128*(1/256 * (y - 0.5) + (y - 0.5)^9) - 128*(1/256 * (x - 0.5) + (x - 0.5)^9), we
+			// can calculate the cumulative density function between the min/max bounds trivially.
+			// Note that we don't bother to normalize the CDF to total to 1 (using the 128
+			// multiple), as it will come out in the division of num / den.
+			let (max_norm, amt_norm, min_norm) = (max - 0.5, amount - 0.5, min - 0.5);
+			let (max_pow, amt_pow, min_pow) = three_f64_pow_9(max_norm, amt_norm, min_norm);
+			let (max_v, amt_v, min_v) = (max_pow + max_norm / 256.0, amt_pow + amt_norm / 256.0, min_pow + min_norm / 256.0);
+			let num = max_v - amt_v;
+			let den = max_v - min_v;
 
-			// Because our numerator and denominator max out at 0.5^3 we need to multiply them by
-			// quite a large factor to get something useful (ideally in the 2^30 range).
-			const BILLIONISH: f64 = 1024.0 * 1024.0 * 1024.0;
+			// Because our numerator and denominator max out at 0.0078125 we need to multiply them
+			// by quite a large factor to get something useful (ideally in the 2^30 range).
+			const BILLIONISH: f64 = 1024.0 * 1024.0 * 1024.0 * 64.0;
 			let numerator = (num * BILLIONISH) as u64 + 1;
 			let denominator = (den * BILLIONISH) as u64 + 1;
 			debug_assert!(numerator <= 1 << 30, "Got large numerator ({}) from float {}.", numerator, num);
@@ -1180,13 +1185,13 @@ fn success_probability(
 		};
 
 	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
-		denominator < u64::max_value() / 21
+		denominator < u64::max_value() / 78
 	{
-		// If we have no knowledge of the channel, scale probability down by ~75%
+		// If we have no knowledge of the channel, scale probability down by a multiple of ~82%.
 		// Note that we prefer to increase the denominator rather than decrease the numerator as
 		// the denominator is more likely to be larger and thus provide greater precision. This is
 		// mostly an overoptimization but makes a large difference in tests.
-		denominator = denominator * 21 / 16
+		denominator = denominator * 78 / 64
 	}
 
 	(numerator, denominator)
@@ -3012,47 +3017,47 @@ mod tests {
 			info,
 			short_channel_id: 42,
 		});
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 11497);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 11577);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 7408);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 8462);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 2_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 6151);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 6889);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 5427);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 5883);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4955);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 5412);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4736);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4940);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4484);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4689);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4484);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4468);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4263);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4468);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4263);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4217);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4044);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 3996);
 	}
 
 	#[test]
@@ -3252,7 +3257,7 @@ mod tests {
 			});
 
 			// With no historical data the normal liquidity penalty calculation is used.
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 135);
 		}
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 		None);
@@ -3270,7 +3275,7 @@ mod tests {
 			});
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 249);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 220);
 		}
 		// The "it failed" increment is 32, where the probability should lie several buckets into
 		// the first octile.
@@ -3294,7 +3299,7 @@ mod tests {
 				short_channel_id: 42,
 			});
 
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 105);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 83);
 		}
 		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3305,12 +3310,12 @@ mod tests {
 		// simply check bounds here.
 		let five_hundred_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 500, &params, false).unwrap();
-		assert!(five_hundred_prob > 0.59);
-		assert!(five_hundred_prob < 0.60);
+		assert!(five_hundred_prob > 0.61, "{}", five_hundred_prob);
+		assert!(five_hundred_prob < 0.62, "{}", five_hundred_prob);
 		let one_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false).unwrap();
-		assert!(one_prob < 0.85);
-		assert!(one_prob > 0.84);
+		assert!(one_prob < 0.89, "{}", one_prob);
+		assert!(one_prob > 0.88, "{}", one_prob);
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
@@ -3324,7 +3329,7 @@ mod tests {
 				short_channel_id: 42,
 			});
 
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 135);
 		}
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
@@ -3512,8 +3517,8 @@ mod tests {
 			short_channel_id: 42,
 		});
 		// With no historical data the normal liquidity penalty calculation is used, which results
-		// in a success probability of ~75%.
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1269);
+		// in a success probability of ~82%.
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 910);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params, false),
