@@ -1157,27 +1157,25 @@ fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 /// Given liquidity bounds, calculates the success probability (in the form of a numerator and
 /// denominator) of an HTLC. This is a key assumption in our scoring models.
 ///
-/// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
-///
 /// `total_inflight_amount_msat` includes the amount of the HTLC and any HTLCs in flight over the
 /// channel.
 ///
 /// min_zero_implies_no_successes signals that a `min_liquidity_msat` of 0 means we've not
 /// (recently) seen an HTLC successfully complete over this channel.
 #[inline(always)]
-fn success_probability(
+fn success_probability_float(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
 	min_zero_implies_no_successes: bool,
-) -> (u64, u64) {
+) -> (f64, f64) {
 	debug_assert!(min_liquidity_msat <= total_inflight_amount_msat);
 	debug_assert!(total_inflight_amount_msat < max_liquidity_msat);
 	debug_assert!(max_liquidity_msat <= capacity_msat);
 
 	let (numerator, mut denominator) =
 		if params.linear_success_probability {
-			(max_liquidity_msat - total_inflight_amount_msat,
-				(max_liquidity_msat - min_liquidity_msat).saturating_add(1))
+			((max_liquidity_msat - total_inflight_amount_msat) as f64,
+				(max_liquidity_msat - min_liquidity_msat).saturating_add(1) as f64)
 		} else {
 			let capacity = capacity_msat as f64;
 			let min = (min_liquidity_msat as f64) / capacity;
@@ -1200,6 +1198,57 @@ fn success_probability(
 			let (max_v, amt_v, min_v) = (max_pow + max_norm / 256.0, amt_pow + amt_norm / 256.0, min_pow + min_norm / 256.0);
 			let num = max_v - amt_v;
 			let den = max_v - min_v;
+			(num, den)
+		};
+
+	if min_zero_implies_no_successes && min_liquidity_msat == 0 {
+		// If we have no knowledge of the channel, scale probability down by a multiple of ~82%.
+		// Note that we prefer to increase the denominator rather than decrease the numerator as
+		// the denominator is more likely to be larger and thus provide greater precision. This is
+		// mostly an overoptimization but makes a large difference in tests.
+		denominator = denominator * 78.0 / 64.0;
+	}
+
+	(numerator, denominator)
+}
+
+#[inline(always)]
+/// Identical to [`success_probability_float`] but returns integer numerator and denominators.
+///
+/// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
+fn success_probability(
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
+	min_zero_implies_no_successes: bool,
+) -> (u64, u64) {
+	debug_assert!(min_liquidity_msat <= total_inflight_amount_msat);
+	debug_assert!(total_inflight_amount_msat < max_liquidity_msat);
+	debug_assert!(max_liquidity_msat <= capacity_msat);
+
+	let (numerator, denominator) =
+		if params.linear_success_probability {
+			let (numerator, mut denominator) =
+				(max_liquidity_msat - total_inflight_amount_msat,
+				(max_liquidity_msat - min_liquidity_msat).saturating_add(1));
+
+			if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
+				denominator < u64::max_value() / 78
+			{
+				// If we have no knowledge of the channel, scale probability down by a multiple of ~82%.
+				// Note that we prefer to increase the denominator rather than decrease the numerator as
+				// the denominator is more likely to be larger and thus provide greater precision. This is
+				// mostly an overoptimization but makes a large difference in tests.
+				denominator = denominator * 78 / 64
+			}
+
+			(numerator, denominator)
+		} else {
+			// We calculate the nonlinear probabilities using floats anyway, so just stub out to
+			// the float version and then convert to integers.
+			let (num, den) = success_probability_float(
+				total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, capacity_msat,
+				params, min_zero_implies_no_successes
+			);
 
 			// Because our numerator and denominator max out at 0.0078125 we need to multiply them
 			// by quite a large factor to get something useful (ideally in the 2^30 range).
@@ -1210,16 +1259,6 @@ fn success_probability(
 			debug_assert!(denominator <= 1 << 30, "Got large denominator ({}) from float {}.", denominator, den);
 			(numerator, denominator)
 		};
-
-	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
-		denominator < u64::max_value() / 78
-	{
-		// If we have no knowledge of the channel, scale probability down by a multiple of ~82%.
-		// Note that we prefer to increase the denominator rather than decrease the numerator as
-		// the denominator is more likely to be larger and thus provide greater precision. This is
-		// mostly an overoptimization but makes a large difference in tests.
-		denominator = denominator * 78 / 64
-	}
 
 	(numerator, denominator)
 }
@@ -1766,7 +1805,7 @@ mod bucketed_history {
 		// Because the first thing we do is check if `total_valid_points` is sufficient to consider
 		// the data here at all, and can return early if it is not, we want this to go first to
 		// avoid hitting a second cache line load entirely in that case.
-		total_valid_points_tracked: u64,
+		total_valid_points_tracked: f64,
 		min_liquidity_offset_history: HistoricalBucketRangeTracker,
 		max_liquidity_offset_history: HistoricalBucketRangeTracker,
 	}
@@ -1776,7 +1815,7 @@ mod bucketed_history {
 			HistoricalLiquidityTracker {
 				min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-				total_valid_points_tracked: 0,
+				total_valid_points_tracked: 0.0,
 			}
 		}
 
@@ -1787,7 +1826,7 @@ mod bucketed_history {
 			let mut res = HistoricalLiquidityTracker {
 				min_liquidity_offset_history,
 				max_liquidity_offset_history,
-				total_valid_points_tracked: 0,
+				total_valid_points_tracked: 0.0,
 			};
 			res.recalculate_valid_point_count();
 			res
@@ -1810,12 +1849,15 @@ mod bucketed_history {
 		}
 
 		fn recalculate_valid_point_count(&mut self) {
-			self.total_valid_points_tracked = 0;
+			let mut total_valid_points_tracked = 0;
 			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
 				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
-					self.total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+					let mut bucket_weight = (*min_bucket as u64) * (*max_bucket as u64);
+					bucket_weight *= bucket_weight;
+					total_valid_points_tracked += bucket_weight;
 				}
 			}
+			self.total_valid_points_tracked = total_valid_points_tracked as f64;
 		}
 
 		pub(super) fn writeable_min_offset_history(&self) -> &HistoricalBucketRangeTracker {
@@ -1901,20 +1943,23 @@ mod bucketed_history {
 				let mut actual_valid_points_tracked = 0;
 				for (min_idx, min_bucket) in min_liquidity_offset_history_buckets.iter().enumerate() {
 					for max_bucket in max_liquidity_offset_history_buckets.iter().take(32 - min_idx) {
-						actual_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+						let mut bucket_weight = (*min_bucket as u64) * (*max_bucket as u64);
+						bucket_weight *= bucket_weight;
+						actual_valid_points_tracked += bucket_weight;
 					}
 				}
-				assert_eq!(total_valid_points_tracked, actual_valid_points_tracked);
+				assert_eq!(total_valid_points_tracked, actual_valid_points_tracked as f64);
 			}
 
 			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
 			// treat it as if we were fully decayed.
-			const FULLY_DECAYED: u16 = BUCKET_FIXED_POINT_ONE * BUCKET_FIXED_POINT_ONE;
+			const FULLY_DECAYED: f64 = BUCKET_FIXED_POINT_ONE as f64 * BUCKET_FIXED_POINT_ONE as f64 *
+				BUCKET_FIXED_POINT_ONE as f64 * BUCKET_FIXED_POINT_ONE as f64;
 			if total_valid_points_tracked < FULLY_DECAYED.into() {
 				return None;
 			}
 
-			let mut cumulative_success_prob_times_billion = 0;
+			let mut cumulative_success_prob = 0.0f64;
 			// Special-case the 0th min bucket - it generally means we failed a payment, so only
 			// consider the highest (i.e. largest-offset-from-max-capacity) max bucket for all
 			// points against the 0th min bucket. This avoids the case where we fail to route
@@ -1927,7 +1972,7 @@ mod bucketed_history {
 				// max-bucket with at least BUCKET_FIXED_POINT_ONE.
 				let mut highest_max_bucket_with_points = 0;
 				let mut highest_max_bucket_with_full_points = None;
-				let mut total_max_points = 0; // Total points in max-buckets to consider
+				let mut total_weight = 0;
 				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate() {
 					if *max_bucket >= BUCKET_FIXED_POINT_ONE {
 						highest_max_bucket_with_full_points = Some(cmp::max(highest_max_bucket_with_full_points.unwrap_or(0), max_idx));
@@ -1935,8 +1980,10 @@ mod bucketed_history {
 					if *max_bucket != 0 {
 						highest_max_bucket_with_points = cmp::max(highest_max_bucket_with_points, max_idx);
 					}
-					total_max_points += *max_bucket as u64;
+					total_weight += (*max_bucket as u64) * (*max_bucket as u64)
+						* (min_liquidity_offset_history_buckets[0] as u64) * (min_liquidity_offset_history_buckets[0] as u64);
 				}
+				debug_assert!(total_weight as f64 <= total_valid_points_tracked);
 				// Use the highest max-bucket with at least BUCKET_FIXED_POINT_ONE, but if none is
 				// available use the highest max-bucket with any non-zero value. This ensures that
 				// if we have substantially decayed data we don't end up thinking the highest
@@ -1945,13 +1992,10 @@ mod bucketed_history {
 				let selected_max = highest_max_bucket_with_full_points.unwrap_or(highest_max_bucket_with_points);
 				let max_bucket_end_pos = BUCKET_START_POS[32 - selected_max] - 1;
 				if payment_pos < max_bucket_end_pos {
-					let (numerator, denominator) = success_probability(payment_pos as u64, 0,
+					let (numerator, denominator) = success_probability_float(payment_pos as u64, 0,
 						max_bucket_end_pos as u64, POSITION_TICKS as u64 - 1, params, true);
-					let bucket_prob_times_billion =
-						(min_liquidity_offset_history_buckets[0] as u64) * total_max_points
-							* 1024 * 1024 * 1024 / total_valid_points_tracked;
-					cumulative_success_prob_times_billion += bucket_prob_times_billion *
-						numerator / denominator;
+					let bucket_prob = total_weight as f64 / total_valid_points_tracked;
+					cumulative_success_prob += bucket_prob * numerator / denominator;
 				}
 			}
 
@@ -1959,26 +2003,28 @@ mod bucketed_history {
 				let min_bucket_start_pos = BUCKET_START_POS[min_idx];
 				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate().take(32 - min_idx) {
 					let max_bucket_end_pos = BUCKET_START_POS[32 - max_idx] - 1;
-					// Note that this multiply can only barely not overflow - two 16 bit ints plus
-					// 30 bits is 62 bits.
-					let bucket_prob_times_billion = (*min_bucket as u64) * (*max_bucket as u64)
-						* 1024 * 1024 * 1024 / total_valid_points_tracked;
+					let mut bucket_weight = (*min_bucket as u64) * (*max_bucket as u64);
+					bucket_weight *= bucket_weight;
+					debug_assert!(bucket_weight as f64 <= total_valid_points_tracked);
+
 					if payment_pos >= max_bucket_end_pos {
 						// Success probability 0, the payment amount may be above the max liquidity
 						break;
-					} else if payment_pos < min_bucket_start_pos {
-						cumulative_success_prob_times_billion += bucket_prob_times_billion;
+					}
+
+					let bucket_prob = bucket_weight as f64 / total_valid_points_tracked;
+					if payment_pos < min_bucket_start_pos {
+						cumulative_success_prob += bucket_prob;
 					} else {
-						let (numerator, denominator) = success_probability(payment_pos as u64,
+						let (numerator, denominator) = success_probability_float(payment_pos as u64,
 							min_bucket_start_pos as u64, max_bucket_end_pos as u64,
 							POSITION_TICKS as u64 - 1, params, true);
-						cumulative_success_prob_times_billion += bucket_prob_times_billion *
-							numerator / denominator;
+						cumulative_success_prob += bucket_prob * numerator / denominator;
 					}
 				}
 			}
 
-			Some(cumulative_success_prob_times_billion)
+			Some((cumulative_success_prob * (1024.0 * 1024.0 * 1024.0)) as u64)
 		}
 	}
 }
@@ -3576,9 +3622,12 @@ mod tests {
 		// Now test again with the amount in the bottom bucket.
 		amount_msat /= 2;
 		// The new amount is entirely within the only minimum bucket with score, so the probability
-		// we assign is 1/2.
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
-			Some(0.5));
+		// we assign is around 41%.
+		let probability =
+			scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false)
+			.unwrap();
+		assert!(probability >= 0.41);
+		assert!(probability < 0.42);
 
 		// ...but once we see a failure, we consider the payment to be substantially less likely,
 		// even though not a probability of zero as we still look at the second max bucket which
