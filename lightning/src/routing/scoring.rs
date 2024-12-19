@@ -1154,6 +1154,71 @@ fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 	(a * a4 * a4, b * b4 * b4, c * c4 * c4)
 }
 
+/// If we have no knowledge of the channel, we scale probability down by a multiple of ~82% for the
+/// historical model by multiplying the denominator of a success probability by this before
+/// dividing by 64.
+///
+/// This number (as well as the PDF) was picked experimentally on probing results to maximize the
+/// log-loss of succeeding and failing hops.
+///
+/// Note that we prefer to increase the denominator rather than decrease the numerator as the
+/// denominator is more likely to be larger and thus provide greater precision. This is mostly an
+/// overoptimization but makes a large difference in tests.
+const MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64: u64 = 78;
+
+#[inline(always)]
+fn linear_success_probability(
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	min_zero_implies_no_successes: bool,
+) -> (u64, u64) {
+	let (numerator, mut denominator) =
+		(max_liquidity_msat - total_inflight_amount_msat,
+		(max_liquidity_msat - min_liquidity_msat).saturating_add(1));
+
+	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
+		denominator < u64::max_value() / MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64
+	{
+		denominator = denominator * MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64 / 64
+	}
+
+	(numerator, denominator)
+}
+
+/// Returns a (numerator, denominator) pair each between 0 and 0.0078125, inclusive.
+#[inline(always)]
+fn nonlinear_success_probability(
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	capacity_msat: u64, min_zero_implies_no_successes: bool,
+) -> (f64, f64) {
+	let capacity = capacity_msat as f64;
+	let max = (max_liquidity_msat as f64) / capacity;
+	let min = (min_liquidity_msat as f64) / capacity;
+	let amount = (total_inflight_amount_msat as f64) / capacity;
+
+	// Assume the channel has a probability density function of
+	// `128 * (1/256 + 9*(x - 0.5)^8)` for values from 0 to 1 (where 1 is the channel's
+	// full capacity). The success probability given some liquidity bounds is thus the
+	// integral under the curve from the amount to maximum estimated liquidity, divided by
+	// the same integral from the minimum to the maximum estimated liquidity bounds.
+	//
+	// Because the integral from x to y is simply
+	// `128*(1/256 * (y - 0.5) + (y - 0.5)^9) - 128*(1/256 * (x - 0.5) + (x - 0.5)^9), we
+	// can calculate the cumulative density function between the min/max bounds trivially.
+	// Note that we don't bother to normalize the CDF to total to 1 (using the 128
+	// multiple), as it will come out in the division of num / den.
+	let (max_norm, min_norm, amt_norm) = (max - 0.5, min - 0.5, amount - 0.5);
+	let (max_pow, min_pow, amt_pow) = three_f64_pow_9(max_norm, min_norm, amt_norm);
+	let (max_v, min_v, amt_v) = (max_pow + max_norm / 256.0, min_pow + min_norm / 256.0, amt_pow + amt_norm / 256.0);
+	let mut denominator = max_v - min_v;
+	let numerator = max_v - amt_v;
+
+	if min_zero_implies_no_successes && min_liquidity_msat == 0 {
+		denominator = denominator * (MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64 as f64) / 64.0;
+	}
+
+	(numerator, denominator)
+}
+
 /// Given liquidity bounds, calculates the success probability (in the form of a numerator and
 /// denominator) of an HTLC. This is a key assumption in our scoring models.
 ///
@@ -1174,54 +1239,25 @@ fn success_probability(
 	debug_assert!(total_inflight_amount_msat < max_liquidity_msat);
 	debug_assert!(max_liquidity_msat <= capacity_msat);
 
-	let (numerator, mut denominator) =
-		if params.linear_success_probability {
-			(max_liquidity_msat - total_inflight_amount_msat,
-				(max_liquidity_msat - min_liquidity_msat).saturating_add(1))
-		} else {
-			let capacity = capacity_msat as f64;
-			let min = (min_liquidity_msat as f64) / capacity;
-			let max = (max_liquidity_msat as f64) / capacity;
-			let amount = (total_inflight_amount_msat as f64) / capacity;
+	if params.linear_success_probability {
+		linear_success_probability(total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, min_zero_implies_no_successes)
+	} else {
+		// We calculate the nonlinear probabilities using floats anyway, so just stub out to
+		// the float version and then convert to integers.
+		let (num, den) = nonlinear_success_probability(
+			total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, capacity_msat,
+			min_zero_implies_no_successes,
+		);
 
-			// Assume the channel has a probability density function of
-			// `128 * (1/256 + 9*(x - 0.5)^8)` for values from 0 to 1 (where 1 is the channel's
-			// full capacity). The success probability given some liquidity bounds is thus the
-			// integral under the curve from the amount to maximum estimated liquidity, divided by
-			// the same integral from the minimum to the maximum estimated liquidity bounds.
-			//
-			// Because the integral from x to y is simply
-			// `128*(1/256 * (y - 0.5) + (y - 0.5)^9) - 128*(1/256 * (x - 0.5) + (x - 0.5)^9), we
-			// can calculate the cumulative density function between the min/max bounds trivially.
-			// Note that we don't bother to normalize the CDF to total to 1 (using the 128
-			// multiple), as it will come out in the division of num / den.
-			let (max_norm, amt_norm, min_norm) = (max - 0.5, amount - 0.5, min - 0.5);
-			let (max_pow, amt_pow, min_pow) = three_f64_pow_9(max_norm, amt_norm, min_norm);
-			let (max_v, amt_v, min_v) = (max_pow + max_norm / 256.0, amt_pow + amt_norm / 256.0, min_pow + min_norm / 256.0);
-			let num = max_v - amt_v;
-			let den = max_v - min_v;
-
-			// Because our numerator and denominator max out at 0.0078125 we need to multiply them
-			// by quite a large factor to get something useful (ideally in the 2^30 range).
-			const BILLIONISH: f64 = 1024.0 * 1024.0 * 1024.0 * 64.0;
-			let numerator = (num * BILLIONISH) as u64 + 1;
-			let denominator = (den * BILLIONISH) as u64 + 1;
-			debug_assert!(numerator <= 1 << 30, "Got large numerator ({}) from float {}.", numerator, num);
-			debug_assert!(denominator <= 1 << 30, "Got large denominator ({}) from float {}.", denominator, den);
-			(numerator, denominator)
-		};
-
-	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
-		denominator < u64::max_value() / 78
-	{
-		// If we have no knowledge of the channel, scale probability down by a multiple of ~82%.
-		// Note that we prefer to increase the denominator rather than decrease the numerator as
-		// the denominator is more likely to be larger and thus provide greater precision. This is
-		// mostly an overoptimization but makes a large difference in tests.
-		denominator = denominator * 78 / 64
+		// Because our numerator and denominator max out at 0.0078125 we need to multiply them
+		// by quite a large factor to get something useful (ideally in the 2^30 range).
+		const BILLIONISH: f64 = 1024.0 * 1024.0 * 1024.0 * 64.0;
+		let numerator = (num * BILLIONISH) as u64 + 1;
+		let denominator = (den * BILLIONISH) as u64 + 1;
+		debug_assert!(numerator <= 1 << 30, "Got large numerator ({}) from float {}.", numerator, num);
+		debug_assert!(denominator <= 1 << 30, "Got large denominator ({}) from float {}.", denominator, den);
+		(numerator, denominator)
 	}
-
-	(numerator, denominator)
 }
 
 impl<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>>
