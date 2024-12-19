@@ -1370,8 +1370,7 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 			match phase {
 				ChannelPhase::Funded(_) | ChannelPhase::UnfundedOutboundV1(_) => true,
 				ChannelPhase::UnfundedInboundV1(_) => false,
-				ChannelPhase::UnfundedOutboundV2(_) => true,
-				ChannelPhase::UnfundedInboundV2(_) => false,
+				ChannelPhase::UnfundedV2(chan) => chan.context.is_outbound(),
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
@@ -3048,10 +3047,7 @@ macro_rules! convert_chan_phase_err {
 			ChannelPhase::UnfundedInboundV1(channel) => {
 				convert_chan_phase_err!($self, $peer_state, $err, channel, $channel_id, UNFUNDED_CHANNEL)
 			},
-			ChannelPhase::UnfundedOutboundV2(channel) => {
-				convert_chan_phase_err!($self, $peer_state, $err, channel, $channel_id, UNFUNDED_CHANNEL)
-			},
-			ChannelPhase::UnfundedInboundV2(channel) => {
+			ChannelPhase::UnfundedV2(channel) => {
 				convert_chan_phase_err!($self, $peer_state, $err, channel, $channel_id, UNFUNDED_CHANNEL)
 			},
 		}
@@ -4114,7 +4110,7 @@ where
 						)
 					},
 					ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) |
-					ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => {
+					ChannelPhase::UnfundedV2(_) => {
 						// Unfunded channel has no update
 						(chan_phase_entry.get_mut().context_mut().force_shutdown(false, closure_reason), None)
 					},
@@ -6540,10 +6536,7 @@ where
 							ChannelPhase::UnfundedOutboundV1(chan) => {
 								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
 							},
-							ChannelPhase::UnfundedInboundV2(chan) => {
-								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
-							},
-							ChannelPhase::UnfundedOutboundV2(chan) => {
+							ChannelPhase::UnfundedV2(chan) => {
 								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
 							},
 						}
@@ -7721,7 +7714,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								node_id: channel.context.get_counterparty_node_id(),
 								msg: channel.accept_inbound_dual_funded_channel()
 							};
-							(channel.context.channel_id(), ChannelPhase::UnfundedInboundV2(channel), Some(message_send_event))
+							(channel.context.channel_id(), ChannelPhase::UnfundedV2(channel), Some(message_send_event))
 						})
 					},
 				}
@@ -7840,7 +7833,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						num_unfunded_channels += 1;
 					}
 				},
-				ChannelPhase::UnfundedInboundV2(chan) => {
+				ChannelPhase::UnfundedV2(chan) => {
+					// Outbound channels don't contribute to the unfunded count in the DoS context.
+					if chan.context.is_outbound() {
+						continue;
+					}
+
 					// Only inbound V2 channels that are not 0conf and that we do not contribute to will be
 					// included in the unfunded count.
 					if chan.context.minimum_depth().unwrap_or(1) != 0 &&
@@ -7848,7 +7846,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						num_unfunded_channels += 1;
 					}
 				},
-				ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedOutboundV2(_) => {
+				ChannelPhase::UnfundedOutboundV1(_) => {
 					// Outbound channels don't contribute to the unfunded count in the DoS context.
 					continue;
 				},
@@ -7996,7 +7994,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					node_id: *counterparty_node_id,
 					msg: channel.accept_inbound_dual_funded_channel(),
 				};
-				(ChannelPhase::UnfundedInboundV2(channel), Some(message_send_event))
+				(ChannelPhase::UnfundedV2(channel), Some(message_send_event))
 			},
 		};
 
@@ -8243,10 +8241,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
 			match channel_phase {
-				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-					Ok(channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
-				},
-				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+				ChannelPhase::UnfundedV2(ref mut channel) => {
 					Ok(channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
 				},
 				_ => Err("tx_add_input"),
@@ -8257,10 +8252,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
 			match channel_phase {
-				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-					Ok(channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id))
-				},
-				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+				ChannelPhase::UnfundedV2(ref mut channel) => {
 					Ok(channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id))
 				},
 				_ => Err("tx_add_output"),
@@ -8271,10 +8263,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
 			match channel_phase {
-				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-					Ok(channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id))
-				},
-				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+				ChannelPhase::UnfundedV2(ref mut channel) => {
 					Ok(channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id))
 				},
 				_ => Err("tx_remove_input"),
@@ -8285,10 +8274,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn internal_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
 			match channel_phase {
-				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-					Ok(channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id))
-				},
-				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+				ChannelPhase::UnfundedV2(ref mut channel) => {
 					Ok(channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id))
 				},
 				_ => Err("tx_remove_output"),
@@ -8311,9 +8297,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
 				let (msg_send_event_opt, signing_session_opt) = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(channel) => channel.tx_complete(msg)
-						.into_msg_send_event_or_signing_session(counterparty_node_id),
-					ChannelPhase::UnfundedOutboundV2(channel) => channel.tx_complete(msg)
+					ChannelPhase::UnfundedV2(channel) => channel.tx_complete(msg)
 						.into_msg_send_event_or_signing_session(counterparty_node_id),
 					_ => try_chan_phase_entry!(self, peer_state, Err(ChannelError::Close(
 						(
@@ -8326,10 +8310,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				};
 				if let Some(mut signing_session) = signing_session_opt {
 					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut() {
-						ChannelPhase::UnfundedOutboundV2(chan) => {
-							chan.funding_tx_constructed(&mut signing_session, &self.logger)
-						},
-						ChannelPhase::UnfundedInboundV2(chan) => {
+						ChannelPhase::UnfundedV2(chan) => {
 							chan.funding_tx_constructed(&mut signing_session, &self.logger)
 						},
 						_ => Err(ChannelError::Warn(
@@ -8338,8 +8319,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
 					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
 					let channel = match channel_phase {
-						ChannelPhase::UnfundedOutboundV2(chan) => chan.into_channel(signing_session),
-						ChannelPhase::UnfundedInboundV2(chan) => chan.into_channel(signing_session),
+						ChannelPhase::UnfundedV2(chan) => chan.into_channel(signing_session),
 						_ => {
 							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
 							Err(ChannelError::Warn(
@@ -8435,8 +8415,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
 				let tx_constructor = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(chan) => &mut chan.interactive_tx_constructor,
-					ChannelPhase::UnfundedOutboundV2(chan) => &mut chan.interactive_tx_constructor,
+					ChannelPhase::UnfundedV2(chan) => &mut chan.interactive_tx_constructor,
 					ChannelPhase::Funded(_) => {
 						// TODO(splicing)/TODO(RBF): We'll also be doing interactive tx construction
 						// for a "ChannelPhase::Funded" when we want to bump the fee on an interactively
@@ -8583,7 +8562,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) |
-					ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => {
+					ChannelPhase::UnfundedV2(_) => {
 						let context = phase.context_mut();
 						let logger = WithChannelContext::from(&self.logger, context, None);
 						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
@@ -9560,7 +9539,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 					None
 				},
-				ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => None,
+				ChannelPhase::UnfundedV2(_) => None,
 			}
 		};
 
@@ -10997,7 +10976,7 @@ where
 					match phase {
 						// Retain unfunded channels.
 						ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) |
-						ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => true,
+						ChannelPhase::UnfundedV2(_) => true,
 						ChannelPhase::Funded(channel) => {
 							let res = f(channel);
 							if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
@@ -11525,10 +11504,7 @@ where
 						ChannelPhase::UnfundedInboundV1(chan) => {
 							&mut chan.context
 						},
-						ChannelPhase::UnfundedOutboundV2(chan) => {
-							&mut chan.context
-						},
-						ChannelPhase::UnfundedInboundV2(chan) => {
+						ChannelPhase::UnfundedV2(chan) => {
 							&mut chan.context
 						},
 					};
@@ -11681,8 +11657,7 @@ where
 								node_id: chan.context.get_counterparty_node_id(),
 								msg: chan.get_channel_reestablish(&&logger),
 							});
-						}
-
+						},
 						ChannelPhase::UnfundedOutboundV1(chan) => {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							if let Some(msg) = chan.get_open_channel(self.chain_hash, &&logger) {
@@ -11691,21 +11666,26 @@ where
 									msg,
 								});
 							}
-						}
-
-						ChannelPhase::UnfundedOutboundV2(chan) => {
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-								node_id: chan.context.get_counterparty_node_id(),
-								msg: chan.get_open_channel_v2(self.chain_hash),
-							});
 						},
-
-						ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedInboundV2(_) => {
+						ChannelPhase::UnfundedV2(chan) => {
+							if chan.context.is_outbound() {
+								pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+									node_id: chan.context.get_counterparty_node_id(),
+									msg: chan.get_open_channel_v2(self.chain_hash),
+								});
+							} else {
+								// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
+								// they are not persisted and won't be recovered after a crash.
+								// Therefore, they shouldn't exist at this point.
+								debug_assert!(false);
+							}
+						},
+						ChannelPhase::UnfundedInboundV1(_) => {
 							// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 							// they are not persisted and won't be recovered after a crash.
 							// Therefore, they shouldn't exist at this point.
 							debug_assert!(false);
-						}
+						},
 					}
 				}
 			}
@@ -11803,16 +11783,18 @@ where
 							return;
 						}
 					},
-					Some(ChannelPhase::UnfundedOutboundV2(ref mut chan)) => {
-						if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-								node_id: counterparty_node_id,
-								msg,
-							});
-							return;
+					Some(ChannelPhase::UnfundedV2(ref mut chan)) => {
+						if chan.context.is_outbound() {
+							if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
+								peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+									node_id: counterparty_node_id,
+									msg,
+								});
+								return;
+							}
 						}
 					},
-					None | Some(ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::Funded(_)) => (),
+					None | Some(ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::Funded(_)) => (),
 				}
 			}
 
