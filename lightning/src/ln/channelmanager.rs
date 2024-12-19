@@ -48,7 +48,7 @@ use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFun
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelPhase, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext, InteractivelyFunded as _};
+use crate::ln::channel::{self, Channel, ChannelPhase, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel_state::ChannelDetails;
@@ -8435,8 +8435,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
 				let tx_constructor = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(chan) => chan.interactive_tx_constructor_mut(),
-					ChannelPhase::UnfundedOutboundV2(chan) => chan.interactive_tx_constructor_mut(),
+					ChannelPhase::UnfundedInboundV2(chan) => &mut chan.interactive_tx_constructor,
+					ChannelPhase::UnfundedOutboundV2(chan) => &mut chan.interactive_tx_constructor,
 					ChannelPhase::Funded(_) => {
 						// TODO(splicing)/TODO(RBF): We'll also be doing interactive tx construction
 						// for a "ChannelPhase::Funded" when we want to bump the fee on an interactively
