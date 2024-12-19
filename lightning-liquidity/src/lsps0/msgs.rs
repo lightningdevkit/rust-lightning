@@ -1,4 +1,4 @@
-//! Message, request, and other primitive types used to implement LSPS1.
+//! Message, request, and other primitive types used to implement LSPS0.
 
 use crate::lsps0::ser::{LSPSMessage, RequestId, ResponseError};
 use crate::prelude::Vec;
