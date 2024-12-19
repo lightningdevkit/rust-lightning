@@ -50,7 +50,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext, InteractivelyFunded as _};
 #[cfg(any(dual_funding, splicing))]
-use crate::ln::channel::InboundV2Channel;
+use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -7702,10 +7702,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					},
 					#[cfg(dual_funding)]
 					OpenChannelMessage::V2(open_channel_msg) => {
-						InboundV2Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-							self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(), &peer_state.latest_features,
-							&open_channel_msg, _funding_inputs, _total_witness_weight, user_channel_id,
-							&self.default_configuration, best_block_height, &self.logger
+						PendingV2Channel::new_inbound(
+							&self.fee_estimator, &self.entropy_source, &self.signer_provider,
+							self.get_our_node_id(), *counterparty_node_id,
+							&self.channel_type_features(), &peer_state.latest_features,
+							&open_channel_msg, _funding_inputs, _total_witness_weight,
+							user_channel_id, &self.default_configuration, best_block_height,
+							&self.logger,
 						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
 							ChannelError::Close(
 								(
@@ -7983,10 +7986,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 			#[cfg(dual_funding)]
 			OpenChannelMessageRef::V2(msg) => {
-				let channel = InboundV2Channel::new(&self.fee_estimator, &self.entropy_source,
-					&self.signer_provider, self.get_our_node_id(), *counterparty_node_id,
-					&self.channel_type_features(), &peer_state.latest_features, msg, vec![], Weight::from_wu(0),
-					user_channel_id, &self.default_configuration, best_block_height, &self.logger
+				let channel = PendingV2Channel::new_inbound(
+					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
+					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
+					&peer_state.latest_features, msg, vec![], Weight::from_wu(0), user_channel_id,
+					&self.default_configuration, best_block_height, &self.logger,
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = events::MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,
