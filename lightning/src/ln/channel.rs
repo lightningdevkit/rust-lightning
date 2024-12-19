@@ -1127,9 +1127,9 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
-	UnfundedOutboundV2(OutboundV2Channel<SP>),
+	UnfundedOutboundV2(PendingV2Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once accepting V2 channels is enabled.
-	UnfundedInboundV2(InboundV2Channel<SP>),
+	UnfundedInboundV2(PendingV2Channel<SP>),
 	Funded(Channel<SP>),
 }
 
@@ -1849,25 +1849,7 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 	}
 }
 
-impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.context
-	}
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.context
-	}
-	fn dual_funding_context(&self) -> &DualFundingChannelContext {
-		&self.dual_funding_context
-	}
-	fn unfunded_context(&self) -> &UnfundedChannelContext {
-		&self.unfunded_context
-	}
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
-		&mut self.interactive_tx_constructor
-	}
-}
-
-impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> InteractivelyFunded<SP> for PendingV2Channel<SP> where SP::Target: SignerProvider {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -8822,8 +8804,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
-// A not-yet-funded outbound (from holder) channel using V2 channel establishment.
-pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
+// A not-yet-funded channel using V2 channel establishment.
+pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	pub dual_funding_context: DualFundingChannelContext,
@@ -8831,15 +8813,15 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
-impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
-	) -> Result<OutboundV2Channel<SP>, APIError>
+	) -> Result<Self, APIError>
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
@@ -8911,6 +8893,10 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
+		if !self.context.is_outbound() {
+			debug_assert!(false, "Tried to send open_channel2 for an inbound channel?");
+		}
+
 		if self.context.have_received_message() {
 			debug_assert!(false, "Cannot generate an open_channel2 after we've moved forward");
 		}
@@ -8960,40 +8946,16 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let holder_commitment_point = self.unfunded_context.holder_commitment_point.ok_or(ChannelError::close(
-			format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
-			self.context.channel_id())))?;
-		let channel = Channel {
-			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-			holder_commitment_point,
-		};
-
-		Ok(channel)
-	}
-}
-
-// A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
-pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
-	pub context: ChannelContext<SP>,
-	pub unfunded_context: UnfundedChannelContext,
-	pub dual_funding_context: DualFundingChannelContext,
-	/// The current interactive transaction construction session under negotiation.
-	interactive_tx_constructor: Option<InteractiveTxConstructor>,
-}
-
-impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, total_witness_weight: Weight,
 		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
-	) -> Result<InboundV2Channel<SP>, ChannelError>
+	) -> Result<Self, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,

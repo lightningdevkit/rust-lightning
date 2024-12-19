@@ -18,7 +18,7 @@ use {
 		CounterpartyChannelTransactionParameters,
 	},
 	crate::ln::channel::{
-		calculate_our_funding_satoshis, OutboundV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+		calculate_our_funding_satoshis, PendingV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS,
 	},
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
 	crate::ln::functional_test_utils::*,
@@ -71,7 +71,7 @@ fn do_test_v2_channel_establishment(
 		MIN_CHAN_DUST_LIMIT_SATOSHIS,
 	)
 	.unwrap();
-	let mut channel = OutboundV2Channel::new(
+	let mut channel = PendingV2Channel::new_outbound(
 		&LowerBoundedFeeEstimator(node_cfgs[0].fee_estimator),
 		&nodes[0].node.entropy_source,
 		&nodes[0].node.signer_provider,
