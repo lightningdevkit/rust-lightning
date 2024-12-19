@@ -1097,7 +1097,7 @@ fn fake_network_test() {
 	).with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1000000);
 	let payment_preimage_1 = send_along_route(&nodes[1],
-		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: Some(route_params.clone()) },
+		Route { paths: vec![Path { hops, trampoline_hops: vec![], blinded_tail: None }], route_params: Some(route_params.clone()) },
 			&vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
@@ -1131,7 +1131,7 @@ fn fake_network_test() {
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
 	let payment_hash_2 = send_along_route(&nodes[1],
-		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: Some(route_params) },
+		Route { paths: vec![Path { hops, trampoline_hops: vec![], blinded_tail: None }], route_params: Some(route_params) },
 			&vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
