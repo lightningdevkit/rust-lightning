@@ -1237,35 +1237,42 @@ DirectedChannelLiquidity< L, HT, T> {
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 
-		let mut res = if total_inflight_amount_msat <= min_liquidity_msat {
-			0
-		} else if total_inflight_amount_msat >= max_liquidity_msat {
-			// Equivalent to hitting the else clause below with the amount equal to the effective
-			// capacity and without any certainty on the liquidity upper bound, plus the
-			// impossibility penalty.
-			let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
-			Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-					score_params.liquidity_penalty_multiplier_msat,
-					score_params.liquidity_penalty_amount_multiplier_msat)
-				.saturating_add(score_params.considered_impossible_penalty_msat)
-		} else {
-			let (numerator, denominator) = success_probability(
-				total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat,
-				available_capacity, score_params, false,
-			);
-			if denominator - numerator < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
-				// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
-				// don't bother trying to use the log approximation as it gets too noisy to be
-				// particularly helpful, instead just round down to 0.
-				0
+		let mut res = 0;
+		if score_params.liquidity_penalty_multiplier_msat != 0 ||
+		   score_params.liquidity_penalty_amount_multiplier_msat != 0 {
+			if total_inflight_amount_msat <= min_liquidity_msat {
+				// If the in-flight is less than the minimum liquidity estimate, we don't assign a
+				// liquidity penalty at all (as the success probability is 100%).
+			} else if total_inflight_amount_msat >= max_liquidity_msat {
+				// Equivalent to hitting the else clause below with the amount equal to the effective
+				// capacity and without any certainty on the liquidity upper bound, plus the
+				// impossibility penalty.
+				let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
+				res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+						score_params.liquidity_penalty_multiplier_msat,
+						score_params.liquidity_penalty_amount_multiplier_msat);
 			} else {
-				let negative_log10_times_2048 =
-					log_approx::negative_log10_times_2048(numerator, denominator);
-				Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-					score_params.liquidity_penalty_multiplier_msat,
-					score_params.liquidity_penalty_amount_multiplier_msat)
+				let (numerator, denominator) = success_probability(
+					total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat,
+					available_capacity, score_params, false,
+				);
+				if denominator - numerator < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
+					// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
+					// don't bother trying to use the log approximation as it gets too noisy to be
+					// particularly helpful, instead just round down to 0.
+				} else {
+					let negative_log10_times_2048 =
+						log_approx::negative_log10_times_2048(numerator, denominator);
+					res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+						score_params.liquidity_penalty_multiplier_msat,
+						score_params.liquidity_penalty_amount_multiplier_msat);
+				}
 			}
-		};
+		}
+
+		if total_inflight_amount_msat >= max_liquidity_msat {
+			res = res.saturating_add(score_params.considered_impossible_penalty_msat);
+		}
 
 		if total_inflight_amount_msat >= available_capacity {
 			// We're trying to send more than the capacity, use a max penalty.
