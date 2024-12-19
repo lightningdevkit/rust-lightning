@@ -531,8 +531,9 @@ pub struct ProbabilisticScoringFeeParameters {
 	///
 	/// `-log10(success_probability) * liquidity_penalty_multiplier_msat`
 	///
-	/// In testing, this scoring model performs that the historical scoring model configured with
-	/// the [`historical_liquidity_penalty_multiplier_msat`] and thus is disabled by default.
+	/// In testing, this scoring model performs much worse than the historical scoring model
+	/// configured with the [`historical_liquidity_penalty_multiplier_msat`] and thus is disabled
+	/// by default.
 	///
 	/// Default value: 0 msat
 	///
@@ -557,9 +558,9 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// probabilities, the multiplier will have a decreasing effect as the negative `log10` will
 	/// fall below `1`.
 	///
-	/// In testing, this scoring model performs that the historical scoring model configured with
-	/// the [`historical_liquidity_penalty_amount_multiplier_msat`] and thus is disabled by
-	/// default.
+	/// In testing, this scoring model performs much worse than the historical scoring model
+	/// configured with the [`historical_liquidity_penalty_amount_multiplier_msat`] and thus is
+	/// disabled by default.
 	///
 	/// Default value: 0 msat
 	///
