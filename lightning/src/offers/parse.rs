@@ -205,6 +205,25 @@ pub enum Bolt12SemanticError {
 	UnexpectedHumanReadableName,
 }
 
+/// An error when attempting to respond to received [`InvoiceRequest`]
+/// 
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// 
+#[derive(Debug)]
+pub enum Bolt12ResponseError {
+	/// Error from  BOLT 12 semantic checks.
+	SemanticError(Bolt12SemanticError),
+	/// The amount in the [`InvoiceRequest`] is too low compared to [`Offer`].
+	/// 
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Offer`]: crate::offers::offer::Offer
+	InsufficientAmount,
+	/// The user rejected the received [`InvoiceRequest`]
+	/// 
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	UserRejected
+}
+
 impl From<CheckedHrpstringError> for Bolt12ParseError {
 	fn from(error: CheckedHrpstringError) -> Self {
 		Self::Bech32(error)
