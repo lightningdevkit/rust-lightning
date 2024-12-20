@@ -233,6 +233,17 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		self.inner.punish_revokeable_output(justice_tx, input, amount, per_commitment_key, secp_ctx, per_commitment_point)
 	}
+
+	fn punish_htlc_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
+	) -> Result<Witness, ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::SignJusticeRevokedHtlc) {
+			return Err(());
+		}
+		self.inner.punish_htlc_output(justice_tx, input, amount, per_commitment_key, secp_ctx, per_commitment_point, htlc)
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {
