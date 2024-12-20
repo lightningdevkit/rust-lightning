@@ -171,8 +171,8 @@ impl_writeable_tlv_based!(RevokedOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RevokedHTLCOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	per_commitment_key: SecretKey,
 	weight: u64,
 	amount: u64,
@@ -180,12 +180,12 @@ pub(crate) struct RevokedHTLCOutput {
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> Self {
 		let weight = if htlc.offered { weight_revoked_offered_htlc(channel_type_features) } else { weight_revoked_received_htlc(channel_type_features) };
 		RevokedHTLCOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			per_commitment_key,
 			weight,
 			amount,
@@ -196,8 +196,8 @@ impl RevokedHTLCOutput {
 
 impl_writeable_tlv_based!(RevokedHTLCOutput, {
 	(0, per_commitment_point, required),
-	(2, counterparty_delayed_payment_base_key, required),
-	(4, counterparty_htlc_base_key, required),
+	(2, counterparty_delayed_payment_base_key, option),
+	(4, counterparty_htlc_base_key, option),
 	(6, per_commitment_key, required),
 	(8, weight, required),
 	(10, amount, required),
@@ -1370,7 +1370,7 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: 1_000_000, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()))
+				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()))
 			}
 		}
 	}
