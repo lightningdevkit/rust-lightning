@@ -37,8 +37,17 @@ use crate::util::ser::WithoutLength;
 use crate::util::test_utils;
 use lightning_invoice::RawBolt11Invoice;
 #[cfg(async_payments)] use {
+	crate::blinded_path::message::{BlindedMessagePath, MessageContext, OffersContext},
 	crate::ln::inbound_payment,
+	crate::ln::msgs::OnionMessageHandler,
+	crate::onion_message::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler, ReleaseHeldHtlc},
+	crate::onion_message::messenger::{Destination, MessageSendInstructions, MessageRouter, PeeledOnion},
+	crate::onion_message::offers::OffersMessage,
+	crate::onion_message::packet::ParsedOnionMessageContents,
+	crate::types::features::Bolt12InvoiceFeatures,
 	crate::types::payment::PaymentPreimage,
+
+	core::convert::Infallible,
 };
 
 fn blinded_payment_path(
@@ -107,6 +116,25 @@ pub fn get_blinded_route_parameters(
 			)
 		]), amt_msat
 	)
+}
+
+#[cfg(async_payments)]
+fn extract_invoice_request_reply_path<'a, 'b, 'c>(
+	invreq_recipient: &Node<'a, 'b, 'c>, message: &msgs::OnionMessage
+) -> BlindedMessagePath {
+	match invreq_recipient.onion_messenger.peel_onion_message(message) {
+		Ok(PeeledOnion::Receive(invreq, context, reply_path)) => {
+			assert!(
+				matches!(invreq, ParsedOnionMessageContents::Offers(OffersMessage::InvoiceRequest(_)))
+			);
+			assert!(
+				matches!(context, Some(MessageContext::Offers(OffersContext::InvoiceRequest { .. })))
+			);
+			reply_path.unwrap()
+		},
+		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
 }
 
 #[test]
@@ -1510,6 +1538,210 @@ fn fails_receive_tlvs_authentication() {
 		&nodes[0], payment_hash, true,
 		PaymentFailedConditions::new().expected_htlc_error_data(0x4000 | 22, &[]),
 	);
+}
+
+#[test]
+#[cfg(async_payments)]
+fn static_invoice_unknown_required_features() {
+	// Test that we will fail to pay a static invoice with unsupported required features.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let blinded_paths_to_always_online_node = nodes[1].message_router.create_blinded_paths(
+		nodes[1].node.get_our_node_id(),
+		MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+		Vec::new(), &secp_ctx
+	).unwrap();
+	let (offer_builder, nonce) =
+		nodes[2].node.create_async_receive_offer_builder(blinded_paths_to_always_online_node).unwrap();
+	let offer = offer_builder.build().unwrap();
+	let static_invoice_unknown_req_features = nodes[2].node.create_static_invoice_builder(
+		&offer, nonce, None
+	)
+		.unwrap()
+		.features_unchecked(Bolt12InvoiceFeatures::unknown())
+		.build_and_sign(&secp_ctx).unwrap();
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None).unwrap();
+
+	// Don't forward the invreq since we don't support retrieving the static invoice from the
+	// recipient's LSP yet, instead manually construct the response.
+	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+	let invreq_reply_path = extract_invoice_request_reply_path(&nodes[1], &invreq_om);
+	nodes[1].onion_messenger.send_onion_message(
+		ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(static_invoice_unknown_req_features)),
+		MessageSendInstructions::WithoutReplyPath { destination: Destination::BlindedPath(invreq_reply_path) }
+	).unwrap();
+
+	let static_invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &static_invoice_om);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_hash, payment_id: ev_payment_id, reason } => {
+			assert_eq!(payment_hash, None);
+			assert_eq!(payment_id, ev_payment_id);
+			assert_eq!(reason, Some(PaymentFailureReason::UnknownRequiredFeatures));
+		},
+		_ => panic!()
+	}
+}
+
+#[test]
+#[cfg(async_payments)]
+fn ignore_unexpected_static_invoice() {
+	// Test that we'll ignore unexpected static invoices, invoices that don't match our invoice
+	// request, and duplicate invoices.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	// Initiate payment to the sender's intended offer.
+	let blinded_paths_to_always_online_node = nodes[1].message_router.create_blinded_paths(
+		nodes[1].node.get_our_node_id(),
+		MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+		Vec::new(), &secp_ctx
+	).unwrap();
+	let (offer_builder, offer_nonce) = nodes[2].node.create_async_receive_offer_builder(blinded_paths_to_always_online_node.clone()).unwrap();
+	let offer = offer_builder.build().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None).unwrap();
+
+	// Don't forward the invreq since we don't support retrieving the static invoice from the
+	// recipient's LSP yet, instead manually construct the responses below.
+	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+	let invreq_reply_path = extract_invoice_request_reply_path(&nodes[1], &invreq_om);
+
+	// Create a static invoice to be sent over the reply path containing the original payment_id, but
+	// the static invoice corresponds to a different offer than was originally paid.
+	let unexpected_static_invoice = {
+		let (offer_builder, nonce) = nodes[2].node.create_async_receive_offer_builder(blinded_paths_to_always_online_node).unwrap();
+		let sender_unintended_offer = offer_builder.build().unwrap();
+
+		nodes[2].node.create_static_invoice_builder(
+			&sender_unintended_offer, nonce, None
+		).unwrap().build_and_sign(&secp_ctx).unwrap()
+	};
+
+	// Check that we'll ignore the unexpected static invoice.
+	nodes[1].onion_messenger.send_onion_message(
+		ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(unexpected_static_invoice)),
+		MessageSendInstructions::WithoutReplyPath { destination: Destination::BlindedPath(invreq_reply_path.clone()) }
+	).unwrap();
+	let unexpected_static_invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &unexpected_static_invoice_om);
+	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	assert!(async_pmts_msgs.is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// A valid static invoice corresponding to the correct offer will succeed and cause us to send a
+	// held_htlc_available onion message.
+	let valid_static_invoice = nodes[2].node.create_static_invoice_builder(
+		&offer, offer_nonce, None
+	).unwrap().build_and_sign(&secp_ctx).unwrap();
+
+	nodes[1].onion_messenger.send_onion_message(
+		ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(valid_static_invoice.clone())),
+		MessageSendInstructions::WithoutReplyPath { destination: Destination::BlindedPath(invreq_reply_path.clone()) }
+	).unwrap();
+	let static_invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &static_invoice_om);
+	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	assert!(!async_pmts_msgs.is_empty());
+	assert!(async_pmts_msgs.into_iter().all(|(msg, _)| matches!(msg, AsyncPaymentsMessage::HeldHtlcAvailable(_))));
+
+	// Receiving a duplicate invoice will have no effect.
+	nodes[1].onion_messenger.send_onion_message(
+		ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(valid_static_invoice)),
+		MessageSendInstructions::WithoutReplyPath { destination: Destination::BlindedPath(invreq_reply_path) }
+	).unwrap();
+	let dup_static_invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &dup_static_invoice_om);
+	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	assert!(async_pmts_msgs.is_empty());
+}
+
+#[test]
+#[cfg(async_payments)]
+fn pays_static_invoice() {
+	// Test that we support the async payments flow up to and including sending the actual payment.
+	// Async receive is not yet supported so we don't complete the payment yet.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let blinded_paths_to_always_online_node = nodes[1].message_router.create_blinded_paths(
+		nodes[1].node.get_our_node_id(),
+		MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+		Vec::new(), &secp_ctx
+	).unwrap();
+	let (offer_builder, offer_nonce) = nodes[2].node.create_async_receive_offer_builder(blinded_paths_to_always_online_node).unwrap();
+	let offer = offer_builder.build().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	let static_invoice = nodes[2].node.create_static_invoice_builder(
+		&offer, offer_nonce, None
+	).unwrap().build_and_sign(&secp_ctx).unwrap();
+
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None).unwrap();
+
+	// Don't forward the invreq since we don't support retrieving the static invoice from the
+	// recipient's LSP yet, instead manually construct the response.
+	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+	let invreq_reply_path = extract_invoice_request_reply_path(&nodes[1], &invreq_om);
+
+	nodes[1].onion_messenger.send_onion_message(
+		ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(static_invoice)),
+		MessageSendInstructions::WithoutReplyPath { destination: Destination::BlindedPath(invreq_reply_path) }
+	).unwrap();
+	let static_invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &static_invoice_om);
+	let mut async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	assert!(!async_pmts_msgs.is_empty());
+	assert!(async_pmts_msgs.iter().all(|(msg, _)| matches!(msg, AsyncPaymentsMessage::HeldHtlcAvailable(_))));
+
+	// Manually send the message and context releasing the HTLC since the recipient doesn't support
+	// responding themselves yet.
+	let held_htlc_avail_reply_path = match async_pmts_msgs.pop().unwrap().1 {
+		MessageSendInstructions::WithSpecifiedReplyPath { reply_path, .. } => reply_path,
+		_ => panic!()
+	};
+	nodes[2].onion_messenger.send_onion_message(
+		ParsedOnionMessageContents::<Infallible>::AsyncPayments(
+			AsyncPaymentsMessage::ReleaseHeldHtlc(ReleaseHeldHtlc {}),
+		),
+		MessageSendInstructions::WithoutReplyPath {
+			destination: Destination::BlindedPath(held_htlc_avail_reply_path)
+		}
+	).unwrap();
+
+	let release_held_htlc_om = nodes[2].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
+
+	// Check that we've queued the HTLCs of the async keysend payment.
+	let htlc_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	assert_eq!(htlc_updates.update_add_htlcs.len(), 1);
+	check_added_monitors!(nodes[0], 1);
+
+	// Receiving a duplicate release_htlc message doesn't result in duplicate payment.
+	nodes[0].onion_messenger.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
 fn secret_from_hex(hex: &str) -> SecretKey {
