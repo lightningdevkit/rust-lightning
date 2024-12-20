@@ -3647,8 +3647,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let counterparty_htlc_outp = if htlc.offered {
 						PackageSolvingData::CounterpartyOfferedHTLCOutput(
 							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
-								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
-								self.counterparty_commitment_params.counterparty_htlc_base_key,
 								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(

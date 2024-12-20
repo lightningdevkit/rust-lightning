@@ -213,19 +213,19 @@ impl_writeable_tlv_based!(RevokedHTLCOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CounterpartyOfferedHTLCOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	preimage: PaymentPreimage,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
 }
 
 impl CounterpartyOfferedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
 		CounterpartyOfferedHTLCOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			preimage,
 			htlc,
 			channel_type_features,
@@ -238,8 +238,8 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
-			(2, self.counterparty_delayed_payment_base_key, required),
-			(4, self.counterparty_htlc_base_key, required),
+			(2, self.counterparty_delayed_payment_base_key, option),
+			(4, self.counterparty_htlc_base_key, option),
 			(6, self.preimage, required),
 			(8, self.htlc, required),
 			(10, legacy_deserialization_prevention_marker, option),
@@ -252,8 +252,8 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 impl Readable for CounterpartyOfferedHTLCOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut per_commitment_point = RequiredWrapper(None);
-		let mut counterparty_delayed_payment_base_key = RequiredWrapper(None);
-		let mut counterparty_htlc_base_key = RequiredWrapper(None);
+		let mut counterparty_delayed_payment_base_key = None;
+		let mut counterparty_htlc_base_key = None;
 		let mut preimage = RequiredWrapper(None);
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
@@ -261,8 +261,8 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
-			(2, counterparty_delayed_payment_base_key, required),
-			(4, counterparty_htlc_base_key, required),
+			(2, counterparty_delayed_payment_base_key, option),
+			(4, counterparty_htlc_base_key, option),
 			(6, preimage, required),
 			(8, htlc, required),
 			(10, _legacy_deserialization_prevention_marker, option),
@@ -273,8 +273,8 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
-			counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
-			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
+			counterparty_delayed_payment_base_key,
+			counterparty_htlc_base_key,
 			preimage: preimage.0.unwrap(),
 			htlc: htlc.0.unwrap(),
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
@@ -1382,7 +1382,7 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), preimage, htlc, $features))
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, $features))
 			}
 		}
 	}
