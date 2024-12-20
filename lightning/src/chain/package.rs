@@ -125,25 +125,25 @@ const HIGH_FREQUENCY_BUMP_INTERVAL: u32 = 1;
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RevokedOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	per_commitment_key: SecretKey,
 	weight: u64,
 	amount: Amount,
-	on_counterparty_tx_csv: u16,
+	on_counterparty_tx_csv: Option<u16>,
 	is_counterparty_balance_on_anchors: Option<()>,
 }
 
 impl RevokedOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: Amount, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool, weight: u64) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: Amount, is_counterparty_balance_on_anchors: bool, weight: u64) -> Self {
 		RevokedOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			per_commitment_key,
 			weight,
 			amount,
-			on_counterparty_tx_csv,
+			on_counterparty_tx_csv: None,
 			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None }
 		}
 	}
@@ -151,12 +151,12 @@ impl RevokedOutput {
 
 impl_writeable_tlv_based!(RevokedOutput, {
 	(0, per_commitment_point, required),
-	(2, counterparty_delayed_payment_base_key, required),
-	(4, counterparty_htlc_base_key, required),
+	(2, counterparty_delayed_payment_base_key, option),
+	(4, counterparty_htlc_base_key, option),
 	(6, per_commitment_key, required),
 	(8, weight, required),
 	(10, amount, required),
-	(12, on_counterparty_tx_csv, required),
+	(12, on_counterparty_tx_csv, option),
 	(14, is_counterparty_balance_on_anchors, option)
 });
 
@@ -1363,7 +1363,7 @@ mod tests {
 				let secp_ctx = Secp256k1::new();
 				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, Amount::ZERO, 0, $is_counterparty_balance_on_anchors, WEIGHT_REVOKED_OUTPUT))
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_scalar, Amount::ZERO, $is_counterparty_balance_on_anchors, WEIGHT_REVOKED_OUTPUT))
 			}
 		}
 	}
