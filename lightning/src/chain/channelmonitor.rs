@@ -3651,8 +3651,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
-								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
-								self.counterparty_commitment_params.counterparty_htlc_base_key,
 								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
 					};
 					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry);

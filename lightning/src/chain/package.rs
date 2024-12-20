@@ -291,18 +291,18 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CounterpartyReceivedHTLCOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
 }
 
 impl CounterpartyReceivedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
 		CounterpartyReceivedHTLCOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			htlc,
 			channel_type_features
 		}
@@ -314,8 +314,8 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
-			(2, self.counterparty_delayed_payment_base_key, required),
-			(4, self.counterparty_htlc_base_key, required),
+			(2, self.counterparty_delayed_payment_base_key, option),
+			(4, self.counterparty_htlc_base_key, option),
 			(6, self.htlc, required),
 			(8, legacy_deserialization_prevention_marker, option),
 			(9, self.channel_type_features, required),
@@ -327,16 +327,16 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 impl Readable for CounterpartyReceivedHTLCOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut per_commitment_point = RequiredWrapper(None);
-		let mut counterparty_delayed_payment_base_key = RequiredWrapper(None);
-		let mut counterparty_htlc_base_key = RequiredWrapper(None);
+		let mut counterparty_delayed_payment_base_key = None;
+		let mut counterparty_htlc_base_key = None;
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
-			(2, counterparty_delayed_payment_base_key, required),
-			(4, counterparty_htlc_base_key, required),
+			(2, counterparty_delayed_payment_base_key, option),
+			(4, counterparty_htlc_base_key, option),
 			(6, htlc, required),
 			(8, _legacy_deserialization_prevention_marker, option),
 			(9, channel_type_features, option),
@@ -346,8 +346,8 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
-			counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
-			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
+			counterparty_delayed_payment_base_key,
+			counterparty_htlc_base_key,
 			htlc: htlc.0.unwrap(),
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
 		})
@@ -1306,7 +1306,6 @@ mod tests {
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
-	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 
 	use bitcoin::absolute::LockTime;
 	use bitcoin::amount::Amount;
@@ -1368,7 +1367,7 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: $expiry, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), htlc, $features))
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, htlc, $features))
 			}
 		}
 	}
