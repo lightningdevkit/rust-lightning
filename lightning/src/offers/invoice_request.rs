@@ -77,15 +77,19 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::{PrintableString, UntrustedString};
+
+use super::offer::Currency;
+use super::parse::Bolt12ResponseError;
 
 #[cfg(not(c_bindings))]
 use {
@@ -462,6 +466,22 @@ where
 	fn sign(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, ()> {
 		self.sign_invoice_request(message)
 	}
+}
+
+/// Trait that allow user to introduce [`Amount::Currency`] support for [`Offer`]
+/// 
+/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+pub trait Bolt12CurrencyAssessor {
+	/// Converts fiat to milli satoshis.
+	fn fiat_to_msats(&self, currency: Currency) -> Result<u64, Bolt12ResponseError>;
+}
+
+/// Trait that allow users assess the received Bolt12 Message, and ensure if they want to respond to it.
+pub trait Bolt12Assessor {
+	/// Evaluates a received [`InvoiceRequest`] and determines whether to respond to it.
+	fn assess_invoice_request(&self, invoice_request: &InvoiceRequest) -> Result<(), Bolt12ResponseError>;
+	/// Evaluates the recieved [`Bolt12Invoice`] and determines whether to pay for it.
+	fn assess_bolt12_invoice(&self, invoice: &Bolt12Invoice) -> Result<(), Bolt12ResponseError>;
 }
 
 impl UnsignedInvoiceRequest {

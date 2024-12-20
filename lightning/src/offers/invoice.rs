@@ -629,7 +629,7 @@ impl AsRef<TaggedHash> for UnsignedBolt12Invoice {
 #[derive(Clone, Debug)]
 pub struct Bolt12Invoice {
 	bytes: Vec<u8>,
-	contents: InvoiceContents,
+	pub(super) contents: InvoiceContents,
 	signature: Signature,
 	tagged_hash: TaggedHash,
 }
@@ -640,7 +640,7 @@ pub struct Bolt12Invoice {
 /// [`Refund`]: crate::offers::refund::Refund
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-enum InvoiceContents {
+pub(super) enum InvoiceContents {
 	/// Contents for an [`Bolt12Invoice`] corresponding to an [`Offer`].
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
@@ -659,7 +659,7 @@ enum InvoiceContents {
 
 /// Invoice-specific fields for an `invoice` message.
 #[derive(Clone, Debug, PartialEq)]
-struct InvoiceFields {
+pub(super) struct InvoiceFields {
 	payment_paths: Vec<BlindedPaymentPath>,
 	created_at: Duration,
 	relative_expiry: Option<Duration>,
