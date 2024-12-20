@@ -3535,7 +3535,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							// per_commitment_data is corrupt or our commitment signing key leaked!
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
-						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), &self.onchain_tx_handler.channel_transaction_parameters.channel_type_features);
+						let htlc_punishment_witness_weight = self.onchain_tx_handler.signer.get_htlc_punishment_witness_weight(htlc.offered);
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), htlc_punishment_witness_weight);
 						let justice_package = PackageTemplate::build_package(
 							commitment_txid,
 							transaction_output_index,

@@ -180,8 +180,7 @@ pub(crate) struct RevokedHTLCOutput {
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> Self {
-		let weight = if htlc.offered { weight_revoked_offered_htlc(channel_type_features) } else { weight_revoked_received_htlc(channel_type_features) };
+	pub(crate) fn build(per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, weight: u64) -> Self {
 		RevokedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key: None,
@@ -1319,7 +1318,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
+	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc, weight_revoked_received_htlc};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
@@ -1370,7 +1369,9 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: 1_000_000, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()))
+				let features = &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				let witness_weight = weight_revoked_received_htlc(features);
+				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, dumb_scalar, 1_000_000 / 1_000, htlc, witness_weight))
 			}
 		}
 	}
