@@ -244,6 +244,18 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		self.inner.punish_htlc_output(justice_tx, input, amount, per_commitment_key, secp_ctx, per_commitment_point, htlc)
 	}
+
+	fn sweep_counterparty_htlc_output(
+		&self, sweep_tx: &Transaction, input: usize, amount: u64,
+		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
+		htlc: &HTLCOutputInCommitment, preimage: Option<&PaymentPreimage>,
+	) -> Result<Witness, ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::SignCounterpartyHtlcTransaction) {
+			return Err(());
+		}
+		self.inner.sweep_counterparty_htlc_output(sweep_tx, input, amount, secp_ctx, per_commitment_point, htlc, preimage)
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {

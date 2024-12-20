@@ -21,11 +21,10 @@ use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::{SecretKey,PublicKey};
-use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 
 use crate::types::payment::PaymentPreimage;
-use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
+use crate::ln::chan_utils::{self, HTLCOutputInCommitment};
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
@@ -615,28 +614,13 @@ impl PackageSolvingData {
 				} else { return false; }
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
-				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
-
-				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-					let mut ser_sig = sig.serialize_der().to_vec();
-					ser_sig.push(EcdsaSighashType::All as u8);
-					bumped_tx.input[i].witness.push(ser_sig);
-					bumped_tx.input[i].witness.push(outp.preimage.0.to_vec());
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				if let Ok(witness) = onchain_handler.signer.sweep_counterparty_htlc_output(&bumped_tx, i, outp.htlc.amount_msat / 1000, &onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.htlc, Some(&outp.preimage)) {
+					bumped_tx.input[i].witness = witness;
 				}
 			},
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
-				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
-
-				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-					let mut ser_sig = sig.serialize_der().to_vec();
-					ser_sig.push(EcdsaSighashType::All as u8);
-					bumped_tx.input[i].witness.push(ser_sig);
-					// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-					bumped_tx.input[i].witness.push(vec![]);
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				if let Ok(witness) = onchain_handler.signer.sweep_counterparty_htlc_output(&bumped_tx, i, outp.htlc.amount_msat / 1000, &onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.htlc, None) {
+					bumped_tx.input[i].witness = witness;
 				}
 			},
 			_ => { panic!("API Error!"); }
