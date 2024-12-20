@@ -484,6 +484,24 @@ pub trait Bolt12Assessor {
 	fn assess_bolt12_invoice(&self, invoice: &Bolt12Invoice) -> Result<(), Bolt12ResponseError>;
 }
 
+/// Provides default impelementation for [`Bolt12Assessor`] & [`Bolt12CurrencyAssessor`].
+pub struct DefaultBolt12Assessor {}
+
+impl Bolt12CurrencyAssessor for DefaultBolt12Assessor {
+	fn fiat_to_msats(&self, _currency: Currency) -> Result<u64, Bolt12ResponseError> {
+		Err(Bolt12ResponseError::SemanticError(Bolt12SemanticError::UnsupportedCurrency))
+	}
+}
+
+impl Bolt12Assessor for DefaultBolt12Assessor {
+	fn assess_invoice_request(&self, _invoice_request: &InvoiceRequest) -> Result<(), Bolt12ResponseError> {
+		Ok(())
+	}
+	fn assess_bolt12_invoice(&self, _invoice: &Bolt12Invoice) -> Result<(), Bolt12ResponseError> {
+		Ok(())
+	}
+}
+
 impl UnsignedInvoiceRequest {
 	fn new(offer: &Offer, contents: InvoiceRequestContents) -> Self {
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
