@@ -3509,11 +3509,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 			let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
 			let revokeable_spk = self.onchain_tx_handler.signer.get_revokeable_spk(false, commitment_number, &per_commitment_point, &self.onchain_tx_handler.secp_ctx);
+			let punishment_witness_weight = self.onchain_tx_handler.signer.get_punishment_witness_weight();
 
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_spk {
-					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx());
+					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx(), punishment_witness_weight);
 					let justice_package = PackageTemplate::build_package(
 						commitment_txid, idx as u32,
 						PackageSolvingData::RevokedOutput(revk_outp),
@@ -3674,6 +3675,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			Err(_) => return (Vec::new(), None)
 		};
 		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+		let punishment_witness_weight = self.onchain_tx_handler.signer.get_punishment_witness_weight();
 
 		let htlc_txid = tx.compute_txid();
 		let mut claimable_outpoints = vec![];
@@ -3695,7 +3697,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
 					self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key,
 					tx.output[idx].value, self.counterparty_commitment_params.on_counterparty_tx_csv,
-					false
+					false, punishment_witness_weight,
 				);
 				let justice_package = PackageTemplate::build_package(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),

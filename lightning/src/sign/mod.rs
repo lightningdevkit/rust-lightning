@@ -38,6 +38,7 @@ use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
 
 use lightning_invoice::RawBolt11Invoice;
 
+use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
@@ -872,6 +873,12 @@ pub trait ChannelSigner {
 		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
 	) -> Result<Witness, ()>;
+
+	/// Return the total weight of the witness required to spend the justice path of the revokeable
+	/// output.
+	fn get_punishment_witness_weight(&self) -> u64 {
+		WEIGHT_REVOKED_OUTPUT
+	}
 }
 
 /// Specifies the recipient of an invoice.
