@@ -488,7 +488,13 @@ where L::Target: Logger {
 pub struct ProbabilisticScoringFeeParameters {
 	/// A fixed penalty in msats to apply to each channel.
 	///
-	/// Default value: 500 msat
+	/// In testing, a value of roughly 1/10th of [`historical_liquidity_penalty_multiplier_msat`]
+	/// (implying scaling all estimated probabilities down by a factor of ~79%) resulted in the
+	/// most accurate total success probabilities.
+	///
+	/// Default value: 1,024 msat (i.e. we're willing to pay 1 sat to avoid each additional hop).
+	///
+	/// [`historical_liquidity_penalty_multiplier_msat`]: Self::historical_liquidity_penalty_multiplier_msat
 	pub base_penalty_msat: u64,
 
 	/// A multiplier used with the payment amount to calculate a fixed penalty applied to each
@@ -500,9 +506,16 @@ pub struct ProbabilisticScoringFeeParameters {
 	///
 	/// ie `base_penalty_amount_multiplier_msat * amount_msat / 2^30`
 	///
-	/// Default value: 8,192 msat
+	/// In testing, a value of roughly ~100x (1/10th * 2^10) of
+	/// [`historical_liquidity_penalty_amount_multiplier_msat`] (implying scaling all estimated
+	/// probabilities down by a factor of ~79%) resulted in the most accurate total success
+	/// probabilities.
+	///
+	/// Default value: 131,072 msat (i.e. we're willing to pay 0.125bps to avoid each additional
+	///                              hop).
 	///
 	/// [`base_penalty_msat`]: Self::base_penalty_msat
+	/// [`historical_liquidity_penalty_amount_multiplier_msat`]: Self::historical_liquidity_penalty_amount_multiplier_msat
 	pub base_penalty_amount_multiplier_msat: u64,
 
 	/// A multiplier used in conjunction with the negative `log10` of the channel's success
@@ -518,9 +531,14 @@ pub struct ProbabilisticScoringFeeParameters {
 	///
 	/// `-log10(success_probability) * liquidity_penalty_multiplier_msat`
 	///
-	/// Default value: 30,000 msat
+	/// In testing, this scoring model performs much worse than the historical scoring model
+	/// configured with the [`historical_liquidity_penalty_multiplier_msat`] and thus is disabled
+	/// by default.
+	///
+	/// Default value: 0 msat
 	///
 	/// [`liquidity_offset_half_life`]: ProbabilisticScoringDecayParameters::liquidity_offset_half_life
+	/// [`historical_liquidity_penalty_multiplier_msat`]: Self::historical_liquidity_penalty_multiplier_msat
 	pub liquidity_penalty_multiplier_msat: u64,
 
 	/// A multiplier used in conjunction with the payment amount and the negative `log10` of the
@@ -540,7 +558,13 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// probabilities, the multiplier will have a decreasing effect as the negative `log10` will
 	/// fall below `1`.
 	///
-	/// Default value: 192 msat
+	/// In testing, this scoring model performs much worse than the historical scoring model
+	/// configured with the [`historical_liquidity_penalty_amount_multiplier_msat`] and thus is
+	/// disabled by default.
+	///
+	/// Default value: 0 msat
+	///
+	/// [`historical_liquidity_penalty_amount_multiplier_msat`]: Self::historical_liquidity_penalty_amount_multiplier_msat
 	pub liquidity_penalty_amount_multiplier_msat: u64,
 
 	/// A multiplier used in conjunction with the negative `log10` of the channel's success
@@ -554,7 +578,8 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// track which of several buckets those bounds fall into, exponentially decaying the
 	/// probability of each bucket as new samples are added.
 	///
-	/// Default value: 10,000 msat
+	/// Default value: 10,000 msat (i.e. willing to pay 1 sat to avoid an 80% probability channel,
+	///                            or 6 sats to avoid a 25% probability channel).
 	///
 	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
 	pub historical_liquidity_penalty_multiplier_msat: u64,
@@ -575,7 +600,9 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// channel, we track which of several buckets those bounds fall into, exponentially decaying
 	/// the probability of each bucket as new samples are added.
 	///
-	/// Default value: 64 msat
+	/// Default value: 1,250 msat (i.e. willing to pay about 0.125 bps per hop to avoid 78%
+	///                            probability channels, or 0.5bps to avoid a 38% probability
+	///                            channel).
 	///
 	/// [`liquidity_penalty_amount_multiplier_msat`]: Self::liquidity_penalty_amount_multiplier_msat
 	pub historical_liquidity_penalty_amount_multiplier_msat: u64,
@@ -642,15 +669,15 @@ pub struct ProbabilisticScoringFeeParameters {
 impl Default for ProbabilisticScoringFeeParameters {
 	fn default() -> Self {
 		Self {
-			base_penalty_msat: 500,
-			base_penalty_amount_multiplier_msat: 8192,
-			liquidity_penalty_multiplier_msat: 30_000,
-			liquidity_penalty_amount_multiplier_msat: 192,
+			base_penalty_msat: 1024,
+			base_penalty_amount_multiplier_msat: 131_072,
+			liquidity_penalty_multiplier_msat: 0,
+			liquidity_penalty_amount_multiplier_msat: 0,
 			manual_node_penalties: new_hash_map(),
 			anti_probing_penalty_msat: 250,
 			considered_impossible_penalty_msat: 1_0000_0000_000,
 			historical_liquidity_penalty_multiplier_msat: 10_000,
-			historical_liquidity_penalty_amount_multiplier_msat: 64,
+			historical_liquidity_penalty_amount_multiplier_msat: 1_250,
 			linear_success_probability: false,
 		}
 	}
@@ -743,7 +770,7 @@ pub struct ProbabilisticScoringDecayParameters {
 	/// liquidity bounds are 200,000 sats and 600,000 sats, after this amount of time the upper
 	/// and lower liquidity bounds will be decayed to 100,000 and 800,000 sats.
 	///
-	/// Default value: 6 hours
+	/// Default value: 30 minutes
 	///
 	/// # Note
 	///
@@ -755,7 +782,7 @@ pub struct ProbabilisticScoringDecayParameters {
 impl Default for ProbabilisticScoringDecayParameters {
 	fn default() -> Self {
 		Self {
-			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
+			liquidity_offset_half_life: Duration::from_secs(30 * 60),
 			historical_no_updates_half_life: Duration::from_secs(60 * 60 * 24 * 14),
 		}
 	}
@@ -765,7 +792,7 @@ impl Default for ProbabilisticScoringDecayParameters {
 impl ProbabilisticScoringDecayParameters {
 	fn zero_penalty() -> Self {
 		Self {
-			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
+			liquidity_offset_half_life: Duration::from_secs(30 * 60),
 			historical_no_updates_half_life: Duration::from_secs(60 * 60 * 24 * 14),
 		}
 	}
@@ -1119,16 +1146,81 @@ const PRECISION_LOWER_BOUND_DENOMINATOR: u64 = log_approx::LOWER_BITS_BOUND;
 const AMOUNT_PENALTY_DIVISOR: u64 = 1 << 20;
 const BASE_AMOUNT_PENALTY_DIVISOR: u64 = 1 << 30;
 
-/// Raises three `f64`s to the 3rd power, without `powi` because it requires `std` (dunno why).
+/// Raises three `f64`s to the 9th power, without `powi` because it requires `std` (dunno why).
 #[inline(always)]
-fn three_f64_pow_3(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
-	(a * a * a, b * b * b, c * c * c)
+fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
+	let (a2, b2, c2) = (a * a, b * b, c * c);
+	let (a4, b4, c4) = (a2 * a2, b2 * b2, c2 * c2);
+	(a * a4 * a4, b * b4 * b4, c * c4 * c4)
+}
+
+/// If we have no knowledge of the channel, we scale probability down by a multiple of ~82% for the
+/// historical model by multiplying the denominator of a success probability by this before
+/// dividing by 64.
+///
+/// This number (as well as the PDF) was picked experimentally on probing results to maximize the
+/// log-loss of succeeding and failing hops.
+///
+/// Note that we prefer to increase the denominator rather than decrease the numerator as the
+/// denominator is more likely to be larger and thus provide greater precision. This is mostly an
+/// overoptimization but makes a large difference in tests.
+const MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64: u64 = 78;
+
+#[inline(always)]
+fn linear_success_probability(
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	min_zero_implies_no_successes: bool,
+) -> (u64, u64) {
+	let (numerator, mut denominator) =
+		(max_liquidity_msat - total_inflight_amount_msat,
+		(max_liquidity_msat - min_liquidity_msat).saturating_add(1));
+
+	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
+		denominator < u64::max_value() / MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64
+	{
+		denominator = denominator * MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64 / 64
+	}
+
+	(numerator, denominator)
+}
+
+/// Returns a (numerator, denominator) pair each between 0 and 0.0078125, inclusive.
+#[inline(always)]
+fn nonlinear_success_probability(
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	capacity_msat: u64, min_zero_implies_no_successes: bool,
+) -> (f64, f64) {
+	let capacity = capacity_msat as f64;
+	let max = (max_liquidity_msat as f64) / capacity;
+	let min = (min_liquidity_msat as f64) / capacity;
+	let amount = (total_inflight_amount_msat as f64) / capacity;
+
+	// Assume the channel has a probability density function of
+	// `128 * (1/256 + 9*(x - 0.5)^8)` for values from 0 to 1 (where 1 is the channel's
+	// full capacity). The success probability given some liquidity bounds is thus the
+	// integral under the curve from the amount to maximum estimated liquidity, divided by
+	// the same integral from the minimum to the maximum estimated liquidity bounds.
+	//
+	// Because the integral from x to y is simply
+	// `128*(1/256 * (y - 0.5) + (y - 0.5)^9) - 128*(1/256 * (x - 0.5) + (x - 0.5)^9), we
+	// can calculate the cumulative density function between the min/max bounds trivially.
+	// Note that we don't bother to normalize the CDF to total to 1 (using the 128
+	// multiple), as it will come out in the division of num / den.
+	let (max_norm, min_norm, amt_norm) = (max - 0.5, min - 0.5, amount - 0.5);
+	let (max_pow, min_pow, amt_pow) = three_f64_pow_9(max_norm, min_norm, amt_norm);
+	let (max_v, min_v, amt_v) = (max_pow + max_norm / 256.0, min_pow + min_norm / 256.0, amt_pow + amt_norm / 256.0);
+	let mut denominator = max_v - min_v;
+	let numerator = max_v - amt_v;
+
+	if min_zero_implies_no_successes && min_liquidity_msat == 0 {
+		denominator = denominator * (MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64 as f64) / 64.0;
+	}
+
+	(numerator, denominator)
 }
 
 /// Given liquidity bounds, calculates the success probability (in the form of a numerator and
 /// denominator) of an HTLC. This is a key assumption in our scoring models.
-///
-/// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
 ///
 /// `total_inflight_amount_msat` includes the amount of the HTLC and any HTLCs in flight over the
 /// channel.
@@ -1136,6 +1228,27 @@ fn three_f64_pow_3(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 /// min_zero_implies_no_successes signals that a `min_liquidity_msat` of 0 means we've not
 /// (recently) seen an HTLC successfully complete over this channel.
 #[inline(always)]
+fn success_probability_float(
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
+	min_zero_implies_no_successes: bool,
+) -> (f64, f64) {
+	debug_assert!(min_liquidity_msat <= total_inflight_amount_msat);
+	debug_assert!(total_inflight_amount_msat < max_liquidity_msat);
+	debug_assert!(max_liquidity_msat <= capacity_msat);
+
+	if params.linear_success_probability {
+		let (numerator, denominator) = linear_success_probability(total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, min_zero_implies_no_successes);
+		(numerator as f64, denominator as f64)
+	} else {
+		nonlinear_success_probability(total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, capacity_msat, min_zero_implies_no_successes)
+	}
+}
+
+#[inline(always)]
+/// Identical to [`success_probability_float`] but returns integer numerator and denominators.
+///
+/// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
 fn success_probability(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
@@ -1145,51 +1258,25 @@ fn success_probability(
 	debug_assert!(total_inflight_amount_msat < max_liquidity_msat);
 	debug_assert!(max_liquidity_msat <= capacity_msat);
 
-	let (numerator, mut denominator) =
-		if params.linear_success_probability {
-			(max_liquidity_msat - total_inflight_amount_msat,
-				(max_liquidity_msat - min_liquidity_msat).saturating_add(1))
-		} else {
-			let capacity = capacity_msat as f64;
-			let min = (min_liquidity_msat as f64) / capacity;
-			let max = (max_liquidity_msat as f64) / capacity;
-			let amount = (total_inflight_amount_msat as f64) / capacity;
+	if params.linear_success_probability {
+		linear_success_probability(total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, min_zero_implies_no_successes)
+	} else {
+		// We calculate the nonlinear probabilities using floats anyway, so just stub out to
+		// the float version and then convert to integers.
+		let (num, den) = nonlinear_success_probability(
+			total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat, capacity_msat,
+			min_zero_implies_no_successes,
+		);
 
-			// Assume the channel has a probability density function of (x - 0.5)^2 for values from
-			// 0 to 1 (where 1 is the channel's full capacity). The success probability given some
-			// liquidity bounds is thus the integral under the curve from the amount to maximum
-			// estimated liquidity, divided by the same integral from the minimum to the maximum
-			// estimated liquidity bounds.
-			//
-			// Because the integral from x to y is simply (y - 0.5)^3 - (x - 0.5)^3, we can
-			// calculate the cumulative density function between the min/max bounds trivially. Note
-			// that we don't bother to normalize the CDF to total to 1, as it will come out in the
-			// division of num / den.
-			let (max_pow, amt_pow, min_pow) = three_f64_pow_3(max - 0.5, amount - 0.5, min - 0.5);
-			let num = max_pow - amt_pow;
-			let den = max_pow - min_pow;
-
-			// Because our numerator and denominator max out at 0.5^3 we need to multiply them by
-			// quite a large factor to get something useful (ideally in the 2^30 range).
-			const BILLIONISH: f64 = 1024.0 * 1024.0 * 1024.0;
-			let numerator = (num * BILLIONISH) as u64 + 1;
-			let denominator = (den * BILLIONISH) as u64 + 1;
-			debug_assert!(numerator <= 1 << 30, "Got large numerator ({}) from float {}.", numerator, num);
-			debug_assert!(denominator <= 1 << 30, "Got large denominator ({}) from float {}.", denominator, den);
-			(numerator, denominator)
-		};
-
-	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
-		denominator < u64::max_value() / 21
-	{
-		// If we have no knowledge of the channel, scale probability down by ~75%
-		// Note that we prefer to increase the denominator rather than decrease the numerator as
-		// the denominator is more likely to be larger and thus provide greater precision. This is
-		// mostly an overoptimization but makes a large difference in tests.
-		denominator = denominator * 21 / 16
+		// Because our numerator and denominator max out at 0.0078125 we need to multiply them
+		// by quite a large factor to get something useful (ideally in the 2^30 range).
+		const BILLIONISH: f64 = 1024.0 * 1024.0 * 1024.0 * 64.0;
+		let numerator = (num * BILLIONISH) as u64 + 1;
+		let denominator = (den * BILLIONISH) as u64 + 1;
+		debug_assert!(numerator <= 1 << 30, "Got large numerator ({}) from float {}.", numerator, num);
+		debug_assert!(denominator <= 1 << 30, "Got large denominator ({}) from float {}.", denominator, den);
+		(numerator, denominator)
 	}
-
-	(numerator, denominator)
 }
 
 impl<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>>
@@ -1205,35 +1292,42 @@ DirectedChannelLiquidity< L, HT, T> {
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 
-		let mut res = if total_inflight_amount_msat <= min_liquidity_msat {
-			0
-		} else if total_inflight_amount_msat >= max_liquidity_msat {
-			// Equivalent to hitting the else clause below with the amount equal to the effective
-			// capacity and without any certainty on the liquidity upper bound, plus the
-			// impossibility penalty.
-			let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
-			Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-					score_params.liquidity_penalty_multiplier_msat,
-					score_params.liquidity_penalty_amount_multiplier_msat)
-				.saturating_add(score_params.considered_impossible_penalty_msat)
-		} else {
-			let (numerator, denominator) = success_probability(
-				total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat,
-				available_capacity, score_params, false,
-			);
-			if denominator - numerator < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
-				// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
-				// don't bother trying to use the log approximation as it gets too noisy to be
-				// particularly helpful, instead just round down to 0.
-				0
+		let mut res = 0;
+		if score_params.liquidity_penalty_multiplier_msat != 0 ||
+		   score_params.liquidity_penalty_amount_multiplier_msat != 0 {
+			if total_inflight_amount_msat <= min_liquidity_msat {
+				// If the in-flight is less than the minimum liquidity estimate, we don't assign a
+				// liquidity penalty at all (as the success probability is 100%).
+			} else if total_inflight_amount_msat >= max_liquidity_msat {
+				// Equivalent to hitting the else clause below with the amount equal to the effective
+				// capacity and without any certainty on the liquidity upper bound, plus the
+				// impossibility penalty.
+				let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
+				res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+						score_params.liquidity_penalty_multiplier_msat,
+						score_params.liquidity_penalty_amount_multiplier_msat);
 			} else {
-				let negative_log10_times_2048 =
-					log_approx::negative_log10_times_2048(numerator, denominator);
-				Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
-					score_params.liquidity_penalty_multiplier_msat,
-					score_params.liquidity_penalty_amount_multiplier_msat)
+				let (numerator, denominator) = success_probability(
+					total_inflight_amount_msat, min_liquidity_msat, max_liquidity_msat,
+					available_capacity, score_params, false,
+				);
+				if denominator - numerator < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
+					// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
+					// don't bother trying to use the log approximation as it gets too noisy to be
+					// particularly helpful, instead just round down to 0.
+				} else {
+					let negative_log10_times_2048 =
+						log_approx::negative_log10_times_2048(numerator, denominator);
+					res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+						score_params.liquidity_penalty_multiplier_msat,
+						score_params.liquidity_penalty_amount_multiplier_msat);
+				}
 			}
-		};
+		}
+
+		if total_inflight_amount_msat >= max_liquidity_msat {
+			res = res.saturating_add(score_params.considered_impossible_penalty_msat);
+		}
 
 		if total_inflight_amount_msat >= available_capacity {
 			// We're trying to send more than the capacity, use a max penalty.
@@ -1727,7 +1821,12 @@ mod bucketed_history {
 		// Because the first thing we do is check if `total_valid_points` is sufficient to consider
 		// the data here at all, and can return early if it is not, we want this to go first to
 		// avoid hitting a second cache line load entirely in that case.
-		total_valid_points_tracked: u64,
+		//
+		// Note that we store it as an `f64` rather than a `u64` (potentially losing some
+		// precision) because we ultimately need the value as an `f64` when dividing bucket weights
+		// by it. Storing it as an `f64` avoids doing the additional int -> float conversion in the
+		// hot score-calculation path.
+		total_valid_points_tracked: f64,
 		min_liquidity_offset_history: HistoricalBucketRangeTracker,
 		max_liquidity_offset_history: HistoricalBucketRangeTracker,
 	}
@@ -1737,7 +1836,7 @@ mod bucketed_history {
 			HistoricalLiquidityTracker {
 				min_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
 				max_liquidity_offset_history: HistoricalBucketRangeTracker::new(),
-				total_valid_points_tracked: 0,
+				total_valid_points_tracked: 0.0,
 			}
 		}
 
@@ -1748,7 +1847,7 @@ mod bucketed_history {
 			let mut res = HistoricalLiquidityTracker {
 				min_liquidity_offset_history,
 				max_liquidity_offset_history,
-				total_valid_points_tracked: 0,
+				total_valid_points_tracked: 0.0,
 			};
 			res.recalculate_valid_point_count();
 			res
@@ -1771,12 +1870,18 @@ mod bucketed_history {
 		}
 
 		fn recalculate_valid_point_count(&mut self) {
-			self.total_valid_points_tracked = 0;
+			let mut total_valid_points_tracked = 0;
 			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
 				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(32 - min_idx) {
-					self.total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+					// In testing, raising the weights of buckets to a high power led to better
+					// scoring results. Thus, we raise the bucket weights to the 4th power here (by
+					// squaring the result of multiplying the weights).
+					let mut bucket_weight = (*min_bucket as u64) * (*max_bucket as u64);
+					bucket_weight *= bucket_weight;
+					total_valid_points_tracked += bucket_weight;
 				}
 			}
+			self.total_valid_points_tracked = total_valid_points_tracked as f64;
 		}
 
 		pub(super) fn writeable_min_offset_history(&self) -> &HistoricalBucketRangeTracker {
@@ -1862,20 +1967,23 @@ mod bucketed_history {
 				let mut actual_valid_points_tracked = 0;
 				for (min_idx, min_bucket) in min_liquidity_offset_history_buckets.iter().enumerate() {
 					for max_bucket in max_liquidity_offset_history_buckets.iter().take(32 - min_idx) {
-						actual_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+						let mut bucket_weight = (*min_bucket as u64) * (*max_bucket as u64);
+						bucket_weight *= bucket_weight;
+						actual_valid_points_tracked += bucket_weight;
 					}
 				}
-				assert_eq!(total_valid_points_tracked, actual_valid_points_tracked);
+				assert_eq!(total_valid_points_tracked, actual_valid_points_tracked as f64);
 			}
 
 			// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme),
 			// treat it as if we were fully decayed.
-			const FULLY_DECAYED: u16 = BUCKET_FIXED_POINT_ONE * BUCKET_FIXED_POINT_ONE;
+			const FULLY_DECAYED: f64 = BUCKET_FIXED_POINT_ONE as f64 * BUCKET_FIXED_POINT_ONE as f64 *
+				BUCKET_FIXED_POINT_ONE as f64 * BUCKET_FIXED_POINT_ONE as f64;
 			if total_valid_points_tracked < FULLY_DECAYED.into() {
 				return None;
 			}
 
-			let mut cumulative_success_prob_times_billion = 0;
+			let mut cumulative_success_prob = 0.0f64;
 			// Special-case the 0th min bucket - it generally means we failed a payment, so only
 			// consider the highest (i.e. largest-offset-from-max-capacity) max bucket for all
 			// points against the 0th min bucket. This avoids the case where we fail to route
@@ -1888,7 +1996,7 @@ mod bucketed_history {
 				// max-bucket with at least BUCKET_FIXED_POINT_ONE.
 				let mut highest_max_bucket_with_points = 0;
 				let mut highest_max_bucket_with_full_points = None;
-				let mut total_max_points = 0; // Total points in max-buckets to consider
+				let mut total_weight = 0;
 				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate() {
 					if *max_bucket >= BUCKET_FIXED_POINT_ONE {
 						highest_max_bucket_with_full_points = Some(cmp::max(highest_max_bucket_with_full_points.unwrap_or(0), max_idx));
@@ -1896,8 +2004,14 @@ mod bucketed_history {
 					if *max_bucket != 0 {
 						highest_max_bucket_with_points = cmp::max(highest_max_bucket_with_points, max_idx);
 					}
-					total_max_points += *max_bucket as u64;
+					// In testing, raising the weights of buckets to a high power led to better
+					// scoring results. Thus, we raise the bucket weights to the 4th power here (by
+					// squaring the result of multiplying the weights), matching the logic in
+					// `recalculate_valid_point_count`.
+					let bucket_weight = (*max_bucket as u64) * (min_liquidity_offset_history_buckets[0] as u64);
+					total_weight += bucket_weight * bucket_weight;
 				}
+				debug_assert!(total_weight as f64 <= total_valid_points_tracked);
 				// Use the highest max-bucket with at least BUCKET_FIXED_POINT_ONE, but if none is
 				// available use the highest max-bucket with any non-zero value. This ensures that
 				// if we have substantially decayed data we don't end up thinking the highest
@@ -1906,13 +2020,10 @@ mod bucketed_history {
 				let selected_max = highest_max_bucket_with_full_points.unwrap_or(highest_max_bucket_with_points);
 				let max_bucket_end_pos = BUCKET_START_POS[32 - selected_max] - 1;
 				if payment_pos < max_bucket_end_pos {
-					let (numerator, denominator) = success_probability(payment_pos as u64, 0,
+					let (numerator, denominator) = success_probability_float(payment_pos as u64, 0,
 						max_bucket_end_pos as u64, POSITION_TICKS as u64 - 1, params, true);
-					let bucket_prob_times_billion =
-						(min_liquidity_offset_history_buckets[0] as u64) * total_max_points
-							* 1024 * 1024 * 1024 / total_valid_points_tracked;
-					cumulative_success_prob_times_billion += bucket_prob_times_billion *
-						numerator / denominator;
+					let bucket_prob = total_weight as f64 / total_valid_points_tracked;
+					cumulative_success_prob += bucket_prob * numerator / denominator;
 				}
 			}
 
@@ -1920,26 +2031,32 @@ mod bucketed_history {
 				let min_bucket_start_pos = BUCKET_START_POS[min_idx];
 				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate().take(32 - min_idx) {
 					let max_bucket_end_pos = BUCKET_START_POS[32 - max_idx] - 1;
-					// Note that this multiply can only barely not overflow - two 16 bit ints plus
-					// 30 bits is 62 bits.
-					let bucket_prob_times_billion = (*min_bucket as u64) * (*max_bucket as u64)
-						* 1024 * 1024 * 1024 / total_valid_points_tracked;
 					if payment_pos >= max_bucket_end_pos {
 						// Success probability 0, the payment amount may be above the max liquidity
 						break;
-					} else if payment_pos < min_bucket_start_pos {
-						cumulative_success_prob_times_billion += bucket_prob_times_billion;
+					}
+
+					// In testing, raising the weights of buckets to a high power led to better
+					// scoring results. Thus, we raise the bucket weights to the 4th power here (by
+					// squaring the result of multiplying the weights), matching the logic in
+					// `recalculate_valid_point_count`.
+					let mut bucket_weight = (*min_bucket as u64) * (*max_bucket as u64);
+					bucket_weight *= bucket_weight;
+					debug_assert!(bucket_weight as f64 <= total_valid_points_tracked);
+					let bucket_prob = bucket_weight as f64 / total_valid_points_tracked;
+
+					if payment_pos < min_bucket_start_pos {
+						cumulative_success_prob += bucket_prob;
 					} else {
-						let (numerator, denominator) = success_probability(payment_pos as u64,
+						let (numerator, denominator) = success_probability_float(payment_pos as u64,
 							min_bucket_start_pos as u64, max_bucket_end_pos as u64,
 							POSITION_TICKS as u64 - 1, params, true);
-						cumulative_success_prob_times_billion += bucket_prob_times_billion *
-							numerator / denominator;
+						cumulative_success_prob += bucket_prob * numerator / denominator;
 					}
 				}
 			}
 
-			Some(cumulative_success_prob_times_billion)
+			Some((cumulative_success_prob * (1024.0 * 1024.0 * 1024.0)) as u64)
 		}
 	}
 }
@@ -3012,47 +3129,47 @@ mod tests {
 			info,
 			short_channel_id: 42,
 		});
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 11497);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 42_252);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 7408);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 36_005);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 2_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 6151);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 32_851);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 5427);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 30_832);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4955);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 29_886);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4736);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 28_939);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4484);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 28_435);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4484);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_993);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4263);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_993);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4263);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_488);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 4044);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_047);
 	}
 
 	#[test]
@@ -3252,7 +3369,7 @@ mod tests {
 			});
 
 			// With no historical data the normal liquidity penalty calculation is used.
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 135);
 		}
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 		None);
@@ -3270,7 +3387,7 @@ mod tests {
 			});
 
 			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2048);
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 249);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage_1, &params), 220);
 		}
 		// The "it failed" increment is 32, where the probability should lie several buckets into
 		// the first octile.
@@ -3294,7 +3411,7 @@ mod tests {
 				short_channel_id: 42,
 			});
 
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 105);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 83);
 		}
 		// The first points should be decayed just slightly and the last bucket has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -3305,12 +3422,12 @@ mod tests {
 		// simply check bounds here.
 		let five_hundred_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 500, &params, false).unwrap();
-		assert!(five_hundred_prob > 0.59);
-		assert!(five_hundred_prob < 0.60);
+		assert!(five_hundred_prob > 0.61, "{}", five_hundred_prob);
+		assert!(five_hundred_prob < 0.62, "{}", five_hundred_prob);
 		let one_prob =
 			scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false).unwrap();
-		assert!(one_prob < 0.85);
-		assert!(one_prob > 0.84);
+		assert!(one_prob < 0.89, "{}", one_prob);
+		assert!(one_prob > 0.88, "{}", one_prob);
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
@@ -3324,7 +3441,7 @@ mod tests {
 				short_channel_id: 42,
 			});
 
-			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 168);
+			assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 135);
 		}
 		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
 		// data entirely instead.
@@ -3512,8 +3629,8 @@ mod tests {
 			short_channel_id: 42,
 		});
 		// With no historical data the normal liquidity penalty calculation is used, which results
-		// in a success probability of ~75%.
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1269);
+		// in a success probability of ~82%.
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 910);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params, false),
