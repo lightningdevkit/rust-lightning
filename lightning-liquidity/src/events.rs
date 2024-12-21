@@ -18,6 +18,8 @@
 use crate::lsps0;
 use crate::lsps1;
 use crate::lsps2;
+#[cfg(feature = "lsps5")]
+use crate::lsps5;
 use crate::prelude::{Vec, VecDeque};
 use crate::sync::{Arc, Mutex};
 
@@ -114,6 +116,12 @@ pub enum Event {
 	LSPS2Client(lsps2::event::LSPS2ClientEvent),
 	/// An LSPS2 (JIT Channel) server event.
 	LSPS2Service(lsps2::event::LSPS2ServiceEvent),
+	/// An LSPS5 (Webhook Notifications) client event.
+	#[cfg(feature = "lsps5")]
+	LSPS5Client(lsps5::event::LSPS5ClientEvent),
+	/// An LSPS5 (Webhook Notifications) server event.
+	#[cfg(feature = "lsps5")]
+	LSPS5Service(lsps5::event::LSPS5ServiceEvent),
 }
 
 struct EventFuture {
