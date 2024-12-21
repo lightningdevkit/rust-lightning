@@ -88,6 +88,8 @@ fn invoice_generation_flow() {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
+		#[cfg(feature = "lsps5")]
+		lsps5_service_config: None,
 		advertise_service: true,
 	};
 
@@ -95,6 +97,8 @@ fn invoice_generation_flow() {
 	let client_config = LiquidityClientConfig {
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
+		#[cfg(feature = "lsps5")]
+		lsps5_client_config: None,
 	};
 
 	let (service_node, client_node) =
