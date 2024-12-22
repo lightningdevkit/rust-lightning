@@ -6,9 +6,9 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
-use crate::ln::chan_utils::{
-	ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
-};
+#[cfg(test)]
+use crate::ln::chan_utils::HolderCommitmentTransaction;
+use crate::ln::chan_utils::{ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment};
 use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::types::payment::PaymentPreimage;
 
@@ -56,26 +56,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
-	/// Creates a signature for a holder's commitment transaction.
-	///
-	/// This will be called
-	/// - with a non-revoked `commitment_tx`.
-	/// - with the latest `commitment_tx` when we initiate a force-close.
-	///
-	/// This may be called multiple times for the same transaction.
-	///
-	/// An external signer implementation should check that the commitment has not been revoked.
-	///
-	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
-	/// signature and should be retried later. Once the signer is ready to provide a signature after
-	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
-	///
-	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
-	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-	fn sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
 	/// Same as [`sign_holder_commitment`], but exists only for tests to get access to holder
 	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
 	/// newer state. Thus, needs its own method as [`sign_holder_commitment`] may enforce that we

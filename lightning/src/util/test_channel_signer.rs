@@ -256,6 +256,23 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		self.inner.sweep_counterparty_htlc_output(sweep_tx, input, amount, secp_ctx, per_commitment_point, htlc, preimage)
 	}
+
+	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Witness, ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::SignHolderCommitment) {
+			return Err(());
+		}
+		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
+		let state = self.state.lock().unwrap();
+		let commitment_number = trusted_tx.commitment_number();
+		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
+			if !self.disable_revocation_policy_check {
+				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
+			}
+		}
+		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {
@@ -280,23 +297,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
-	}
-
-	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		#[cfg(test)]
-		if !self.is_signer_available(SignerOp::SignHolderCommitment) {
-			return Err(());
-		}
-		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
-		let state = self.state.lock().unwrap();
-		let commitment_number = trusted_tx.commitment_number();
-		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
-			if !self.disable_revocation_policy_check {
-				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
-			}
-		}
-		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]

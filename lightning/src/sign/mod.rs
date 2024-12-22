@@ -941,6 +941,27 @@ pub trait ChannelSigner {
 			weight_received_htlc(features)
 		}
 	}
+
+	/// Creates a signature for a holder's commitment transaction.
+	///
+	/// This will be called
+	/// - with a non-revoked `commitment_tx`.
+	/// - with the latest `commitment_tx` when we initiate a force-close.
+	///
+	/// This may be called multiple times for the same transaction.
+	///
+	/// An external signer implementation should check that the commitment has not been revoked.
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
+	///
+	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
+	fn sign_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1623,6 +1644,24 @@ impl ChannelSigner for InMemorySigner {
 		};
 		Ok(Witness::from(&[ecdsa_sig.serialize().as_ref(), element, witness_script.as_bytes()][..]))
 	}
+
+	fn sign_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()> {
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let funding_redeemscript =
+			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
+		let trusted_tx = commitment_tx.trust();
+		let sig = trusted_tx.built_transaction().sign_holder_commitment(
+			&self.funding_key,
+			&funding_redeemscript,
+			self.channel_value_satoshis,
+			&self,
+			secp_ctx,
+		);
+		Ok(commitment_tx.finalize_witness(&funding_redeemscript, sig))
+	}
 }
 
 const MISSING_PARAMS_ERR: &'static str =
@@ -1693,23 +1732,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
-	}
-
-	fn sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
-		let funding_redeemscript =
-			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
-		let trusted_tx = commitment_tx.trust();
-		Ok(trusted_tx.built_transaction().sign_holder_commitment(
-			&self.funding_key,
-			&funding_redeemscript,
-			self.channel_value_satoshis,
-			&self,
-			secp_ctx,
-		))
 	}
 
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
