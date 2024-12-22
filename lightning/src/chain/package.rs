@@ -651,8 +651,8 @@ impl PackageSolvingData {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
 				onchain_handler.get_maybe_signed_htlc_tx(outpoint, &outp.preimage)
 			}
-			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				Some(onchain_handler.get_maybe_signed_holder_tx(&outp.funding_redeemscript))
+			PackageSolvingData::HolderFundingOutput(ref _outp) => {
+				Some(onchain_handler.get_maybe_signed_holder_tx())
 			}
 			_ => { panic!("API Error!"); }
 		}

@@ -11266,11 +11266,8 @@ mod tests {
 					&chan.context.holder_signer.as_ref().pubkeys().funding_pubkey,
 					chan.context.counterparty_funding_pubkey()
 				);
-				let holder_sig = chan.context.holder_signer.as_ecdsa().unwrap().sign_holder_commitment(&holder_commitment_tx, &secp_ctx).unwrap();
-				assert_eq!(Signature::from_der(&<Vec<u8>>::from_hex($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
-
-				let funding_redeemscript = chan.context.get_funding_redeemscript();
-				let tx = holder_commitment_tx.add_holder_sig(&funding_redeemscript, holder_sig);
+				let witness = chan.context.holder_signer.as_ref().sign_holder_commitment(&holder_commitment_tx, &secp_ctx).unwrap();
+				let tx = holder_commitment_tx.extract_tx(witness);
 				assert_eq!(serialize(&tx)[..], <Vec<u8>>::from_hex($tx_hex).unwrap()[..], "tx");
 
 				// ((htlc, counterparty_sig), (index, holder_sig))
