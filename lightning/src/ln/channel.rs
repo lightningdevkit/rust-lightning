@@ -11140,7 +11140,7 @@ mod tests {
 		use bitcoin::hash_types::Txid;
 		use bitcoin::hex::DisplayHex;
 		use bitcoin::secp256k1::Message;
-		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
+		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
 		use crate::types::payment::PaymentPreimage;
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
@@ -11297,8 +11297,12 @@ mod tests {
 						assert!(preimage.is_some());
 					}
 
+					let num_anchors = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
+					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
+
 					let htlc_counterparty_sig = htlc_counterparty_sig_iter.next().unwrap();
-					let htlc_holder_sig = chan.context.holder_signer.as_ecdsa().unwrap().sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
+
+					htlc_tx.input[0].witness = chan.context.holder_signer.as_ref().sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
 						channel_derivation_parameters: ChannelDerivationParameters {
 							value_satoshis: chan.context.channel_value_satoshis,
 							keys_id: chan.context.channel_keys_id,
@@ -11312,13 +11316,7 @@ mod tests {
 						preimage: preimage.clone(),
 						counterparty_sig: *htlc_counterparty_sig,
 					}, &secp_ctx).unwrap();
-					let num_anchors = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
-					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
 
-					let signature = Signature::from_der(&<Vec<u8>>::from_hex($htlc_sig_hex).unwrap()[..]).unwrap();
-					assert_eq!(signature, htlc_holder_sig, "htlc sig");
-					let trusted_tx = holder_commitment_tx.trust();
-					htlc_tx.input[0].witness = trusted_tx.build_htlc_input_witness($htlc_idx, htlc_counterparty_sig, &htlc_holder_sig, &preimage);
 					log_trace!(logger, "htlc_tx = {}", serialize(&htlc_tx).as_hex());
 					assert_eq!(serialize(&htlc_tx)[..], <Vec<u8>>::from_hex($htlc_tx_hex).unwrap()[..], "htlc tx");
 				})*

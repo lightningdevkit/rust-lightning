@@ -1768,23 +1768,6 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		)
 	}
 
-
-	/// Builds the witness required to spend the input for the HTLC with index `htlc_index` in a
-	/// second-level holder HTLC transaction.
-	pub(crate) fn build_htlc_input_witness(
-		&self, htlc_index: usize, counterparty_signature: &Signature, signature: &Signature,
-		preimage: &Option<PaymentPreimage>
-	) -> Witness {
-		let keys = &self.inner.keys;
-		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(
-			&self.inner.htlcs[htlc_index], &self.channel_type_features, &keys.broadcaster_htlc_key,
-			&keys.countersignatory_htlc_key, &keys.revocation_key
-		);
-		build_htlc_input_witness(
-			signature, counterparty_signature, preimage, &htlc_redeemscript, &self.channel_type_features,
-		)
-	}
-
 	/// Returns the index of the revokeable output, i.e. the `to_local` output sending funds to
 	/// the broadcaster, in the built transaction, if any exists.
 	///

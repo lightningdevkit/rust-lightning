@@ -972,6 +972,27 @@ pub trait ChannelSigner {
 	fn unsafe_sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()>;
+	/// Computes the signature for a commitment transaction's HTLC output used as an input within
+	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
+	/// must be be computed using [`EcdsaSighashType::All`].
+	///
+	/// Note that this may be called for HTLCs in the penultimate commitment transaction if a
+	/// [`ChannelMonitor`] [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
+	/// broadcasts it before receiving the update for the latest commitment transaction.
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
+	///
+	/// [`EcdsaSighashType::All`]: bitcoin::sighash::EcdsaSighashType::All
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1691,6 +1712,37 @@ impl ChannelSigner for InMemorySigner {
 		);
 		Ok(commitment_tx.finalize_witness(&funding_redeemscript, sig))
 	}
+
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()> {
+		let witness_script = htlc_descriptor.witness_script(secp_ctx);
+		let sighash = &sighash::SighashCache::new(&*htlc_tx)
+			.p2wsh_signature_hash(
+				input,
+				&witness_script,
+				htlc_descriptor.htlc.to_bitcoin_amount(),
+				EcdsaSighashType::All,
+			)
+			.map_err(|_| ())?;
+		let our_htlc_private_key = chan_utils::derive_private_key(
+			&secp_ctx,
+			&htlc_descriptor.per_commitment_point,
+			&self.htlc_base_key,
+		);
+		let sighash = hash_to_message!(sighash.as_byte_array());
+		let sig = sign_with_aux_rand(&secp_ctx, &sighash, &our_htlc_private_key, &self);
+
+		let features = &self.channel_parameters.as_ref().unwrap().channel_type_features;
+		Ok(chan_utils::build_htlc_input_witness(
+			&sig,
+			&htlc_descriptor.counterparty_sig,
+			&htlc_descriptor.preimage,
+			&witness_script,
+			features,
+		))
+	}
 }
 
 const MISSING_PARAMS_ERR: &'static str =
@@ -1857,28 +1909,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		return Ok(sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self));
 	}
 
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let witness_script = htlc_descriptor.witness_script(secp_ctx);
-		let sighash = &sighash::SighashCache::new(&*htlc_tx)
-			.p2wsh_signature_hash(
-				input,
-				&witness_script,
-				htlc_descriptor.htlc.to_bitcoin_amount(),
-				EcdsaSighashType::All,
-			)
-			.map_err(|_| ())?;
-		let our_htlc_private_key = chan_utils::derive_private_key(
-			&secp_ctx,
-			&htlc_descriptor.per_commitment_point,
-			&self.htlc_base_key,
-		);
-		let sighash = hash_to_message!(sighash.as_byte_array());
-		Ok(sign_with_aux_rand(&secp_ctx, &sighash, &our_htlc_private_key, &self))
-	}
-
 	fn sign_counterparty_htlc_transaction(
 		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -2015,13 +2045,6 @@ impl TaprootChannelSigner for InMemorySigner {
 	fn sign_justice_revoked_htlc(
 		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
-	) -> Result<schnorr::Signature, ()> {
-		todo!()
-	}
-
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<All>,
 	) -> Result<schnorr::Signature, ()> {
 		todo!()
 	}

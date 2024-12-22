@@ -105,22 +105,6 @@ pub trait TaprootChannelSigner: ChannelSigner {
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 
-	/// Computes the signature for a commitment transaction's HTLC output used as an input within
-	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
-	/// must be be computed using [`TapSighashType::Default`].
-	///
-	/// Note that this may be called for HTLCs in the penultimate commitment transaction if a
-	/// [`ChannelMonitor`] [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
-	/// broadcasts it before receiving the update for the latest commitment transaction.
-	///
-	///
-	/// [`TapSighashType::Default`]: bitcoin::sighash::TapSighashType::Default
-	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
-
 	/// Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
 	/// transaction, either offered or received.
 	///
