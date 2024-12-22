@@ -3644,14 +3644,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 				let preimage = if htlc.offered { if let Some((p, _)) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 				if preimage.is_some() || !htlc.offered {
+					let weight = self.onchain_tx_handler.signer.counterparty_htlc_output_witness_weight(htlc.offered);
 					let counterparty_htlc_outp = if htlc.offered {
 						PackageSolvingData::CounterpartyOfferedHTLCOutput(
 							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
-								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
+								preimage.unwrap(), htlc.clone(), self.onchain_tx_handler.channel_type_features().clone(), weight))
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
-								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone()))
+								htlc.clone(), self.onchain_tx_handler.channel_type_features().clone(), weight))
 					};
 					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry);
 					claimable_outpoints.push(counterparty_package);

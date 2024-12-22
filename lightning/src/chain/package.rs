@@ -218,10 +218,11 @@ pub(crate) struct CounterpartyOfferedHTLCOutput {
 	preimage: PaymentPreimage,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	weight: u64,
 }
 
 impl CounterpartyOfferedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures, weight: u64) -> Self {
 		CounterpartyOfferedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key: None,
@@ -229,6 +230,7 @@ impl CounterpartyOfferedHTLCOutput {
 			preimage,
 			htlc,
 			channel_type_features,
+			weight,
 		}
 	}
 }
@@ -244,6 +246,7 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 			(8, self.htlc, required),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
+			(12, self.weight, required),
 		});
 		Ok(())
 	}
@@ -258,6 +261,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut weight = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
@@ -267,9 +271,13 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			(8, htlc, required),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
+			(12, weight, option),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
+
+		let channel_type_features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
+		let weight = weight.unwrap_or(weight_offered_htlc(&channel_type_features));
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
@@ -277,7 +285,8 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			counterparty_htlc_base_key,
 			preimage: preimage.0.unwrap(),
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
+			weight,
 		})
 	}
 }
@@ -295,16 +304,18 @@ pub(crate) struct CounterpartyReceivedHTLCOutput {
 	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	weight: u64,
 }
 
 impl CounterpartyReceivedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures, weight: u64) -> Self {
 		CounterpartyReceivedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key: None,
 			counterparty_htlc_base_key: None,
 			htlc,
-			channel_type_features
+			channel_type_features,
+			weight,
 		}
 	}
 }
@@ -319,6 +330,7 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 			(6, self.htlc, required),
 			(8, legacy_deserialization_prevention_marker, option),
 			(9, self.channel_type_features, required),
+			(10, self.weight, required),
 		});
 		Ok(())
 	}
@@ -332,6 +344,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut weight = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
@@ -340,16 +353,21 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			(6, htlc, required),
 			(8, _legacy_deserialization_prevention_marker, option),
 			(9, channel_type_features, option),
+			(10, weight, option),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
+
+		let channel_type_features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
+		let weight = weight.unwrap_or(weight_received_htlc(&channel_type_features));
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
 			counterparty_delayed_payment_base_key,
 			counterparty_htlc_base_key,
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
+			weight,
 		})
 	}
 }
@@ -526,8 +544,8 @@ impl PackageSolvingData {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => outp.weight as usize,
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.weight as usize,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => weight_offered_htlc(&outp.channel_type_features) as usize,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => weight_received_htlc(&outp.channel_type_features) as usize,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.weight as usize,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.weight as usize,
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
 				if outp.preimage.is_none() {
@@ -1367,7 +1385,8 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: $expiry, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, htlc, $features))
+				let weight = weight_received_htlc(&$features);
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, htlc, $features, weight))
 			}
 		}
 	}
@@ -1381,7 +1400,8 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, $features))
+				let weight = weight_offered_htlc(&$features);
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, $features, weight))
 			}
 		}
 	}
