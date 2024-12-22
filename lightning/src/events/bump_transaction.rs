@@ -189,7 +189,7 @@ pub enum BumpTransactionEvent {
 	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
 	/// HTLC transaction. To sign HTLC inputs, an [`EcdsaChannelSigner`] should be re-derived
 	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's signature can be
-	/// computed with [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be
+	/// computed with [`ChannelSigner::sign_holder_htlc_transaction`], which can then be
 	/// provided to [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required
 	/// to spend.
 	///
@@ -204,7 +204,7 @@ pub enum BumpTransactionEvent {
 	/// to the HTLC transaction is greater in value than the HTLCs being claimed.
 	///
 	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
-	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_htlc_transaction
+	/// [`ChannelSigner::sign_holder_htlc_transaction`]: crate::sign::ChannelSigner::sign_holder_htlc_transaction
 	HTLCResolution {
 		/// The `channel_id` of the channel which has been closed.
 		channel_id: ChannelId,
@@ -799,9 +799,8 @@ where
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
 			// Unwrap because we derived the corresponding signers for all htlc descriptors further above
 			let signer  = &signers_and_revokeable_spks.get(&htlc_descriptor.channel_derivation_parameters.keys_id).unwrap().0;
-			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
-			let witness_script = htlc_descriptor.witness_script(&self.secp);
-			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);
+			let witness = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
+			htlc_tx.input[idx].witness = witness;
 		}
 
 		#[cfg(debug_assertions)] {

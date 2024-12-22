@@ -13,7 +13,7 @@ use crate::types::payment::PaymentPreimage;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::sign::{ChannelSigner, HTLCDescriptor};
+use crate::sign::ChannelSigner;
 
 /// A trait to sign Lightning channel transactions as described in
 /// [BOLT 3](https://github.com/lightning/bolts/blob/master/03-transactions.md).
@@ -109,27 +109,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_justice_revoked_htlc(
 		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
-	/// Computes the signature for a commitment transaction's HTLC output used as an input within
-	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
-	/// must be be computed using [`EcdsaSighashType::All`].
-	///
-	/// Note that this may be called for HTLCs in the penultimate commitment transaction if a
-	/// [`ChannelMonitor`] [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
-	/// broadcasts it before receiving the update for the latest commitment transaction.
-	///
-	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
-	/// signature and should be retried later. Once the signer is ready to provide a signature after
-	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
-	///
-	/// [`EcdsaSighashType::All`]: bitcoin::sighash::EcdsaSighashType::All
-	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
-	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
 	/// transaction, either offered or received.

@@ -11,7 +11,7 @@
 
 use alloc::collections::BTreeMap;
 
-use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelSigner, OutputSpender, SpendableOutputDescriptor};
+use crate::sign::{ChannelSigner, OutputSpender, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
@@ -2928,9 +2928,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		for (idx, htlc_descriptor) in descriptors.into_iter().enumerate() {
 			let htlc_input_idx = idx + 1;
 			let signer = htlc_descriptor.derive_channel_signer(&nodes[1].keys_manager);
-			let our_sig = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
-			let witness_script = htlc_descriptor.witness_script(&secp);
-			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
+			let witness = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
+			htlc_tx.input[htlc_input_idx].witness = witness;
 		}
 		let fee_utxo_sig = {
 			let witness_script = ScriptBuf::new_p2pkh(&public_key.pubkey_hash());
