@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ecdsa::EcdsaChannelSigner, SignerProvider, EntropySource};
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ChannelSigner, SignerProvider, EntropySource};
 use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
@@ -846,14 +846,14 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
 /// best chain) upon deserializing the object!
-pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
+pub struct ChannelMonitor<Signer: ChannelSigner> {
 	#[cfg(test)]
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
 	#[cfg(not(test))]
 	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
-impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
+impl<Signer: ChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
 	fn clone(&self) -> Self {
 		let inner = self.inner.lock().unwrap().clone();
 		ChannelMonitor::from_impl(inner)
@@ -861,7 +861,7 @@ impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: 
 }
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
+pub(crate) struct ChannelMonitorImpl<Signer: ChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
 
@@ -1027,7 +1027,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 /// Transaction outputs to watch for on-chain spends.
 pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 
-impl<Signer: EcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> where Signer: PartialEq {
+impl<Signer: ChannelSigner> PartialEq for ChannelMonitor<Signer> where Signer: PartialEq {
 	fn eq(&self, other: &Self) -> bool {
 		// We need some kind of total lockorder. Absent a better idea, we sort by position in
 		// memory and take locks in that order (assuming that we can't move within memory while a
@@ -1039,7 +1039,7 @@ impl<Signer: EcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> where Sign
 	}
 }
 
-impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
+impl<Signer: ChannelSigner> Writeable for ChannelMonitor<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.inner.lock().unwrap().write(writer)
 	}
@@ -1049,7 +1049,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
+impl<Signer: ChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -1316,11 +1316,11 @@ impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L> where L::Target: Logger 
 }
 
 impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
-	pub(crate) fn from<S: EcdsaChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>, payment_hash: Option<PaymentHash>) -> Self {
+	pub(crate) fn from<S: ChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>, payment_hash: Option<PaymentHash>) -> Self {
 		Self::from_impl(logger, &*monitor.inner.lock().unwrap(), payment_hash)
 	}
 
-	pub(crate) fn from_impl<S: EcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>, payment_hash: Option<PaymentHash>) -> Self {
+	pub(crate) fn from_impl<S: ChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>, payment_hash: Option<PaymentHash>) -> Self {
 		let peer_id = monitor_impl.counterparty_node_id;
 		let channel_id = Some(monitor_impl.channel_id());
 		WithChannelMonitor {
@@ -1329,7 +1329,7 @@ impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
 	}
 }
 
-impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
+impl<Signer: ChannelSigner> ChannelMonitor<Signer> {
 	/// For lockorder enforcement purposes, we need to have a single site which constructs the
 	/// `inner` mutex, otherwise cases where we lock two monitors at the same time (eg in our
 	/// PartialEq implementation) we may decide a lockorder violation has occurred.
@@ -2085,7 +2085,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 }
 
-impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
+impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Helper for get_claimable_balances which does the work for an individual HTLC, generating up
 	/// to one `Balance` for the HTLC.
 	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, source: Option<&HTLCSource>,
@@ -2276,7 +2276,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
+impl<Signer: ChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the balances in this channel which are either claimable by us if we were to
 	/// force-close the channel now or which are claimable on-chain (possibly awaiting
 	/// confirmation).
@@ -2736,7 +2736,7 @@ pub fn deliberately_bogus_accepted_htlc_witness() -> Vec<Vec<u8>> {
 	vec![Vec::new(), Vec::new(), Vec::new(), Vec::new(), deliberately_bogus_accepted_htlc_witness_program().into()].into()
 }
 
-impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
+impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Gets the [`ConfirmationTarget`] we should use when selecting feerates for channel closure
 	/// transactions for this channel right now.
 	fn closure_conf_target(&self) -> ConfirmationTarget {
@@ -4674,7 +4674,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: EcdsaChannelSigner, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
+impl<Signer: ChannelSigner, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
 where
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
@@ -4689,7 +4689,7 @@ where
 	}
 }
 
-impl<Signer: EcdsaChannelSigner, M, T: Deref, F: Deref, L: Deref> chain::Confirm for (M, T, F, L)
+impl<Signer: ChannelSigner, M, T: Deref, F: Deref, L: Deref> chain::Confirm for (M, T, F, L)
 where
 	M: Deref<Target = ChannelMonitor<Signer>>,
 	T::Target: BroadcasterInterface,
