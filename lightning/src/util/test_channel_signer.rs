@@ -273,6 +273,11 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
+
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	fn unsafe_sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Witness, ()> {
+		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {
@@ -297,11 +302,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
-	}
-
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {

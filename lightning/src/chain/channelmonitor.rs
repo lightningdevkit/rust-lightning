@@ -3875,7 +3875,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, logger: &WithChannelMonitor<L>
 	) -> Vec<Transaction> where L::Target: Logger {
 		log_debug!(logger, "Getting signed copy of latest holder commitment transaction!");
-		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
+		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx();
 		let txid = commitment_tx.compute_txid();
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment

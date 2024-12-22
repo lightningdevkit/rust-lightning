@@ -6,8 +6,6 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
-#[cfg(test)]
-use crate::ln::chan_utils::HolderCommitmentTransaction;
 use crate::ln::chan_utils::{ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment};
 use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::types::payment::PaymentPreimage;
@@ -56,16 +54,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
-	/// Same as [`sign_holder_commitment`], but exists only for tests to get access to holder
-	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
-	/// newer state. Thus, needs its own method as [`sign_holder_commitment`] may enforce that we
-	/// only ever get called once.
-	///
-	/// This method is *not* async as it is intended only for testing purposes.
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
 	/// Create a signature for the given input in a transaction spending an HTLC transaction output
 	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
 	///

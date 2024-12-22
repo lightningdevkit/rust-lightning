@@ -962,6 +962,16 @@ pub trait ChannelSigner {
 	fn sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()>;
+	/// Same as [`sign_holder_commitment`], but exists only for tests to get access to holder
+	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
+	/// newer state. Thus, needs its own method as [`sign_holder_commitment`] may enforce that we
+	/// only ever get called once.
+	///
+	/// This method is *not* async as it is intended only for testing purposes.
+	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	fn unsafe_sign_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1662,6 +1672,25 @@ impl ChannelSigner for InMemorySigner {
 		);
 		Ok(commitment_tx.finalize_witness(&funding_redeemscript, sig))
 	}
+
+	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	fn unsafe_sign_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()> {
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let funding_redeemscript =
+			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
+		let trusted_tx = commitment_tx.trust();
+		let sig = trusted_tx.built_transaction().sign_holder_commitment(
+			&self.funding_key,
+			&funding_redeemscript,
+			self.channel_value_satoshis,
+			&self,
+			secp_ctx,
+		);
+		Ok(commitment_tx.finalize_witness(&funding_redeemscript, sig))
+	}
 }
 
 const MISSING_PARAMS_ERR: &'static str =
@@ -1732,24 +1761,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
-	}
-
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
-		let funding_redeemscript =
-			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
-		let trusted_tx = commitment_tx.trust();
-		Ok(trusted_tx.built_transaction().sign_holder_commitment(
-			&self.funding_key,
-			&funding_redeemscript,
-			self.channel_value_satoshis,
-			&self,
-			secp_ctx,
-		))
 	}
 
 	fn sign_justice_revoked_output(

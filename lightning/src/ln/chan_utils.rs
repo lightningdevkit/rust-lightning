@@ -1157,24 +1157,6 @@ impl HolderCommitmentTransaction {
 		}
 	}
 
-	#[cfg(test)]
-	pub(crate) fn add_holder_sig(&self, funding_redeemscript: &Script, holder_sig: Signature) -> Transaction {
-		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
-		let mut tx = self.inner.built.transaction.clone();
-		tx.input[0].witness.push(Vec::new());
-
-		if self.holder_sig_first {
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
-		} else {
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
-		}
-
-		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
-		tx
-	}
-
 	pub(crate) fn finalize_witness(&self, funding_redeemscript: &Script, holder_sig: Signature) -> Witness {
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		let mut witness = Witness::new();
