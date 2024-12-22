@@ -32,7 +32,7 @@ use crate::ln::msgs::DecodeError;
 use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ChannelSigner;
 use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
@@ -617,7 +617,7 @@ impl PackageSolvingData {
 			witness: Witness::new(),
 		}
 	}
-	fn finalize_input<Signer: EcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
+	fn finalize_input<Signer: ChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
 				//TODO: should we panic on signer failure ?
@@ -645,7 +645,7 @@ impl PackageSolvingData {
 		}
 		true
 	}
-	fn get_maybe_finalized_tx<Signer: EcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
+	fn get_maybe_finalized_tx<Signer: ChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
@@ -958,7 +958,7 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		(inputs_weight + witnesses_weight + transaction_weight + output_weight) as u64
 	}
-	pub(crate) fn construct_malleable_package_with_external_funding<Signer: EcdsaChannelSigner>(
+	pub(crate) fn construct_malleable_package_with_external_funding<Signer: ChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
 	) -> Option<Vec<ExternalHTLCClaim>> {
 		debug_assert!(self.requires_external_funding());
@@ -976,7 +976,7 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
-	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: EcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: ChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: Amount,
 		destination_script: ScriptBuf, logger: &L
 	) -> Option<MaybeSignedTransaction> {
@@ -999,7 +999,7 @@ impl PackageTemplate {
 		}
 		Some(MaybeSignedTransaction(bumped_tx))
 	}
-	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: EcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: ChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
 	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(!self.is_malleable());
