@@ -14,6 +14,7 @@ use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::events::{Event, MessageSendEventsProvider};
+use crate::onion_message::messenger::DefaultMessageRouter;
 use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
@@ -390,16 +391,17 @@ fn bolt12_invoice_too_large_blinded_paths() {
 		)
 	]);
 
-	let offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+	let router = DefaultMessageRouter::new(nodes[1].network_graph, nodes[1].node.entropy_source);
+	let offer = nodes[1].offers_handler.create_offer_builder(router).unwrap().build().unwrap();
 	let payment_id = PaymentId([1; 32]);
-	nodes[0].node.pay_for_offer(&offer, None, Some(5000), None, payment_id, Retry::Attempts(0), None).unwrap();
+	nodes[0].offers_handler.pay_for_offer(&offer, None, Some(5000), None, payment_id, Retry::Attempts(0), None).unwrap();
 	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
 	nodes[1].onion_messenger.handle_onion_message(nodes[0].node.get_our_node_id(), &invreq_om);
 
 	let invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
 	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &invoice_om);
 	// TODO: assert on the invoice error once we support replying to invoice OMs with failure info
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Failed paying invoice: OnionPacketSizeExceeded", 1);
+	nodes[0].logger.assert_log_contains("lightning::offers::flow", "Failed paying invoice: OnionPacketSizeExceeded", 1);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);

@@ -38,7 +38,7 @@ use core::iter::Iterator;
 ///   down
 ///
 /// `payment_hash` can be specified if you have a specific need for a custom payment hash (see the difference
-/// between [`ChannelManager::create_inbound_payment`] and [`ChannelManager::create_inbound_payment_for_hash`]).
+/// between [`OffersMessageCommons::create_inbound_payment`] and [`ChannelManager::create_inbound_payment_for_hash`]).
 /// If `None` is provided for `payment_hash`, then one will be created.
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
@@ -57,7 +57,7 @@ use core::iter::Iterator;
 ///
 /// [`PhantomKeysManager`]: crate::sign::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: crate::ln::channelmanager::ChannelManager::get_phantom_route_hints
-/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`OffersMessageCommons::create_inbound_payment`]: crate::offers::flow::OffersMessageCommons::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
@@ -99,7 +99,7 @@ where
 /// `description_hash` is a SHA-256 hash of the description text
 ///
 /// `payment_hash` can be specified if you have a specific need for a custom payment hash (see the difference
-/// between [`ChannelManager::create_inbound_payment`] and [`ChannelManager::create_inbound_payment_for_hash`]).
+/// between [`OffersMessageCommons::create_inbound_payment`] and [`ChannelManager::create_inbound_payment_for_hash`]).
 /// If `None` is provided for `payment_hash`, then one will be created.
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
@@ -113,7 +113,7 @@ where
 ///
 /// [`PhantomKeysManager`]: crate::sign::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: crate::ln::channelmanager::ChannelManager::get_phantom_route_hints
-/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`OffersMessageCommons::create_inbound_payment`]: crate::offers::flow::OffersMessageCommons::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 #[cfg_attr(feature = "std", doc = "")]
@@ -710,10 +710,11 @@ mod test {
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::network::Network;
+	use crate::offers::flow::OffersMessageCommons;
 	use crate::sign::PhantomKeysManager;
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
-	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
+	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PaymentId, PhantomRouteHints, RecipientOnionFields, Retry, MIN_FINAL_CLTV_EXPIRY_DELTA};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::routing::router::{PaymentParameters, RouteParameters};

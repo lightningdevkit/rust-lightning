@@ -1349,6 +1349,7 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Readable, Writeable};
 	use crate::util::string::{PrintableString, UntrustedString};
+	use crate::util::test_utils::FixedEntropy;
 
 	#[test]
 	fn builds_invoice_request_with_defaults() {
