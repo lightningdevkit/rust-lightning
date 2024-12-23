@@ -20,10 +20,7 @@ use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::chan_utils::{
-	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
-	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, HTLCOutputInCommitment
-};
+use crate::ln::chan_utils::{ANCHOR_INPUT_WITNESS_WEIGHT, HTLCOutputInCommitment};
 use crate::prelude::*;
 use crate::sign::{
 	ChannelDerivationParameters, ChannelSigner, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
@@ -730,24 +727,24 @@ where
 		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
 		let mut signers_and_revokeable_spks = BTreeMap::new();
 		for htlc_descriptor in htlc_descriptors {
+			// TODO: avoid having mutable references flying around
+			let (_, revokeable_spk, witness_weight) = signers_and_revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+				.or_insert_with(|| {
+					let signer = htlc_descriptor.derive_channel_signer(&self.signer_provider);
+					let revokeable_spk = signer.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, &self.secp);
+					// TODO: cache this, it does not change throughout the lifetime of the channel
+					let witness_weight = signer.get_holder_htlc_transaction_witness_weight(htlc_descriptor.htlc.offered);
+					(signer, revokeable_spk, witness_weight)
+				});
+
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
 				outpoint: htlc_input.previous_output.clone(),
 				previous_utxo: htlc_descriptor.previous_utxo(&self.secp),
-				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + if htlc_descriptor.preimage.is_some() {
-					HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
-				} else {
-					HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
-				},
+				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + *witness_weight,
 			});
 			htlc_tx.input.push(htlc_input);
-			let revokeable_spk = signers_and_revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
-				.or_insert_with(|| {
-					let signer = htlc_descriptor.derive_channel_signer(&self.signer_provider);
-					let revokeable_spk = signer.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, &self.secp);
-					(signer, revokeable_spk)
-				}).1.clone();
-			let htlc_output = htlc_descriptor.tx_output(revokeable_spk);
+			let htlc_output = htlc_descriptor.tx_output(revokeable_spk.clone());
 			htlc_tx.output.push(htlc_output);
 		}
 
