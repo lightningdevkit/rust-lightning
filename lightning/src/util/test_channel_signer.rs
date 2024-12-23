@@ -319,7 +319,6 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
 	}
-
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {
