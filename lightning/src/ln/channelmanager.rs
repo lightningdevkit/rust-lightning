@@ -187,7 +187,7 @@ use core::{cmp, mem};
 // Re-export this for use in the public API.
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
-pub use crate::ln::outbound_payment::{
+pub(crate) use crate::ln::outbound_payment::{
 	Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry,
 	RetryableSendFailure,
 };
@@ -2280,7 +2280,8 @@ where
 /// # use bitcoin::hashes::Hash;
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::routing::router::RouteParametersConfig;
 /// # use lightning_invoice::Bolt11Invoice;
 /// #
@@ -2438,7 +2439,8 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// # use lightning::routing::router::RouteParametersConfig;
 /// #

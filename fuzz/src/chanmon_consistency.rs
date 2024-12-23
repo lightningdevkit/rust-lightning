@@ -58,6 +58,7 @@ use lightning::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, Init, MessageSendEvent,
 	UpdateAddHTLC,
 };
+use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;

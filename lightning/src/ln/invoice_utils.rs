@@ -625,9 +625,10 @@ mod test {
 	use super::*;
 	use crate::chain::channelmonitor::HTLC_FAIL_BACK_BUFFER;
 	use crate::ln::channelmanager::{
-		Bolt11InvoiceParameters, PaymentId, PhantomRouteHints, RecipientOnionFields, Retry,
+		Bolt11InvoiceParameters, PaymentId, PhantomRouteHints,
 		MIN_FINAL_CLTV_EXPIRY_DELTA,
 	};
+	use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 	use crate::routing::router::{PaymentParameters, RouteParameters};

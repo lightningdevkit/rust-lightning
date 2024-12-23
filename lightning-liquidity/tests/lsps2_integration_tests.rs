@@ -11,7 +11,7 @@ use lightning::check_added_monitors;
 use lightning::events::{ClosureReason, Event};
 use lightning::get_event_msg;
 use lightning::ln::channelmanager::PaymentId;
-use lightning::ln::channelmanager::Retry;
+use lightning::ln::outbound_payment::Retry;
 use lightning::ln::functional_test_utils::create_funding_transaction;
 use lightning::ln::functional_test_utils::do_commitment_signed_dance;
 use lightning::ln::functional_test_utils::expect_channel_pending_event;
