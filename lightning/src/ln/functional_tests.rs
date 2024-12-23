@@ -2637,6 +2637,92 @@ fn revoked_output_claim() {
 }
 
 #[test]
+fn test_revoked_output_claim_with_offloaded_claim_info() {
+	revoked_output_claim_with_offloaded_claim_info(true);
+	revoked_output_claim_with_offloaded_claim_info(false);
+}
+
+fn revoked_output_claim_with_offloaded_claim_info(provide_claim_info: bool) {
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Rebalance the network to generate htlc in the two directions
+	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
+	// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx
+	let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
+	let (_payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
+
+	// Get the will-be-revoked local txn from node[0]
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
+
+	//Revoke the old state
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
+	send_payment(&nodes[0], &[&nodes[1]], 2_000_000);
+
+	handle_persist_claim_info_events(&nodes[1]);
+
+	{
+		mine_transaction(&nodes[0], &revoked_local_txn[0]);
+		check_added_monitors!(nodes[0], 1);
+		check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
+		mine_transaction(&nodes[1], &revoked_local_txn[0]);
+		check_added_monitors!(nodes[1], 1);
+		// Provide Claim info selectively acc. to flag.
+		handle_claim_info_request(&nodes[1], provide_claim_info);
+
+		check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+
+		if provide_claim_info {
+
+			assert_eq!(node_txn.len(), 1); // ChannelMonitor: penalty tx
+
+			assert_eq!(node_txn[0].input.len(), 3); // Claim the revoked output + both revoked HTLC outputs
+			check_spends!(node_txn[0], revoked_local_txn[0]);
+
+			// Finally, mine the penalty transaction and check that we get an HTLC failure after
+			// ANTI_REORG_DELAY confirmations.
+			mine_transaction(&nodes[1], &node_txn[0]);
+			connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+			expect_payment_failed!(nodes[1], payment_hash_2, false);
+		} else {
+			assert_eq!(node_txn.len(), 0);
+		}
+	}
+	get_announce_close_broadcast_events(&nodes, 0, 1);
+	assert_eq!(nodes[0].node.list_channels().len(), 0);
+	assert_eq!(nodes[1].node.list_channels().len(), 0);
+}
+
+fn handle_persist_claim_info_events<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
+	let mut persisted_claim_info = &node.chain_monitor.persisted_claim_info.lock().unwrap();
+	for ((outpoint, txid), _) in persisted_claim_info.iter() {
+		let _ = &node.chain_monitor.chain_monitor.claim_info_persisted(*outpoint, *txid).unwrap();
+	}
+}
+
+fn handle_claim_info_request<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, provide_claim_info: bool) {
+	let mut events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let e = events.pop().unwrap();
+	if let Event::ClaimInfoRequest { monitor_id, claim_key, claim_metadata } = e.clone() {
+		if provide_claim_info {
+			let persisted_claim_info = node.chain_monitor.persisted_claim_info.lock().unwrap();
+			let claim_info = persisted_claim_info.get(&(monitor_id, claim_key)).unwrap();
+			node.chain_monitor.chain_monitor.provide_claim_info(monitor_id, claim_key, claim_info.clone(), claim_metadata).unwrap();
+		}
+	} else { panic!(); }
+}
+
+#[test]
 fn test_forming_justice_tx_from_monitor_updates() {
 	do_test_forming_justice_tx_from_monitor_updates(true);
 	do_test_forming_justice_tx_from_monitor_updates(false);
@@ -4469,6 +4555,12 @@ macro_rules! check_spendable_outputs {
 							all_outputs.push(outp);
 						}
 					},
+					Event::PersistClaimInfo{..}  => {
+						// Do Nothing
+					},
+					Event::ClaimInfoRequest{..}  => {
+						// Do Nothing
+					}
 					_ => panic!("Unexpected event"),
 				};
 			}
@@ -8499,6 +8591,10 @@ fn test_update_err_monitor_lockdown() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8572,6 +8668,10 @@ fn test_concurrent_monitor_claim() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8604,6 +8704,10 @@ fn test_concurrent_monitor_claim() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -10810,7 +10914,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	// After the events are processed, the ChannelMonitorUpdates will be released and, upon their
 	// completion, we'll respond to nodes[1] with an RAA + CS.
 	get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	check_added_monitors(&nodes[0], 3);
+	check_added_monitors_with_expected_claim_info_events(&nodes[0], 3, 2);
 }
 
 #[test]

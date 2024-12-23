@@ -50,7 +50,7 @@ use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
+use crate::events::{ClaimInfo, ClaimMetadata, ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 #[allow(unused_imports)]
@@ -1299,6 +1299,7 @@ macro_rules! _process_events_body {
 	}
 }
 pub(super) use _process_events_body as process_events_body;
+use crate::events::Event::PersistClaimInfo;
 
 pub(crate) struct WithChannelMonitor<'a, L: Deref> where L::Target: Logger {
 	logger: &'a L,
@@ -1609,6 +1610,28 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
 
+	/// Upon this call, the [`ClaimInfo`] for the given `counterparty_commitment_tx` is removed from
+	/// both in-memory and on-disk storage for this [`ChannelMonitor`], thereby optimizing memory and
+	/// disk usage.
+	///
+	/// See [`ChainMonitor::claim_info_persisted`] for more details.
+	pub fn remove_claim_info(&self, txid: &Txid) {
+		self.inner.lock().unwrap().remove_claim_info(txid);
+	}
+
+	/// This function should be called in response to a [`ClaimInfoRequest`] to provide the necessary claim data
+	/// that was previously persisted and removed during processing of [`PersistClaimInfo`] event.
+	pub(crate) fn provide_claim_info<B: Deref, F: Deref, L: Deref>(
+		&self, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
+	where B::Target: BroadcasterInterface,
+				F::Target: FeeEstimator,
+				L::Target: Logger,
+	{
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.provide_claim_info(claim_key, claim_info, claim_metadata, broadcaster, fee_estimator, &logger);
+	}
+
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
@@ -1650,6 +1673,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		mem::swap(&mut ret, &mut lck.pending_events);
 		ret.append(&mut lck.get_repeated_events());
 		ret
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn free_claim_info_events(&self) -> Vec<Event> {
+		let mut res = Vec::new();
+		let mut inner = self.inner.lock().unwrap();
+		inner.pending_events.retain(|ev| {
+			if let Event::PersistClaimInfo { .. } = ev {
+				res.push(ev.clone());
+				false
+			} else { true }
+		});
+		res
 	}
 
 	/// Gets the counterparty's initial commitment transaction. The returned commitment
@@ -2788,6 +2824,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				for &mut (_, ref mut source_opt) in self.counterparty_claimable_outpoints.get_mut(&txid).unwrap() {
 					*source_opt = None;
 				}
+				let htlcs = self.counterparty_claimable_outpoints.get(&txid).unwrap().iter().map(|(htlc, _)| htlc.clone()).collect();
+				self.pending_events.push(PersistClaimInfo {
+					monitor_id: self.funding_info.0,
+					claim_key: txid,
+					claim_info: ClaimInfo { htlcs },
+				})
 			} else {
 				assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 			}
@@ -3308,6 +3350,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		ret
 	}
 
+	fn remove_claim_info(&mut self, txid: &Txid) {
+		self.counterparty_claimable_outpoints.remove(txid);
+	}
+
+	fn provide_claim_info<B: Deref, F: Deref, L: Deref>(
+		&mut self, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>)
+	where B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let claimable_outpoints: Vec<_> = claim_info.htlcs.into_iter().zip(core::iter::repeat(None)).collect();
+		self.counterparty_claimable_outpoints.insert(claim_key, claimable_outpoints);
+
+		let (claimable_outpoints, _) = self.check_spend_counterparty_transaction(&claim_metadata.tx, claim_metadata.height, &claim_metadata.block_hash, &logger);
+		let conf_target = self.closure_conf_target();
+		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, claim_metadata.height, self.best_block.height, broadcaster, conf_target, &fee_estimator, logger);
+	}
+
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
 	/// transactions). We're okay if we lose these on restart as they'll be regenerated for us at
 	/// some regular interval via [`ChannelMonitor::rebroadcast_pending_claims`].
@@ -3514,15 +3574,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					Err(_) => return (claimable_outpoints, to_counterparty_output_info)
 				}
 			};
-		}
+			}
 
-		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3*8) | (tx.lock_time.to_consensus_u32() as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3 * 8) | (tx.lock_time.to_consensus_u32() as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		if commitment_number >= self.get_min_seen_secret() {
-			let secret = self.get_secret(commitment_number).unwrap();
-			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
-			let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
-			let revocation_pubkey = RevocationKey::from_basepoint(&self.onchain_tx_handler.secp_ctx,  &self.holder_revocation_basepoint, &per_commitment_point,);
-			let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key));
+			if per_commitment_option.is_none() {
+				self.pending_events.push(Event::ClaimInfoRequest {
+					monitor_id: self.get_funding_txo().0,
+					claim_key: commitment_txid,
+					claim_metadata: ClaimMetadata {
+						block_hash: block_hash.clone(),
+						tx: tx.clone(),
+						height,
+					},
+				});
+			} else {
+				let secret = self.get_secret(commitment_number).unwrap();
+				let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
+				let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+				let revocation_pubkey = RevocationKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.holder_revocation_basepoint, &per_commitment_point);
+				let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_p2wsh();
@@ -3574,14 +3645,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
-				} else {
-					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
-					// spend our funding output with a transaction which doesn't match our past
-					// commitment transactions. Thus, we can only debug-assert here when not
-					// fuzzing.
-					debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
-					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
-						block_hash, [].iter().map(|reference| *reference), logger);
+					} else {
+						// Our fuzzers aren't constrained by pesky things like valid signatures, so can
+						// spend our funding output with a transaction which doesn't match our past
+						// commitment transactions. Thus, we can only debug-assert here when not
+						// fuzzing.
+						debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
+						fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
+							block_hash, [].iter().map(|reference| *reference), logger);
+					}
 				}
 			}
 		} else if let Some(per_commitment_claimable_data) = per_commitment_option {
