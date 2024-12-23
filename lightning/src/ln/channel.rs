@@ -5180,13 +5180,10 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			let htlc_resolution = if let &InboundHTLCState::RemoteAnnounced(ref resolution) = &htlc.state {
-				Some(resolution.clone())
-			} else { None };
-			if let Some(htlc_resolution) = htlc_resolution {
+			if let &InboundHTLCState::RemoteAnnounced(ref htlc_resolution) = &htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution);
+				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone());
 				need_commitment = true;
 			}
 		}
