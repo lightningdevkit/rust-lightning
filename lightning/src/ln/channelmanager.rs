@@ -127,7 +127,7 @@ use core::time::Duration;
 use core::ops::Deref;
 use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub(crate) use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 #[cfg(test)]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::script::ShutdownScript;
@@ -1990,7 +1990,8 @@ where
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 /// # use lightning::routing::router::RouteParameters;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2093,7 +2094,8 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::offer::Offer;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2149,7 +2151,8 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// #
 /// # fn example<T: AChannelManager>(
