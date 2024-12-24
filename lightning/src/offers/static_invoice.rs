@@ -14,6 +14,7 @@ use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::io;
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
+use crate::offers::alloc::WithRoundedCapacity;
 use crate::offers::invoice::{
 	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks,
 	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, FallbackAddress,
@@ -292,7 +293,7 @@ impl UnsignedStaticInvoice {
 		// - all TLV records from `offer_bytes`,
 		// - all invoice-specific TLV records, and
 		// - a signature TLV record once the invoice is signed.
-		let mut bytes = Vec::with_capacity(
+		let mut bytes = Vec::with_rounded_capacity(
 			offer_bytes.len()
 				+ invoice_tlv_stream.serialized_length()
 				+ SIGNATURE_TLV_RECORD_SIZE
@@ -311,7 +312,7 @@ impl UnsignedStaticInvoice {
 
 		let mut experimental_tlv_stream =
 			TlvStream::new(remaining_bytes).range(EXPERIMENTAL_OFFER_TYPES).peekable();
-		let mut experimental_bytes = Vec::with_capacity(
+		let mut experimental_bytes = Vec::with_rounded_capacity(
 			remaining_bytes.len()
 				- experimental_tlv_stream
 					.peek()
@@ -324,7 +325,6 @@ impl UnsignedStaticInvoice {
 		}
 
 		experimental_invoice_tlv_stream.write(&mut experimental_bytes).unwrap();
-		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
 
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
@@ -344,12 +344,6 @@ impl UnsignedStaticInvoice {
 		signature_tlv_stream.write(&mut self.bytes).unwrap();
 
 		// Append the experimental bytes after the signature.
-		debug_assert_eq!(
-			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
-			// records with types >= 253.
-			self.bytes.len() + self.experimental_bytes.len() + 2,
-			self.bytes.capacity(),
-		);
 		self.bytes.extend_from_slice(&self.experimental_bytes);
 
 		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
