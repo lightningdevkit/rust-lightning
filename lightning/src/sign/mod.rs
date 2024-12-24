@@ -1003,6 +1003,25 @@ pub trait ChannelSigner {
 			chan_utils::HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
 		}
 	}
+
+	/// Gets the script pubkey of a htlc output in a commitment transaction
+	fn get_htlc_spk(
+		&self, htlc: &HTLCOutputInCommitment, is_holder_tx: bool, per_commitment_point: &PublicKey,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ScriptBuf {
+		let params = if is_holder_tx {
+			self.get_channel_parameters().unwrap().as_holder_broadcastable()
+		} else {
+			self.get_channel_parameters().unwrap().as_counterparty_broadcastable()
+		};
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		chan_utils::get_htlc_redeemscript(htlc, params.channel_type_features(), &keys).to_p2wsh()
+	}
 }
 
 /// Specifies the recipient of an invoice.

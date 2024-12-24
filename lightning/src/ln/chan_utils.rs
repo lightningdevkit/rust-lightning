@@ -1563,9 +1563,8 @@ impl CommitmentTransaction {
 
 		let mut htlcs = Vec::with_capacity(htlcs_with_aux.len());
 		for (htlc, _) in htlcs_with_aux {
-			let script = get_htlc_redeemscript(&htlc, &channel_parameters.channel_type_features(), &keys);
 			let txout = TxOut {
-				script_pubkey: script.to_p2wsh(),
+				script_pubkey: signer.get_htlc_spk(htlc, is_holder_tx, &keys.per_commitment_point, secp_ctx),
 				value: htlc.to_bitcoin_amount(),
 			};
 			txouts.push((txout, Some(htlc)));
