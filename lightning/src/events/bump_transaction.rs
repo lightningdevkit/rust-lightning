@@ -728,19 +728,20 @@ where
 		let mut signers_and_revokeable_spks = BTreeMap::new();
 		for htlc_descriptor in htlc_descriptors {
 			// TODO: avoid having mutable references flying around
-			let (_, revokeable_spk, witness_weight) = signers_and_revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+			let (_, revokeable_spk, witness_weight, htlc_spk) = signers_and_revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
 				.or_insert_with(|| {
 					let signer = htlc_descriptor.derive_channel_signer(&self.signer_provider);
 					let revokeable_spk = signer.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, &self.secp);
 					// TODO: cache this, it does not change throughout the lifetime of the channel
 					let witness_weight = signer.get_holder_htlc_transaction_witness_weight(htlc_descriptor.htlc.offered);
-					(signer, revokeable_spk, witness_weight)
+					let htlc_spk = signer.get_htlc_spk(&htlc_descriptor.htlc, true, &htlc_descriptor.per_commitment_point, &self.secp);
+					(signer, revokeable_spk, witness_weight, htlc_spk)
 				});
 
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
 				outpoint: htlc_input.previous_output.clone(),
-				previous_utxo: htlc_descriptor.previous_utxo(&self.secp),
+				previous_utxo: htlc_descriptor.previous_utxo(htlc_spk.clone()),
 				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + *witness_weight,
 			});
 			htlc_tx.input.push(htlc_input);
@@ -775,7 +776,9 @@ where
 		// add witness_utxo to htlc inputs
 		for (i, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
 			debug_assert_eq!(htlc_psbt.unsigned_tx.input[i].previous_output, htlc_descriptor.outpoint());
-			htlc_psbt.inputs[i].witness_utxo = Some(htlc_descriptor.previous_utxo(&self.secp));
+			// Unwrap because we derived the corresponding script pubkeys for all the htlc descriptors further above
+			let htlc_spk  = signers_and_revokeable_spks.get(&htlc_descriptor.channel_derivation_parameters.keys_id).unwrap().3.clone();
+			htlc_psbt.inputs[i].witness_utxo = Some(htlc_descriptor.previous_utxo(htlc_spk));
 		}
 		// add witness_utxo to remaining inputs
 		for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {

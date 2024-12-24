@@ -614,13 +614,8 @@ impl HTLCDescriptor {
 
 	/// Returns the UTXO to be spent by the HTLC input, which can be obtained via
 	/// [`Self::unsigned_tx_input`].
-	pub fn previous_utxo<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, secp: &Secp256k1<C>,
-	) -> TxOut {
-		TxOut {
-			script_pubkey: self.witness_script(secp).to_p2wsh(),
-			value: self.htlc.to_bitcoin_amount(),
-		}
+	pub fn previous_utxo(&self, htlc_spk: ScriptBuf) -> TxOut {
+		TxOut { script_pubkey: htlc_spk, value: self.htlc.to_bitcoin_amount() }
 	}
 
 	/// Returns the unsigned transaction input spending the HTLC output in the commitment
@@ -641,38 +636,6 @@ impl HTLCDescriptor {
 			&self.htlc,
 			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
 			revokeable_spk,
-		)
-	}
-
-	/// Returns the witness script of the HTLC output in the commitment transaction.
-	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(
-		&self, secp: &Secp256k1<C>,
-	) -> ScriptBuf {
-		let channel_params =
-			self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		let broadcaster_keys = channel_params.broadcaster_pubkeys();
-		let counterparty_keys = channel_params.countersignatory_pubkeys();
-		let broadcaster_htlc_key = HtlcKey::from_basepoint(
-			secp,
-			&broadcaster_keys.htlc_basepoint,
-			&self.per_commitment_point,
-		);
-		let counterparty_htlc_key = HtlcKey::from_basepoint(
-			secp,
-			&counterparty_keys.htlc_basepoint,
-			&self.per_commitment_point,
-		);
-		let counterparty_revocation_key = &RevocationKey::from_basepoint(
-			&secp,
-			&counterparty_keys.revocation_basepoint,
-			&self.per_commitment_point,
-		);
-		chan_utils::get_htlc_redeemscript_with_explicit_keys(
-			&self.htlc,
-			channel_params.channel_type_features(),
-			&broadcaster_htlc_key,
-			&counterparty_htlc_key,
-			&counterparty_revocation_key,
 		)
 	}
 
@@ -1002,6 +965,25 @@ pub trait ChannelSigner {
 		} else {
 			chan_utils::HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
 		}
+	}
+
+	/// Gets the script pubkey of a htlc output in a commitment transaction
+	fn get_htlc_spk(
+		&self, htlc: &HTLCOutputInCommitment, is_holder_tx: bool, per_commitment_point: &PublicKey,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ScriptBuf {
+		let params = if is_holder_tx {
+			self.get_channel_parameters().unwrap().as_holder_broadcastable()
+		} else {
+			self.get_channel_parameters().unwrap().as_counterparty_broadcastable()
+		};
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		chan_utils::get_htlc_redeemscript(htlc, params.channel_type_features(), &keys).to_p2wsh()
 	}
 }
 
@@ -1727,7 +1709,18 @@ impl ChannelSigner for InMemorySigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()> {
-		let witness_script = htlc_descriptor.witness_script(secp_ctx);
+		let params = self.get_channel_parameters().unwrap().as_holder_broadcastable();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			&htlc_descriptor.per_commitment_point,
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		let witness_script = chan_utils::get_htlc_redeemscript(
+			&htlc_descriptor.htlc,
+			params.channel_type_features(),
+			&keys,
+		);
 		let sighash = &sighash::SighashCache::new(&*htlc_tx)
 			.p2wsh_signature_hash(
 				input,

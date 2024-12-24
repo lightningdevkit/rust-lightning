@@ -8,7 +8,7 @@
 // licenses.
 
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
-use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
+use crate::ln::chan_utils::{self, HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction, TxCreationKeys};
 use crate::ln::channel_keys::{HtlcKey};
 use crate::ln::msgs;
 use crate::types::payment::PaymentPreimage;
@@ -300,7 +300,14 @@ impl ChannelSigner for TestChannelSigner {
 		let revokeable_spk = self.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, secp_ctx);
 		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(revokeable_spk));
 		{
-			let witness_script = htlc_descriptor.witness_script(secp_ctx);
+			let params = self.get_channel_parameters().unwrap().as_holder_broadcastable();
+			let keys = TxCreationKeys::from_channel_static_keys(
+				&htlc_descriptor.per_commitment_point,
+				params.broadcaster_pubkeys(),
+				params.countersignatory_pubkeys(),
+				secp_ctx,
+			);
+			let witness_script = chan_utils::get_htlc_redeemscript(&htlc_descriptor.htlc, params.channel_type_features(), &keys);
 			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {
