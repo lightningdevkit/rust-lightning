@@ -1008,6 +1008,11 @@ pub trait ChannelSigner {
 			None
 		}
 	}
+
+	/// Spend the holder anchor output
+	fn spend_holder_anchor_output(
+		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1768,6 +1773,15 @@ impl ChannelSigner for InMemorySigner {
 			&witness_script,
 			features,
 		))
+	}
+
+	fn spend_holder_anchor_output(
+		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()> {
+		let anchor_sig =
+			EcdsaChannelSigner::sign_holder_anchor_input(self, anchor_tx, input_idx, secp_ctx)?;
+		let funding_pubkey = self.pubkeys().funding_pubkey;
+		Ok(chan_utils::build_anchor_input_witness(&funding_pubkey, &anchor_sig))
 	}
 }
 

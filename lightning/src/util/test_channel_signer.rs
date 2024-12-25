@@ -326,6 +326,12 @@ impl ChannelSigner for TestChannelSigner {
 		}
 		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
 	}
+
+	fn spend_holder_anchor_output(
+		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Witness, ()> {
+		self.inner.spend_holder_anchor_output(anchor_tx, input_idx, secp_ctx)
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {

@@ -687,8 +687,8 @@ where
 			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
 
 			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
-			let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
-			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+			let anchor_witness = signer.spend_holder_anchor_output(&anchor_tx, 0, &self.secp)?;
+			anchor_tx.input[0].witness = anchor_witness;
 
 			#[cfg(debug_assertions)] {
 				let signed_tx_weight = anchor_tx.weight().to_wu();
