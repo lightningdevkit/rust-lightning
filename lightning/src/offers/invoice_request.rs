@@ -1335,7 +1335,7 @@ mod tests {
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash, TlvStream, self};
 	use crate::offers::nonce::Nonce;
-	use crate::offers::offer::{Amount, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity};
+	use crate::offers::offer::{Amount, Currency, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
 		crate::offers::offer::OfferBuilder,
@@ -2045,7 +2045,7 @@ mod tests {
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.description("foo".to_string())
-			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 1000 })
+			.amount(Amount::Currency(Currency { iso4217_code: *b"USD", amount: 1000 }))
 			.build_unchecked()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_unchecked_and_sign();
