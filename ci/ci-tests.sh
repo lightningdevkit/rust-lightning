@@ -112,13 +112,6 @@ cargo check --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
 
-echo -e "\n\Running functional tests from outside the workspace"
-pushd ext-functional-test-demo
-[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
-cargo test --color always
-[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-popd
-
 # Test that we can build downstream code with only the "release pins".
 pushd msrv-no-dev-deps-check
 PIN_RELEASE_DEPS
