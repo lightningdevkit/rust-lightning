@@ -142,6 +142,13 @@ RUSTFLAGS="$RUSTFLAGS --cfg=ldk_test_vectors" cargo test -p lightning --verbose 
 # check that compile with no_std and serde works in lightning-invoice
 cargo test -p lightning-invoice --verbose --color always --no-default-features --features serde
 
+echo -e "\n\nRunning externalized integration tests"
+pushd ext-functional-test-demo
+cargo test --verbose --color always
+cargo test --verbose --color always --features test-broken
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
+popd
+
 echo -e "\n\nTesting no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
