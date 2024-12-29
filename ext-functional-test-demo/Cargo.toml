@@ -3,5 +3,8 @@ name = "ext-functional-tester"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+test-broken = []
+
 [dependencies]
 lightning = { path = "../lightning", features = ["_externalize_tests"] }
