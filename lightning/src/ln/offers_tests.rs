@@ -2319,11 +2319,10 @@ fn no_double_pay_with_stale_channelmanager() {
 		.without_clearing_recipient_events();
 	do_pass_along_path(args);
 
-	expect_recent_payment!(nodes[0], RecentPaymentDetails::Pending, payment_id);
-	match get_event!(nodes[1], Event::PaymentClaimable) {
-		Event::PaymentClaimable { .. } => {},
+	let payment_preimage = match get_event!(nodes[1], Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => purpose.preimage(),
 		_ => panic!("No Event::PaymentClaimable"),
-	}
+	};
 
 	// Reload with the stale manager and check that receiving the invoice again won't result in a
 	// duplicate payment attempt.
