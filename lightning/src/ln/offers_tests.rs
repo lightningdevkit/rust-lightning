@@ -2341,5 +2341,15 @@ fn no_double_pay_with_stale_channelmanager() {
 	// Alice and Bob is closed. Since no 2nd attempt should be made, check that no events are
 	// generated in response to the duplicate invoice.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-}
 
+	// Claim payment on chain
+
+	// First close the channel between bob and alice, from bob's side
+	let error_message = "Channel force-closed";
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_0, &alice_id, error_message.to_string()).unwrap();
+	check_closed_broadcast!(nodes[1], true);
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_1, &alice_id, error_message.to_string()).unwrap();
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors!(nodes[1], 2);
+	check_closed_event!(nodes[1], 2, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [alice_id, alice_id], 10_000_000);
+}
