@@ -48,7 +48,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::channelmanager::{self, Bolt12PaymentError, PaymentId, RecentPaymentDetails, Retry, MAX_SHORT_LIVED_RELATIVE_EXPIRY};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -2344,6 +2344,9 @@ fn no_double_pay_with_stale_channelmanager() {
 
 	// Claim payment on chain
 
+	let commitment_tx_0 = get_local_commitment_txn!(nodes[1], chan_id_0);
+	let commitment_tx_1 = get_local_commitment_txn!(nodes[1], chan_id_1);
+
 	// First close the channel between bob and alice, from bob's side
 	let error_message = "Channel force-closed";
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_0, &alice_id, error_message.to_string()).unwrap();
@@ -2356,4 +2359,19 @@ fn no_double_pay_with_stale_channelmanager() {
 	nodes[1].node.claim_funds(payment_preimage);
 	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
 	check_added_monitors!(nodes[1], 2);
+
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(node_txn.len(), 2);
+
+	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![commitment_tx_0[0].clone(), node_txn[0].clone()]));
+	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![commitment_tx_1[0].clone(), node_txn[1].clone()]));
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV as u32);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+
+	match events[0] {
+		Event::PaymentSent { .. } => {},
+		Event::PaymentPathFailed { .. } => panic!("Received PaymentPathFailed"),
+		_ => panic!("Unexpected event")
+	}
 }
