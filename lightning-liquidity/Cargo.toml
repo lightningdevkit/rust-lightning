@@ -1,6 +1,6 @@
 [package]
 name = "lightning-liquidity"
-version = "0.1.0-alpha.6"
+version = "0.1.0-beta1"
 authors = ["John Cantrell <johncantrell97@gmail.com>", "Elias Rohrer <dev@tnull.de>"]
 homepage = "https://lightningdevkit.org/"
 license = "MIT OR Apache-2.0"
