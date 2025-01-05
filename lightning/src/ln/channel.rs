@@ -1519,7 +1519,7 @@ impl<SP: Deref> Channel<SP> where
 					holder_commitment_point,
 					is_v2_established: true,
 					#[cfg(splicing)]
-					pending_splice: None,
+					pending_splice_pre: None,
 				};
 				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
@@ -1726,6 +1726,23 @@ impl FundingScope {
 #[cfg(splicing)]
 struct PendingSplice {
 	pub our_funding_contribution: i64,
+}
+
+#[cfg(splicing)]
+impl PendingSplice {
+	#[inline]
+	fn add_checked(base: u64, delta: i64) -> u64 {
+		if delta >= 0 {
+			base.saturating_add(delta as u64)
+		} else {
+			base.saturating_sub(delta.abs() as u64)
+		}
+	}
+
+	/// Compute the post-splice channel value from the pre-splice values and the peer contributions
+	pub fn compute_post_value(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64) -> u64 {
+		Self::add_checked(pre_channel_value, our_funding_contribution.saturating_add(their_funding_contribution))
+	}
 }
 
 /// Contains everything about the channel including state, and various flags.
@@ -4256,6 +4273,33 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
+	/// Check that a balance value meets the channel reserve requirements or violates them (below reserve).
+	/// The channel value is an input as opposed to using from self, so that this can be used in case of splicing
+	/// to checks with new channel value (before being comitted to it).
+	#[cfg(splicing)]
+	pub fn check_balance_meets_reserve_requirements(&self, balance: u64, channel_value: u64) -> Result<(), ChannelError> {
+		if balance == 0 {
+			return Ok(());
+		}
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			channel_value, self.holder_dust_limit_satoshis);
+		if balance < holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve mandated by holder, {} vs {}",
+				balance, holder_selected_channel_reserve_satoshis,
+			)));
+		}
+		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			channel_value, self.counterparty_dust_limit_satoshis);
+		if balance < counterparty_selected_channel_reserve_satoshis {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve mandated by counterparty, {} vs {}",
+				balance, counterparty_selected_channel_reserve_satoshis,
+			)));
+		}
+		Ok(())
+	}
+
 	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
 	/// number of pending HTLCs that are on track to be in our next commitment tx.
 	///
@@ -4902,7 +4946,7 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	is_v2_established: bool,
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
 	#[cfg(splicing)]
-	pending_splice: Option<PendingSplice>,
+	pending_splice_pre: Option<PendingSplice>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -8435,7 +8479,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
-		if let Some(splice_info) = &self.pending_splice {
+		if let Some(splice_info) = &self.pending_splice_pre {
 			return Err(APIError::APIMisuseError { err: format!(
 				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
 				self.context.channel_id(), splice_info.our_funding_contribution
@@ -8471,7 +8515,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				self.context.channel_id(), err,
 			)})?;
 
-		self.pending_splice = Some(PendingSplice {
+		self.pending_splice_pre = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
 		});
 
@@ -8505,7 +8549,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let our_funding_contribution_satoshis = 0i64;
 
 		// Check if a splice has been initiated already.
-		if let Some(splice_info) = &self.pending_splice {
+		if let Some(splice_info) = &self.pending_splice_pre {
 			return Err(ChannelError::Warn(format!(
 				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution,
 			)));
@@ -8550,14 +8594,26 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Handle splice_ack
 	#[cfg(splicing)]
-	pub fn splice_ack(&mut self, _msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
+	pub fn splice_ack(&mut self, msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
 		// check if splice is pending
-		if self.pending_splice.is_none() {
+		let pending_splice = if let Some(pending_splice) = &self.pending_splice_pre {
+			pending_splice
+		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
 		};
 
-		// TODO(splicing): Pre-check for reserve requirement
+		// Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
+		let our_funding_contribution = pending_splice.our_funding_contribution;
+		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
+
+		let pre_channel_value = self.funding.get_value_satoshis();
+		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
+		let post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution);
+		// Early check for reserve requirement, assuming maximum balance of full channel value
+		// This will also be checked later at tx_complete
+		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
+
 		Ok(())
 	}
 
@@ -9481,7 +9537,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			is_v2_established: false,
 			holder_commitment_point,
 			#[cfg(splicing)]
-			pending_splice: None,
+			pending_splice_pre: None,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -9758,7 +9814,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			is_v2_established: false,
 			holder_commitment_point,
 			#[cfg(splicing)]
-			pending_splice: None,
+			pending_splice_pre: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
@@ -11120,7 +11176,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			is_v2_established,
 			holder_commitment_point,
 			#[cfg(splicing)]
-			pending_splice: None,
+			pending_splice_pre: None,
 		})
 	}
 }
@@ -13048,6 +13104,71 @@ mod tests {
 				).unwrap(),
 				expected_fee,
 			);
+		}
+	}
+
+	#[cfg(all(test, splicing))]
+	fn get_pre_and_post(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64) -> (u64, u64) {
+		use crate::ln::channel::PendingSplice;
+
+		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
+		(pre_channel_value, post_channel_value)
+	}
+
+	#[cfg(all(test, splicing))]
+	#[test]
+	fn test_splice_compute_post_value() {
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 6_000, 0);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 4_000, 2_000);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 0, 6_000);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// decrease, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, -6_000, 0);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 9_000);
+		}
+		{
+			// decrease, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, -4_000, -2_000);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 9_000);
+		}
+		{
+			// increase and decrease
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, 4_000, -2_000);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 17_000);
+		}
+		let base2: u64 = 2;
+		let huge63i3 = (base2.pow(63) - 3) as i64;
+		assert_eq!(huge63i3, 9223372036854775805);
+		assert_eq!(-huge63i3, -9223372036854775805);
+		{
+			// increase, large amount
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, huge63i3, 3);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 9223372036854784807);
+		}
+		{
+			// increase, large amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, huge63i3, huge63i3);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 9223372036854784807);
 		}
 	}
 }
