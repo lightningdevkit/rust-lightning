@@ -234,6 +234,7 @@ impl From<secp256k1::Error> for Bolt12ParseError {
 mod bolt12_tests {
 	use super::Bolt12ParseError;
 	use crate::offers::offer::Offer;
+	use bech32::primitives::decode::{CheckedHrpstringError, UncheckedHrpstringError, CharError};
 
 	#[test]
 	fn encodes_offer_as_bech32_without_checksum() {
@@ -249,6 +250,9 @@ mod bolt12_tests {
 		let offers = [
 			// A complete string is valid
 			"lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
+
+			// Uppercase is valid
+			"LNO1PQPS7SJQPGTYZM3QV4UXZMTSD3JJQER9WD3HY6TSW35K7MSJZFPY7NZ5YQCNYGRFDEJ82UM5WF5K2UCKYYPWA3EYT44H6TXTXQUQH7LZ5DJGE4AFGFJN7K4RGRKUAG0JSD5XVXG",
 
 			// + can join anywhere
 			"l+no1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
@@ -281,6 +285,16 @@ mod bolt12_tests {
 				Ok(_) => panic!("Valid offer: {}", encoded_offer),
 				Err(e) => assert_eq!(e, Bolt12ParseError::InvalidContinuation),
 			}
+		}
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offers_with_mixed_casing() {
+		// We assert that mixed-case encoding fails to parse.
+		let mixed_case_offer = "LnO1PqPs7sJqPgTyZm3qV4UxZmTsD3JjQeR9Wd3hY6TsW35k7mSjZfPy7nZ5YqCnYgRfDeJ82uM5Wf5k2uCkYyPwA3EyT44h6tXtXqUqH7Lz5dJgE4AfGfJn7k4rGrKuAg0jSd5xVxG";
+		match mixed_case_offer.parse::<Offer>() {
+			Ok(_) => panic!("Valid offer: {}", mixed_case_offer),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MixedCase)))),
 		}
 	}
 }
