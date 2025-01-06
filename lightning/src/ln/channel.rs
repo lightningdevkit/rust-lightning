@@ -1153,6 +1153,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 		}
 	}
 
+	pub fn is_funded(&self) -> bool {
+		matches!(self, ChannelPhase::Funded(_))
+	}
+
 	pub fn as_funded(&self) -> Option<&Channel<SP>> {
 		if let ChannelPhase::Funded(channel) = self {
 			Some(channel)

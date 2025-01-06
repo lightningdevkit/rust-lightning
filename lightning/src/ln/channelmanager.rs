@@ -1366,13 +1366,7 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 				return false;
 			}
 		}
-		!self.channel_by_id.iter().any(|(_, phase)|
-			match phase {
-				ChannelPhase::Funded(_) | ChannelPhase::UnfundedOutboundV1(_) => true,
-				ChannelPhase::UnfundedInboundV1(_) => false,
-				ChannelPhase::UnfundedV2(chan) => chan.context.is_outbound(),
-			}
-		)
+		!self.channel_by_id.iter().any(|(_, channel)| channel.is_funded() || channel.context().is_outbound())
 			&& self.monitor_update_blocked_actions.is_empty()
 			&& self.closed_channel_monitor_update_ids.is_empty()
 	}
