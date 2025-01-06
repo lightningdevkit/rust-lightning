@@ -20,7 +20,7 @@ use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::chan_utils::{ANCHOR_INPUT_WITNESS_WEIGHT, HTLCOutputInCommitment};
+use crate::ln::chan_utils::HTLCOutputInCommitment;
 use crate::prelude::*;
 use crate::sign::{
 	ChannelDerivationParameters, ChannelSigner, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
@@ -608,6 +608,9 @@ where
 		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
+		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
+		let anchor_input_witness_weight = signer.get_holder_anchor_input_witness_weight();
+
 		// Our commitment transaction already has fees allocated to it, so we should take them into
 		// account. We do so by pretending the commitment transaction's fee and weight are part of
 		// the anchor input.
@@ -615,7 +618,7 @@ where
 		let commitment_tx_fee_sat = Amount::from_sat(commitment_tx_fee_sat);
 		anchor_utxo.value += commitment_tx_fee_sat;
 		let starting_package_and_fixed_input_satisfaction_weight =
-			commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+			commitment_tx.weight().to_wu() + anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT;
 		let mut package_and_fixed_input_satisfaction_weight =
 			starting_package_and_fixed_input_satisfaction_weight;
 
@@ -640,7 +643,7 @@ where
 				output: vec![],
 			};
 
-			let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT +
+			let total_satisfaction_weight = anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT +
 				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
 			let total_input_amount = must_spend_amount +
 				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
@@ -686,7 +689,6 @@ where
 			log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
 
-			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 			let anchor_witness = signer.spend_holder_anchor_output(&anchor_tx, 0, &self.secp)?;
 			anchor_tx.input[0].witness = anchor_witness;
 
@@ -862,7 +864,7 @@ mod tests {
 	use super::*;
 
 	use crate::io::Cursor;
-	use crate::ln::chan_utils::ChannelTransactionParameters;
+	use crate::ln::chan_utils::{ANCHOR_INPUT_WITNESS_WEIGHT, ChannelTransactionParameters};
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
 	use crate::sign::KeysManager;

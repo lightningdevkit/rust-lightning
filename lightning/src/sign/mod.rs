@@ -49,6 +49,7 @@ use crate::ln::chan_utils::{
 	get_anchor_redeemscript, get_counterparty_payment_script, get_revokeable_redeemscript,
 	make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction,
 	CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	ANCHOR_INPUT_WITNESS_WEIGHT,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::channel_keys::{
@@ -1013,6 +1014,11 @@ pub trait ChannelSigner {
 	fn spend_holder_anchor_output(
 		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()>;
+
+	/// Get the weight of the witness to spend the holder anchor input
+	fn get_holder_anchor_input_witness_weight(&self) -> u64 {
+		ANCHOR_INPUT_WITNESS_WEIGHT
+	}
 }
 
 /// Specifies the recipient of an invoice.
