@@ -7831,8 +7831,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> usize {
 		let mut num_unfunded_channels = 0;
 		for (_, phase) in peer.channel_by_id.iter() {
-			match phase {
-				ChannelPhase::Funded(chan) => {
+			match phase.as_funded() {
+				Some(chan) => {
 					// This covers non-zero-conf inbound `Channel`s that we are currently monitoring, but those
 					// which have not yet had any confirmations on-chain.
 					if !chan.context.is_outbound() && chan.context.minimum_depth().unwrap_or(1) != 0 &&
@@ -7841,27 +7841,25 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						num_unfunded_channels += 1;
 					}
 				},
-				ChannelPhase::UnfundedInboundV1(chan) => {
-					if chan.context.minimum_depth().unwrap_or(1) != 0 {
-						num_unfunded_channels += 1;
-					}
-				},
-				ChannelPhase::UnfundedV2(chan) => {
+				None => {
 					// Outbound channels don't contribute to the unfunded count in the DoS context.
-					if chan.context.is_outbound() {
+					if phase.context().is_outbound() {
 						continue;
 					}
 
-					// Only inbound V2 channels that are not 0conf and that we do not contribute to will be
-					// included in the unfunded count.
-					if chan.context.minimum_depth().unwrap_or(1) != 0 &&
-						chan.dual_funding_context.our_funding_satoshis == 0 {
-						num_unfunded_channels += 1;
+					// 0conf channels are not considered unfunded.
+					if phase.context().minimum_depth().unwrap_or(1) == 0 {
+						continue;
 					}
-				},
-				ChannelPhase::UnfundedOutboundV1(_) => {
-					// Outbound channels don't contribute to the unfunded count in the DoS context.
-					continue;
+
+					// Inbound V2 channels with contributed inputs are not considered unfunded.
+					if let Some(chan) = phase.as_unfunded_v2() {
+						if chan.dual_funding_context.our_funding_satoshis != 0 {
+							continue;
+						}
+					}
+
+					num_unfunded_channels += 1;
 				},
 			}
 		}

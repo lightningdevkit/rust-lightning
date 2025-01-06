@@ -1172,6 +1172,14 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			None
 		}
 	}
+
+	pub fn as_unfunded_v2(&self) -> Option<&PendingV2Channel<SP>> {
+		if let ChannelPhase::UnfundedV2(channel) = self {
+			Some(channel)
+		} else {
+			None
+		}
+	}
 }
 
 /// Contains all state common to unfunded inbound/outbound channels.
