@@ -3605,9 +3605,7 @@ macro_rules! get_channel_value_stat {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();
 		let chan_lock = peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
-		let chan = chan_lock.channel_by_id.get(&$channel_id).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let chan = chan_lock.channel_by_id.get(&$channel_id).and_then(ChannelPhase::as_funded).unwrap();
 		chan.get_value_stat()
 	}}
 }

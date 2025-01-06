@@ -1152,6 +1152,22 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedV2(ref mut chan) => &mut chan.context,
 		}
 	}
+
+	pub fn as_funded(&self) -> Option<&Channel<SP>> {
+		if let ChannelPhase::Funded(channel) = self {
+			Some(channel)
+		} else {
+			None
+		}
+	}
+
+	pub fn as_funded_mut(&mut self) -> Option<&mut Channel<SP>> {
+		if let ChannelPhase::Funded(channel) = self {
+			Some(channel)
+		} else {
+			None
+		}
+	}
 }
 
 /// Contains all state common to unfunded inbound/outbound channels.
