@@ -1011,7 +1011,7 @@ impl OutboundPayments {
 	#[cfg(async_payments)]
 	pub(super) fn static_invoice_received<ES: Deref>(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		best_block_height: u32, entropy_source: ES,
+		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
 	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
 		macro_rules! abandon_with_entry {
@@ -1045,6 +1045,11 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::UnknownRequiredFeatures);
 						return Err(Bolt12PaymentError::UnknownRequiredFeatures)
 					}
+					if duration_since_epoch > invoice.created_at().saturating_add(invoice.relative_expiry()) {
+						abandon_with_entry!(entry, PaymentFailureReason::PaymentExpired);
+						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired))
+					}
+
 					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
 						Ok(amt) => amt,
 						Err(_) => {

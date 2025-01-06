@@ -579,3 +579,74 @@ fn pays_static_invoice() {
 		.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
+
+#[cfg(not(feature = "std"))]
+#[test]
+fn expired_static_invoice_fail() {
+	// Test that if we receive an expired static invoice we'll fail the payment.
+	let secp_ctx = Secp256k1::new();
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	const INVOICE_EXPIRY_SECS: u32 = 10;
+	let relative_expiry = Duration::from_secs(INVOICE_EXPIRY_SECS as u64);
+	let (offer, static_invoice) =
+		create_static_invoice(&nodes[1], &nodes[2], Some(relative_expiry), &secp_ctx);
+
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0]
+		.node
+		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+
+	let invreq_om = nodes[0]
+		.onion_messenger
+		.next_onion_message_for_peer(nodes[1].node.get_our_node_id())
+		.unwrap();
+	let invreq_reply_path = offers_tests::extract_invoice_request(&nodes[1], &invreq_om).1;
+	// TODO: update to not manually send here when we add support for being the recipient's
+	// always-online counterparty
+	nodes[1]
+		.onion_messenger
+		.send_onion_message(
+			ParsedOnionMessageContents::<Infallible>::Offers(OffersMessage::StaticInvoice(
+				static_invoice,
+			)),
+			MessageSendInstructions::WithoutReplyPath {
+				destination: Destination::BlindedPath(invreq_reply_path),
+			},
+		)
+		.unwrap();
+	let static_invoice_om = nodes[1]
+		.onion_messenger
+		.next_onion_message_for_peer(nodes[0].node.get_our_node_id())
+		.unwrap();
+
+	// Wait until the static invoice expires before providing it to the sender.
+	let block = create_dummy_block(
+		nodes[0].best_block_hash(),
+		nodes[0].node.duration_since_epoch().as_secs() as u32 + INVOICE_EXPIRY_SECS + 1,
+		Vec::new(),
+	);
+	connect_block(&nodes[0], &block);
+	nodes[0]
+		.onion_messenger
+		.handle_onion_message(nodes[1].node.get_our_node_id(), &static_invoice_om);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_id: ev_payment_id, reason, .. } => {
+			assert_eq!(reason.unwrap(), PaymentFailureReason::PaymentExpired);
+			assert_eq!(ev_payment_id, payment_id);
+		},
+		_ => panic!(),
+	}
+	// The sender doesn't reply with InvoiceError right now because the always-online node doesn't
+	// currently provide them with a reply path to do so.
+}
