@@ -4729,8 +4729,8 @@ where
 			let best_block_height = self.best_block.read().unwrap().height;
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
-				invoice, payment_id, features, best_block_height, &*self.entropy_source,
-				&self.pending_events
+				invoice, payment_id, features, best_block_height, self.duration_since_epoch(),
+				&*self.entropy_source, &self.pending_events
 			);
 			match outbound_pmts_res {
 				Ok(()) => {},
