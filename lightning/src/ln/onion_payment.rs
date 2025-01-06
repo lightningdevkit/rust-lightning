@@ -235,6 +235,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			custom_tlvs,
 			requires_blinded_error,
 			has_recipient_created_payment_secret,
+			payment_context,
 		}
 	} else if let Some(data) = payment_data {
 		PendingHTLCRouting::Receive {
