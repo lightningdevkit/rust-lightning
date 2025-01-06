@@ -47,8 +47,8 @@ use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::{MessageContext, OffersContext};
-use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
+use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -62,6 +62,7 @@ use crate::onion_message::messenger::{Destination, PeeledOnion, MessageSendInstr
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
+use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::Writeable;
 
@@ -2253,6 +2254,71 @@ fn fails_paying_invoice_with_unknown_required_features() {
 		},
 		_ => panic!("Expected Event::PaymentFailed with reason"),
 	}
+}
+
+#[test]
+fn rejects_keysend_to_non_static_invoice_path() {
+	// Test that we'll fail a keysend payment that was sent over a non-static BOLT 12 invoice path.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	// First pay the offer and save the payment preimage and invoice.
+	let offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None).unwrap();
+	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+	nodes[1].onion_messenger.handle_onion_message(nodes[0].node.get_our_node_id(), &invreq_om);
+	let invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	let invoice = extract_invoice(&nodes[0], &invoice_om).0;
+	nodes[0].onion_messenger.handle_onion_message(nodes[1].node.get_our_node_id(), &invoice_om);
+
+	route_bolt12_payment(&nodes[0], &[&nodes[1]], &invoice);
+	expect_recent_payment!(nodes[0], RecentPaymentDetails::Pending, payment_id);
+
+	let payment_preimage = match get_event!(nodes[1], Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => purpose.preimage().unwrap(),
+		_ => panic!()
+	};
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	expect_recent_payment!(&nodes[0], RecentPaymentDetails::Fulfilled, payment_id);
+
+	// Time out the payment from recent payments so we can attempt to pay it again via keysend.
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	// Pay the invoice via keysend now that we have the preimage and make sure the recipient fails it
+	// due to incorrect payment context.
+	let pay_params = PaymentParameters::from_bolt12_invoice(&invoice);
+	let route_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
+	let keysend_payment_id = PaymentId([2; 32]);
+	let payment_hash = nodes[0].node.send_spontaneous_payment(
+		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), keysend_payment_id,
+		route_params, Retry::Attempts(0)
+	).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let route: &[&[&Node]] = &[&[&nodes[1]]];
+
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
+		.with_payment_preimage(payment_preimage)
+		.expect_failure(HTLCDestination::FailedPayment { payment_hash });
+	do_pass_along_path(args);
+	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
+	nodes[1].logger.assert_log_contains(
+		"lightning::ln::channelmanager", "received a keysend payment to a non-async payments context", 1
+	);
 }
 
 #[test]
