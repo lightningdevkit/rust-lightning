@@ -240,6 +240,11 @@ pub enum PendingHTLCRouting {
 		/// [`PaymentSecret`] and should verify it using our
 		/// [`NodeSigner::get_inbound_payment_key`].
 		has_recipient_created_payment_secret: bool,
+		/// The context of the payment included by the recipient in a blinded path, or `None` if a
+		/// blinded path was not used.
+		///
+		/// Used in part to determine the [`events::PaymentPurpose`].
+		payment_context: Option<PaymentContext>,
 	},
 }
 
@@ -6023,7 +6028,7 @@ where
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
 										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _,
-										has_recipient_created_payment_secret,
+										has_recipient_created_payment_secret, payment_context,
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
@@ -6031,7 +6036,8 @@ where
 											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											payment_data, None, None, onion_fields, has_recipient_created_payment_secret)
+											payment_data, payment_context, None, onion_fields,
+											has_recipient_created_payment_secret)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -6228,6 +6234,12 @@ where
 										check_total_value!(purpose);
 									},
 									OnionPayload::Spontaneous(preimage) => {
+										if payment_context.is_some() {
+											if !matches!(payment_context, Some(PaymentContext::AsyncBolt12Offer(_))) {
+												log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
+											}
+											fail_htlc!(claimable_htlc, payment_hash);
+										}
 										let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 										check_total_value!(purpose);
 									}
@@ -12377,6 +12389,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
+		(9, payment_context, option),
 	},
 );
 
