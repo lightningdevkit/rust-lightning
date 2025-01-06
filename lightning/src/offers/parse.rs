@@ -58,7 +58,8 @@ mod sealed {
 
 			let parsed = CheckedHrpstring::new::<NoChecksum>(encoded.as_ref())?;
 			let hrp = parsed.hrp();
-			if hrp.as_str() != Self::BECH32_HRP {
+			// Compare the lowercase'd iter to allow for all-uppercase HRPs
+			if hrp.lowercase_char_iter().ne(Self::BECH32_HRP.chars()) {
 				return Err(Bolt12ParseError::InvalidBech32Hrp);
 			}
 
