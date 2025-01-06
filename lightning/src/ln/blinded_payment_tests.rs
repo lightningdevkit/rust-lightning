@@ -105,6 +105,37 @@ pub fn get_blinded_route_parameters(
 	)
 }
 
+pub fn fail_blinded_htlc_backwards(
+	payment_hash: PaymentHash, intro_node_idx: usize, nodes: &[&Node],
+) {
+	for i in (0..nodes.len()).rev() {
+		match i {
+			0 => {
+				let mut payment_failed_conditions = PaymentFailedConditions::new()
+					.expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]);
+					expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+			},
+			i if i <= intro_node_idx => {
+				let unblinded_node_updates = get_htlc_update_msgs!(nodes[i], nodes[i-1].node.get_our_node_id());
+				assert_eq!(unblinded_node_updates.update_fail_htlcs.len(), 1);
+				nodes[i-1].node.handle_update_fail_htlc(
+					nodes[i].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[i-1]
+				);
+				do_commitment_signed_dance(&nodes[i-1], &nodes[i], &unblinded_node_updates.commitment_signed, false, false);
+			},
+			_ => {
+				let blinded_node_updates = get_htlc_update_msgs!(nodes[i], nodes[i-1].node.get_our_node_id());
+				assert_eq!(blinded_node_updates.update_fail_malformed_htlcs.len(), 1);
+				let update_malformed = &blinded_node_updates.update_fail_malformed_htlcs[0];
+				assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+				assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+				nodes[i-1].node.handle_update_fail_malformed_htlc(nodes[i].node.get_our_node_id(), update_malformed);
+				do_commitment_signed_dance(&nodes[i-1], &nodes[i], &blinded_node_updates.commitment_signed, true, false);
+			}
+		}
+	}
+}
+
 #[test]
 fn one_hop_blinded_path() {
 	do_one_hop_blinded_path(true);
@@ -361,11 +392,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &updates_0_1.commitment_signed, true, true);
 
 	if intro_fails {
-		let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
-		expect_payment_failed_conditions(&nodes[0], payment_hash, false,
-			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]]);
 		return
 	}
 
@@ -547,13 +574,8 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 
 	if intro_fails {
 		cause_error!(nodes[0], nodes[1], nodes[2], chan_id_1_2, chan_upd_1_2.short_channel_id);
-		let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		check_added_monitors!(nodes[1], 1);
-		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
-
-		expect_payment_failed_conditions(&nodes[0], payment_hash, false,
-			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]]);
 		return
 	}
 
@@ -643,14 +665,8 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::UnknownNextHop { requested_forward_scid: intercept_scid }]);
 		nodes[1].node.process_pending_htlc_forwards();
-		let update_fail = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		check_added_monitors!(&nodes[1], 1);
-		assert!(update_fail.update_fail_htlcs.len() == 1);
-		let fail_msg = update_fail.update_fail_htlcs[0].clone();
-		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
-		commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
-		expect_payment_failed_conditions(&nodes[0], payment_hash, false,
-			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]]);
 		return
 	}
 
@@ -756,29 +772,7 @@ fn three_hop_blinded_path_fail() {
 	);
 	nodes[3].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[3], 1);
-
-	let updates_3_2 = get_htlc_update_msgs!(nodes[3], nodes[2].node.get_our_node_id());
-	assert_eq!(updates_3_2.update_fail_malformed_htlcs.len(), 1);
-	let update_malformed = &updates_3_2.update_fail_malformed_htlcs[0];
-	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
-	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
-	nodes[2].node.handle_update_fail_malformed_htlc(nodes[3].node.get_our_node_id(), update_malformed);
-	do_commitment_signed_dance(&nodes[2], &nodes[3], &updates_3_2.commitment_signed, true, false);
-
-	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
-	assert_eq!(updates_2_1.update_fail_malformed_htlcs.len(), 1);
-	let update_malformed = &updates_2_1.update_fail_malformed_htlcs[0];
-	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
-	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
-	nodes[1].node.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
-
-	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
-	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates_1_0.update_fail_htlcs[0]);
-	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
-		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2], &nodes[3]]);
 }
 
 #[derive(PartialEq)]
