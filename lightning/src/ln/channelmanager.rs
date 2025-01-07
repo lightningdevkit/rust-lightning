@@ -11646,41 +11646,29 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				for (_, phase) in peer_state.channel_by_id.iter_mut() {
-					match phase {
-						ChannelPhase::Funded(chan) => {
+					match phase.as_funded_mut() {
+						Some(chan) => {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
 								node_id: chan.context.get_counterparty_node_id(),
 								msg: chan.get_channel_reestablish(&&logger),
 							});
 						},
-						ChannelPhase::UnfundedOutboundV1(chan) => {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-							if let Some(msg) = chan.get_open_channel(self.chain_hash, &&logger) {
+						None => match phase.maybe_get_open_channel(self.chain_hash, &self.logger) {
+							Some(OpenChannelMessage::V1(msg)) => {
 								pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-									node_id: chan.context.get_counterparty_node_id(),
+									node_id: phase.context().get_counterparty_node_id(),
 									msg,
 								});
-							}
-						},
-						ChannelPhase::UnfundedV2(chan) => {
-							if chan.context.is_outbound() {
+							},
+							#[cfg(dual_funding)]
+							Some(OpenChannelMessage::V2(msg)) => {
 								pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-									node_id: chan.context.get_counterparty_node_id(),
-									msg: chan.get_open_channel_v2(self.chain_hash),
+									node_id: phase.context().get_counterparty_node_id(),
+									msg,
 								});
-							} else {
-								// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
-								// they are not persisted and won't be recovered after a crash.
-								// Therefore, they shouldn't exist at this point.
-								debug_assert!(false);
-							}
-						},
-						ChannelPhase::UnfundedInboundV1(_) => {
-							// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
-							// they are not persisted and won't be recovered after a crash.
-							// Therefore, they shouldn't exist at this point.
-							debug_assert!(false);
+							},
+							None => {},
 						},
 					}
 				}

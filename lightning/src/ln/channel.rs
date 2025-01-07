@@ -39,7 +39,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
-use crate::ln::channelmanager::{self, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{
 	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
 	htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction,
@@ -1240,6 +1240,43 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
+		}
+	}
+
+	pub fn maybe_get_open_channel<L: Deref>(
+		&mut self, chain_hash: ChainHash, logger: &L,
+	) -> Option<OpenChannelMessage> where L::Target: Logger {
+		match self {
+			ChannelPhase::Funded(_) => None,
+			ChannelPhase::UnfundedOutboundV1(chan) => {
+				let logger = WithChannelContext::from(logger, &chan.context, None);
+				chan.get_open_channel(chain_hash, &&logger)
+					.map(|msg| OpenChannelMessage::V1(msg))
+			},
+			ChannelPhase::UnfundedInboundV1(_) => {
+				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
+				// they are not persisted and won't be recovered after a crash.
+				// Therefore, they shouldn't exist at this point.
+				debug_assert!(false);
+				None
+			},
+			#[cfg(dual_funding)]
+			ChannelPhase::UnfundedV2(chan) => {
+				if chan.context.is_outbound() {
+					Some(OpenChannelMessage::V2(chan.get_open_channel_v2(chain_hash)))
+				} else {
+					// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
+					// they are not persisted and won't be recovered after a crash.
+					// Therefore, they shouldn't exist at this point.
+					debug_assert!(false);
+					None
+				}
+			},
+			#[cfg(not(dual_funding))]
+			ChannelPhase::UnfundedV2(_) => {
+				debug_assert!(false);
+				None
+			},
 		}
 	}
 }
