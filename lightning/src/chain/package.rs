@@ -546,14 +546,9 @@ impl PackageSolvingData {
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.weight as usize,
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.weight as usize,
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.weight as usize,
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
-				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-				if outp.preimage.is_none() {
-					weight_offered_htlc(&outp.channel_type_features) as usize
-				} else {
-					weight_received_htlc(&outp.channel_type_features) as usize
-				}
-			},
+			// Since HolderHLTCOutput requires external funding, we never inquire the witness
+			// weight of the HTLC transaction here. See OnchainTxHandler::generate_claim.
+			PackageSolvingData::HolderHTLCOutput(ref _outp) => unreachable!(),
 			// Since HolderFundingOutput maps to an untractable package that is already signed, its
 			// weight can be determined from the transaction itself.
 			PackageSolvingData::HolderFundingOutput(..) => unreachable!(),
