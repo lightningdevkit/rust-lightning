@@ -909,6 +909,9 @@ pub(super) struct MonitorRestoreUpdates {
 pub(super) struct SignerResumeUpdates {
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub revoke_and_ack: Option<msgs::RevokeAndACK>,
+	pub open_channel: Option<msgs::OpenChannel>,
+	pub accept_channel: Option<msgs::AcceptChannel>,
+	pub funding_created: Option<msgs::FundingCreated>,
 	pub funding_signed: Option<msgs::FundingSigned>,
 	pub channel_ready: Option<msgs::ChannelReady>,
 	pub order: RAACommitmentOrder,
@@ -1186,6 +1189,48 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			Some(channel)
 		} else {
 			None
+		}
+	}
+
+	pub fn signer_maybe_unblocked<L: Deref>(
+		&mut self, chain_hash: ChainHash, logger: &L,
+	) -> Option<SignerResumeUpdates> where L::Target: Logger {
+		match self {
+			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
+				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
+				Some(SignerResumeUpdates {
+					commitment_update: None,
+					revoke_and_ack: None,
+					open_channel,
+					accept_channel: None,
+					funding_created,
+					funding_signed: None,
+					channel_ready: None,
+					order: chan.context.resend_order.clone(),
+					closing_signed: None,
+					signed_closing_tx: None,
+					shutdown_result: None,
+				})
+			},
+			ChannelPhase::UnfundedInboundV1(chan) => {
+				let logger = WithChannelContext::from(logger, &chan.context, None);
+				let accept_channel = chan.signer_maybe_unblocked(&&logger);
+				Some(SignerResumeUpdates {
+					commitment_update: None,
+					revoke_and_ack: None,
+					open_channel: None,
+					accept_channel,
+					funding_created: None,
+					funding_signed: None,
+					channel_ready: None,
+					order: chan.context.resend_order.clone(),
+					closing_signed: None,
+					signed_closing_tx: None,
+					shutdown_result: None,
+				})
+			},
+			ChannelPhase::UnfundedV2(_) => None,
 		}
 	}
 }
@@ -6178,6 +6223,9 @@ impl<SP: Deref> Channel<SP> where
 		SignerResumeUpdates {
 			commitment_update,
 			revoke_and_ack,
+			open_channel: None,
+			accept_channel: None,
+			funding_created: None,
 			funding_signed,
 			channel_ready,
 			order: self.context.resend_order.clone(),

@@ -9468,9 +9468,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
 			let node_id = phase.context().get_counterparty_node_id();
-			match phase {
-				ChannelPhase::Funded(chan) => {
-					let msgs = chan.signer_maybe_unblocked(&self.logger);
+			match (phase.signer_maybe_unblocked(self.chain_hash, &self.logger), phase.as_funded()) {
+				(Some(msgs), Some(chan)) => {
 					let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
 						node_id,
 						updates,
@@ -9521,34 +9520,29 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					}
 					msgs.shutdown_result
-				}
-				ChannelPhase::UnfundedOutboundV1(chan) => {
-					let (open_channel, funding_created) = chan.signer_maybe_unblocked(self.chain_hash.clone(), &self.logger);
-					if let Some(msg) = open_channel {
+				},
+				(Some(msgs), None) => {
+					if let Some(msg) = msgs.open_channel {
 						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 							node_id,
 							msg,
 						});
 					}
-					if let Some(msg) = funding_created {
+					if let Some(msg) = msgs.funding_created {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 							node_id,
 							msg,
 						});
 					}
-					None
-				}
-				ChannelPhase::UnfundedInboundV1(chan) => {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					if let Some(msg) = chan.signer_maybe_unblocked(&&logger) {
+					if let Some(msg) = msgs.accept_channel {
 						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 							node_id,
 							msg,
 						});
 					}
 					None
-				},
-				ChannelPhase::UnfundedV2(_) => None,
+				}
+				(None, _) => None,
 			}
 		};
 
