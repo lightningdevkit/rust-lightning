@@ -394,20 +394,16 @@ impl_writeable_tlv_based!(RouteHop, {
 pub struct TrampolineHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
-	/// The node_announcement features of the node at this hop. For the last hop, these may be
-	/// amended to match the features present in the invoice this node generated.
+	/// The node_announcement features of the node at this hop.
 	pub node_features: NodeFeatures,
-	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
-	/// If this is the last hop in [`Path::hops`]:
-	/// * if we're sending to a [`BlindedPaymentPath`], this is the fee paid for use of the entire
-	///   blinded path
-	/// * otherwise, this is the full value of this [`Path`]'s part of the payment
+	/// The fee taken at this hop, paying for any potential future intermediate hops through the
+	/// subsequent Trampoline hop.
+	/// If this is the last hop in [`Path::trampoline_hops`], this is the fee paid for the use of
+	/// the entire blinded path.
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop.
-	/// If this is the last hop in [`Path::hops`]:
-	/// * if we're sending to a [`BlindedPaymentPath`], this is the CLTV delta for the entire
-	///   blinded path
-	/// * otherwise, this is the CLTV delta expected at the destination
+	/// If this is the last hop in [`Path::hops`], this is the CLTV delta for the entire
+	/// blinded path.
 	pub cltv_expiry_delta: u32,
 }
 
