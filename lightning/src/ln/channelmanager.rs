@@ -8425,9 +8425,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
-				let tx_constructor = match channel_phase {
-					ChannelPhase::UnfundedV2(chan) => &mut chan.interactive_tx_constructor,
-					ChannelPhase::Funded(_) => {
+				let tx_constructor = match channel_phase.as_unfunded_v2_mut() {
+					Some(chan) => &mut chan.interactive_tx_constructor,
+					None => if channel_phase.is_funded() {
 						// TODO(splicing)/TODO(RBF): We'll also be doing interactive tx construction
 						// for a "ChannelPhase::Funded" when we want to bump the fee on an interactively
 						// constructed funding tx or during splicing. For now we send an error as we would
@@ -8437,8 +8437,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							splicing and RBF attempts of interactive funding transactions are not supported yet so \
 							we don't have any negotiation in progress".into(),
 						)), chan_phase_entry)
-					}
-					ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) => {
+					} else {
 						try_chan_phase_entry!(self, peer_state, Err(ChannelError::Warn(
 							"Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel \
 							establishment".into(),

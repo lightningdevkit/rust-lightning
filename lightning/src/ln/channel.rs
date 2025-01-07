@@ -1180,6 +1180,14 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			None
 		}
 	}
+
+	pub fn as_unfunded_v2_mut(&mut self) -> Option<&mut PendingV2Channel<SP>> {
+		if let ChannelPhase::UnfundedV2(channel) = self {
+			Some(channel)
+		} else {
+			None
+		}
+	}
 }
 
 /// Contains all state common to unfunded inbound/outbound channels.
