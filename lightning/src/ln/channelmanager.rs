@@ -11483,14 +11483,13 @@ where
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				peer_state.channel_by_id.retain(|_, phase| {
-					let context = match phase {
-						ChannelPhase::Funded(chan) => {
+					match phase.as_funded_mut() {
+						Some(chan) => {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							if chan.remove_uncommitted_htlcs_and_mark_paused(&&logger).is_ok() {
 								// We only retain funded channels that are not shutdown.
 								return true;
 							}
-							&mut chan.context
 						},
 						// If we get disconnected and haven't yet committed to a funding
 						// transaction, we can replay the `open_channel` on reconnection, so don't
@@ -11498,17 +11497,14 @@ where
 						// the funding transaction we don't yet support replaying the funding
 						// handshake (and bailing if the peer rejects it), so we force-close in
 						// that case.
-						ChannelPhase::UnfundedOutboundV1(chan) if chan.is_resumable() => return true,
-						ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
-						// Unfunded inbound channels will always be removed.
-						ChannelPhase::UnfundedInboundV1(chan) => {
-							&mut chan.context
-						},
-						ChannelPhase::UnfundedV2(chan) => {
-							&mut chan.context
+						None => {
+							if phase.is_resumable() {
+								return true;
+							}
 						},
 					};
 					// Clean up for removal.
+					let context = phase.context_mut();
 					let mut close_res = context.force_shutdown(false, ClosureReason::DisconnectedPeer);
 					locked_close_channel!(self, peer_state, &context, close_res);
 					failed_channels.push(close_res);

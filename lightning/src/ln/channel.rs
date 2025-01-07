@@ -1233,6 +1233,15 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedV2(_) => None,
 		}
 	}
+
+	pub fn is_resumable(&self) -> bool {
+		match self {
+			ChannelPhase::Funded(_) => false,
+			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
+			ChannelPhase::UnfundedInboundV1(_) => false,
+			ChannelPhase::UnfundedV2(_) => false,
+		}
+	}
 }
 
 /// Contains all state common to unfunded inbound/outbound channels.
