@@ -39,6 +39,7 @@ impl LSPS0ServiceHandler {
 	fn handle_request(
 		&self, request_id: RequestId, request: LSPS0Request, counterparty_node_id: &PublicKey,
 	) -> Result<(), lightning::ln::msgs::LightningError> {
+		let _msg_queue_notifier = self.pending_messages.notifier();
 		match request {
 			LSPS0Request::ListProtocols(_) => {
 				let msg = LSPS0Message::Response(
