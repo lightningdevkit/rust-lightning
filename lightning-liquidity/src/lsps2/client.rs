@@ -6,7 +6,7 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option. You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains the main LSPS2 client object, [`LSPS2ClientHandler`].
+//! Contains the main bLIP-52 / LSPS2 client object, [`LSPS2ClientHandler`].
 
 use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
@@ -57,13 +57,13 @@ impl PeerState {
 	}
 }
 
-/// The main object allowing to send and receive LSPS2 messages.
+/// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
 ///
 /// Note that currently only the 'client-trusts-LSP' trust model is supported, i.e., we don't
 /// provide any additional API guidance to allow withholding the preimage until the channel is
-/// opened. Please refer to the [`LSPS2 specification`] for more information.
+/// opened. Please refer to the [`bLIP-52 / LSPS2 specification`] for more information.
 ///
-/// [`LSPS2 specification`]: https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS2#trust-models
+/// [`bLIP-52 / LSPS2 specification`]: https://github.com/lightning/blips/blob/master/blip-0052.md#trust-models
 pub struct LSPS2ClientHandler<ES: Deref>
 where
 	ES::Target: EntropySource,

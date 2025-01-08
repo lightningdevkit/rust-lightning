@@ -1,6 +1,8 @@
 //! Contains basic data types that allow for the (de-)seralization of LSPS messages in the JSON-RPC 2.0 format.
 //!
-//! Please refer to the [LSPS0 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0) for more information.
+//! Please refer to the [bLIP-50 / LSPS0
+//! specification](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
+//! information.
 
 use crate::lsps0::msgs::{
 	LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsRequest,

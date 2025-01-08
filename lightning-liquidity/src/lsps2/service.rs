@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains the main LSPS2 server-side object, [`LSPS2ServiceHandler`].
+//! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
 use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{
@@ -549,7 +549,7 @@ macro_rules! get_or_insert_peer_state_entry {
 	}}
 }
 
-/// The main object allowing to send and receive LSPS2 messages.
+/// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
 pub struct LSPS2ServiceHandler<CM: Deref + Clone>
 where
 	CM::Target: AChannelManager,

@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Implementation of LSPS2: JIT Channel Negotiation specification.
+//! Implementation of bLIP-52 / LSPS2: JIT Channel Negotiation specification.
 
 pub mod client;
 pub mod event;
