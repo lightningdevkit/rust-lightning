@@ -1358,6 +1358,16 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 	}
 }
 
+impl<SP: Deref> From<Channel<SP>> for ChannelPhase<SP>
+where
+	SP::Target: SignerProvider,
+	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+{
+	fn from(channel: Channel<SP>) -> Self {
+		ChannelPhase::Funded(channel)
+	}
+}
+
 /// Contains all state common to unfunded inbound/outbound channels.
 pub(super) struct UnfundedChannelContext {
 	/// A counter tracking how many ticks have elapsed since this unfunded channel was

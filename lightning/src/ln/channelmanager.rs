@@ -8124,7 +8124,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								});
 							}
 
-							if let Some(chan) = e.insert(ChannelPhase::Funded(chan)).as_funded_mut() {
+							if let Some(chan) = e.insert(ChannelPhase::from(chan)).as_funded_mut() {
 								handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
 									per_peer_state, chan, INITIAL_MONITOR);
 							} else {
@@ -8171,7 +8171,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								// We really should be able to insert here without doing a second
 								// lookup, but sadly rust stdlib doesn't currently allow keeping
 								// the original Entry around with the value removed.
-								let chan = peer_state.channel_by_id.entry(msg.channel_id).or_insert(ChannelPhase::Funded(chan));
+								let chan = peer_state.channel_by_id.entry(msg.channel_id).or_insert(ChannelPhase::from(chan));
 								if let Some(chan) = chan.as_funded_mut() {
 									handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 								} else { unreachable!(); }
@@ -8326,7 +8326,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									.into()))
 						},
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					peer_state.channel_by_id.insert(channel_id, ChannelPhase::Funded(channel));
+					peer_state.channel_by_id.insert(channel_id, ChannelPhase::from(channel));
 					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((funding_ready_for_sig_event, None));
@@ -13253,7 +13253,7 @@ where
 					per_peer_state.entry(channel.context.get_counterparty_node_id())
 						.or_insert_with(|| Mutex::new(empty_peer_state()))
 						.get_mut().unwrap()
-						.channel_by_id.insert(channel.context.channel_id(), ChannelPhase::Funded(channel));
+						.channel_by_id.insert(channel.context.channel_id(), ChannelPhase::from(channel));
 				}
 			} else if channel.is_awaiting_initial_mon_persist() {
 				// If we were persisted and shut down while the initial ChannelMonitor persistence
