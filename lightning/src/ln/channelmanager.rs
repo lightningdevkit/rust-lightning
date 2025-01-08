@@ -11760,28 +11760,27 @@ where
 				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
-					Some(ChannelPhase::UnfundedOutboundV1(ref mut chan)) => {
-						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator, &&logger) {
+					Some(chan) => match chan.maybe_handle_error_without_close(
+						self.chain_hash, &self.fee_estimator, &self.logger,
+					) {
+						Ok(Some(OpenChannelMessage::V1(msg))) => {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 								node_id: counterparty_node_id,
 								msg,
 							});
 							return;
-						}
+						},
+						#[cfg(dual_funding)]
+						Ok(Some(OpenChannelMessage::V2(msg))) => {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+								node_id: counterparty_node_id,
+								msg,
+							});
+							return;
+						},
+						Ok(None) | Err(()) => {},
 					},
-					Some(ChannelPhase::UnfundedV2(ref mut chan)) => {
-						if chan.context.is_outbound() {
-							if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
-								peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-									node_id: counterparty_node_id,
-									msg,
-								});
-								return;
-							}
-						}
-					},
-					None | Some(ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::Funded(_)) => (),
+					None => {},
 				}
 			}
 

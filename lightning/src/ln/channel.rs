@@ -1279,6 +1279,38 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			},
 		}
 	}
+
+	pub fn maybe_handle_error_without_close<F: Deref, L: Deref>(
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> Result<Option<OpenChannelMessage>, ()>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		match self {
+			ChannelPhase::Funded(_) => Ok(None),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
+				let logger = WithChannelContext::from(logger, &chan.context, None);
+				chan.maybe_handle_error_without_close(chain_hash, fee_estimator, &&logger)
+					.map(|msg| Some(OpenChannelMessage::V1(msg)))
+			},
+			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
+			#[cfg(dual_funding)]
+			ChannelPhase::UnfundedV2(chan) => {
+				if chan.context.is_outbound() {
+					chan.maybe_handle_error_without_close(chain_hash, fee_estimator)
+						.map(|msg| Some(OpenChannelMessage::V2(msg)))
+				} else {
+					Ok(None)
+				}
+			},
+			#[cfg(not(dual_funding))]
+			ChannelPhase::UnfundedV2(_) => {
+				debug_assert!(false);
+				Ok(None)
+			},
+		}
+	}
 }
 
 /// Contains all state common to unfunded inbound/outbound channels.
@@ -8979,6 +9011,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
+	#[cfg(dual_funding)]
 	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
 	) -> Result<msgs::OpenChannelV2, ()>
@@ -8989,6 +9022,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(self.get_open_channel_v2(chain_hash))
 	}
 
+	#[cfg(dual_funding)]
 	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
 		if !self.context.is_outbound() {
 			debug_assert!(false, "Tried to send open_channel2 for an inbound channel?");
