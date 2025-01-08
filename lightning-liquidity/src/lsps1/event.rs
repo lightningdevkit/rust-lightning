@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains LSPS1 event types
+//! Contains bLIP-51 / LSPS1 event types
 
 use super::msgs::OrderId;
 use super::msgs::{ChannelInfo, LSPS1Options, OrderParameters, PaymentInfo};
@@ -16,7 +16,7 @@ use crate::lsps0::ser::{RequestId, ResponseError};
 
 use bitcoin::secp256k1::PublicKey;
 
-/// An event which an LSPS1 client should take some action in response to.
+/// An event which an bLIP-51 / LSPS1 client should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1ClientEvent {
 	/// A request previously issued via [`LSPS1ClientHandler::request_supported_options`]
@@ -28,7 +28,7 @@ pub enum LSPS1ClientEvent {
 	/// [`LSPS1ClientHandler::request_supported_options`]: crate::lsps1::client::LSPS1ClientHandler::request_supported_options
 	/// [`LSPS1ClientHandler::create_order`]: crate::lsps1::client::LSPS1ClientHandler::create_order
 	SupportedOptionsReady {
-		/// The identifier of the issued LSPS1 `get_info` request, as returned by
+		/// The identifier of the issued bLIP-51 / LSPS1 `get_info` request, as returned by
 		/// [`LSPS1ClientHandler::request_supported_options`]
 		///
 		/// This can be used to track which request this event corresponds to.
@@ -45,7 +45,7 @@ pub enum LSPS1ClientEvent {
 	///
 	/// [`LSPS1ClientHandler::request_supported_options`]: crate::lsps1::client::LSPS1ClientHandler::request_supported_options
 	SupportedOptionsRequestFailed {
-		/// The identifier of the issued LSPS1 `get_info` request, as returned by
+		/// The identifier of the issued bLIP-51 / LSPS1 `get_info` request, as returned by
 		/// [`LSPS1ClientHandler::request_supported_options`]
 		///
 		/// This can be used to track which request this event corresponds to.
@@ -68,7 +68,7 @@ pub enum LSPS1ClientEvent {
 	///
 	/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
 	OrderCreated {
-		/// The identifier of the issued LSPS1 `create_order` request, as returned by
+		/// The identifier of the issued bLIP-51 / LSPS1 `create_order` request, as returned by
 		/// [`LSPS1ClientHandler::create_order`]
 		///
 		/// This can be used to track which request this event corresponds to.
@@ -92,7 +92,7 @@ pub enum LSPS1ClientEvent {
 	///
 	/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
 	OrderStatus {
-		/// The identifier of the issued LSPS1 `get_order` request, as returned by
+		/// The identifier of the issued bLIP-51 / LSPS1 `get_order` request, as returned by
 		/// [`LSPS1ClientHandler::check_order_status`]
 		///
 		/// This can be used to track which request this event corresponds to.

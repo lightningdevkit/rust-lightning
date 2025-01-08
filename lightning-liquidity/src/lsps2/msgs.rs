@@ -1,4 +1,4 @@
-//! Message, request, and other primitive types used to implement LSPS2.
+//! Message, request, and other primitive types used to implement bLIP-52 / LSPS2.
 
 use core::convert::TryFrom;
 
@@ -161,7 +161,7 @@ pub struct BuyResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// An enum that captures all the valid JSON-RPC requests in the LSPS2 protocol.
+/// An enum that captures all the valid JSON-RPC requests in the bLIP-52 / LSPS2 protocol.
 pub enum LSPS2Request {
 	/// A request to learn an LSP's channel fees and parameters.
 	GetInfo(GetInfoRequest),
@@ -170,7 +170,7 @@ pub enum LSPS2Request {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// An enum that captures all the valid JSON-RPC responses in the LSPS2 protocol.
+/// An enum that captures all the valid JSON-RPC responses in the bLIP-52 / LSPS2 protocol.
 pub enum LSPS2Response {
 	/// A successful response to a [`LSPS2Request::GetInfo`] request.
 	GetInfo(GetInfoResponse),
@@ -183,7 +183,7 @@ pub enum LSPS2Response {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// An enum that captures all valid JSON-RPC messages in the LSPS2 protocol.
+/// An enum that captures all valid JSON-RPC messages in the bLIP-52 / LSPS2 protocol.
 pub enum LSPS2Message {
 	/// An LSPS2 JSON-RPC request.
 	Request(RequestId, LSPS2Request),

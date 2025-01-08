@@ -1,4 +1,4 @@
-//! Utilities for implementing the LSPS2 standard.
+//! Utilities for implementing the bLIP-52 / LSPS2 standard.
 
 use crate::lsps2::msgs::OpeningFeeParams;
 use crate::utils;
@@ -57,7 +57,7 @@ pub fn is_expired_opening_fee_params(fee_params: &OpeningFeeParams) -> bool {
 ///
 /// Returns [`Option::None`] when the computation overflows.
 ///
-/// See the [`specification`](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS2#computing-the-opening_fee) for more details.
+/// See the [`specification`](https://github.com/lightning/blips/blob/master/blip-0052.md#computing-the-opening_fee) for more details.
 pub fn compute_opening_fee(
 	payment_size_msat: u64, opening_fee_min_fee_msat: u64, opening_fee_proportional: u64,
 ) -> Option<u64> {

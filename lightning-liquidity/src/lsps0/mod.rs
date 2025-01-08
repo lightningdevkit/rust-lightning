@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Types and primitives that implement the LSPS0: Transport Layer specification.
+//! Types and primitives that implement the bLIP-50 / LSPS0: Transport Layer specification.
 
 pub mod client;
 pub mod event;

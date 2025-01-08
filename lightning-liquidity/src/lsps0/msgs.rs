@@ -11,14 +11,16 @@ pub(crate) const LSPS0_LISTPROTOCOLS_METHOD_NAME: &str = "lsps0.list_protocols";
 
 /// A `list_protocols` request.
 ///
-/// Please refer to the [LSPS0 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0#lsps-specification-support-query)
+/// Please refer to the [bLIP-50 / LSPS0
+/// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct ListProtocolsRequest {}
 
 /// A response to a `list_protocols` request.
 ///
-/// Please refer to the [LSPS0 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0#lsps-specification-support-query)
+/// Please refer to the [bLIP-50 / LSPS0
+/// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ListProtocolsResponse {
@@ -26,9 +28,10 @@ pub struct ListProtocolsResponse {
 	pub protocols: Vec<u16>,
 }
 
-/// An LSPS0 protocol request.
+/// An bLIP-50 / LSPS0 protocol request.
 ///
-/// Please refer to the [LSPS0 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0)
+/// Please refer to the [bLIP-50 / LSPS0
+/// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0Request {
@@ -45,9 +48,10 @@ impl LSPS0Request {
 	}
 }
 
-/// An LSPS0 protocol request.
+/// An bLIP-50 / LSPS0 protocol request.
 ///
-/// Please refer to the [LSPS0 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0)
+/// Please refer to the [bLIP-50 / LSPS0
+/// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0Response {
@@ -57,9 +61,10 @@ pub enum LSPS0Response {
 	ListProtocolsError(ResponseError),
 }
 
-/// An LSPS0 protocol message.
+/// An bLIP-50 / LSPS0 protocol message.
 ///
-/// Please refer to the [LSPS0 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0)
+/// Please refer to the [bLIP-50 / LSPS0
+/// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0Message {

@@ -7,10 +7,10 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains the main LSPS0 server-side object, [`LSPS0ServiceHandler`].
+//! Contains the main bLIP-50 / LSPS0 server-side object, [`LSPS0ServiceHandler`].
 //!
-//! Please refer to the [LSPS0
-//! specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0) for more
+//! Please refer to the [bLIP-50 / LSPS0
+//! specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
 use crate::lsps0::msgs::{LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsResponse};
@@ -24,7 +24,7 @@ use lightning::util::logger::Level;
 
 use bitcoin::secp256k1::PublicKey;
 
-/// The main server-side object allowing to send and receive LSPS0 messages.
+/// The main server-side object allowing to send and receive bLIP-50 / LSPS0 messages.
 pub struct LSPS0ServiceHandler {
 	pending_messages: Arc<MessageQueue>,
 	protocols: Vec<u16>,
