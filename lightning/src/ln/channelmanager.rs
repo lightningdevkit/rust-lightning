@@ -5035,13 +5035,15 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let funding_txo;
-		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(&temporary_channel_id) {
-			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
+		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(&temporary_channel_id)
+			.map(ChannelPhase::into_unfunded_outbound_v1)
+		{
+			Some(Ok(mut chan)) => {
 				macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
 					let counterparty;
 					let err = if let ChannelError::Close((msg, reason)) = $err {
 						let channel_id = $chan.context.channel_id();
-						counterparty = chan.context.get_counterparty_node_id();
+						counterparty = $chan.context.get_counterparty_node_id();
 						let shutdown_res = $chan.context.force_shutdown(false, reason);
 						MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None)
 					} else { unreachable!(); };
@@ -5070,7 +5072,7 @@ where
 					}
 				}
 			},
-			Some(phase) => {
+			Some(Err(phase)) => {
 				peer_state.channel_by_id.insert(temporary_channel_id, phase);
 				return Err(APIError::APIMisuseError {
 					err: format!(
@@ -8018,12 +8020,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.common_fields.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut phase) => {
-					match phase.get_mut() {
-						ChannelPhase::UnfundedOutboundV1(chan) => {
+					match phase.get_mut().as_unfunded_outbound_v1_mut() {
+						Some(chan) => {
 							try_chan_phase_entry!(self, peer_state, chan.accept_channel(msg, &self.default_configuration.channel_handshake_limits, &peer_state.latest_features), phase);
 							(chan.context.get_value_satoshis(), chan.context.get_funding_redeemscript().to_p2wsh(), chan.context.get_user_id())
 						},
-						_ => {
+						None => {
 							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got an unexpected accept_channel message from peer with counterparty_node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id));
 						}
 					}
@@ -8055,8 +8057,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let (mut chan, funding_msg_opt, monitor) =
-			match peer_state.channel_by_id.remove(&msg.temporary_channel_id) {
-				Some(ChannelPhase::UnfundedInboundV1(inbound_chan)) => {
+			match peer_state.channel_by_id.remove(&msg.temporary_channel_id)
+				.map(ChannelPhase::into_unfunded_inbound_v1)
+			{
+				Some(Ok(inbound_chan)) => {
 					let logger = WithChannelContext::from(&self.logger, &inbound_chan.context, None);
 					match inbound_chan.funding_created(msg, best_block, &self.signer_provider, &&logger) {
 						Ok(res) => res,
@@ -8072,7 +8076,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						},
 					}
 				},
-				Some(mut phase) => {
+				Some(Err(mut phase)) => {
 					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
 					let err = ChannelError::close(err_msg);
 					return Err(convert_chan_phase_err!(self, peer_state, err, &mut phase, &msg.temporary_channel_id).1);
@@ -8151,8 +8155,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(chan_phase_entry) => {
-				if matches!(chan_phase_entry.get(), ChannelPhase::UnfundedOutboundV1(_)) {
-					let chan = if let ChannelPhase::UnfundedOutboundV1(chan) = chan_phase_entry.remove() { chan } else { unreachable!() };
+				if chan_phase_entry.get().is_unfunded_outbound_v1() {
+					let chan = if let Ok(chan) = chan_phase_entry.remove().into_unfunded_outbound_v1() { chan } else { unreachable!() };
 					let logger = WithContext::from(
 						&self.logger,
 						Some(chan.context.get_counterparty_node_id()),

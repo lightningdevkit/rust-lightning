@@ -1185,6 +1185,34 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 		}
 	}
 
+	pub fn as_unfunded_outbound_v1_mut(&mut self) -> Option<&mut OutboundV1Channel<SP>> {
+		if let ChannelPhase::UnfundedOutboundV1(channel) = self {
+			Some(channel)
+		} else {
+			None
+		}
+	}
+
+	pub fn is_unfunded_outbound_v1(&self) -> bool {
+		matches!(self, ChannelPhase::UnfundedOutboundV1(_))
+	}
+
+	pub fn into_unfunded_outbound_v1(self) -> Result<OutboundV1Channel<SP>, Self> {
+		if let ChannelPhase::UnfundedOutboundV1(channel) = self {
+			Ok(channel)
+		} else {
+			Err(self)
+		}
+	}
+
+	pub fn into_unfunded_inbound_v1(self) -> Result<InboundV1Channel<SP>, Self> {
+		if let ChannelPhase::UnfundedInboundV1(channel) = self {
+			Ok(channel)
+		} else {
+			Err(self)
+		}
+	}
+
 	pub fn as_unfunded_v2(&self) -> Option<&PendingV2Channel<SP>> {
 		if let ChannelPhase::UnfundedV2(channel) = self {
 			Some(channel)
