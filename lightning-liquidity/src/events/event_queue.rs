@@ -14,37 +14,19 @@ pub(crate) struct EventQueue {
 	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
-	condvar: crate::sync::Condvar,
+	condvar: Arc<crate::sync::Condvar>,
 }
 
 impl EventQueue {
 	pub fn new() -> Self {
 		let queue = Arc::new(Mutex::new(VecDeque::new()));
 		let waker = Arc::new(Mutex::new(None));
-		#[cfg(feature = "std")]
-		{
-			let condvar = crate::sync::Condvar::new();
-			Self { queue, waker, condvar }
+		Self {
+			queue,
+			waker,
+			#[cfg(feature = "std")]
+			condvar: Arc::new(crate::sync::Condvar::new()),
 		}
-		#[cfg(not(feature = "std"))]
-		Self { queue, waker }
-	}
-
-	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
-		{
-			let mut queue = self.queue.lock().unwrap();
-			if queue.len() < MAX_EVENT_QUEUE_SIZE {
-				queue.push_back(event.into());
-			} else {
-				return;
-			}
-		}
-
-		if let Some(waker) = self.waker.lock().unwrap().take() {
-			waker.wake();
-		}
-		#[cfg(feature = "std")]
-		self.condvar.notify_one();
 	}
 
 	pub fn next_event(&self) -> Option<LiquidityEvent> {
@@ -82,6 +64,41 @@ impl EventQueue {
 
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.queue.lock().unwrap().split_off(0).into()
+	}
+
+	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
+	pub fn notifier(&self) -> EventQueueNotifierGuard {
+		EventQueueNotifierGuard(self)
+	}
+}
+
+// A guard type that will notify about new events when dropped.
+#[must_use]
+pub(crate) struct EventQueueNotifierGuard<'a>(&'a EventQueue);
+
+impl<'a> EventQueueNotifierGuard<'a> {
+	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
+		let mut queue = self.0.queue.lock().unwrap();
+		if queue.len() < MAX_EVENT_QUEUE_SIZE {
+			queue.push_back(event.into());
+		} else {
+			return;
+		}
+	}
+}
+
+impl<'a> Drop for EventQueueNotifierGuard<'a> {
+	fn drop(&mut self) {
+		let should_notify = !self.0.queue.lock().unwrap().is_empty();
+
+		if should_notify {
+			if let Some(waker) = self.0.waker.lock().unwrap().take() {
+				waker.wake();
+			}
+
+			#[cfg(feature = "std")]
+			self.0.condvar.notify_one();
+		}
 	}
 }
 
@@ -129,7 +146,8 @@ mod tests {
 		});
 
 		for _ in 0..3 {
-			event_queue.enqueue(expected_event.clone());
+			let guard = event_queue.notifier();
+			guard.enqueue(expected_event.clone());
 		}
 
 		assert_eq!(event_queue.wait_next_event(), expected_event);
@@ -154,14 +172,16 @@ mod tests {
 		let mut delayed_enqueue = false;
 
 		for _ in 0..25 {
-			event_queue.enqueue(expected_event.clone());
+			let guard = event_queue.notifier();
+			guard.enqueue(expected_event.clone());
 			enqueued_events.fetch_add(1, Ordering::SeqCst);
 		}
 
 		loop {
 			tokio::select! {
 				_ = tokio::time::sleep(Duration::from_millis(10)), if !delayed_enqueue => {
-					event_queue.enqueue(expected_event.clone());
+					let guard = event_queue.notifier();
+					guard.enqueue(expected_event.clone());
 					enqueued_events.fetch_add(1, Ordering::SeqCst);
 					delayed_enqueue = true;
 				}
@@ -169,7 +189,8 @@ mod tests {
 					assert_eq!(e, expected_event);
 					received_events.fetch_add(1, Ordering::SeqCst);
 
-					event_queue.enqueue(expected_event.clone());
+					let guard = event_queue.notifier();
+					guard.enqueue(expected_event.clone());
 					enqueued_events.fetch_add(1, Ordering::SeqCst);
 				}
 				e = event_queue.next_event_async() => {
@@ -201,8 +222,9 @@ mod tests {
 		std::thread::spawn(move || {
 			// Sleep a bit before we enqueue the events everybody is waiting for.
 			std::thread::sleep(Duration::from_millis(20));
-			thread_queue.enqueue(thread_event.clone());
-			thread_queue.enqueue(thread_event.clone());
+			let guard = thread_queue.notifier();
+			guard.enqueue(thread_event.clone());
+			guard.enqueue(thread_event.clone());
 		});
 
 		let e = event_queue.next_event_async().await;
