@@ -65,6 +65,8 @@
 //! # }
 //! ```
 
+use core::ops::Deref;
+
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
@@ -80,7 +82,7 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES};
+use crate::offers::offer::{Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -500,6 +502,27 @@ impl Bolt12Assessor for DefaultBolt12Assessor {
 	fn assess_bolt12_invoice(&self, _invoice: &Bolt12Invoice) -> Result<(), Bolt12ResponseError> {
 		Ok(())
 	}
+}
+
+pub(super) fn calculate_offer_amount<CA: Deref>(
+    assessor: &CA,
+    invoice_request: &InvoiceRequestContents,
+) -> Result<u64, Bolt12ResponseError>
+where
+    CA::Target: Bolt12CurrencyAssessor,
+{
+	match invoice_request.inner.offer.amount() {
+		Some(Amount::Bitcoin { amount_msats }) => {
+			amount_msats
+				.checked_mul(invoice_request.quantity().unwrap_or(1))
+				.ok_or(Bolt12SemanticError::InvalidAmount)
+		}
+		Some(Amount::Currency(currency)) => assessor.fiat_to_msats(currency)?
+			.checked_mul(invoice_request.quantity().unwrap_or(1))
+			.ok_or(Bolt12SemanticError::InvalidAmount),
+		None => Err(Bolt12SemanticError::MissingAmount),
+	}
+	.map_err(Bolt12ResponseError::SemanticError)
 }
 
 impl UnsignedInvoiceRequest {
