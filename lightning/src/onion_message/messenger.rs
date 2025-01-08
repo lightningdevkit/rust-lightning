@@ -1445,11 +1445,14 @@ where
 				let future = ResultFuture::Pending(handler(ev));
 				futures.push(future);
 			}
-			// Let the `OnionMessageIntercepted` events finish before moving on to peer_connecteds
-			let res = MultiResultFuturePoller::new(futures).await;
-			log_trace!(self.logger, "Done handling events async, results: {:?}", res);
-			let mut res_iter = res.iter().skip(intercepted_msgs_offset);
-			drop_handled_events_and_abort!(self, res_iter, self.pending_intercepted_msgs_events);
+
+			if !futures.is_empty() {
+				// Let the `OnionMessageIntercepted` events finish before moving on to peer_connecteds
+				let res = MultiResultFuturePoller::new(futures).await;
+				log_trace!(self.logger, "Done handling events async, results: {:?}", res);
+				let mut res_iter = res.iter().skip(intercepted_msgs_offset);
+				drop_handled_events_and_abort!(self, res_iter, self.pending_intercepted_msgs_events);
+			}
 		}
 
 		{
@@ -1472,10 +1475,13 @@ where
 					let future = ResultFuture::Pending(handler(event));
 					futures.push(future);
 				}
-				let res = MultiResultFuturePoller::new(futures).await;
-				log_trace!(self.logger, "Done handling events async, results: {:?}", res);
-				let mut res_iter = res.iter();
-				drop_handled_events_and_abort!(self, res_iter, self.pending_peer_connected_events);
+
+				if !futures.is_empty() {
+					let res = MultiResultFuturePoller::new(futures).await;
+					log_trace!(self.logger, "Done handling events async, results: {:?}", res);
+					let mut res_iter = res.iter();
+					drop_handled_events_and_abort!(self, res_iter, self.pending_peer_connected_events);
+				}
 			}
 		}
 		self.pending_events_processor.store(false, Ordering::Release);
