@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains the main LSPS1 client object, [`LSPS1ClientHandler`].
+//! Contains the main LSPS1 / bLIP-51 client object, [`LSPS1ClientHandler`].
 
 use super::event::LSPS1ClientEvent;
 use super::msgs::{
@@ -30,7 +30,7 @@ use bitcoin::Address;
 
 use core::ops::Deref;
 
-/// Client-side configuration options for LSPS1 channel requests.
+/// Client-side configuration options for LSPS1 / bLIP-51 channel requests.
 #[derive(Clone, Debug)]
 pub struct LSPS1ClientConfig {
 	/// The maximally allowed channel fees.
@@ -44,7 +44,7 @@ struct PeerState {
 	pending_get_order_requests: HashSet<RequestId>,
 }
 
-/// The main object allowing to send and receive LSPS1 messages.
+/// The main object allowing to send and receive LSPS1 / bLIP-51 messages.
 pub struct LSPS1ClientHandler<ES: Deref>
 where
 	ES::Target: EntropySource,
