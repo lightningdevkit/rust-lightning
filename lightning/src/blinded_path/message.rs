@@ -419,6 +419,10 @@ pub enum AsyncPaymentsContext {
 		///
 		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
 		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored. Without this, anyone with the path corresponding to this context is
+		/// able to trivially ask if we're online forever.
+		path_absolute_expiry: core::time::Duration,
 	},
 }
 
@@ -454,6 +458,7 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(1, InboundPayment) => {
 		(0, nonce, required),
 		(2, hmac, required),
+		(4, path_absolute_expiry, required),
 	},
 );
 

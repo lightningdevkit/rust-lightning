@@ -213,6 +213,15 @@ pub(super) fn create_for_spontaneous_payment(
 	Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
 }
 
+pub(super) fn calculate_absolute_expiry(highest_seen_timestamp: u64, invoice_expiry_delta_secs: u32) -> u64 {
+	// We assume that highest_seen_timestamp is pretty close to the current time - it's updated when
+	// we receive a new block with the maximum time we've seen in a header. It should never be more
+	// than two hours in the future.  Thus, we add two hours here as a buffer to ensure we
+	// absolutely never fail a payment too early.
+	// Note that we assume that received blocks have reasonably up-to-date timestamps.
+	highest_seen_timestamp + invoice_expiry_delta_secs as u64 + 7200
+}
+
 fn construct_metadata_bytes(min_value_msat: Option<u64>, payment_type: Method,
 	invoice_expiry_delta_secs: u32, highest_seen_timestamp: u64, min_final_cltv_expiry_delta: Option<u16>) -> Result<[u8; METADATA_LEN], ()> {
 	if min_value_msat.is_some() && min_value_msat.unwrap() > MAX_VALUE_MSAT {
@@ -225,12 +234,7 @@ fn construct_metadata_bytes(min_value_msat: Option<u64>, payment_type: Method,
 	};
 	min_amt_msat_bytes[0] |= (payment_type as u8) << METHOD_TYPE_OFFSET;
 
-	// We assume that highest_seen_timestamp is pretty close to the current time - it's updated when
-	// we receive a new block with the maximum time we've seen in a header. It should never be more
-	// than two hours in the future.  Thus, we add two hours here as a buffer to ensure we
-	// absolutely never fail a payment too early.
-	// Note that we assume that received blocks have reasonably up-to-date timestamps.
-	let expiry_timestamp = highest_seen_timestamp + invoice_expiry_delta_secs as u64 + 7200;
+	let expiry_timestamp = calculate_absolute_expiry(highest_seen_timestamp, invoice_expiry_delta_secs);
 	let mut expiry_bytes = expiry_timestamp.to_be_bytes();
 
 	// `min_value_msat` should fit in (64 bits - 3 payment type bits =) 61 bits as an unsigned integer.
