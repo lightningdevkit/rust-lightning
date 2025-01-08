@@ -177,6 +177,8 @@ where
 	fn handle_get_info_request(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let response = LSPS1Response::GetInfo(LSPS1GetInfoResponse {
 			options: self
 				.config
@@ -190,7 +192,7 @@ where
 		});
 
 		let msg = LSPS1Message::Response(request_id, response).into();
-		self.pending_messages.enqueue(counterparty_node_id, msg);
+		message_queue_notifier.enqueue(counterparty_node_id, msg);
 		Ok(())
 	}
 
@@ -198,7 +200,9 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1CreateOrderRequest,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let event_queue_notifier = self.pending_events.notifier();
+
 		if !is_valid(&params.order, &self.config.supported_options.as_ref().unwrap()) {
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
@@ -209,7 +213,7 @@ where
 				)),
 			});
 			let msg = LSPS1Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 			return Err(LightningError {
 				err: format!(
 					"Client order does not match any supported options: {:?}",
@@ -250,6 +254,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		payment: LSPS1PaymentInfo, created_at: LSPSDateTime,
 	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 
@@ -306,7 +311,7 @@ where
 
 		if let Some(response) = response {
 			let msg = LSPS1Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 		}
 
 		result
@@ -376,6 +381,8 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
 		order_state: LSPS1OrderState, channel: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 
@@ -420,7 +427,7 @@ where
 
 		if let Some(response) = response {
 			let msg = LSPS1Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
+			message_queue_notifier.enqueue(&counterparty_node_id, msg);
 		}
 
 		result

@@ -205,6 +205,7 @@ where
 	pub fn set_webhook(
 		&self, counterparty_node_id: PublicKey, app_name: String, webhook_url: String,
 	) -> Result<LSPSRequestId, LSPS5Error> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let app_name = LSPS5AppName::from_string(app_name)?;
 
 		let lsps_webhook_url = LSPS5WebhookUrl::from_string(webhook_url)?;
@@ -228,7 +229,7 @@ where
 			LSPS5Request::SetWebhook(SetWebhookRequest { app_name, webhook: lsps_webhook_url });
 
 		let message = LSPS5Message::Request(request_id.clone(), request);
-		self.pending_messages.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
+		message_queue_notifier.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
 
 		Ok(request_id)
 	}
@@ -250,6 +251,7 @@ where
 	/// [`WebhooksListed`]: super::event::LSPS5ClientEvent::WebhooksListed
 	/// [`LSPS5Response::ListWebhooks`]: super::msgs::LSPS5Response::ListWebhooks
 	pub fn list_webhooks(&self, counterparty_node_id: PublicKey) -> LSPSRequestId {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let request_id = generate_request_id(&self.entropy_source);
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
@@ -260,7 +262,7 @@ where
 
 		let request = LSPS5Request::ListWebhooks(ListWebhooksRequest {});
 		let message = LSPS5Message::Request(request_id.clone(), request);
-		self.pending_messages.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
+		message_queue_notifier.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
 
 		request_id
 	}
@@ -287,6 +289,7 @@ where
 	pub fn remove_webhook(
 		&self, counterparty_node_id: PublicKey, app_name: String,
 	) -> Result<LSPSRequestId, LSPS5Error> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let app_name = LSPS5AppName::from_string(app_name)?;
 
 		let request_id = generate_request_id(&self.entropy_source);
@@ -301,7 +304,7 @@ where
 
 		let request = LSPS5Request::RemoveWebhook(RemoveWebhookRequest { app_name });
 		let message = LSPS5Message::Request(request_id.clone(), request);
-		self.pending_messages.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
+		message_queue_notifier.enqueue(&counterparty_node_id, LSPSMessage::LSPS5(message));
 
 		Ok(request_id)
 	}

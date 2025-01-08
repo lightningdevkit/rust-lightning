@@ -33,11 +33,29 @@ impl MessageQueue {
 		self.pending_msgs_notifier.get_future()
 	}
 
-	pub(crate) fn enqueue(&self, counterparty_node_id: &PublicKey, msg: LSPSMessage) {
-		{
-			let mut queue = self.queue.lock().unwrap();
-			queue.push_back((*counterparty_node_id, msg));
+	pub(crate) fn notifier(&self) -> MessageQueueNotifierGuard {
+		MessageQueueNotifierGuard { msg_queue: self, buffer: VecDeque::new() }
+	}
+}
+
+// A guard type that will process buffered messages and wake the background processor when dropped.
+#[must_use]
+pub(crate) struct MessageQueueNotifierGuard<'a> {
+	msg_queue: &'a MessageQueue,
+	buffer: VecDeque<(PublicKey, LSPSMessage)>,
+}
+
+impl<'a> MessageQueueNotifierGuard<'a> {
+	pub fn enqueue(&mut self, counterparty_node_id: &PublicKey, msg: LSPSMessage) {
+		self.buffer.push_back((*counterparty_node_id, msg));
+	}
+}
+
+impl<'a> Drop for MessageQueueNotifierGuard<'a> {
+	fn drop(&mut self) {
+		if !self.buffer.is_empty() {
+			self.msg_queue.queue.lock().unwrap().append(&mut self.buffer);
+			self.msg_queue.pending_msgs_notifier.notify();
 		}
-		self.pending_msgs_notifier.notify();
 	}
 }

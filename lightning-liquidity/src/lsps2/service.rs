@@ -499,7 +499,7 @@ impl PeerState {
 }
 
 macro_rules! get_or_insert_peer_state_entry {
-	($self: ident, $outer_state_lock: expr, $counterparty_node_id: expr) => {{
+	($self: ident, $outer_state_lock: expr, $message_queue_notifier: expr, $counterparty_node_id: expr) => {{
 		// Return an internal error and abort if we hit the maximum allowed number of total peers.
 		let is_limited_by_max_total_peers = $outer_state_lock.len() >= MAX_TOTAL_PEERS;
 		match $outer_state_lock.entry(*$counterparty_node_id) {
@@ -512,7 +512,7 @@ macro_rules! get_or_insert_peer_state_entry {
 
 					let msg = LSPSMessage::Invalid(error_response);
 					drop($outer_state_lock);
-					$self.pending_messages.enqueue($counterparty_node_id, msg);
+					$message_queue_notifier.enqueue($counterparty_node_id, msg);
 
 					let err = format!(
 						"Dropping request from peer {} due to reaching maximally allowed number of total peers: {}",
@@ -581,6 +581,7 @@ where
 	pub fn invalid_token_provided(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
 	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 
@@ -622,7 +623,7 @@ where
 
 		if let Some(response) = response {
 			let msg = LSPS2Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 		}
 
 		result
@@ -637,6 +638,7 @@ where
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
 		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
 	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 
@@ -689,7 +691,7 @@ where
 
 		if let Some(response) = response {
 			let msg = LSPS2Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 		}
 
 		result
@@ -707,6 +709,8 @@ where
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
 		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
 	) -> Result<(), APIError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
+
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 
@@ -767,7 +771,7 @@ where
 
 		if let Some(response) = response {
 			let msg = LSPS2Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 		}
 
 		result
@@ -1202,11 +1206,16 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS2GetInfoRequest,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let event_queue_notifier = self.pending_events.notifier();
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock =
-				get_or_insert_peer_state_entry!(self, outer_state_lock, counterparty_node_id);
+			let inner_state_lock = get_or_insert_peer_state_entry!(
+				self,
+				outer_state_lock,
+				message_queue_notifier,
+				counterparty_node_id
+			);
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			let request = LSPS2Request::GetInfo(params.clone());
 			match self.insert_pending_request(
@@ -1229,7 +1238,7 @@ where
 		};
 
 		if let Some(msg) = response {
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 		}
 
 		result
@@ -1238,6 +1247,7 @@ where
 	fn handle_buy_request(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey, params: LSPS2BuyRequest,
 	) -> Result<(), LightningError> {
+		let mut message_queue_notifier = self.pending_messages.notifier();
 		let event_queue_notifier = self.pending_events.notifier();
 		if let Some(payment_size_msat) = params.payment_size_msat {
 			if payment_size_msat < params.opening_fee_params.min_payment_size_msat {
@@ -1247,7 +1257,7 @@ where
 					data: None,
 				});
 				let msg = LSPS2Message::Response(request_id, response).into();
-				self.pending_messages.enqueue(counterparty_node_id, msg);
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
 
 				return Err(LightningError {
 					err: "payment size is below our minimum supported payment size".to_string(),
@@ -1262,7 +1272,7 @@ where
 					data: None,
 				});
 				let msg = LSPS2Message::Response(request_id, response).into();
-				self.pending_messages.enqueue(counterparty_node_id, msg);
+				message_queue_notifier.enqueue(counterparty_node_id, msg);
 				return Err(LightningError {
 					err: "payment size is above our maximum supported payment size".to_string(),
 					action: ErrorAction::IgnoreAndLog(Level::Info),
@@ -1283,7 +1293,7 @@ where
 							data: None,
 						});
 						let msg = LSPS2Message::Response(request_id, response).into();
-						self.pending_messages.enqueue(counterparty_node_id, msg);
+						message_queue_notifier.enqueue(counterparty_node_id, msg);
 						return Err(LightningError {
 							err: "payment size is too small to cover the opening fee".to_string(),
 							action: ErrorAction::IgnoreAndLog(Level::Info),
@@ -1297,7 +1307,7 @@ where
 						data: None,
 					});
 					let msg = LSPS2Message::Response(request_id, response).into();
-					self.pending_messages.enqueue(counterparty_node_id, msg);
+					message_queue_notifier.enqueue(counterparty_node_id, msg);
 					return Err(LightningError {
 						err: "overflow error when calculating opening_fee".to_string(),
 						action: ErrorAction::IgnoreAndLog(Level::Info),
@@ -1314,7 +1324,7 @@ where
 				data: None,
 			});
 			let msg = LSPS2Message::Response(request_id, response).into();
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 			return Err(LightningError {
 				err: "invalid opening fee parameters were supplied by client".to_string(),
 				action: ErrorAction::IgnoreAndLog(Level::Info),
@@ -1323,8 +1333,12 @@ where
 
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock =
-				get_or_insert_peer_state_entry!(self, outer_state_lock, counterparty_node_id);
+			let inner_state_lock = get_or_insert_peer_state_entry!(
+				self,
+				outer_state_lock,
+				message_queue_notifier,
+				counterparty_node_id
+			);
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
 			let request = LSPS2Request::Buy(params.clone());
@@ -1350,7 +1364,7 @@ where
 		};
 
 		if let Some(msg) = response {
-			self.pending_messages.enqueue(counterparty_node_id, msg);
+			message_queue_notifier.enqueue(counterparty_node_id, msg);
 		}
 
 		result
