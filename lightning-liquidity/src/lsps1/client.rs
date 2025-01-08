@@ -105,8 +105,9 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		result: LSPS1GetInfoResponse,
 	) -> Result<(), LightningError> {
-		let outer_state_lock = self.per_peer_state.write().unwrap();
+		let _event_queue_notifier = self.pending_events.notifier();
 
+		let outer_state_lock = self.per_peer_state.write().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
@@ -142,6 +143,8 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -219,6 +222,8 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -261,6 +266,8 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -338,6 +345,8 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -380,6 +389,8 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
