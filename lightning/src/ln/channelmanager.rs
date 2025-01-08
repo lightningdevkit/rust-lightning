@@ -6429,34 +6429,6 @@ where
 			let mut pending_peers_awaiting_removal = Vec::new();
 			let mut shutdown_channels = Vec::new();
 
-			macro_rules! process_unfunded_channel_tick {
-				($peer_state: expr, $chan: expr, $pending_msg_events: expr) => { {
-					let context = &mut $chan.context;
-					context.maybe_expire_prev_config();
-					if $chan.unfunded_context.should_expire_unfunded_channel() {
-						let logger = WithChannelContext::from(&self.logger, context, None);
-						log_error!(logger,
-							"Force-closing pending channel with ID {} for not establishing in a timely manner",
-							context.channel_id());
-						let mut close_res = context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
-						locked_close_channel!(self, $peer_state, context, close_res);
-						shutdown_channels.push(close_res);
-						$pending_msg_events.push(MessageSendEvent::HandleError {
-							node_id: context.get_counterparty_node_id(),
-							action: msgs::ErrorAction::SendErrorMessage {
-								msg: msgs::ErrorMessage {
-									channel_id: context.channel_id(),
-									data: "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned(),
-								},
-							},
-						});
-						false
-					} else {
-						true
-					}
-				} }
-			}
-
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
@@ -6465,8 +6437,8 @@ where
 					let pending_msg_events = &mut peer_state.pending_msg_events;
 					let counterparty_node_id = *counterparty_node_id;
 					peer_state.channel_by_id.retain(|chan_id, phase| {
-						match phase {
-							ChannelPhase::Funded(chan) => {
+						match phase.as_funded_mut() {
+							Some(chan) => {
 								let new_feerate = if chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 									anchor_feerate
 								} else {
@@ -6540,14 +6512,32 @@ where
 
 								true
 							},
-							ChannelPhase::UnfundedInboundV1(chan) => {
-								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
-							},
-							ChannelPhase::UnfundedOutboundV1(chan) => {
-								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
-							},
-							ChannelPhase::UnfundedV2(chan) => {
-								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
+							None => {
+								phase.context_mut().maybe_expire_prev_config();
+								let unfunded_context = phase.unfunded_context_mut().expect("channel should be unfunded");
+								if unfunded_context.should_expire_unfunded_channel() {
+									let context = phase.context();
+									let logger = WithChannelContext::from(&self.logger, context, None);
+									log_error!(logger,
+										"Force-closing pending channel with ID {} for not establishing in a timely manner",
+										context.channel_id());
+									let context = phase.context_mut();
+									let mut close_res = context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
+									locked_close_channel!(self, peer_state, context, close_res);
+									shutdown_channels.push(close_res);
+									pending_msg_events.push(MessageSendEvent::HandleError {
+										node_id: context.get_counterparty_node_id(),
+										action: msgs::ErrorAction::SendErrorMessage {
+											msg: msgs::ErrorMessage {
+												channel_id: context.channel_id(),
+												data: "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned(),
+											},
+										},
+									});
+									false
+								} else {
+									true
+								}
 							},
 						}
 					});

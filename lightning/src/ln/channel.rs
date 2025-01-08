@@ -1156,6 +1156,15 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 		}
 	}
 
+	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
+		match self {
+			ChannelPhase::Funded(_) => { debug_assert!(false); None },
+			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
+		}
+	}
+
 	pub fn is_funded(&self) -> bool {
 		matches!(self, ChannelPhase::Funded(_))
 	}
