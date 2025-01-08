@@ -20,6 +20,8 @@ use crate::ln::offers_tests;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::Retry;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::Offer;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{
 	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, ReleaseHeldHtlc,
 };
@@ -32,10 +34,38 @@ use crate::sign::NodeSigner;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentPreimage, PaymentSecret};
 use crate::util::config::UserConfig;
+use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
 
 use core::convert::Infallible;
 use core::time::Duration;
+
+fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
+	always_online_counterparty: &Node, recipient: &Node, relative_expiry: Option<Duration>,
+	secp_ctx: &Secp256k1<T>,
+) -> (Offer, StaticInvoice) {
+	let blinded_paths_to_always_online_node = always_online_counterparty
+		.message_router
+		.create_blinded_paths(
+			always_online_counterparty.node.get_our_node_id(),
+			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			Vec::new(),
+			&secp_ctx,
+		)
+		.unwrap();
+	let (offer_builder, offer_nonce) = recipient
+		.node
+		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
+		.unwrap();
+	let offer = offer_builder.build().unwrap();
+	let static_invoice = recipient
+		.node
+		.create_static_invoice_builder(&offer, offer_nonce, relative_expiry)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+	(offer, static_invoice)
+}
 
 #[test]
 fn blinded_keysend() {
@@ -362,20 +392,8 @@ fn ignore_unexpected_static_invoice() {
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
 	// Initiate payment to the sender's intended offer.
-	let blinded_paths_to_always_online_node = nodes[1]
-		.message_router
-		.create_blinded_paths(
-			nodes[1].node.get_our_node_id(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
-			Vec::new(),
-			&secp_ctx,
-		)
-		.unwrap();
-	let (offer_builder, offer_nonce) = nodes[2]
-		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node.clone())
-		.unwrap();
-	let offer = offer_builder.build().unwrap();
+	let (offer, valid_static_invoice) =
+		create_static_invoice(&nodes[1], &nodes[2], None, &secp_ctx);
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
@@ -393,20 +411,7 @@ fn ignore_unexpected_static_invoice() {
 
 	// Create a static invoice to be sent over the reply path containing the original payment_id, but
 	// the static invoice corresponds to a different offer than was originally paid.
-	let unexpected_static_invoice = {
-		let (offer_builder, nonce) = nodes[2]
-			.node
-			.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
-			.unwrap();
-		let sender_unintended_offer = offer_builder.build().unwrap();
-
-		nodes[2]
-			.node
-			.create_static_invoice_builder(&sender_unintended_offer, nonce, None)
-			.unwrap()
-			.build_and_sign(&secp_ctx)
-			.unwrap()
-	};
+	let unexpected_static_invoice = create_static_invoice(&nodes[1], &nodes[2], None, &secp_ctx).1;
 
 	// Check that we'll ignore the unexpected static invoice.
 	nodes[1]
@@ -433,13 +438,6 @@ fn ignore_unexpected_static_invoice() {
 
 	// A valid static invoice corresponding to the correct offer will succeed and cause us to send a
 	// held_htlc_available onion message.
-	let valid_static_invoice = nodes[2]
-		.node
-		.create_static_invoice_builder(&offer, offer_nonce, None)
-		.unwrap()
-		.build_and_sign(&secp_ctx)
-		.unwrap();
-
 	nodes[1]
 		.onion_messenger
 		.send_onion_message(
@@ -499,32 +497,14 @@ fn pays_static_invoice() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
-	let blinded_paths_to_always_online_node = nodes[1]
-		.message_router
-		.create_blinded_paths(
-			nodes[1].node.get_our_node_id(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
-			Vec::new(),
-			&secp_ctx,
-		)
-		.unwrap();
-	let (offer_builder, offer_nonce) = nodes[2]
-		.node
-		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
-		.unwrap();
-	let offer = offer_builder.build().unwrap();
-	let amt_msat = 5000;
-	let payment_id = PaymentId([1; 32]);
 	let relative_expiry = Duration::from_secs(1000);
-	let static_invoice = nodes[2]
-		.node
-		.create_static_invoice_builder(&offer, offer_nonce, Some(relative_expiry))
-		.unwrap()
-		.build_and_sign(&secp_ctx)
-		.unwrap();
+	let (offer, static_invoice) =
+		create_static_invoice(&nodes[1], &nodes[2], Some(relative_expiry), &secp_ctx);
 	assert!(static_invoice.invoice_features().supports_basic_mpp());
 	assert_eq!(static_invoice.relative_expiry(), relative_expiry);
 
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
