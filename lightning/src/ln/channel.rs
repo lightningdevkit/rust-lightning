@@ -1201,6 +1201,14 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 		}
 	}
 
+	pub fn into_unfunded_v2(self) -> Option<PendingV2Channel<SP>> {
+		if let ChannelPhase::UnfundedV2(channel) = self {
+			Some(channel)
+		} else {
+			None
+		}
+	}
+
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<SignerResumeUpdates> where L::Target: Logger {

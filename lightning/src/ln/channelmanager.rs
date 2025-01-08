@@ -8241,44 +8241,44 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn internal_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
-			match channel_phase {
-				ChannelPhase::UnfundedV2(ref mut channel) => {
+			match channel_phase.as_unfunded_v2_mut() {
+				Some(channel) => {
 					Ok(channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
 				},
-				_ => Err("tx_add_input"),
+				None => Err("tx_add_input"),
 			}
 		})
 	}
 
 	fn internal_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
-			match channel_phase {
-				ChannelPhase::UnfundedV2(ref mut channel) => {
+			match channel_phase.as_unfunded_v2_mut() {
+				Some(channel) => {
 					Ok(channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id))
 				},
-				_ => Err("tx_add_output"),
+				None => Err("tx_add_output"),
 			}
 		})
 	}
 
 	fn internal_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
-			match channel_phase {
-				ChannelPhase::UnfundedV2(ref mut channel) => {
+			match channel_phase.as_unfunded_v2_mut() {
+				Some(channel) => {
 					Ok(channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id))
 				},
-				_ => Err("tx_remove_input"),
+				None => Err("tx_remove_input"),
 			}
 		})
 	}
 
 	fn internal_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
-			match channel_phase {
-				ChannelPhase::UnfundedV2(ref mut channel) => {
+			match channel_phase.as_unfunded_v2_mut() {
+				Some(channel) => {
 					Ok(channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id))
 				},
-				_ => Err("tx_remove_output"),
+				None => Err("tx_remove_output"),
 			}
 		})
 	}
@@ -8297,10 +8297,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
-				let (msg_send_event_opt, signing_session_opt) = match channel_phase {
-					ChannelPhase::UnfundedV2(channel) => channel.tx_complete(msg)
+				let (msg_send_event_opt, signing_session_opt) = match channel_phase.as_unfunded_v2_mut() {
+					Some(channel) => channel.tx_complete(msg)
 						.into_msg_send_event_or_signing_session(counterparty_node_id),
-					_ => try_chan_phase_entry!(self, peer_state, Err(ChannelError::Close(
+					None => try_chan_phase_entry!(self, peer_state, Err(ChannelError::Close(
 						(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress".into(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
@@ -8310,18 +8310,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if let Some(mut signing_session) = signing_session_opt {
-					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut() {
-						ChannelPhase::UnfundedV2(chan) => {
+					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut().as_unfunded_v2_mut() {
+						Some(chan) => {
 							chan.funding_tx_constructed(&mut signing_session, &self.logger)
 						},
-						_ => Err(ChannelError::Warn(
+						None => Err(ChannelError::Warn(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
 							.into())),
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
 					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
-					let channel = match channel_phase {
-						ChannelPhase::UnfundedV2(chan) => chan.into_channel(signing_session),
-						_ => {
+					let channel = match channel_phase.into_unfunded_v2() {
+						Some(chan) => chan.into_channel(signing_session),
+						None => {
 							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
 							Err(ChannelError::Warn(
 								"Got a tx_complete message with no interactive transaction construction expected or in-progress"
