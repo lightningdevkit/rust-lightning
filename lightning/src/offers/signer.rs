@@ -501,3 +501,10 @@ pub(crate) fn hmac_for_held_htlc_available_context(
 
 	Hmac::from_engine(hmac)
 }
+
+#[cfg(async_payments)]
+pub(crate) fn verify_held_htlc_available_context(
+	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_held_htlc_available_context(nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
+}
