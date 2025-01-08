@@ -9958,8 +9958,11 @@ where
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let hmac = signer::hmac_for_held_htlc_available_context(nonce, expanded_key);
+		let path_absolute_expiry = Duration::from_secs(
+			inbound_payment::calculate_absolute_expiry(created_at.as_secs(), relative_expiry_secs)
+		);
 		let context = MessageContext::AsyncPayments(
-			AsyncPaymentsContext::InboundPayment { nonce, hmac }
+			AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry }
 		);
 		let async_receive_message_paths = self.create_blinded_paths(context)
 			.map_err(|()| Bolt12SemanticError::MissingPaths)?;
