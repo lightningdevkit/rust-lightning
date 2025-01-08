@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains LSPS2 event types
+//! Contains bLIP-52 / LSPS2 event types
 
 use super::msgs::OpeningFeeParams;
 use crate::lsps0::ser::RequestId;
@@ -25,7 +25,7 @@ pub enum LSPS2ClientEvent {
 	///
 	/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
 	OpeningParametersReady {
-		/// The identifier of the issued LSPS2 `get_info` request, as returned by
+		/// The identifier of the issued bLIP-52 / LSPS2 `get_info` request, as returned by
 		/// [`LSPS2ClientHandler::request_opening_params`]
 		///
 		/// This can be used to track which request this event corresponds to.
@@ -44,7 +44,7 @@ pub enum LSPS2ClientEvent {
 	/// When the invoice is paid, the LSP will open a channel with the previously agreed upon
 	/// parameters to you.
 	InvoiceParametersReady {
-		/// The identifier of the issued LSPS2 `buy` request, as returned by
+		/// The identifier of the issued bLIP-52 / LSPS2 `buy` request, as returned by
 		/// [`LSPS2ClientHandler::select_opening_params`].
 		///
 		/// This can be used to track which request this event corresponds to.
@@ -62,7 +62,7 @@ pub enum LSPS2ClientEvent {
 	},
 }
 
-/// An event which an LSPS2 server should take some action in response to.
+/// An event which an bLIP-52 / LSPS2 server should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS2ServiceEvent {
 	/// A request from a client for information about JIT Channel parameters.

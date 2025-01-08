@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Types and primitives that implement the LSPS1: Channel Request specification.
+//! Types and primitives that implement the bLIP-51 / LSPS1: Channel Request specification.
 
 pub mod client;
 pub mod event;

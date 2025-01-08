@@ -1,4 +1,4 @@
-//! Message, request, and other primitive types used to implement LSPS1.
+//! Message, request, and other primitive types used to implement bLIP-51 / LSPS1.
 
 use crate::lsps0::ser::{
 	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSMessage,
@@ -31,8 +31,9 @@ pub struct OrderId(pub String);
 
 /// A request made to an LSP to retrieve the supported options.
 ///
-/// Please refer to the [LSPS1 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1#1-lsps1info)
-/// for more information.
+/// Please refer to the [bLIP-51 / LSPS1
+/// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#1-lsps1get_info) for
+/// more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct GetInfoRequest {}
@@ -78,7 +79,8 @@ pub struct GetInfoResponse {
 
 /// A request made to an LSP to create an order.
 ///
-/// Please refer to the [LSPS1 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1#2-lsps1create_order)
+/// Please refer to the [bLIP-51 / LSPS1
+/// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#2-lsps1create_order)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CreateOrderRequest {
@@ -92,7 +94,7 @@ pub struct CreateOrderRequest {
 	pub refund_onchain_address: Option<Address>,
 }
 
-/// An object representing an LSPS1 channel order.
+/// An object representing an bLIP-51 / LSPS1 channel order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct OrderParameters {
 	/// Indicates how many satoshi the LSP will provide on their side.
@@ -244,7 +246,8 @@ pub struct ChannelInfo {
 
 /// A request made to an LSP to retrieve information about an previously made order.
 ///
-/// Please refer to the [LSPS1 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1#21-lsps1get_order)
+/// Please refer to the [bLIP-51 / LSPS1
+/// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#21-lsps1get_order)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GetOrderRequest {
@@ -252,7 +255,7 @@ pub struct GetOrderRequest {
 	pub order_id: OrderId,
 }
 
-/// An enum that captures all the valid JSON-RPC requests in the LSPS1 protocol.
+/// An enum that captures all the valid JSON-RPC requests in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Request {
 	/// A request to learn about the options supported by the LSP.
@@ -263,7 +266,7 @@ pub enum LSPS1Request {
 	GetOrder(GetOrderRequest),
 }
 
-/// An enum that captures all the valid JSON-RPC responses in the LSPS1 protocol.
+/// An enum that captures all the valid JSON-RPC responses in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Response {
 	/// A successful response to a [`GetInfoRequest`].
@@ -280,7 +283,7 @@ pub enum LSPS1Response {
 	GetOrderError(ResponseError),
 }
 
-/// An enum that captures all valid JSON-RPC messages in the LSPS1 protocol.
+/// An enum that captures all valid JSON-RPC messages in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Message {
 	/// An LSPS1 JSON-RPC request.

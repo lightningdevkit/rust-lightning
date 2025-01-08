@@ -1,7 +1,7 @@
-//! Contains the main LSPS0 client-side object, [`LSPS0ClientHandler`].
+//! Contains the main bLIP-50 / LSPS0 client-side object, [`LSPS0ClientHandler`].
 //!
-//! Please refer to the [LSPS0
-//! specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0) for more
+//! Please refer to the [bLIP-50 / LSPS0
+//! specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
 use crate::events::{Event, EventQueue};
@@ -22,7 +22,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use core::ops::Deref;
 
-/// A message handler capable of sending and handling LSPS0 messages.
+/// A message handler capable of sending and handling bLIP-50 / LSPS0 messages.
 pub struct LSPS0ClientHandler<ES: Deref>
 where
 	ES::Target: EntropySource,
@@ -43,10 +43,10 @@ where
 		Self { entropy_source, pending_messages, pending_events }
 	}
 
-	/// Calls LSPS0's `list_protocols`.
+	/// Calls bLIP-50 / LSPS0's `list_protocols`.
 	///
-	/// Please refer to the [LSPS0
-	/// specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0#lsps-specification-support-query)
+	/// Please refer to the [bLIP-50 / LSPS0
+	/// specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 	/// for more information.
 	pub fn list_protocols(&self, counterparty_node_id: &PublicKey) {
 		let msg = LSPS0Message::Request(

@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains the main LSPS1 server object, [`LSPS1ServiceHandler`].
+//! Contains the main bLIP-51 / LSPS1 server object, [`LSPS1ServiceHandler`].
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
@@ -36,7 +36,7 @@ use bitcoin::secp256k1::PublicKey;
 use chrono::Utc;
 use core::ops::Deref;
 
-/// Server-side configuration options for LSPS1 channel requests.
+/// Server-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]
 pub struct LSPS1ServiceConfig {
 	/// A token to be send with each channel request.
@@ -125,7 +125,7 @@ impl PeerState {
 	}
 }
 
-/// The main object allowing to send and receive LSPS1 messages.
+/// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
 pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, C: Deref>
 where
 	ES::Target: EntropySource,
