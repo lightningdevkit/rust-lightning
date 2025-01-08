@@ -31,7 +31,7 @@ pub(crate) struct EventQueue {
 	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
-	condvar: crate::sync::Condvar,
+	condvar: Arc<crate::sync::Condvar>,
 }
 
 impl EventQueue {
@@ -40,7 +40,7 @@ impl EventQueue {
 		let waker = Arc::new(Mutex::new(None));
 		#[cfg(feature = "std")]
 		{
-			let condvar = crate::sync::Condvar::new();
+			let condvar = Arc::new(crate::sync::Condvar::new());
 			Self { queue, waker, condvar }
 		}
 		#[cfg(not(feature = "std"))]
@@ -99,6 +99,49 @@ impl EventQueue {
 
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.queue.lock().unwrap().split_off(0).into()
+	}
+
+	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
+	pub fn notifier(&self) -> EventQueueNotifierGuard {
+		#[cfg(feature = "std")]
+		{
+			EventQueueNotifierGuard {
+				queue: Arc::clone(&self.queue),
+				waker: Arc::clone(&self.waker),
+				condvar: Arc::clone(&self.condvar),
+			}
+		}
+		#[cfg(not(feature = "std"))]
+		{
+			EventQueueNotifierGuard {
+				queue: Arc::clone(&self.queue),
+				waker: Arc::clone(&self.waker),
+			}
+		}
+	}
+}
+
+// A guard type that will notify about new events when dropped.
+#[must_use]
+pub(crate) struct EventQueueNotifierGuard {
+	queue: Arc<Mutex<VecDeque<Event>>>,
+	waker: Arc<Mutex<Option<Waker>>>,
+	#[cfg(feature = "std")]
+	condvar: Arc<crate::sync::Condvar>,
+}
+
+impl Drop for EventQueueNotifierGuard {
+	fn drop(&mut self) {
+		let should_notify = !self.queue.lock().unwrap().is_empty();
+
+		if should_notify {
+			if let Some(waker) = self.waker.lock().unwrap().take() {
+				waker.wake();
+			}
+
+			#[cfg(feature = "std")]
+			self.condvar.notify_one();
+		}
 	}
 }
 
