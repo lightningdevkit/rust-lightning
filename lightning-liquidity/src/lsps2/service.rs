@@ -740,6 +740,8 @@ where
 		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
 		payment_hash: PaymentHash,
 	) -> Result<(), APIError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let peer_by_intercept_scid = self.peer_by_intercept_scid.read().unwrap();
 		if let Some(counterparty_node_id) = peer_by_intercept_scid.get(&intercept_scid) {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -1029,6 +1031,8 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetInfoRequest,
 	) -> Result<(), LightningError> {
 		let _msg_queue_notifier = self.pending_messages.notifier();
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
 		let inner_state_lock =
 			get_or_insert_peer_state_entry!(self, outer_state_lock, counterparty_node_id);
@@ -1056,6 +1060,8 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: BuyRequest,
 	) -> Result<(), LightningError> {
 		let _msg_queue_notifier = self.pending_messages.notifier();
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		if let Some(payment_size_msat) = params.payment_size_msat {
 			if payment_size_msat < params.opening_fee_params.min_payment_size_msat {
 				let response = LSPS2Response::BuyError(ResponseError {
