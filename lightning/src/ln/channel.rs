@@ -4258,7 +4258,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			debug_assert!(false);
 			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
 				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
 			)));
 		}
 
