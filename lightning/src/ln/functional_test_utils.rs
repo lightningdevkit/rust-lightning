@@ -1507,7 +1507,7 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(nodes:
 }
 
 pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64) -> (msgs::ChannelReady, Transaction) {
-	let mut no_announce_cfg = test_default_channel_config();
+	let mut no_announce_cfg = nodes[a].node.get_current_default_configuration().clone();
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
 	nodes[a].node.create_channel(nodes[b].node.get_our_node_id(), channel_value, push_msat, 42, None, Some(no_announce_cfg)).unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, nodes[b].node.get_our_node_id());
