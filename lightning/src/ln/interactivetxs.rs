@@ -1694,6 +1694,7 @@ pub(super) fn calculate_change_output_value(
 	let total_input_satoshis: u64 =
 		funding_inputs_prev_outputs.iter().map(|out| out.value.to_sat()).sum();
 
+	// Note: in case of additional outputs, they will have to be subtracted here
 	let remaining_value =
 		total_input_satoshis.saturating_sub(our_contribution).saturating_sub(fees_sats);
 
