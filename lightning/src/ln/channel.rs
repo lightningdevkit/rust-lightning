@@ -2108,6 +2108,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
 			let change_output_fee = fee_for_weight(self.dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
 			change_output.value = Amount::from_sat(change_value.saturating_sub(change_output_fee));
+			// Note: dust check not done here, should be handled before
 			funding_outputs.push(OutputOwned::Single(change_output));
 		}
 
