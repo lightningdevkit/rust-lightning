@@ -1928,16 +1928,11 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, APIError>
 	where ES::Target: EntropySource
 	{
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
-
-		if let Some(prev_funding_input) = prev_funding_input {
-			funding_inputs.push(prev_funding_input);
-		}
 
 		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)
 			.map_err(|err| APIError::APIMisuseError { err: err.to_string() })?;
