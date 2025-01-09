@@ -484,7 +484,7 @@ where L::Target: Logger {
 ///
 /// The penalty applied to any channel by the [`ProbabilisticScorer`] is the sum of each of the
 /// parameters here.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProbabilisticScoringFeeParameters {
 	/// A fixed penalty in msats to apply to each channel.
 	///
@@ -742,7 +742,7 @@ impl ProbabilisticScoringFeeParameters {
 /// Used to configure decay parameters that are static throughout the lifetime of the scorer.
 /// these decay parameters affect the score of the channel penalty and are not changed on a
 /// per-route penalty cost call.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct ProbabilisticScoringDecayParameters {
 	/// If we aren't learning any new datapoints for a channel, the historical liquidity bounds
 	/// tracking can simply live on with increasingly stale data. Instead, when a channel has not
