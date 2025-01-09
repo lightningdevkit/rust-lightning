@@ -8842,21 +8842,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match channel_entry.get_mut() {
 					Channel::UnfundedV2(chan) => {
 						if let Some(signing_session) = chan.interactive_tx_signing_session.take() {
-							let (channel_id, mut channel) = channel_entry.remove_entry();
-							if let Channel::UnfundedV2(chan) = channel {
-								(
-									channel_id,
-									chan.into_channel(signing_session)
-										.map_err(|(mut chan, err)|
-											convert_chan_phase_err!(self, peer_state, err, chan.context, &channel_id, UNFUNDED_CHANNEL).1
-										)?
-								)
-							} else {
-								debug_assert!(false, "The channel phase was not UnfundedV2");
-								let err = ChannelError::close(
-									"Closing due to unexpected sender error".into());
-								return Err(convert_chan_phase_err!(self, peer_state, err, &mut channel,
-									&channel_id).1)
+							let (channel_id, channel) = channel_entry.remove_entry();
+							match channel {
+								Channel::UnfundedV2(chan) => {
+									(
+										channel_id,
+										chan.into_channel(signing_session)
+											.map_err(|(mut chan, err)|
+												convert_chan_phase_err!(self, peer_state, err, chan.context, &channel_id, UNFUNDED_CHANNEL).1
+											)?
+									)
+								}
+								_ => unreachable!("The Channel variant was determined as UnfundedV2 in the outer match"),
 							}
 						} else {
 							return try_chan_phase_entry!(self, peer_state, Err(ChannelError::close(
