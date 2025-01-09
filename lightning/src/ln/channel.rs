@@ -1127,9 +1127,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
-	UnfundedOutboundV2(OutboundV2Channel<SP>),
-	#[allow(dead_code)] // TODO(dual_funding): Remove once accepting V2 channels is enabled.
-	UnfundedInboundV2(InboundV2Channel<SP>),
+	UnfundedV2(PendingV2Channel<SP>),
 	Funded(Channel<SP>),
 }
 
@@ -1142,8 +1140,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
-			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
-			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
+			ChannelPhase::UnfundedV2(chan) => &chan.context,
 		}
 	}
 
@@ -1152,8 +1149,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(ref mut chan) => &mut chan.context,
-			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
-			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
+			ChannelPhase::UnfundedV2(ref mut chan) => &mut chan.context,
 		}
 	}
 }
@@ -1684,63 +1680,53 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for Channel<SP> where SP::Ta
 	}
 }
 
-pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP>;
-
-	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
-
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
-
-	fn dual_funding_context(&self) -> &DualFundingChannelContext;
-
-	fn unfunded_context(&self) -> &UnfundedChannelContext;
-
-	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
+	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
-	fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
-	fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
-	fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> InteractiveTxMessageSendResult {
+		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
-	fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
-		let tx_constructor = match self.interactive_tx_constructor_mut() {
+	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
+		let tx_constructor = match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor,
 			None => {
 				let tx_abort = msgs::TxAbort {
@@ -1759,26 +1745,25 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 		};
 
 		if let HandleTxCompleteValue::SendTxComplete(_, ref signing_session) = tx_complete {
-			self.context_mut().next_funding_txid = Some(signing_session.unsigned_tx.compute_txid());
+			self.context.next_funding_txid = Some(signing_session.unsigned_tx.compute_txid());
 		};
 
 		HandleTxCompleteResult(Ok(tx_complete))
 	}
 
-	fn funding_tx_constructed<L: Deref>(
+	pub fn funding_tx_constructed<L: Deref>(
 		&mut self, signing_session: &mut InteractiveTxSigningSession, logger: &L
 	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
-		let our_funding_satoshis = self.dual_funding_context().our_funding_satoshis;
-		let transaction_number = self.unfunded_context().transaction_number();
-		let context = self.context_mut();
+		let our_funding_satoshis = self.dual_funding_context.our_funding_satoshis;
+		let transaction_number = self.unfunded_context.transaction_number();
 
 		let mut output_index = None;
-		let expected_spk = context.get_funding_redeemscript().to_p2wsh();
+		let expected_spk = self.context.get_funding_redeemscript().to_p2wsh();
 		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == context.get_value_satoshis() {
+			if outp.script_pubkey() == &expected_spk && outp.value() == self.context.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(ChannelError::Close(
 						(
@@ -1798,18 +1783,18 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
 		};
-		context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-		context.holder_signer.as_mut().provide_channel_parameters(&context.channel_transaction_parameters);
+		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
+		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
-		context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
-		let commitment_signed = context.get_initial_commitment_signed(logger);
+		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
+		let commitment_signed = self.context.get_initial_commitment_signed(logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
+				self.context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
-				context.channel_transaction_parameters.funding_outpoint = None;
+				self.context.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
 			},
 		};
@@ -1817,7 +1802,7 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 		let funding_ready_for_sig_event = None;
 		if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
-			if signing_session.provide_holder_witnesses(context.channel_id, Vec::new()).is_err() {
+			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
 				debug_assert!(
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
@@ -1840,48 +1825,12 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 			// </div>
 		}
 
-		context.channel_state = ChannelState::FundingNegotiated;
+		self.context.channel_state = ChannelState::FundingNegotiated;
 
 		// Clear the interactive transaction constructor
-		self.interactive_tx_constructor_mut().take();
+		self.interactive_tx_constructor.take();
 
 		Ok((commitment_signed, funding_ready_for_sig_event))
-	}
-}
-
-impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.context
-	}
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.context
-	}
-	fn dual_funding_context(&self) -> &DualFundingChannelContext {
-		&self.dual_funding_context
-	}
-	fn unfunded_context(&self) -> &UnfundedChannelContext {
-		&self.unfunded_context
-	}
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
-		&mut self.interactive_tx_constructor
-	}
-}
-
-impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.context
-	}
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.context
-	}
-	fn dual_funding_context(&self) -> &DualFundingChannelContext {
-		&self.dual_funding_context
-	}
-	fn unfunded_context(&self) -> &UnfundedChannelContext {
-		&self.unfunded_context
-	}
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
-		&mut self.interactive_tx_constructor
 	}
 }
 
@@ -8819,24 +8768,24 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
-// A not-yet-funded outbound (from holder) channel using V2 channel establishment.
-pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
+// A not-yet-funded channel using V2 channel establishment.
+pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
-	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
-impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_outbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, user_id: u128, config: &UserConfig,
 		current_chain_height: u32, outbound_scid_alias: u64, funding_confirmation_target: ConfirmationTarget,
 		logger: L,
-	) -> Result<OutboundV2Channel<SP>, APIError>
+	) -> Result<Self, APIError>
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
@@ -8908,6 +8857,10 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
+		if !self.context.is_outbound() {
+			debug_assert!(false, "Tried to send open_channel2 for an inbound channel?");
+		}
+
 		if self.context.have_received_message() {
 			debug_assert!(false, "Cannot generate an open_channel2 after we've moved forward");
 		}
@@ -8957,40 +8910,16 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let holder_commitment_point = self.unfunded_context.holder_commitment_point.ok_or(ChannelError::close(
-			format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
-			self.context.channel_id())))?;
-		let channel = Channel {
-			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-			holder_commitment_point,
-		};
-
-		Ok(channel)
-	}
-}
-
-// A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
-pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
-	pub context: ChannelContext<SP>,
-	pub unfunded_context: UnfundedChannelContext,
-	pub dual_funding_context: DualFundingChannelContext,
-	/// The current interactive transaction construction session under negotiation.
-	interactive_tx_constructor: Option<InteractiveTxConstructor>,
-}
-
-impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
-	pub fn new<ES: Deref, F: Deref, L: Deref>(
+	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, total_witness_weight: Weight,
 		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
-	) -> Result<InboundV2Channel<SP>, ChannelError>
+	) -> Result<Self, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
