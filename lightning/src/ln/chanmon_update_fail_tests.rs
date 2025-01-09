@@ -19,7 +19,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, PaymentSendFailure, RAACommitmentOrder, RAAMonitorUpdateBlockingAction, RecipientOnionFields};
 use crate::ln::channel::{AnnouncementSigsState, ChannelPhase};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -3333,6 +3333,19 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 		check_added_monitors(&nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		send_payment(&nodes[1], &[&nodes[2]], 100_000);
+	} else {
+		// Handle RAA blockers on nodes[1]
+		let raa_blockers = nodes[1].node.get_and_clear_pending_raa_blockers();
+		assert_eq!(raa_blockers.len(), 1);
+		let (chan_id, blockers) = &raa_blockers[0];
+		assert_eq!(*chan_id, chan_id_bc);
+		assert_eq!(blockers.len(), 1);
+		match blockers[0] {
+			RAAMonitorUpdateBlockingAction::ForwardedPaymentInboundClaim { channel_id, .. } => {
+				assert_eq!(channel_id, chan_id_ab);
+			}
+			_ => panic!("Unexpected RAA blocker")
+		}
 	}
 }
 
@@ -3548,8 +3561,8 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1);
-	create_announced_chan_between_nodes(&nodes, 1, 2);
+	let chan_id_ab = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let chan_id_bc = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
 	// Route a payment from A, through B, to C, then claim it on C. Replay the
 	// `update_fulfill_htlc` twice on B to check that B doesn't hang.
@@ -3596,6 +3609,19 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		// Handle RAA blockers on nodes[1]
+		let raa_blockers = nodes[1].node.get_and_clear_pending_raa_blockers();
+		assert_eq!(raa_blockers.len(), 1);
+		let (chan_id, blockers) = &raa_blockers[0];
+		assert_eq!(*chan_id, chan_id_bc);
+		assert_eq!(blockers.len(), 1);
+		match blockers[0] {
+			RAAMonitorUpdateBlockingAction::ForwardedPaymentInboundClaim { channel_id, .. } => {
+				assert_eq!(channel_id, chan_id_ab);
+			}
+			_ => panic!("Unexpected RAA blocker")
+		}
 	}
 }
 

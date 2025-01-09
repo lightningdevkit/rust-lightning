@@ -652,6 +652,11 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				panic!("Had {} excess added monitors on node {}", added_monitors.len(), self.logger.id);
 			}
 
+			let raa_blockers = self.node.get_and_clear_pending_raa_blockers();
+			if !raa_blockers.is_empty() {
+				panic!( "Had excess RAA blockers on node {}: {:?}", self.logger.id, raa_blockers);
+			}
+
 			// Check that if we serialize the network graph, we can deserialize it again.
 			let network_graph = {
 				let mut w = test_utils::TestVecWriter(Vec::new());
