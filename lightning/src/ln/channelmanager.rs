@@ -4693,6 +4693,17 @@ where
 		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, recipient_onion, payment_id, route, None, &self.entropy_source, best_block_height)
 	}
 
+	#[cfg(all(test, async_payments))]
+	pub(crate) fn test_modify_pending_payment<Fn>(
+		&self, payment_id: &PaymentId, mut callback: Fn
+	) where Fn: FnMut(&mut PendingOutboundPayment) {
+		let mut outbounds = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
+		match outbounds.get_mut(payment_id) {
+			Some(outb) => callback(outb),
+			_ => panic!()
+		}
+	}
+
 	#[cfg(test)]
 	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
@@ -10550,6 +10561,16 @@ where
 
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
+		)
+	}
+
+	#[cfg(all(test, async_payments))]
+	pub(super) fn test_create_blinded_payment_paths(
+		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
+		relative_expiry_seconds: u32
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		self.create_blinded_payment_paths(
+			amount_msats, payment_secret, payment_context, relative_expiry_seconds
 		)
 	}
 
