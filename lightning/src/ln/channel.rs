@@ -1939,21 +1939,10 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			funding_inputs.push(prev_funding_input);
 		}
 
-		let mut funding_inputs_prev_outputs: Vec<&TxOut> = Vec::with_capacity(funding_inputs.len());
-		// Check that vouts exist for each TxIn in provided transactions.
-		for (idx, (txin, tx)) in funding_inputs.iter().enumerate() {
-			if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
-				funding_inputs_prev_outputs.push(output);
-			} else {
-				return Err(APIError::APIMisuseError {
-					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
-						tx.as_transaction().compute_txid(), txin.previous_output.vout, idx) });
-			}
-		}
+		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)
+			.map_err(|err| APIError::APIMisuseError { err: err.to_string() })?;
 
-		let total_input_satoshis: u64 = funding_inputs.iter().map(
-			|(txin, tx)| tx.as_transaction().output.get(txin.previous_output.vout as usize).map(|out| out.value.to_sat()).unwrap_or(0)
-		).sum();
+		let total_input_satoshis: u64 = funding_inputs_prev_outputs.iter().map(|txout| txout.value.to_sat()).sum();
 		if total_input_satoshis < self.dual_funding_context.our_funding_satoshis {
 			return Err(APIError::APIMisuseError {
 				err: format!("Total value of funding inputs must be at least funding amount. It was {} sats",
@@ -4511,6 +4500,33 @@ pub(super) struct DualFundingChannelContext {
 	/// Note that this field may be emptied once the interactive negotiation has been started.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+}
+
+impl DualFundingChannelContext {
+	/// Obtain prev outputs for each supplied input and matching transaction.
+	/// Can error when there a prev tx does not have an output for the specified vout number.
+	/// Also checks for matching of transaction IDs.
+	fn txouts_from_input_prev_txs(inputs: &Vec<(TxIn, TransactionU16LenLimited)>) -> Result<Vec<&TxOut>, ChannelError> {
+		let mut prev_outputs: Vec<&TxOut> = Vec::with_capacity(inputs.len());
+		// Check that vouts exist for each TxIn in provided transactions.
+		for (idx, (txin, tx)) in inputs.iter().enumerate() {
+			let txid = tx.as_transaction().compute_txid();
+			if txin.previous_output.txid != txid {
+				return Err(ChannelError::Warn(
+					format!("Transaction input txid mismatch, {} vs. {}, at index {}", txin.previous_output.txid, txid, idx)
+				));
+			}
+			if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
+				prev_outputs.push(output);
+			} else {
+				return Err(ChannelError::Warn(
+					format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn, at index {}",
+						txid, txin.previous_output.vout, idx)
+				));
+			}
+		}
+		Ok(prev_outputs)
+	}
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -9181,16 +9197,17 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
+		let dual_funding_context = DualFundingChannelContext {
+			our_funding_satoshis: funding_satoshis,
+			their_funding_satoshis: None,
+			funding_tx_locktime,
+			funding_feerate_sat_per_1000_weight,
+			our_funding_inputs: funding_inputs,
+		};
 		let chan = Self {
 			context,
 			unfunded_context,
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: funding_satoshis,
-				their_funding_satoshis: None,
-				funding_tx_locktime,
-				funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
-			},
+			dual_funding_context,
 			interactive_tx_constructor: None,
 		};
 		Ok(chan)
