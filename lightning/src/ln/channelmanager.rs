@@ -2430,6 +2430,9 @@ where
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	#[cfg(test)]
+	pub(super) pending_outbound_payments: OutboundPayments,
+	#[cfg(not(test))]
 	pending_outbound_payments: OutboundPayments,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
@@ -10555,6 +10558,16 @@ where
 
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
+		)
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_create_blinded_payment_paths(
+		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
+		relative_expiry_seconds: u32
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		self.create_blinded_payment_paths(
+			amount_msats, payment_secret, payment_context, relative_expiry_seconds
 		)
 	}
 
