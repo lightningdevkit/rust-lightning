@@ -1358,6 +1358,16 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 	}
 }
 
+impl<SP: Deref> From<OutboundV1Channel<SP>> for ChannelPhase<SP>
+where
+	SP::Target: SignerProvider,
+	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+{
+	fn from(channel: OutboundV1Channel<SP>) -> Self {
+		ChannelPhase::UnfundedOutboundV1(channel)
+	}
+}
+
 impl<SP: Deref> From<Channel<SP>> for ChannelPhase<SP>
 where
 	SP::Target: SignerProvider,

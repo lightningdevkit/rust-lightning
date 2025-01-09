@@ -3668,7 +3668,7 @@ where
 					panic!("RNG is bad???");
 				}
 			},
-			hash_map::Entry::Vacant(entry) => { entry.insert(ChannelPhase::UnfundedOutboundV1(channel)); }
+			hash_map::Entry::Vacant(entry) => { entry.insert(ChannelPhase::from(channel)); }
 		}
 
 		if let Some(msg) = res {
@@ -5116,7 +5116,7 @@ where
 						return Err(APIError::ChannelUnavailable { err });
 					}
 				}
-				e.insert(ChannelPhase::UnfundedOutboundV1(chan));
+				e.insert(ChannelPhase::from(chan));
 			}
 		}
 		Ok(())
