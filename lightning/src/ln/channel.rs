@@ -2046,21 +2046,10 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			funding_inputs.push(prev_funding_input);
 		}
 
-		let mut funding_inputs_prev_outputs: Vec<&TxOut> = Vec::with_capacity(funding_inputs.len());
-		// Check that vouts exist for each TxIn in provided transactions.
-		for (idx, (txin, tx)) in funding_inputs.iter().enumerate() {
-			if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
-				funding_inputs_prev_outputs.push(output);
-			} else {
-				return Err(APIError::APIMisuseError {
-					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
-						tx.as_transaction().compute_txid(), txin.previous_output.vout, idx) });
-			}
-		}
+		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)
+			.map_err(|err| APIError::APIMisuseError { err: err.to_string() })?;
 
-		let total_input_satoshis: u64 = funding_inputs.iter().map(
-			|(txin, tx)| tx.as_transaction().output.get(txin.previous_output.vout as usize).map(|out| out.value.to_sat()).unwrap_or(0)
-		).sum();
+		let total_input_satoshis: u64 = funding_inputs_prev_outputs.iter().map(|txout| txout.value.to_sat()).sum();
 		if total_input_satoshis < self.dual_funding_context.our_funding_satoshis {
 			return Err(APIError::APIMisuseError {
 				err: format!("Total value of funding inputs must be at least funding amount. It was {} sats",
