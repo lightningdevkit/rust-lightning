@@ -7689,7 +7689,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									msg,
 								}
 							});
-							(*temporary_channel_id, ChannelPhase::UnfundedInboundV1(channel), message_send_event)
+							(*temporary_channel_id, ChannelPhase::from(channel), message_send_event)
 						})
 					},
 					#[cfg(dual_funding)]
@@ -7977,7 +7977,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 					}
 				});
-				(ChannelPhase::UnfundedInboundV1(channel), message_send_event)
+				(ChannelPhase::from(channel), message_send_event)
 			},
 			#[cfg(dual_funding)]
 			OpenChannelMessageRef::V2(msg) => {
