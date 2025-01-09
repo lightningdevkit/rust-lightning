@@ -48,7 +48,7 @@ use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFun
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelPhase, ChannelError, ChannelUpdateStatus, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+use crate::ln::channel::{self, ChannelPhase, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel_state::ChannelDetails;
@@ -150,7 +150,7 @@ use crate::ln::script::ShutdownScript;
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
 /// Information about where a received HTLC('s onion) has indicated the HTLC should go.
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub enum PendingHTLCRouting {
 	/// An HTLC which should be forwarded on to another node.
@@ -270,7 +270,7 @@ impl PendingHTLCRouting {
 
 /// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
 /// should go next.
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
@@ -313,14 +313,14 @@ pub struct PendingHTLCInfo {
 	pub skimmed_fee_msat: Option<u64>,
 }
 
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
 }
 
 /// Stores whether we can't forward an HTLC or relevant forwarding info
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
 	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
@@ -820,7 +820,7 @@ pub(super) const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
-/// variable at runtime (eg Channel::channel_reestablish needs to re-send messages in the order
+/// variable at runtime (eg FundedChannel::channel_reestablish needs to re-send messages in the order
 /// they were originally sent). In those cases, this enum is also returned.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) enum RAACommitmentOrder {
@@ -3680,7 +3680,7 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &FundedChannel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
 		// a scid or a scid alias, and the `outpoint_to_peer` shouldn't be used outside
@@ -4204,7 +4204,7 @@ where
 	}
 
 	fn can_forward_htlc_to_outgoing_channel(
-		&self, chan: &mut Channel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
+		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
 	) -> Result<(), (&'static str, u16)> {
 		if !chan.context.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 			// Note that the behavior here should be identical to the above block - we
@@ -4245,7 +4245,7 @@ where
 
 	/// Executes a callback `C` that returns some value `X` on the channel found with the given
 	/// `scid`. `None` is returned when the channel is not found.
-	fn do_funded_channel_callback<X, C: Fn(&mut Channel<SP>) -> X>(
+	fn do_funded_channel_callback<X, C: Fn(&mut FundedChannel<SP>) -> X>(
 		&self, scid: u64, callback: C,
 	) -> Option<X> {
 		let (counterparty_node_id, channel_id) = match self.short_to_chan_info.read().unwrap().get(&scid).cloned() {
@@ -4268,7 +4268,7 @@ where
 	fn can_forward_htlc(
 		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
 	) -> Result<(), (&'static str, u16)> {
-		match self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut Channel<SP>| {
+		match self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut FundedChannel<SP>| {
 			self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
 		}) {
 			Some(Ok(())) => {},
@@ -4439,7 +4439,7 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
-	fn get_channel_update_for_broadcast(&self, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_broadcast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.context.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
@@ -4465,7 +4465,7 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
-	fn get_channel_update_for_unicast(&self, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_unicast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
 		let short_channel_id = match chan.context.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
@@ -5603,7 +5603,7 @@ where
 		};
 
 		'outer_loop: for (incoming_scid, update_add_htlcs) in decode_update_add_htlcs {
-			let incoming_channel_details_opt = self.do_funded_channel_callback(incoming_scid, |chan: &mut Channel<SP>| {
+			let incoming_channel_details_opt = self.do_funded_channel_callback(incoming_scid, |chan: &mut FundedChannel<SP>| {
 				let counterparty_node_id = chan.context.get_counterparty_node_id();
 				let channel_id = chan.context.channel_id();
 				let funding_txo = chan.context.get_funding_txo().unwrap();
@@ -5638,7 +5638,7 @@ where
 				let outgoing_scid_opt = next_packet_details_opt.as_ref().map(|d| d.outgoing_scid);
 
 				// Process the HTLC on the incoming channel.
-				match self.do_funded_channel_callback(incoming_scid, |chan: &mut Channel<SP>| {
+				match self.do_funded_channel_callback(incoming_scid, |chan: &mut FundedChannel<SP>| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, Some(update_add_htlc.payment_hash));
 					chan.can_accept_incoming_htlc(
 						update_add_htlc, &self.fee_estimator, &logger,
@@ -6338,7 +6338,7 @@ where
 		let _ = self.process_background_events();
 	}
 
-	fn update_channel_fee(&self, chan_id: &ChannelId, chan: &mut Channel<SP>, new_feerate: u32) -> NotifyOption {
+	fn update_channel_fee(&self, chan_id: &ChannelId, chan: &mut FundedChannel<SP>, new_feerate: u32) -> NotifyOption {
 		if !chan.context.is_outbound() { return NotifyOption::SkipPersistNoEvents; }
 
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
@@ -7437,7 +7437,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Handles a channel reentering a functional state, either due to reconnect or a monitor
 	/// update completion.
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
-		channel: &mut Channel<SP>, raa: Option<msgs::RevokeAndACK>,
+		channel: &mut FundedChannel<SP>, raa: Option<msgs::RevokeAndACK>,
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
@@ -10946,7 +10946,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut Channel<SP>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut FundedChannel<SP>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -13157,7 +13157,7 @@ where
 		let mut close_background_events = Vec::new();
 		let mut funding_txo_to_channel_id = hash_map_with_capacity(channel_count as usize);
 		for _ in 0..channel_count {
-			let mut channel: Channel<SP> = Channel::read(reader, (
+			let mut channel: FundedChannel<SP> = FundedChannel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
 			))?;
 			let logger = WithChannelContext::from(&args.logger, &channel.context, None);
