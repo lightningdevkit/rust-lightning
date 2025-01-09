@@ -24,8 +24,11 @@ use lightning::util::ser::WithoutLength;
 
 use bitcoin::secp256k1::PublicKey;
 
-use core::fmt;
+use core::fmt::{self, Display};
 use core::str::FromStr;
+
+#[cfg(feature = "std")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -185,6 +188,44 @@ impl wire::Type for RawLSPSMessage {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct LSPSRequestId(pub String);
+
+/// An object representing datetimes as described in bLIP-50 / LSPS0.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct LSPSDateTime(chrono::DateTime<chrono::Utc>);
+
+impl LSPSDateTime {
+	/// Returns the LSPSDateTime as RFC3339 formatted string.
+	pub fn to_rfc3339(&self) -> String {
+		self.0.to_rfc3339()
+	}
+
+	/// Returns if the given time is in the past.
+	#[cfg(feature = "std")]
+	pub fn is_past(&self) -> bool {
+		let now_seconds_since_epoch = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("system clock to be ahead of the unix epoch")
+			.as_secs();
+		let datetime_seconds_since_epoch =
+			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
+		now_seconds_since_epoch > datetime_seconds_since_epoch
+	}
+}
+
+impl FromStr for LSPSDateTime {
+	type Err = ();
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let datetime = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| ())?;
+		Ok(Self(datetime.into()))
+	}
+}
+
+impl Display for LSPSDateTime {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.to_rfc3339())
+	}
+}
 
 /// An error returned in response to an JSON-RPC request.
 ///

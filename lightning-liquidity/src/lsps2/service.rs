@@ -1419,11 +1419,13 @@ fn calculate_amount_to_forward_per_htlc(
 
 #[cfg(test)]
 mod tests {
-
 	use super::*;
-	use chrono::TimeZone;
-	use chrono::Utc;
+
+	use crate::lsps0::ser::LSPSDateTime;
+
 	use proptest::prelude::*;
+
+	use core::str::FromStr;
 
 	const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
@@ -1518,7 +1520,7 @@ mod tests {
 		let opening_fee_params = LSPS2OpeningFeeParams {
 			min_fee_msat: 10_000_000,
 			proportional: 10_000,
-			valid_until: Utc.timestamp_opt(3000, 0).unwrap(),
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
 			min_lifetime: 4032,
 			max_client_to_self_delay: 2016,
 			min_payment_size_msat: 10_000_000,
@@ -1710,7 +1712,7 @@ mod tests {
 		let opening_fee_params = LSPS2OpeningFeeParams {
 			min_fee_msat: 10_000_000,
 			proportional: 10_000,
-			valid_until: Utc.timestamp_opt(3000, 0).unwrap(),
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
 			min_lifetime: 4032,
 			max_client_to_self_delay: 2016,
 			min_payment_size_msat: 10_000_000,
