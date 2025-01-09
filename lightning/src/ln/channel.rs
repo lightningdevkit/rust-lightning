@@ -1378,6 +1378,16 @@ where
 	}
 }
 
+impl<SP: Deref> From<PendingV2Channel<SP>> for ChannelPhase<SP>
+where
+	SP::Target: SignerProvider,
+	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
+{
+	fn from(channel: PendingV2Channel<SP>) -> Self {
+		ChannelPhase::UnfundedV2(channel)
+	}
+}
+
 impl<SP: Deref> From<Channel<SP>> for ChannelPhase<SP>
 where
 	SP::Target: SignerProvider,

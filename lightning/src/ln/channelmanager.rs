@@ -7713,7 +7713,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								node_id: channel.context.get_counterparty_node_id(),
 								msg: channel.accept_inbound_dual_funded_channel()
 							};
-							(channel.context.channel_id(), ChannelPhase::UnfundedV2(channel), Some(message_send_event))
+							(channel.context.channel_id(), ChannelPhase::from(channel), Some(message_send_event))
 						})
 					},
 				}
@@ -7991,7 +7991,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					node_id: *counterparty_node_id,
 					msg: channel.accept_inbound_dual_funded_channel(),
 				};
-				(ChannelPhase::UnfundedV2(channel), Some(message_send_event))
+				(ChannelPhase::from(channel), Some(message_send_event))
 			},
 		};
 
