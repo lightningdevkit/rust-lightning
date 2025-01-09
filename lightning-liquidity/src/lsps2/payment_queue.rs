@@ -54,6 +54,12 @@ impl PaymentQueue {
 	}
 }
 
+impl Default for PaymentQueue {
+	fn default() -> Self {
+		Self { payments: Vec::new() }
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
