@@ -19,7 +19,9 @@ use super::msgs::{
 use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
-use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
+use crate::lsps0::ser::{
+	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+};
 use crate::prelude::{new_hash_map, HashMap, String};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
@@ -73,7 +75,7 @@ impl OutboundRequestState {
 
 struct OutboundLSPS1Config {
 	order: LSPS1OrderParams,
-	created_at: chrono::DateTime<Utc>,
+	created_at: LSPSDateTime,
 	payment: LSPS1PaymentInfo,
 }
 
@@ -84,7 +86,7 @@ struct OutboundCRChannel {
 
 impl OutboundCRChannel {
 	fn new(
-		order: LSPS1OrderParams, created_at: chrono::DateTime<Utc>, order_id: LSPS1OrderId,
+		order: LSPS1OrderParams, created_at: LSPSDateTime, order_id: LSPS1OrderId,
 		payment: LSPS1PaymentInfo,
 	) -> Self {
 		Self {
@@ -237,7 +239,7 @@ where
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub fn send_payment_details(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
-		payment: LSPS1PaymentInfo, created_at: chrono::DateTime<Utc>,
+		payment: LSPS1PaymentInfo, created_at: LSPSDateTime,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -380,7 +382,7 @@ where
 							order_id,
 							order: config.order.clone(),
 							order_state,
-							created_at: config.created_at,
+							created_at: config.created_at.clone(),
 							payment: config.payment.clone(),
 							channel,
 						});

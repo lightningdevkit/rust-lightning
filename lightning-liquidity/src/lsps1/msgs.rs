@@ -1,8 +1,8 @@
 //! Message, request, and other primitive types used to implement bLIP-51 / LSPS1.
 
 use crate::lsps0::ser::{
-	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSMessage,
-	LSPSRequestId, LSPSResponseError,
+	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSDateTime,
+	LSPSMessage, LSPSRequestId, LSPSResponseError,
 };
 
 use crate::prelude::String;
@@ -12,8 +12,6 @@ use bitcoin::{Address, FeeRate, OutPoint};
 use lightning_invoice::Bolt11Invoice;
 
 use serde::{Deserialize, Serialize};
-
-use chrono::Utc;
 
 use core::convert::TryFrom;
 
@@ -127,7 +125,7 @@ pub struct LSPS1CreateOrderResponse {
 	#[serde(flatten)]
 	pub order: LSPS1OrderParams,
 	/// The datetime when the order was created
-	pub created_at: chrono::DateTime<Utc>,
+	pub created_at: LSPSDateTime,
 	/// The current state of the order.
 	pub order_state: LSPS1OrderState,
 	/// Contains details about how to pay for the order.
@@ -163,7 +161,7 @@ pub struct LSPS1Bolt11PaymentInfo {
 	/// Indicates the current state of the payment.
 	pub state: LSPS1PaymentState,
 	/// The datetime when the payment option expires.
-	pub expires_at: chrono::DateTime<Utc>,
+	pub expires_at: LSPSDateTime,
 	/// The total fee the LSP will charge to open this channel in satoshi.
 	#[serde(with = "string_amount")]
 	pub fee_total_sat: u64,
@@ -180,7 +178,7 @@ pub struct LSPS1OnchainPaymentInfo {
 	/// Indicates the current state of the payment.
 	pub state: LSPS1PaymentState,
 	/// The datetime when the payment option expires.
-	pub expires_at: chrono::DateTime<Utc>,
+	pub expires_at: LSPSDateTime,
 	/// The total fee the LSP will charge to open this channel in satoshi.
 	#[serde(with = "string_amount")]
 	pub fee_total_sat: u64,
@@ -237,11 +235,11 @@ pub struct LSPS1OnchainPayment {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS1ChannelInfo {
 	/// The datetime when the funding transaction has been published.
-	pub funded_at: chrono::DateTime<Utc>,
+	pub funded_at: LSPSDateTime,
 	/// The outpoint of the funding transaction.
 	pub funding_outpoint: OutPoint,
 	/// The earliest datetime when the channel may be closed by the LSP.
-	pub expires_at: chrono::DateTime<Utc>,
+	pub expires_at: LSPSDateTime,
 }
 
 /// A request made to an LSP to retrieve information about an previously made order.

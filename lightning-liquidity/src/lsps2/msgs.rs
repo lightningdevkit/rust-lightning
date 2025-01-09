@@ -5,13 +5,13 @@ use core::convert::TryFrom;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use lightning::util::scid_utils;
 
 use crate::lsps0::ser::{
-	string_amount, string_amount_option, LSPSMessage, LSPSRequestId, LSPSResponseError,
+	string_amount, string_amount_option, LSPSDateTime, LSPSMessage, LSPSRequestId,
+	LSPSResponseError,
 };
 use crate::prelude::{String, Vec};
 use crate::utils;
@@ -42,7 +42,7 @@ pub struct LSPS2RawOpeningFeeParams {
 	/// A fee proportional to the size of the initial payment.
 	pub proportional: u32,
 	/// An [`ISO8601`](https://www.iso.org/iso-8601-date-and-time-format.html) formatted date for which these params are valid.
-	pub valid_until: chrono::DateTime<Utc>,
+	pub valid_until: LSPSDateTime,
 	/// The number of blocks after confirmation that the LSP promises it will keep the channel alive without closing.
 	pub min_lifetime: u32,
 	/// The maximum number of blocks that the client is allowed to set its `to_self_delay` parameter.
@@ -93,7 +93,7 @@ pub struct LSPS2OpeningFeeParams {
 	/// A fee proportional to the size of the initial payment.
 	pub proportional: u32,
 	/// An [`ISO8601`](https://www.iso.org/iso-8601-date-and-time-format.html) formatted date for which these params are valid.
-	pub valid_until: chrono::DateTime<Utc>,
+	pub valid_until: LSPSDateTime,
 	/// The number of blocks after confirmation that the LSP promises it will keep the channel alive without closing.
 	pub min_lifetime: u32,
 	/// The maximum number of blocks that the client is allowed to set its `to_self_delay` parameter.
@@ -214,15 +214,17 @@ impl From<LSPS2Message> for LSPSMessage {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
 	use crate::alloc::string::ToString;
 	use crate::lsps2::utils::is_valid_opening_fee_params;
+
+	use core::str::FromStr;
 
 	#[test]
 	fn into_opening_fee_params_produces_valid_promise() {
 		let min_fee_msat = 100;
 		let proportional = 21;
-		let valid_until: chrono::DateTime<Utc> =
-			chrono::DateTime::parse_from_rfc3339("2035-05-20T08:30:45Z").unwrap().into();
+		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
 		let min_lifetime = 144;
 		let max_client_to_self_delay = 128;
 		let min_payment_size_msat = 1;
@@ -257,7 +259,7 @@ mod tests {
 	fn changing_single_field_produced_invalid_params() {
 		let min_fee_msat = 100;
 		let proportional = 21;
-		let valid_until = chrono::DateTime::parse_from_rfc3339("2035-05-20T08:30:45Z").unwrap();
+		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
 		let min_lifetime = 144;
 		let max_client_to_self_delay = 128;
 		let min_payment_size_msat = 1;
@@ -266,7 +268,7 @@ mod tests {
 		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
-			valid_until: valid_until.into(),
+			valid_until,
 			min_lifetime,
 			max_client_to_self_delay,
 			min_payment_size_msat,
@@ -284,7 +286,7 @@ mod tests {
 	fn wrong_secret_produced_invalid_params() {
 		let min_fee_msat = 100;
 		let proportional = 21;
-		let valid_until = chrono::DateTime::parse_from_rfc3339("2035-05-20T08:30:45Z").unwrap();
+		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
 		let min_lifetime = 144;
 		let max_client_to_self_delay = 128;
 		let min_payment_size_msat = 1;
@@ -293,7 +295,7 @@ mod tests {
 		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
-			valid_until: valid_until.into(),
+			valid_until,
 			min_lifetime,
 			max_client_to_self_delay,
 			min_payment_size_msat,
@@ -313,7 +315,7 @@ mod tests {
 	fn expired_params_produces_invalid_params() {
 		let min_fee_msat = 100;
 		let proportional = 21;
-		let valid_until = chrono::DateTime::parse_from_rfc3339("2023-05-20T08:30:45Z").unwrap();
+		let valid_until = LSPSDateTime::from_str("2023-05-20T08:30:45Z").unwrap();
 		let min_lifetime = 144;
 		let max_client_to_self_delay = 128;
 		let min_payment_size_msat = 1;
@@ -322,7 +324,7 @@ mod tests {
 		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
-			valid_until: valid_until.into(),
+			valid_until,
 			min_lifetime,
 			max_client_to_self_delay,
 			min_payment_size_msat,
@@ -339,7 +341,7 @@ mod tests {
 	fn buy_request_serialization() {
 		let min_fee_msat = 100;
 		let proportional = 21;
-		let valid_until = chrono::DateTime::parse_from_rfc3339("2023-05-20T08:30:45Z").unwrap();
+		let valid_until = LSPSDateTime::from_str("2023-05-20T08:30:45Z").unwrap();
 		let min_lifetime = 144;
 		let max_client_to_self_delay = 128;
 		let min_payment_size_msat = 1;
@@ -348,7 +350,7 @@ mod tests {
 		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
-			valid_until: valid_until.into(),
+			valid_until,
 			min_lifetime,
 			max_client_to_self_delay,
 			min_payment_size_msat,

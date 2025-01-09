@@ -7,9 +7,6 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 
-#[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// Determines if the given parameters are valid given the secret used to generate the promise.
 pub fn is_valid_opening_fee_params(
 	fee_params: &LSPS2OpeningFeeParams, promise_secret: &[u8; 32],
@@ -35,16 +32,7 @@ pub fn is_valid_opening_fee_params(
 pub fn is_expired_opening_fee_params(fee_params: &LSPS2OpeningFeeParams) -> bool {
 	#[cfg(feature = "std")]
 	{
-		let seconds_since_epoch = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.expect("system clock to be ahead of the unix epoch")
-			.as_secs();
-		let valid_until_seconds_since_epoch = fee_params
-			.valid_until
-			.timestamp()
-			.try_into()
-			.expect("expiration to be ahead of unix epoch");
-		seconds_since_epoch > valid_until_seconds_since_epoch
+		fee_params.valid_until.is_past()
 	}
 	#[cfg(not(feature = "std"))]
 	{
