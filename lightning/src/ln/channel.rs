@@ -1134,11 +1134,11 @@ pub(super) enum Channel<SP: Deref> where SP::Target: SignerProvider {
 	Funded(FundedChannel<SP>),
 }
 
-impl<'a, SP: Deref> Channel<SP> where
+impl<SP: Deref> Channel<SP> where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
-	pub fn context(&'a self) -> &'a ChannelContext<SP> {
+	pub fn context(&self) -> &ChannelContext<SP> {
 		match self {
 			Channel::Funded(chan) => &chan.context,
 			Channel::UnfundedOutboundV1(chan) => &chan.context,
@@ -1147,7 +1147,7 @@ impl<'a, SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
+	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		match self {
 			Channel::Funded(ref mut chan) => &mut chan.context,
 			Channel::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
