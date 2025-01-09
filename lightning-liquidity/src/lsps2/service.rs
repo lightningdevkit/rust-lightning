@@ -38,6 +38,7 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
+use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
 
@@ -372,12 +373,42 @@ impl OutboundJITChannelState {
 	}
 }
 
+impl_writeable_tlv_based_enum!(OutboundJITChannelState,
+	(0, PendingInitialPayment) => {
+		(0, payment_queue, required),
+	},
+	(2, PendingChannelOpen) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+	},
+	(4, PendingPaymentForward) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+		(4, channel_id, required),
+	},
+	(6, PendingPayment) => {
+		(0, payment_queue, required),
+		(2, opening_fee_msat, required),
+		(4, channel_id, required),
+	},
+	(8, PaymentForwarded) => {
+		(0, channel_id, required),
+	},
+);
+
 struct OutboundJITChannel {
 	state: OutboundJITChannelState,
 	user_channel_id: u128,
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 }
+
+impl_writeable_tlv_based!(OutboundJITChannel, {
+	(0, state, required),
+	(2, user_channel_id, required),
+	(4, opening_fee_params, required),
+	(6, payment_size_msat, option),
+});
 
 impl OutboundJITChannel {
 	fn new(
@@ -491,6 +522,13 @@ impl PeerState {
 		self.pending_requests.is_empty() && self.outbound_channels_by_intercept_scid.is_empty()
 	}
 }
+
+impl_writeable_tlv_based!(PeerState, {
+	(0, outbound_channels_by_intercept_scid, required),
+	(2, intercept_scid_by_user_channel_id, required),
+	(4, intercept_scid_by_channel_id, required),
+	(_unused, pending_requests, (static_value, new_hash_map())),
+});
 
 macro_rules! get_or_insert_peer_state_entry {
 	($self: ident, $outer_state_lock: expr, $message_queue_notifier: expr, $counterparty_node_id: expr) => {{
