@@ -22,6 +22,7 @@ use bitcoin::secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 
 use lightning::util::scid_utils;
+use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
 
 use crate::lsps0::ser::{
 	string_amount, string_amount_option, LSPSDateTime, LSPSMessage, LSPSRequestId,
@@ -44,6 +45,10 @@ pub struct LSPS2GetInfoRequest {
 	/// An optional token to provide to the LSP.
 	pub token: Option<String>,
 }
+
+impl_writeable_tlv_based!(LSPS2GetInfoRequest, {
+	(0, token, option),
+});
 
 /// Fees and parameters for a JIT Channel without the promise.
 ///
@@ -122,6 +127,17 @@ pub struct LSPS2OpeningFeeParams {
 	pub promise: String,
 }
 
+impl_writeable_tlv_based!(LSPS2OpeningFeeParams, {
+	(0, min_fee_msat, required),
+	(2, proportional, required),
+	(4, valid_until, required),
+	(6, min_lifetime, required),
+	(8, max_client_to_self_delay, required),
+	(10, min_payment_size_msat, required),
+	(12, max_payment_size_msat, required),
+	(14, promise, required),
+});
+
 /// A response to a [`LSPS2GetInfoRequest`]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LSPS2GetInfoResponse {
@@ -140,6 +156,11 @@ pub struct LSPS2BuyRequest {
 	#[serde(with = "string_amount_option")]
 	pub payment_size_msat: Option<u64>,
 }
+
+impl_writeable_tlv_based!(LSPS2BuyRequest, {
+	(0, opening_fee_params, required),
+	(2, payment_size_msat, option),
+});
 
 /// A newtype that holds a `short_channel_id` in human readable format of BBBxTTTx000.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -184,6 +205,11 @@ pub enum LSPS2Request {
 	/// A request to buy a JIT channel from an LSP.
 	Buy(LSPS2BuyRequest),
 }
+
+impl_writeable_tlv_based_enum!(LSPS2Request,
+	{0, GetInfo} => (),
+	{2, Buy} => (),
+);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// An enum that captures all the valid JSON-RPC responses in the bLIP-52 / LSPS2 protocol.
