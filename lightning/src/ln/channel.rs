@@ -1988,7 +1988,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let mut output_index = None;
 		let expected_spk = self.context.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
+		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == self.context.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(ChannelError::Close(
@@ -2001,7 +2001,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			}
 		}
 		let outpoint = if let Some(output_index) = output_index {
-			OutPoint { txid: signing_session.unsigned_tx.compute_txid(), index: output_index }
+			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
 			return Err(ChannelError::Close(
 				(
@@ -2016,7 +2016,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let commitment_signed = self.context.get_initial_commitment_signed(logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
+				self.context.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
@@ -5910,7 +5910,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
-			if msg.tx_hash != signing_session.unsigned_tx.compute_txid() {
+			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
 				return Err(ChannelError::Close(
 					(
 						"The txid for the transaction does not match".to_string(),
@@ -6666,9 +6666,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
 				 if let Some(session) = &self.interactive_tx_signing_session {
 					// if next_funding_txid matches the latest interactive funding transaction:
-					if session.unsigned_tx.compute_txid() == next_funding_txid {
+					if session.unsigned_tx().compute_txid() == next_funding_txid {
 						// if it has not received tx_signatures for that funding transaction:
-						if !session.counterparty_sent_tx_signatures {
+						if !session.counterparty_sent_tx_signatures() {
 							// MUST retransmit its commitment_signed for that funding transaction.
 							let commitment_signed = self.context.get_initial_commitment_signed(logger)?;
 							let commitment_update = Some(msgs::CommitmentUpdate {
@@ -6680,16 +6680,16 @@ impl<SP: Deref> FundedChannel<SP> where
 								update_fee: None,
 							});
 							// if it has already received commitment_signed and it should sign first, as specified in the tx_signatures requirements:
-							if session.received_commitment_signed && session.holder_sends_tx_signatures_first {
+							if session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first() {
 								// MUST send its tx_signatures for that funding transaction.
-								(commitment_update, session.holder_tx_signatures.clone(), None)
+								(commitment_update, session.holder_tx_signatures().clone(), None)
 							} else {
 								(commitment_update, None, None)
 							}
 						} else {
 							// if it has already received tx_signatures for that funding transaction:
 							// MUST send its tx_signatures for that funding transaction.
-							(None, session.holder_tx_signatures.clone(), None)
+							(None, session.holder_tx_signatures().clone(), None)
 						}
 					} else {
 						// MUST send tx_abort to let the sending node know that they can forget this funding transaction.
@@ -8024,7 +8024,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// to the txid of that interactive transaction, else we MUST NOT set it.
 		if let Some(signing_session) = &self.interactive_tx_signing_session {
 			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
-			if !signing_session.counterparty_sent_tx_signatures {
+			if !signing_session.counterparty_sent_tx_signatures() {
 				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
 				Some(self.funding_outpoint().txid)
 			} else {

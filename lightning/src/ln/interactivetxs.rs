@@ -289,16 +289,36 @@ impl ConstructedTransaction {
 /// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#sharing-funding-signatures-tx_signatures
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractiveTxSigningSession {
-	pub unsigned_tx: ConstructedTransaction,
-	pub counterparty_sent_tx_signatures: bool,
-	pub holder_sends_tx_signatures_first: bool,
-	pub received_commitment_signed: bool,
-	pub holder_tx_signatures: Option<TxSignatures>,
+	unsigned_tx: ConstructedTransaction,
+	counterparty_sent_tx_signatures: bool,
+	holder_sends_tx_signatures_first: bool,
+	has_received_commitment_signed: bool,
+	holder_tx_signatures: Option<TxSignatures>,
 }
 
 impl InteractiveTxSigningSession {
+	pub fn unsigned_tx(&self) -> &ConstructedTransaction {
+		&self.unsigned_tx
+	}
+
+	pub fn counterparty_sent_tx_signatures(&self) -> bool {
+		self.counterparty_sent_tx_signatures
+	}
+
+	pub fn holder_sends_tx_signatures_first(&self) -> bool {
+		self.holder_sends_tx_signatures_first
+	}
+
+	pub fn has_received_commitment_signed(&self) -> bool {
+		self.has_received_commitment_signed
+	}
+
+	pub fn holder_tx_signatures(&self) -> &Option<TxSignatures> {
+		&self.holder_tx_signatures
+	}
+
 	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
-		self.received_commitment_signed = true;
+		self.has_received_commitment_signed = true;
 		if self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
 		} else {
@@ -307,7 +327,7 @@ impl InteractiveTxSigningSession {
 	}
 
 	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.received_commitment_signed {
+		if self.has_received_commitment_signed {
 			self.holder_tx_signatures.clone()
 		} else {
 			None
@@ -988,7 +1008,7 @@ macro_rules! define_state_transitions {
 				let signing_session = InteractiveTxSigningSession {
 					holder_sends_tx_signatures_first: tx.holder_sends_tx_signatures_first,
 					unsigned_tx: tx,
-					received_commitment_signed: false,
+					has_received_commitment_signed: false,
 					holder_tx_signatures: None,
 					counterparty_sent_tx_signatures: false,
 				};
