@@ -9,7 +9,6 @@
 
 //! Tests that test the creation of dual-funded channels in ChannelManager.
 
-#[cfg(dual_funding)]
 use {
 	crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator},
 	crate::events::{Event, MessageSendEvent, MessageSendEventsProvider},
@@ -29,14 +28,12 @@ use {
 	crate::util::test_utils,
 };
 
-#[cfg(dual_funding)]
 // Dual-funding: V2 Channel Establishment Tests
 struct V2ChannelEstablishmentTestSession {
 	funding_input_sats: u64,
 	initiator_input_value_satoshis: u64,
 }
 
-#[cfg(dual_funding)]
 // TODO(dual_funding): Use real node and API for creating V2 channels as initiator when available,
 // instead of manually constructing messages.
 fn do_test_v2_channel_establishment(
@@ -248,7 +245,6 @@ fn do_test_v2_channel_establishment(
 }
 
 #[test]
-#[cfg(dual_funding)]
 fn test_v2_channel_establishment() {
 	// Only initiator contributes, no persist pending
 	do_test_v2_channel_establishment(

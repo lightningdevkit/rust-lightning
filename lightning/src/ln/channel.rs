@@ -1182,7 +1182,6 @@ enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	Undefined,
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
-	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	UnfundedV2(PendingV2Channel<SP>),
 	Funded(FundedChannel<SP>),
 }
@@ -1399,7 +1398,6 @@ impl<SP: Deref> Channel<SP> where
 				debug_assert!(false);
 				ReconnectionMsg::None
 			},
-			#[cfg(dual_funding)]
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
 					ReconnectionMsg::Open(OpenChannelMessage::V2(
@@ -1413,8 +1411,6 @@ impl<SP: Deref> Channel<SP> where
 					ReconnectionMsg::None
 				}
 			},
-			#[cfg(not(dual_funding))]
-			ChannelPhase::UnfundedV2(_) => ReconnectionMsg::None,
 		}
 	}
 
@@ -1434,7 +1430,6 @@ impl<SP: Deref> Channel<SP> where
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
 			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
-			#[cfg(dual_funding)]
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
 					chan.maybe_handle_error_without_close(chain_hash, fee_estimator)
@@ -1442,11 +1437,6 @@ impl<SP: Deref> Channel<SP> where
 				} else {
 					Ok(None)
 				}
-			},
-			#[cfg(not(dual_funding))]
-			ChannelPhase::UnfundedV2(_) => {
-				debug_assert!(false);
-				Ok(None)
 			},
 		}
 	}
@@ -4530,7 +4520,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		})
 	}
 
-	#[cfg(all(test, dual_funding))]
+	#[cfg(all(test))]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, funding: &FundingScope, logger: &L, channel_transaction_parameters: ChannelTransactionParameters,
 		counterparty_cur_commitment_point_override: PublicKey,
@@ -9571,7 +9561,6 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
-	#[cfg(dual_funding)]
 	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
 	) -> Result<msgs::OpenChannelV2, ()>
@@ -9582,7 +9571,6 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(self.get_open_channel_v2(chain_hash))
 	}
 
-	#[cfg(dual_funding)]
 	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
 		if !self.context.is_outbound() {
 			debug_assert!(false, "Tried to send open_channel2 for an inbound channel?");
