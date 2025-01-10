@@ -455,16 +455,14 @@ impl Readable for HolderHTLCOutput {
 /// Note that on upgrades, some features of existing outputs may be missed.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
-	funding_redeemscript: ScriptBuf,
 	pub(crate) funding_amount: Option<u64>,
 	channel_type_features: ChannelTypeFeatures,
 }
 
 
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: ScriptBuf, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
 		HolderFundingOutput {
-			funding_redeemscript,
 			funding_amount: Some(funding_amount),
 			channel_type_features,
 		}
@@ -475,7 +473,7 @@ impl Writeable for HolderFundingOutput {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
-			(0, self.funding_redeemscript, required),
+			(0, None::<ScriptBuf>, option),
 			(1, self.channel_type_features, required),
 			(2, legacy_deserialization_prevention_marker, option),
 			(3, self.funding_amount, option),
@@ -486,13 +484,13 @@ impl Writeable for HolderFundingOutput {
 
 impl Readable for HolderFundingOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut funding_redeemscript = RequiredWrapper(None);
+		let mut _funding_redeemscript: Option<ScriptBuf> = None;
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut funding_amount = None;
 
 		read_tlv_fields!(reader, {
-			(0, funding_redeemscript, required),
+			(0, _funding_redeemscript, option),
 			(1, channel_type_features, option),
 			(2, _legacy_deserialization_prevention_marker, option),
 			(3, funding_amount, option),
@@ -501,7 +499,6 @@ impl Readable for HolderFundingOutput {
 		verify_channel_type_features(&channel_type_features, None)?;
 
 		Ok(Self {
-			funding_redeemscript: funding_redeemscript.0.unwrap(),
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
 			funding_amount
 		})
@@ -1420,7 +1417,7 @@ mod tests {
 
 	macro_rules! dumb_funding_output {
 		() => {
-			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(ScriptBuf::new(), 0, ChannelTypeFeatures::only_static_remote_key()))
+			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(0, ChannelTypeFeatures::only_static_remote_key()))
 		}
 	}
 

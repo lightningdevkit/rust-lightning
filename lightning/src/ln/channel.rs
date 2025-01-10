@@ -1863,7 +1863,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		                                          shutdown_script, context.get_holder_selected_contest_delay(),
 		                                          &context.destination_script, (funding_txo, funding_txo_script),
 		                                          &context.channel_transaction_parameters, context.is_outbound(),
-		                                          funding_redeemscript.clone(), context.channel_value_satoshis,
+		                                          context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
 		channel_monitor.provide_initial_counterparty_commitment_tx(
