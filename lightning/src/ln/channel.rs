@@ -1853,9 +1853,8 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			return Err(ChannelError::close("Failed to advance holder commitment point".to_owned()));
 		}
 
-		let funding_redeemscript = context.get_funding_redeemscript();
+		let funding_txo_script = context.get_funding_redeemscript().to_p2wsh();
 		let funding_txo = context.get_funding_txo().unwrap();
-		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_point, &context.get_counterparty_pubkeys().payment_point, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
@@ -1863,7 +1862,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		                                          shutdown_script, context.get_holder_selected_contest_delay(),
 		                                          &context.destination_script, (funding_txo, funding_txo_script),
 		                                          &context.channel_transaction_parameters, context.is_outbound(),
-		                                          funding_redeemscript.clone(), context.channel_value_satoshis,
+		                                          context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
 		channel_monitor.provide_initial_counterparty_commitment_tx(

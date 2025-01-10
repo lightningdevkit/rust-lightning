@@ -878,6 +878,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: ChannelSigner> {
 	prev_counterparty_commitment_txid: Option<Txid>,
 
 	counterparty_commitment_params: CounterpartyCommitmentParameters,
+	// this field is not used, but kept for backwards compatibility
 	funding_redeemscript: ScriptBuf,
 	channel_value_satoshis: u64,
 	// first is the idx of the first of the two per-commitment points
@@ -1340,7 +1341,7 @@ impl<Signer: ChannelSigner> ChannelMonitor<Signer> {
 	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, mut keys: Signer, shutdown_script: Option<ScriptBuf>,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, ScriptBuf),
 	                  channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
-	                  funding_redeemscript: ScriptBuf, channel_value_satoshis: u64,
+	                  channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
 	                  best_block: BestBlock, counterparty_node_id: PublicKey, channel_id: ChannelId,
@@ -1404,7 +1405,7 @@ impl<Signer: ChannelSigner> ChannelMonitor<Signer> {
 			prev_counterparty_commitment_txid: None,
 
 			counterparty_commitment_params,
-			funding_redeemscript,
+			funding_redeemscript: ScriptBuf::new(),
 			channel_value_satoshis,
 			their_cur_per_commitment_points: None,
 
@@ -3069,7 +3070,6 @@ impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding_outp = HolderFundingOutput::build(
-			self.funding_redeemscript.clone(),
 			self.channel_value_satoshis,
 			self.onchain_tx_handler.channel_type_features().clone()
 		);
@@ -5278,7 +5278,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
-			&channel_parameters, true, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			&channel_parameters, true, 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key, channel_id);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -5528,7 +5528,7 @@ mod tests {
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 			Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &ScriptBuf::new(),
 			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, ScriptBuf::new()),
-			&channel_parameters, true, ScriptBuf::new(), 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
+			&channel_parameters, true, 46, 0, HolderCommitmentTransaction::dummy(&mut Vec::new()),
 			best_block, dummy_key, channel_id);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
