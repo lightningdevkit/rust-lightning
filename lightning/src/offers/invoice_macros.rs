@@ -109,9 +109,6 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
 	/// privacy is lost if a public node id is used for
 	#[doc = concat!("[`", stringify!($invoice_type), "::signing_pubkey`].")]
-	///
-	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
-	/// matched in another language.
 	pub fn payment_paths(&$self) -> &[BlindedPaymentPath] {
 		$contents.payment_paths()
 	}
