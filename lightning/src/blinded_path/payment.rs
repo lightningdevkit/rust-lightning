@@ -12,6 +12,7 @@
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
@@ -170,15 +171,8 @@ impl BlindedPaymentPath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
-		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-		let encrypted_control_tlvs = &self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
-		let mut s = Cursor::new(encrypted_control_tlvs);
-		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-			Ok(ChaChaPolyReadAdapter {
-				readable: BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. })
-			}) => {
+		match self.decrypt_intro_payload::<NS>(node_signer) {
+			Ok((BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }), control_tlvs_ss)) => {
 				let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
 					Some(node_id) => node_id,
 					None => return Err(()),
@@ -191,6 +185,20 @@ impl BlindedPaymentPath {
 				self.inner_path.blinded_hops.remove(0);
 				Ok(())
 			},
+			_ => Err(())
+		}
+	}
+
+	pub(crate) fn decrypt_intro_payload<NS: Deref>(
+		&self, node_signer: &NS
+	) -> Result<(BlindedPaymentTlvs, SharedSecret), ()> where NS::Target: NodeSigner {
+		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
+		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
+		let encrypted_control_tlvs = &self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
+		let mut s = Cursor::new(encrypted_control_tlvs);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
+		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
+			Ok(ChaChaPolyReadAdapter { readable, .. }) => Ok((readable, control_tlvs_ss)),
 			_ => Err(())
 		}
 	}
@@ -349,6 +357,11 @@ pub enum PaymentContext {
 	/// [`Offer`]: crate::offers::offer::Offer
 	Bolt12Offer(Bolt12OfferContext),
 
+	/// The payment was made for a static invoice requested from a BOLT 12 [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	AsyncBolt12Offer(AsyncBolt12OfferContext),
+
 	/// The payment was made for an invoice sent for a BOLT 12 [`Refund`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
@@ -376,6 +389,18 @@ pub struct Bolt12OfferContext {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub invoice_request: InvoiceRequestFields,
+}
+
+/// The context of a payment made for a static invoice requested from a BOLT 12 [`Offer`].
+///
+/// [`Offer`]: crate::offers::offer::Offer
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AsyncBolt12OfferContext {
+	/// The [`Nonce`] used to verify that an inbound [`InvoiceRequest`] corresponds to this static
+	/// invoice's offer.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub offer_nonce: Nonce,
 }
 
 /// The context of a payment made for an invoice sent for a BOLT 12 [`Refund`].
@@ -627,6 +652,7 @@ impl_writeable_tlv_based_enum_legacy!(PaymentContext,
 	// 0 for Unknown removed in version 0.1.
 	(1, Bolt12Offer),
 	(2, Bolt12Refund),
+	(3, AsyncBolt12Offer),
 );
 
 impl<'a> Writeable for PaymentContextRef<'a> {
@@ -649,6 +675,10 @@ impl<'a> Writeable for PaymentContextRef<'a> {
 impl_writeable_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
 	(2, invoice_request, required),
+});
+
+impl_writeable_tlv_based!(AsyncBolt12OfferContext, {
+	(0, offer_nonce, required),
 });
 
 impl_writeable_tlv_based!(Bolt12RefundContext, {});

@@ -1507,7 +1507,7 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(nodes:
 }
 
 pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64) -> (msgs::ChannelReady, Transaction) {
-	let mut no_announce_cfg = test_default_channel_config();
+	let mut no_announce_cfg = nodes[a].node.get_current_default_configuration().clone();
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
 	nodes[a].node.create_channel(nodes[b].node.get_our_node_id(), channel_value, push_msat, 42, None, Some(no_announce_cfg)).unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, nodes[b].node.get_our_node_id());
@@ -1941,15 +1941,18 @@ macro_rules! expect_pending_htlcs_forwardable_conditions {
 #[macro_export]
 macro_rules! expect_htlc_handling_failed_destinations {
 	($events: expr, $expected_failures: expr) => {{
+		let mut num_expected_failures = $expected_failures.len();
 		for event in $events {
 			match event {
 				$crate::events::Event::PendingHTLCsForwardable { .. } => { },
 				$crate::events::Event::HTLCHandlingFailed { ref failed_next_destination, .. } => {
-					assert!($expected_failures.contains(&failed_next_destination))
+					assert!($expected_failures.contains(&failed_next_destination));
+					num_expected_failures -= 1;
 				},
 				_ => panic!("Unexpected destination"),
 			}
 		}
+		assert_eq!(num_expected_failures, 0);
 	}}
 }
 
@@ -2491,6 +2494,7 @@ pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
+	pub(crate) retry_expected: bool,
 }
 
 impl<'a> PaymentFailedConditions<'a> {
@@ -2500,6 +2504,7 @@ impl<'a> PaymentFailedConditions<'a> {
 			expected_blamed_scid: None,
 			expected_blamed_chan_closed: None,
 			expected_mpp_parts_remain: false,
+			retry_expected: false,
 		}
 	}
 	pub fn mpp_parts_remain(mut self) -> Self {
@@ -2516,6 +2521,10 @@ impl<'a> PaymentFailedConditions<'a> {
 	}
 	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
 		self.expected_htlc_error_data = Some((code, data));
+		self
+	}
+	pub fn retry_expected(mut self) -> Self {
+		self.retry_expected = true;
 		self
 	}
 }
@@ -2583,7 +2592,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 		},
 		_ => panic!("Unexpected event"),
 	};
-	if !conditions.expected_mpp_parts_remain {
+	if !conditions.expected_mpp_parts_remain && !conditions.retry_expected {
 		match &payment_failed_events[1] {
 			Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
 				assert_eq!(*payment_hash, Some(expected_payment_hash), "unexpected second payment_hash");
@@ -2594,6 +2603,11 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 					PaymentFailureReason::RetriesExhausted
 				});
 			}
+			_ => panic!("Unexpected second event"),
+		}
+	} else if conditions.retry_expected {
+		match &payment_failed_events[1] {
+			Event::PendingHTLCsForwardable { .. } => {},
 			_ => panic!("Unexpected second event"),
 		}
 	}
@@ -2718,6 +2732,8 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 
 		if is_last_hop && is_probe {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, true, true);
+			expect_pending_htlcs_forwardable!(node);
+			check_added_monitors(node, 1);
 		} else {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 			expect_pending_htlcs_forwardable!(node);
@@ -2744,8 +2760,12 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
-								assert_eq!(expected_preimage, *payment_preimage);
-								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								if let Some(preimage) = expected_preimage {
+									assert_eq!(preimage, payment_preimage.unwrap());
+								}
+								if let Some(secret) = our_payment_secret {
+									assert_eq!(secret, *payment_secret);
+								}
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {
@@ -2767,7 +2787,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 				}
 				event = Some(events_2[0].clone());
 			} else if let Some(ref failure) = expected_failure {
-				assert_eq!(events_2.len(), 2);
+				// If we successfully decode the HTLC onion but then fail later in
+				// process_pending_htlc_forwards, then we'll queue the failure and generate a new
+				// `ProcessPendingHTLCForwards` event. If we fail during the process of decoding the HTLC,
+				// we'll fail it directly with no intermediate forwarding event.
+				assert!(events_2.len() == 1 || events_2.len() == 2);
 				expect_htlc_handling_failed_destinations!(events_2, &[failure]);
 				node.node.process_pending_htlc_forwards();
 				check_added_monitors!(node, 1);
@@ -2801,22 +2825,26 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 	do_pass_along_path(args)
 }
 
-pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]]) {
+pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[(&[&Node<'a, 'b, 'c>], PaymentHash)]) {
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
 
 	check_added_monitors!(origin_node, expected_route.len());
 
-	for path in expected_route.iter() {
+	for (path, payment_hash) in expected_route.iter() {
 		let ev = remove_first_msg_event_to_node(&path[0].node.get_our_node_id(), &mut events);
 
-		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, PaymentHash([0_u8; 32]), ev)
+		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, *payment_hash, ev)
 			.is_probe()
 			.without_clearing_recipient_events());
 
 		let nodes_to_fail_payment: Vec<_> = vec![origin_node].into_iter().chain(path.iter().cloned()).collect();
 
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
+		expect_htlc_handling_failed_destinations!(
+			path.last().unwrap().node.get_and_clear_pending_events(),
+			&[HTLCDestination::FailedPayment { payment_hash: *payment_hash }]
+		);
 	}
 }
 

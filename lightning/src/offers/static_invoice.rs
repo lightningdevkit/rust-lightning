@@ -49,7 +49,7 @@ use crate::offers::invoice::is_expired;
 use crate::prelude::*;
 
 /// Static invoices default to expiring after 2 weeks.
-const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(3600 * 24 * 14);
+pub const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(3600 * 24 * 14);
 
 /// Tag for the hash function used when signing a [`StaticInvoice`]'s merkle root.
 pub const SIGNATURE_TAG: &'static str = concat!("lightning", "static_invoice", "signature");
@@ -102,8 +102,8 @@ pub struct StaticInvoiceBuilder<'a> {
 impl<'a> StaticInvoiceBuilder<'a> {
 	/// Initialize a [`StaticInvoiceBuilder`] from the given [`Offer`].
 	///
-	/// Unless [`StaticInvoiceBuilder::relative_expiry`] is set, the invoice will expire 24 hours
-	/// after `created_at`.
+	/// The invoice's expiration will default to [`DEFAULT_RELATIVE_EXPIRY`] after `created_at` unless
+	/// overridden by [`StaticInvoiceBuilder::relative_expiry`].
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
 		offer: &'a Offer, payment_paths: Vec<BlindedPaymentPath>,
 		message_paths: Vec<BlindedMessagePath>, created_at: Duration, expanded_key: &ExpandedKey,
