@@ -173,7 +173,6 @@ impl OutputSpendStatus {
 				latest_broadcast_height,
 				..
 			} => {
-				debug_assert!(confirmation_height >= *latest_broadcast_height);
 				*self = Self::PendingThresholdConfirmations {
 					first_broadcast_hash: *first_broadcast_hash,
 					latest_broadcast_height: *latest_broadcast_height,
