@@ -46,6 +46,7 @@ use crate::prelude::*;
 
 #[cfg(not(c_bindings))]
 use {
+	crate::offers::flow::OffersMessageFlow,
 	crate::sign::KeysManager,
 	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::ln::peer_handler::IgnoringMessageHandler,
@@ -183,7 +184,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH> where
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedMessagePath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -458,34 +459,8 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()>;
-
-	/// Creates compact [`BlindedMessagePath`]s to the `recipient` node. The nodes in `peers` are
-	/// assumed to be direct peers with the `recipient`.
-	///
-	/// Compact blinded paths use short channel ids instead of pubkeys for a smaller serialization,
-	/// which is beneficial when a QR code is used to transport the data. The SCID is passed using
-	/// a [`MessageForwardNode`] but may be `None` for graceful degradation.
-	///
-	/// Implementations using additional intermediate nodes are responsible for using a
-	/// [`MessageForwardNode`] with `Some` short channel id, if possible. Similarly, implementations
-	/// should call [`BlindedMessagePath::use_compact_introduction_node`].
-	///
-	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
-	/// ignoring the short channel ids.
-	fn create_compact_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, recipient: PublicKey, context: MessageContext,
-		peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let peers = peers
-			.into_iter()
-			.map(|MessageForwardNode { node_id, short_channel_id: _ }| node_id)
-			.collect();
-		self.create_blinded_paths(recipient, context, peers, secp_ctx)
-	}
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
@@ -503,6 +478,7 @@ where
 {
 	network_graph: G,
 	entropy_source: ES,
+	is_compact: bool,
 }
 
 impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
@@ -511,9 +487,17 @@ where
 	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
-	pub fn new(network_graph: G, entropy_source: ES) -> Self {
-		Self { network_graph, entropy_source }
+	pub fn normal_blinded_paths(network_graph: G, entropy_source: ES) -> Self {
+		Self { network_graph, entropy_source, is_compact: false }
 	}
+
+	/// Configures the [`DefaultMessageRouter`] to create compact blinded paths.
+	/// 
+	/// Compact blinded paths use short channel IDs (SCIDs) instead of public keys, reducing serialization 
+	/// size. This is useful for constrained mediums like QR codes. SCIDs are passed via [`MessageForwardNode`].
+	pub fn compact_blinded_paths(network_graph: G, entropy_source: ES) -> Self {
+		Self { network_graph, entropy_source, is_compact: true }
+    }
 
 	fn create_blinded_paths_from_iter<
 		I: ExactSizeIterator<Item = MessageForwardNode>,
@@ -618,25 +602,13 @@ where
 		}
 	}
 
-	pub(crate) fn create_blinded_paths<
+	pub(crate) fn create_blinded_paths_internal<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext,
-		peers: Vec<PublicKey>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let peers = peers
-			.into_iter()
-			.map(|node_id| MessageForwardNode { node_id, short_channel_id: None });
-		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, false)
-	}
-
-	pub(crate) fn create_compact_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext,
+		&self, network_graph: &G, recipient: PublicKey, context: MessageContext,
 		peers: Vec<MessageForwardNode>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, true)
+		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, self.is_compact)
 	}
 }
 
@@ -654,19 +626,34 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
-	}
-
-	fn create_compact_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	>(
 		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_compact_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
+		self.create_blinded_paths_internal(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
 	}
+}
 
+/// A [`MessageRouter`] implementation that does not perform routing.
+///
+/// # Behavior
+///
+/// `NullMessageRouter` serves as a placeholder router that neither creates 
+/// [`BlindedMessagePath`]s nor finds any paths for messages. It can be used 
+/// in cases where no routing is required or desired.
+pub struct NullMessageRouter {}
+
+impl MessageRouter for NullMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		Err(())
+	}
+	fn create_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		Ok(Vec::new())
+	}
 }
 
 /// A path for sending an [`OnionMessage`].
@@ -1267,7 +1254,10 @@ where
 		let peers = self.message_recipients.lock().unwrap()
 			.iter()
 			.filter(|(_, peer)| matches!(peer, OnionMessageRecipient::ConnectedPeer(_)))
-			.map(|(node_id, _ )| *node_id)
+			.map(|(node_id, _ )| MessageForwardNode {
+				node_id: *node_id,
+				short_channel_id: None,
+			})
 			.collect::<Vec<_>>();
 
 		self.message_router
@@ -1847,6 +1837,10 @@ where
 			.get_mut(&peer_node_id)
 			.and_then(|buffer| buffer.dequeue_message())
 	}
+
+	fn message_received(&self) {
+		self.offers_handler.message_received();
+	}
 }
 
 // TODO: parameterize the below Simple* types with OnionMessenger and handle the messages it
@@ -1866,7 +1860,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<OffersMessageFlow<Arc<KeysManager>, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
@@ -1887,7 +1881,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<OffersMessageFlow<Arc<KeysManager>, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler

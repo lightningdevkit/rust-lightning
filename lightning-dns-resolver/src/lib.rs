@@ -159,7 +159,9 @@ mod test {
 	use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 	use bitcoin::Block;
 
-	use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
+	use lightning::blinded_path::message::{
+		BlindedMessagePath, MessageContext, MessageForwardNode,
+	};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::events::{Event, PaymentPurpose};
 	use lightning::ln::channelmanager::{PaymentId, Retry};
@@ -225,7 +227,7 @@ mod test {
 		}
 
 		fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-			&self, recipient: PublicKey, context: MessageContext, _peers: Vec<PublicKey>,
+			&self, recipient: PublicKey, context: MessageContext, _peers: Vec<MessageForwardNode>,
 			secp_ctx: &Secp256k1<T>,
 		) -> Result<Vec<BlindedMessagePath>, ()> {
 			let keys = KeysManager::new(&[0; 32], 42, 43);
@@ -391,9 +393,9 @@ mod test {
 		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
 
 		// When we get the proof back, override its contents to an offer from nodes[1]
-		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+		let bs_offer = nodes[1].offers_handler.create_offer_builder().unwrap().build().unwrap();
 		nodes[0]
-			.node
+			.offers_handler
 			.testing_dnssec_proof_offer_resolution_override
 			.lock()
 			.unwrap()
@@ -404,7 +406,7 @@ mod test {
 		let retry = Retry::Attempts(0);
 		let amt = 42_000;
 		nodes[0]
-			.node
+			.offers_handler
 			.pay_for_offer_from_human_readable_name(name, amt, payment_id, retry, None, resolvers)
 			.unwrap();
 
