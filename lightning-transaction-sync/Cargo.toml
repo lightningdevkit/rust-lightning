@@ -37,5 +37,11 @@ tokio = { version = "1.35.0", features = ["macros"] }
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 electrsd = { version = "0.28.0", default-features = false, features = ["legacy"] }
 
-[lints]
-workspace = true
+[lints.rust.unexpected_cfgs]
+level = "forbid"
+# When adding a new cfg attribute, ensure that it is added to this list.
+#
+# Note that Cargo automatically declares corresponding cfgs for every feature
+# defined in the member-level [features] tables as "expected".
+check-cfg = [
+]
