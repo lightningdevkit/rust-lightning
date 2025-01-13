@@ -3959,8 +3959,8 @@ where
 			.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase) => {
-				if let Some(chan) = chan_phase.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					handle_new_monitor_update!(self, funding_txo,
 						monitor_update, peer_state_lock, peer_state, per_peer_state, chan);
 					return;
@@ -4110,11 +4110,11 @@ where
 						(chan_entry.get_mut().context_mut().force_shutdown(false, closure_reason), None)
 					},
 				};
-				let chan_phase = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
+				let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 				mem::drop(peer_state);
 				mem::drop(per_peer_state);
 				self.finish_close_channel(shutdown_res);
-				(update_opt, chan_phase.context().get_counterparty_node_id())
+				(update_opt, chan.context().get_counterparty_node_id())
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
 				// N.B. that we don't send any channel close event here: we
@@ -9292,9 +9292,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
 									};
 									let mut shutdown_res = chan_entry.get_mut().context_mut().force_shutdown(false, reason.clone());
-									let chan_phase = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
+									let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 									failed_channels.push(shutdown_res);
-									if let Some(chan) = chan_phase.as_funded() {
+									if let Some(chan) = chan.as_funded() {
 										if let Ok(update) = self.get_channel_update_for_broadcast(chan) {
 											let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
 											pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
