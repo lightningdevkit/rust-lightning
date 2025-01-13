@@ -3012,7 +3012,7 @@ macro_rules! locked_close_channel {
 }
 
 /// Returns (boolean indicating if we should remove the Channel object from memory, a mapped error)
-macro_rules! convert_chan_phase_err {
+macro_rules! convert_channel_err {
 	($self: ident, $peer_state: expr, $err: expr, $context: expr, $channel_id: expr, MANUAL_CHANNEL_UPDATE, $channel_update: expr) => {
 		match $err {
 			ChannelError::Warn(msg) => {
@@ -3032,19 +3032,19 @@ macro_rules! convert_chan_phase_err {
 			},
 		}
 	};
-	($self: ident, $peer_state: expr, $err: expr, $channel: expr, $channel_id: expr, FUNDED_CHANNEL) => {
-		convert_chan_phase_err!($self, $peer_state, $err, $channel.context, $channel_id, MANUAL_CHANNEL_UPDATE, { $self.get_channel_update_for_broadcast(&$channel).ok() })
+	($self: ident, $peer_state: expr, $err: expr, $funded_channel: expr, $channel_id: expr, FUNDED_CHANNEL) => {
+		convert_channel_err!($self, $peer_state, $err, $funded_channel.context, $channel_id, MANUAL_CHANNEL_UPDATE, { $self.get_channel_update_for_broadcast(&$funded_channel).ok() })
 	};
 	($self: ident, $peer_state: expr, $err: expr, $context: expr, $channel_id: expr, UNFUNDED_CHANNEL) => {
-		convert_chan_phase_err!($self, $peer_state, $err, $context, $channel_id, MANUAL_CHANNEL_UPDATE, None)
+		convert_channel_err!($self, $peer_state, $err, $context, $channel_id, MANUAL_CHANNEL_UPDATE, None)
 	};
-	($self: ident, $peer_state: expr, $err: expr, $channel_phase: expr, $channel_id: expr) => {
-		match $channel_phase.as_funded_mut() {
-			Some(channel) => {
-				convert_chan_phase_err!($self, $peer_state, $err, channel, $channel_id, FUNDED_CHANNEL)
+	($self: ident, $peer_state: expr, $err: expr, $channel: expr, $channel_id: expr) => {
+		match $channel.as_funded_mut() {
+			Some(funded_channel) => {
+				convert_channel_err!($self, $peer_state, $err, funded_channel, $channel_id, FUNDED_CHANNEL)
 			},
 			None => {
-				convert_chan_phase_err!($self, $peer_state, $err, $channel_phase.context_mut(), $channel_id, UNFUNDED_CHANNEL)
+				convert_channel_err!($self, $peer_state, $err, $channel.context_mut(), $channel_id, UNFUNDED_CHANNEL)
 			},
 		}
 	};
@@ -3056,7 +3056,7 @@ macro_rules! break_chan_phase_entry {
 			Ok(res) => res,
 			Err(e) => {
 				let key = *$entry.key();
-				let (drop, res) = convert_chan_phase_err!($self, $peer_state, e, $entry.get_mut(), &key);
+				let (drop, res) = convert_channel_err!($self, $peer_state, e, $entry.get_mut(), &key);
 				if drop {
 					$entry.remove_entry();
 				}
@@ -3072,7 +3072,7 @@ macro_rules! try_chan_phase_entry {
 			Ok(res) => res,
 			Err(e) => {
 				let key = *$entry.key();
-				let (drop, res) = convert_chan_phase_err!($self, $peer_state, e, $entry.get_mut(), &key);
+				let (drop, res) = convert_channel_err!($self, $peer_state, e, $entry.get_mut(), &key);
 				if drop {
 					$entry.remove_entry();
 				}
@@ -6436,7 +6436,7 @@ where
 								if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 
 								if let Err(e) = chan.timer_check_closing_negotiation_progress() {
-									let (needs_close, err) = convert_chan_phase_err!(self, peer_state, e, chan, chan_id, FUNDED_CHANNEL);
+									let (needs_close, err) = convert_channel_err!(self, peer_state, e, chan, chan_id, FUNDED_CHANNEL);
 									handle_errors.push((Err(err), counterparty_node_id));
 									if needs_close { return false; }
 								}
@@ -8064,14 +8064,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// Really we should be returning the channel_id the peer expects based
 							// on their funding info here, but they're horribly confused anyway, so
 							// there's not a lot we can do to save them.
-							return Err(convert_chan_phase_err!(self, peer_state, err, inbound_chan.context, &msg.temporary_channel_id, UNFUNDED_CHANNEL).1);
+							return Err(convert_channel_err!(self, peer_state, err, inbound_chan.context, &msg.temporary_channel_id, UNFUNDED_CHANNEL).1);
 						},
 					}
 				},
 				Some(Err(mut phase)) => {
 					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
 					let err = ChannelError::close(err_msg);
-					return Err(convert_chan_phase_err!(self, peer_state, err, &mut phase, &msg.temporary_channel_id).1);
+					return Err(convert_channel_err!(self, peer_state, err, &mut phase, &msg.temporary_channel_id).1);
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			};
@@ -8081,12 +8081,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		macro_rules! fail_chan { ($err: expr) => { {
 			// Note that at this point we've filled in the funding outpoint on our
 			// channel, but its actually in conflict with another channel. Thus, if
-			// we call `convert_chan_phase_err` immediately (thus calling
+			// we call `convert_channel_err` immediately (thus calling
 			// `locked_close_channel`), we'll remove the existing channel from `outpoint_to_peer`.
 			// Thus, we must first unset the funding outpoint on the channel.
 			let err = ChannelError::close($err.to_owned());
 			chan.unset_funding_info(msg.temporary_channel_id);
-			return Err(convert_chan_phase_err!(self, peer_state, err, chan.context, &funded_channel_id, UNFUNDED_CHANNEL).1);
+			return Err(convert_channel_err!(self, peer_state, err, chan.context, &funded_channel_id, UNFUNDED_CHANNEL).1);
 		} } }
 
 		match peer_state.channel_by_id.entry(funded_channel_id) {
@@ -8175,7 +8175,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								// found an (unreachable) panic when the monitor update contained
 								// within `shutdown_finish` was applied.
 								chan.unset_funding_info(msg.channel_id);
-								return Err(convert_chan_phase_err!(self, peer_state, e, chan, &msg.channel_id, FUNDED_CHANNEL).1);
+								return Err(convert_channel_err!(self, peer_state, e, chan, &msg.channel_id, FUNDED_CHANNEL).1);
 							}
 						},
 						Err((mut chan, e)) => {
@@ -8184,7 +8184,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// We've already removed this outbound channel from the map in
 							// `PeerState` above so at this point we just need to clean up any
 							// lingering entries concerning this channel as it is safe to do so.
-							return Err(convert_chan_phase_err!(self, peer_state, e, chan.context, &msg.channel_id, UNFUNDED_CHANNEL).1);
+							return Err(convert_channel_err!(self, peer_state, e, chan.context, &msg.channel_id, UNFUNDED_CHANNEL).1);
 						}
 					}
 				} else {
@@ -9560,7 +9560,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								},
 								Err(e) => {
 									has_update = true;
-									let (close_channel, res) = convert_chan_phase_err!(self, peer_state, e, chan, channel_id, FUNDED_CHANNEL);
+									let (close_channel, res) = convert_channel_err!(self, peer_state, e, chan, channel_id, FUNDED_CHANNEL);
 									handle_errors.push((chan.context.get_counterparty_node_id(), Err(res)));
 									!close_channel
 								}
