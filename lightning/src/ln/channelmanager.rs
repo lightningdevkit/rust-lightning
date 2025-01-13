@@ -56,7 +56,7 @@ use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelType
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, Router};
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::routing::router::Route;
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
@@ -128,8 +128,8 @@ use core::ops::Deref;
 use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
 pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
-#[cfg(test)]
-pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
+#[cfg(any(test, feature = "_test_utils"))]
+pub use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -2403,9 +2403,10 @@ where
 	message_router: MR,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BestBlock>,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	best_block: RwLock<BestBlock>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
@@ -2487,10 +2488,10 @@ where
 	/// required to access the channel with the `counterparty_node_id`.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	#[cfg(not(test))]
-	outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
+	#[cfg(not(any(test, feature = "_test_utils")))]
+	outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
 
 	/// SCIDs (and outbound SCID aliases) -> `counterparty_node_id`s and `channel_id`s.
 	///
@@ -4518,7 +4519,7 @@ where
 		})
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn test_send_payment_along_path(&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
@@ -4622,8 +4623,8 @@ where
 	// [`TestRouter::expect_find_route`] instead.
 	//
 	// [`TestRouter::expect_find_route`]: crate::util::test_utils::TestRouter::expect_find_route
-	#[cfg(test)]
-	pub(crate) fn send_payment_with_route(
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn send_payment_with_route(
 		&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId
 	) -> Result<(), PaymentSendFailure> {
@@ -4681,7 +4682,7 @@ where
 				&self.pending_events, |args| self.send_payment_along_path(args))
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -4690,7 +4691,7 @@ where
 			best_block_height, |args| self.send_payment_along_path(args))
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, recipient_onion, payment_id, route, None, &self.entropy_source, best_block_height)
@@ -5135,7 +5136,7 @@ where
 		Ok(())
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
 		let txid = funding_transaction.compute_txid();
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_| {
@@ -11023,7 +11024,7 @@ where
 									// Most of our tests were written when we only broadcasted
 									// `channel_announcement`s once and then never re-broadcasted
 									// them again, so disable the re-broadcasting entirely in tests
-									#[cfg(test)]
+									#[cfg(any(test, feature = "_test_utils"))]
 									{
 										should_announce = announcement_sigs.is_some();
 									}
