@@ -3050,7 +3050,7 @@ macro_rules! convert_channel_err {
 	};
 }
 
-macro_rules! break_chan_phase_entry {
+macro_rules! break_channel_entry {
 	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
 		match $res {
 			Ok(res) => res,
@@ -4546,7 +4546,7 @@ where
 								first_hop_htlc_msat: htlc_msat,
 								payment_id,
 							}, onion_packet, None, &self.fee_estimator, &&logger);
-						match break_chan_phase_entry!(self, peer_state, send_res, chan_phase_entry) {
+						match break_channel_entry!(self, peer_state, send_res, chan_phase_entry) {
 							Some(monitor_update) => {
 								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
 									false => {
