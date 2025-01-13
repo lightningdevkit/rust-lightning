@@ -3831,8 +3831,8 @@ where
 			let peer_state = &mut *peer_state_lock;
 
 			match peer_state.channel_by_id.entry(channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let funding_txo_opt = chan.context.get_funding_txo();
 						let their_features = &peer_state.latest_features;
 						let (shutdown_msg, mut monitor_update_opt, htlcs) =
@@ -3856,9 +3856,9 @@ where
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
 					} else {
-						let mut shutdown_res = chan_phase_entry.get_mut().context_mut()
+						let mut shutdown_res = chan_entry.get_mut().context_mut()
 							.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
-						remove_channel_entry!(self, peer_state, chan_phase_entry, shutdown_res);
+						remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 						shutdown_result = Some(shutdown_res);
 					}
 				},
@@ -4096,9 +4096,9 @@ where
 				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(broadcast) }
 			};
 			let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
-			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
 				log_error!(logger, "Force-closing channel {}", channel_id);
-				let (mut shutdown_res, update_opt) = match chan_phase_entry.get_mut().as_funded_mut() {
+				let (mut shutdown_res, update_opt) = match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						(
 							chan.context.force_shutdown(broadcast, closure_reason),
@@ -4107,10 +4107,10 @@ where
 					},
 					None => {
 						// Unfunded channel has no update
-						(chan_phase_entry.get_mut().context_mut().force_shutdown(false, closure_reason), None)
+						(chan_entry.get_mut().context_mut().force_shutdown(false, closure_reason), None)
 					},
 				};
-				let chan_phase = remove_channel_entry!(self, peer_state, chan_phase_entry, shutdown_res);
+				let chan_phase = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 				mem::drop(peer_state);
 				mem::drop(per_peer_state);
 				self.finish_close_channel(shutdown_res);
@@ -4531,8 +4531,8 @@ where
 				.ok_or_else(|| APIError::ChannelUnavailable{err: "No peer matching the path's first hop found!".to_owned() })?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
-			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(id) {
-				match chan_phase_entry.get_mut().as_funded_mut() {
+			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(id) {
+				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						if !chan.context.is_live() {
 							return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
@@ -4546,7 +4546,7 @@ where
 								first_hop_htlc_msat: htlc_msat,
 								payment_id,
 							}, onion_packet, None, &self.fee_estimator, &&logger);
-						match break_channel_entry!(self, peer_state, send_res, chan_phase_entry) {
+						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
 								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
 									false => {
@@ -6735,8 +6735,8 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(channel_id) {
-					hash_map::Entry::Occupied(chan_phase_entry) => {
-						if let Some(_chan) = chan_phase_entry.get().as_funded() {
+					hash_map::Entry::Occupied(chan_entry) => {
+						if let Some(_chan) = chan_entry.get().as_funded() {
 							let failure_code = 0x1000|7;
 							let data = self.get_htlc_inbound_temp_fail_data(failure_code);
 							(failure_code, data)
@@ -7068,8 +7068,8 @@ where
 
 		if let Some(peer_state_lock) = peer_state_opt.as_mut() {
 			let peer_state = &mut **peer_state_lock;
-			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(chan_id) {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(chan_id) {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 					let fulfill_res = chan.get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, payment_info, &&logger);
 
@@ -8146,9 +8146,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(chan_phase_entry) => {
-				if chan_phase_entry.get().is_unfunded_outbound_v1() {
-					let chan = if let Ok(chan) = chan_phase_entry.remove().into_unfunded_outbound_v1() { chan } else { unreachable!() };
+			hash_map::Entry::Occupied(chan_entry) => {
+				if chan_entry.get().is_unfunded_outbound_v1() {
+					let chan = if let Ok(chan) = chan_entry.remove().into_unfunded_outbound_v1() { chan } else { unreachable!() };
 					let logger = WithContext::from(
 						&self.logger,
 						Some(chan.context.get_counterparty_node_id()),
@@ -8209,8 +8209,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut();
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let channel_phase = chan_entry.get_mut();
 				let msg_send_event = match tx_msg_handler(channel_phase) {
 					Ok(msg_send_event) => msg_send_event,
 					Err(tx_msg_str) =>  return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
@@ -8285,8 +8285,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut();
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let channel_phase = chan_entry.get_mut();
 				let (msg_send_event_opt, signing_session_opt) = match channel_phase.as_unfunded_v2_mut() {
 					Some(channel) => channel.tx_complete(msg)
 						.into_msg_send_event_or_signing_session(counterparty_node_id),
@@ -8294,13 +8294,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress".into(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_phase_entry)
+						))), chan_entry)
 				};
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if let Some(mut signing_session) = signing_session_opt {
-					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut().as_unfunded_v2_mut() {
+					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_entry.get_mut().as_unfunded_v2_mut() {
 						Some(chan) => {
 							chan.funding_tx_constructed(&mut signing_session, &self.logger)
 						},
@@ -8308,7 +8308,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
 							.into())),
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
+					let (channel_id, channel_phase) = chan_entry.remove_entry();
 					let channel = match channel_phase.into_unfunded_v2() {
 						Some(chan) => chan.into_channel(signing_session),
 						None => {
@@ -8356,12 +8356,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut().as_funded_mut();
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let channel_phase = chan_entry.get_mut().as_funded_mut();
 				match channel_phase {
 					Some(chan) => {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let (tx_signatures_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_phase_entry);
+						let (tx_signatures_opt, funding_tx_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
@@ -8380,7 +8380,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						(
 							"Got an unexpected tx_signatures message".into(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_phase_entry)
+						))), chan_entry)
 				}
 				Ok(())
 			},
@@ -8403,8 +8403,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut();
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let channel_phase = chan_entry.get_mut();
 				let tx_constructor = match channel_phase.as_unfunded_v2_mut() {
 					Some(chan) => &mut chan.interactive_tx_constructor,
 					None => if channel_phase.is_funded() {
@@ -8416,12 +8416,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							"Got an unexpected tx_abort message: After initial funding transaction is signed, \
 							splicing and RBF attempts of interactive funding transactions are not supported yet so \
 							we don't have any negotiation in progress".into(),
-						)), chan_phase_entry)
+						)), chan_entry)
 					} else {
 						try_channel_entry!(self, peer_state, Err(ChannelError::Warn(
 							"Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel \
 							establishment".into(),
-						)), chan_phase_entry)
+						)), chan_entry)
 					},
 				};
 				// This checks for and resets the interactive negotiation state by `take()`ing it from the channel.
@@ -8465,11 +8465,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 					let announcement_sigs_opt = try_channel_entry!(self, peer_state, chan.channel_ready(&msg, &self.node_signer,
-						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
+						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_entry);
 					if let Some(announcement_sigs) = announcement_sigs_opt {
 						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
@@ -8499,7 +8499,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Ok(())
 				} else {
 					try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got a channel_ready message for an unfunded channel!".into())), chan_phase_entry)
+						"Got a channel_ready message for an unfunded channel!".into())), chan_entry)
 				}
 			},
 			hash_map::Entry::Vacant(_) => {
@@ -8520,8 +8520,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
-			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(msg.channel_id.clone()) {
-				match chan_phase_entry.get_mut().as_funded_mut() {
+			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(msg.channel_id.clone()) {
+				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						if !chan.received_shutdown() {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
@@ -8532,7 +8532,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 						let funding_txo_opt = chan.context.get_funding_txo();
 						let (shutdown, monitor_update_opt, htlcs) = try_channel_entry!(self, peer_state,
-							chan.shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_phase_entry);
+							chan.shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
 						dropped_htlcs = htlcs;
 
 						if let Some(msg) = shutdown {
@@ -8551,11 +8551,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					},
 					None => {
-						let context = chan_phase_entry.get_mut().context_mut();
+						let context = chan_entry.get_mut().context_mut();
 						let logger = WithChannelContext::from(&self.logger, context, None);
 						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
 						let mut close_res = context.force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
-						remove_channel_entry!(self, peer_state, chan_phase_entry, close_res);
+						remove_channel_entry!(self, peer_state, chan_entry, close_res);
 						finish_shutdown = Some(close_res);
 					},
 				}
@@ -8586,10 +8586,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let (closing_signed, tx, shutdown_result) = try_channel_entry!(self, peer_state, chan.closing_signed(&self.fee_estimator, &msg, &&logger), chan_phase_entry);
+						let (closing_signed, tx, shutdown_result) = try_channel_entry!(self, peer_state, chan.closing_signed(&self.fee_estimator, &msg, &&logger), chan_entry);
 						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
@@ -8604,7 +8604,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
 							debug_assert!(tx.is_some());
-							let channel_phase = remove_channel_entry!(self, peer_state, chan_phase_entry, close_res);
+							let channel_phase = remove_channel_entry!(self, peer_state, chan_entry, close_res);
 							(tx, Some(channel_phase), Some(close_res))
 						} else {
 							debug_assert!(tx.is_none());
@@ -8612,7 +8612,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-							"Got a closing_signed message for an unfunded channel!".into())), chan_phase_entry);
+							"Got a closing_signed message for an unfunded channel!".into())), chan_entry);
 					}
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -8660,12 +8660,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.update_add_htlc(&msg, &self.fee_estimator), chan_phase_entry);
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					try_channel_entry!(self, peer_state, chan.update_add_htlc(&msg, &self.fee_estimator), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
+						"Got an update_add_htlc message for an unfunded channel!".into())), chan_entry);
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -8686,9 +8686,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
-				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-						let res = try_channel_entry!(self, peer_state, chan.update_fulfill_htlc(&msg), chan_phase_entry);
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+						let res = try_channel_entry!(self, peer_state, chan.update_fulfill_htlc(&msg), chan_entry);
 						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							log_trace!(logger,
@@ -8709,7 +8709,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						res
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-							"Got an update_fulfill_htlc message for an unfunded channel!".into())), chan_phase_entry);
+							"Got an update_fulfill_htlc message for an unfunded channel!".into())), chan_entry);
 					}
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -8735,12 +8735,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan_phase_entry);
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					try_channel_entry!(self, peer_state, chan.update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got an update_fail_htlc message for an unfunded channel!".into())), chan_phase_entry);
+						"Got an update_fail_htlc message for an unfunded channel!".into())), chan_entry);
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -8760,16 +8760,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+			hash_map::Entry::Occupied(mut chan_entry) => {
 				if (msg.failure_code & 0x8000) == 0 {
 					let chan_err = ChannelError::close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
-					try_channel_entry!(self, peer_state, Err(chan_err), chan_phase_entry);
+					try_channel_entry!(self, peer_state, Err(chan_err), chan_entry);
 				}
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code, msg.sha256_of_onion.to_vec())), chan_phase_entry);
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					try_channel_entry!(self, peer_state, chan.update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code, msg.sha256_of_onion.to_vec())), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got an update_fail_malformed_htlc message for an unfunded channel!".into())), chan_phase_entry);
+						"Got an update_fail_malformed_htlc message for an unfunded channel!".into())), chan_entry);
 				}
 				Ok(())
 			},
@@ -8788,15 +8788,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 					let funding_txo = chan.context.get_funding_txo();
 
 					if chan.interactive_tx_signing_session.is_some() {
 						let monitor = try_channel_entry!(
 							self, peer_state, chan.commitment_signed_initial_v2(msg, best_block, &self.signer_provider, &&logger),
-							chan_phase_entry);
+							chan_entry);
 						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 						if let Ok(persist_state) = monitor_res {
 							handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
@@ -8809,11 +8809,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									"Channel funding outpoint was a duplicate".to_owned(),
 									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 								)
-							)), chan_phase_entry)
+							)), chan_entry)
 						}
 					} else {
 						let monitor_update_opt = try_channel_entry!(
-							self, peer_state, chan.commitment_signed(msg, &&logger), chan_phase_entry);
+							self, peer_state, chan.commitment_signed(msg, &&logger), chan_entry);
 						if let Some(monitor_update) = monitor_update_opt {
 							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 								peer_state, per_peer_state, chan);
@@ -8822,7 +8822,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Ok(())
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry);
+						"Got a commitment_signed message for an unfunded channel!".into())), chan_entry);
 				}
 			},
 			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9005,8 +9005,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}).map(|mtx| mtx.lock().unwrap())?;
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
-				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						let funding_txo_opt = chan.context.get_funding_txo();
 						let mon_update_blocked = if let Some(funding_txo) = funding_txo_opt {
@@ -9015,7 +9015,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								*counterparty_node_id)
 						} else { false };
 						let (htlcs_to_fail, monitor_update_opt) = try_channel_entry!(self, peer_state,
-							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_phase_entry);
+							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_entry);
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
@@ -9025,7 +9025,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						htlcs_to_fail
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
+							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_entry);
 					}
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9045,13 +9045,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					try_channel_entry!(self, peer_state, chan.update_fee(&self.fee_estimator, &msg, &&logger), chan_phase_entry);
+					try_channel_entry!(self, peer_state, chan.update_fee(&self.fee_estimator, &msg, &&logger), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got an update_fee message for an unfunded channel!".into())), chan_phase_entry);
+						"Got an update_fee message for an unfunded channel!".into())), chan_entry);
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9069,8 +9069,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					if !chan.context.is_usable() {
 						return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 					}
@@ -9079,14 +9079,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg: try_channel_entry!(self, peer_state, chan.announcement_signatures(
 							&self.node_signer, self.chain_hash, self.best_block.read().unwrap().height,
 							msg, &self.default_configuration
-						), chan_phase_entry),
+						), chan_entry),
 						// Note that announcement_signatures fails if the channel cannot be announced,
 						// so get_channel_update_for_broadcast will never fail by the time we get here.
 						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap()),
 					});
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got an announcement_signatures message for an unfunded channel!".into())), chan_phase_entry);
+						"Got an announcement_signatures message for an unfunded channel!".into())), chan_entry);
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9111,8 +9111,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(chan_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					if chan.context.get_counterparty_node_id() != *counterparty_node_id {
 						if chan.context.should_announce() {
 							// If the announcement is about a channel of ours which is public, some
@@ -9129,7 +9129,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					} else {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						log_debug!(logger, "Received channel_update {:?} for channel {}.", msg, chan_id);
-						let did_change = try_channel_entry!(self, peer_state, chan.channel_update(&msg), chan_phase_entry);
+						let did_change = try_channel_entry!(self, peer_state, chan.channel_update(&msg), chan_entry);
 						// If nothing changed after applying their update, we don't need to bother
 						// persisting.
 						if !did_change {
@@ -9138,7 +9138,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-						"Got a channel_update for an unfunded channel!".into())), chan_phase_entry);
+						"Got a channel_update for an unfunded channel!".into())), chan_entry);
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Ok(NotifyOption::SkipPersistNoEvents)
@@ -9162,15 +9162,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
-				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						// Currently, we expect all holding cell update_adds to be dropped on peer
 						// disconnect, so Channel's reestablish will never hand us any holding cell
 						// freed HTLCs to fail backwards. If in the future we no longer drop pending
 						// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 						let responses = try_channel_entry!(self, peer_state, chan.channel_reestablish(
 							msg, &&logger, &self.node_signer, self.chain_hash,
-							&self.default_configuration, &*self.best_block.read().unwrap()), chan_phase_entry);
+							&self.default_configuration, &*self.best_block.read().unwrap()), chan_entry);
 						let mut channel_update = None;
 						if let Some(msg) = responses.shutdown_msg {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
@@ -9200,7 +9200,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						need_lnd_workaround
 					} else {
 						return try_channel_entry!(self, peer_state, Err(ChannelError::close(
-							"Got a channel_reestablish message for an unfunded channel!".into())), chan_phase_entry);
+							"Got a channel_reestablish message for an unfunded channel!".into())), chan_entry);
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
@@ -9285,14 +9285,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 								let peer_state = &mut *peer_state_lock;
 								let pending_msg_events = &mut peer_state.pending_msg_events;
-								if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(channel_id) {
+								if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id) {
 									let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
 										reason
 									} else {
 										ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
 									};
-									let mut shutdown_res = chan_phase_entry.get_mut().context_mut().force_shutdown(false, reason.clone());
-									let chan_phase = remove_channel_entry!(self, peer_state, chan_phase_entry, shutdown_res);
+									let mut shutdown_res = chan_entry.get_mut().context_mut().force_shutdown(false, reason.clone());
+									let chan_phase = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
 									failed_channels.push(shutdown_res);
 									if let Some(chan) = chan_phase.as_funded() {
 										if let Ok(update) = self.get_channel_update_for_broadcast(chan) {
@@ -10639,9 +10639,9 @@ where
 					break;
 				}
 
-				if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(
+				if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(
 					channel_id) {
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 						debug_assert_eq!(chan.context.get_funding_txo().unwrap(), channel_funding_outpoint);
 						if let Some((monitor_update, further_update_exists)) = chan.unblock_next_blocked_monitor_update() {
 							log_debug!(logger, "Unlocking monitor updating for channel {} and updating monitor",
