@@ -8,7 +8,7 @@ use lightning_types::payment::PaymentHash;
 /// remaining payments forwarded.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub(crate) struct PaymentQueue {
-	payments: Vec<(PaymentHash, Vec<InterceptedHTLC>)>,
+	payments: Vec<PaymentQueueEntry>,
 }
 
 impl PaymentQueue {
@@ -17,35 +17,46 @@ impl PaymentQueue {
 	}
 
 	pub(crate) fn add_htlc(&mut self, new_htlc: InterceptedHTLC) -> (u64, usize) {
-		let payment = self.payments.iter_mut().find(|(p, _)| p == &new_htlc.payment_hash);
-		if let Some((payment_hash, htlcs)) = payment {
+		let payment =
+			self.payments.iter_mut().find(|entry| entry.payment_hash == new_htlc.payment_hash);
+		if let Some(entry) = payment {
 			// HTLCs within a payment should have the same payment hash.
-			debug_assert!(htlcs.iter().all(|htlc| htlc.payment_hash == *payment_hash));
+			debug_assert!(entry.htlcs.iter().all(|htlc| htlc.payment_hash == entry.payment_hash));
 			// The given HTLC should not already be present.
-			debug_assert!(htlcs.iter().all(|htlc| htlc.intercept_id != new_htlc.intercept_id));
-			htlcs.push(new_htlc);
+			debug_assert!(entry
+				.htlcs
+				.iter()
+				.all(|htlc| htlc.intercept_id != new_htlc.intercept_id));
+			entry.htlcs.push(new_htlc);
 			let total_expected_outbound_amount_msat =
-				htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum();
-			(total_expected_outbound_amount_msat, htlcs.len())
+				entry.htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum();
+			(total_expected_outbound_amount_msat, entry.htlcs.len())
 		} else {
 			let expected_outbound_amount_msat = new_htlc.expected_outbound_amount_msat;
-			self.payments.push((new_htlc.payment_hash, vec![new_htlc]));
+			let entry =
+				PaymentQueueEntry { payment_hash: new_htlc.payment_hash, htlcs: vec![new_htlc] };
+			self.payments.push(entry);
 			(expected_outbound_amount_msat, 1)
 		}
 	}
 
-	pub(crate) fn pop_greater_than_msat(
-		&mut self, amount_msat: u64,
-	) -> Option<(PaymentHash, Vec<InterceptedHTLC>)> {
-		let position = self.payments.iter().position(|(_payment_hash, htlcs)| {
-			htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum::<u64>() >= amount_msat
+	pub(crate) fn pop_greater_than_msat(&mut self, amount_msat: u64) -> Option<PaymentQueueEntry> {
+		let position = self.payments.iter().position(|entry| {
+			entry.htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum::<u64>()
+				>= amount_msat
 		});
 		position.map(|position| self.payments.remove(position))
 	}
 
 	pub(crate) fn clear(&mut self) -> Vec<InterceptedHTLC> {
-		self.payments.drain(..).map(|(_k, v)| v).flatten().collect()
+		self.payments.drain(..).map(|entry| entry.htlcs).flatten().collect()
 	}
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct PaymentQueueEntry {
+	pub(crate) payment_hash: PaymentHash,
+	pub(crate) htlcs: Vec<InterceptedHTLC>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -90,24 +101,23 @@ mod tests {
 			}),
 			(500_000_000, 2),
 		);
-		assert_eq!(
-			payment_queue.pop_greater_than_msat(500_000_000),
-			Some((
-				PaymentHash([100; 32]),
-				vec![
-					InterceptedHTLC {
-						intercept_id: InterceptId([0; 32]),
-						expected_outbound_amount_msat: 200_000_000,
-						payment_hash: PaymentHash([100; 32]),
-					},
-					InterceptedHTLC {
-						intercept_id: InterceptId([2; 32]),
-						expected_outbound_amount_msat: 300_000_000,
-						payment_hash: PaymentHash([100; 32]),
-					},
-				]
-			))
-		);
+
+		let expected_entry = PaymentQueueEntry {
+			payment_hash: PaymentHash([100; 32]),
+			htlcs: vec![
+				InterceptedHTLC {
+					intercept_id: InterceptId([0; 32]),
+					expected_outbound_amount_msat: 200_000_000,
+					payment_hash: PaymentHash([100; 32]),
+				},
+				InterceptedHTLC {
+					intercept_id: InterceptId([2; 32]),
+					expected_outbound_amount_msat: 300_000_000,
+					payment_hash: PaymentHash([100; 32]),
+				},
+			],
+		};
+		assert_eq!(payment_queue.pop_greater_than_msat(500_000_000), Some(expected_entry),);
 		assert_eq!(
 			payment_queue.clear(),
 			vec![InterceptedHTLC {
