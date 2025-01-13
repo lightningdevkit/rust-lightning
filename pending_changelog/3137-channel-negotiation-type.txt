@@ -1,7 +1,0 @@
-# API Updates
- * `Event::OpenChannelRequest::push_msat` has been replaced by the field `channel_negotiation_type` to
-   differentiate between an inbound request for a dual-funded (V2) or non-dual-funded (V1) channel to be
-   opened, with value being either of the enum variants `InboundChannelFunds::DualFunded` and
-   `InboundChannelFunds::PushMsat(u64)` corresponding to V2 and V1 channel open requests respectively.
-   This is in preparation for supporting accepting dual-funded channels, which will be available in a later release.
-
