@@ -1272,7 +1272,7 @@ impl<Signer: ChannelSigner> OnchainTxHandler<Signer> {
 	}
 
 	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
-		&self.channel_transaction_parameters.channel_type_features
+		self.channel_transaction_parameters.channel_type_features()
 	}
 }
 
