@@ -13,7 +13,7 @@
 
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::types::features::ChannelTypeFeatures;

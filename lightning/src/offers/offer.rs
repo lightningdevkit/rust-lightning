@@ -72,10 +72,10 @@
 //! # Note
 //!
 //! If constructing an [`Offer`] for use with a [`ChannelManager`], use
-//! [`ChannelManager::create_offer_builder`] instead of [`OfferBuilder::new`].
+//! [`OffersMessageFlow::create_offer_builder`] instead of [`OfferBuilder::new`].
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-//! [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
+//! [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 
 use core::borrow::Borrow;
 use bitcoin::constants::ChainHash;
@@ -229,10 +229,10 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	/// # Note
 	///
 	/// If constructing an [`Offer`] for use with a [`ChannelManager`], use
-	/// [`ChannelManager::create_offer_builder`] instead of [`OfferBuilder::new`].
+	/// [`OffersMessageFlow::create_offer_builder`] instead of [`OfferBuilder::new`].
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
+	/// [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 	pub fn new(signing_pubkey: PublicKey) -> Self {
 		Self {
 			offer: OfferContents {
@@ -968,7 +968,7 @@ impl OfferContents {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(*amount_msats)),
-			Some(Amount::Currency { iso4217_code, amount }) => (
+			Some(Amount::Currency ( Currency { iso4217_code, amount })) => (
 				Some(iso4217_code), Some(*amount)
 			),
 		};
@@ -1028,13 +1028,17 @@ pub enum Amount {
 		/// The amount in millisatoshi.
 		amount_msats: u64,
 	},
-	/// An amount of currency specified using ISO 4217.
-	Currency {
-		/// The currency that the amount is denominated in.
-		iso4217_code: CurrencyCode,
-		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
-		amount: u64,
-	},
+	/// An amount of currency.
+	Currency(Currency),
+}
+
+/// An amount of currency specified using ISO 4217.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Currency {
+	/// The currency that the amount is denominated in.
+	pub iso4217_code: CurrencyCode,
+	/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
+	pub amount: u64,
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
@@ -1162,7 +1166,7 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 			},
 			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
 			(Some(_), None) => return Err(Bolt12SemanticError::MissingAmount),
-			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
+			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency(Currency { iso4217_code, amount })),
 		};
 
 		if amount.is_some() && description.is_none() {
@@ -1218,7 +1222,7 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
-	use crate::blinded_path::BlindedHop;
+	use crate::{blinded_path::BlindedHop, offers::offer::Currency};
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::types::features::OfferFeatures;
 	use crate::ln::channelmanager::PaymentId;
@@ -1473,7 +1477,7 @@ mod tests {
 	#[test]
 	fn builds_offer_with_amount() {
 		let bitcoin_amount = Amount::Bitcoin { amount_msats: 1000 };
-		let currency_amount = Amount::Currency { iso4217_code: *b"USD", amount: 10 };
+		let currency_amount = Amount::Currency(Currency { iso4217_code: *b"USD", amount: 10 });
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.amount_msats(1000)

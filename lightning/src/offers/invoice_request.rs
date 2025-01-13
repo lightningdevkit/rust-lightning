@@ -65,6 +65,8 @@
 //! # }
 //! ```
 
+use core::ops::Deref;
+
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
@@ -77,15 +79,19 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::{PrintableString, UntrustedString};
+
+use super::offer::Currency;
+use super::parse::Bolt12ResponseError;
 
 #[cfg(not(c_bindings))]
 use {
@@ -462,6 +468,61 @@ where
 	fn sign(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, ()> {
 		self.sign_invoice_request(message)
 	}
+}
+
+/// Trait that allow user to introduce [`Amount::Currency`] support for [`Offer`]
+/// 
+/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+pub trait Bolt12CurrencyAssessor {
+	/// Converts fiat to milli satoshis.
+	fn fiat_to_msats(&self, currency: Currency) -> Result<u64, Bolt12ResponseError>;
+}
+
+/// Trait that allow users assess the received Bolt12 Message, and ensure if they want to respond to it.
+pub trait Bolt12Assessor {
+	/// Evaluates a received [`InvoiceRequest`] and determines whether to respond to it.
+	fn assess_invoice_request(&self, invoice_request: &InvoiceRequest) -> Result<(), Bolt12ResponseError>;
+	/// Evaluates the recieved [`Bolt12Invoice`] and determines whether to pay for it.
+	fn assess_bolt12_invoice(&self, invoice: &Bolt12Invoice) -> Result<(), Bolt12ResponseError>;
+}
+
+/// Provides default impelementation for [`Bolt12Assessor`] & [`Bolt12CurrencyAssessor`].
+pub struct DefaultBolt12Assessor {}
+
+impl Bolt12CurrencyAssessor for DefaultBolt12Assessor {
+	fn fiat_to_msats(&self, _currency: Currency) -> Result<u64, Bolt12ResponseError> {
+		Err(Bolt12ResponseError::SemanticError(Bolt12SemanticError::UnsupportedCurrency))
+	}
+}
+
+impl Bolt12Assessor for DefaultBolt12Assessor {
+	fn assess_invoice_request(&self, _invoice_request: &InvoiceRequest) -> Result<(), Bolt12ResponseError> {
+		Ok(())
+	}
+	fn assess_bolt12_invoice(&self, _invoice: &Bolt12Invoice) -> Result<(), Bolt12ResponseError> {
+		Ok(())
+	}
+}
+
+pub(super) fn calculate_offer_amount<CA: Deref>(
+    assessor: &CA,
+    invoice_request: &InvoiceRequestContents,
+) -> Result<u64, Bolt12ResponseError>
+where
+    CA::Target: Bolt12CurrencyAssessor,
+{
+	match invoice_request.inner.offer.amount() {
+		Some(Amount::Bitcoin { amount_msats }) => {
+			amount_msats
+				.checked_mul(invoice_request.quantity().unwrap_or(1))
+				.ok_or(Bolt12SemanticError::InvalidAmount)
+		}
+		Some(Amount::Currency(currency)) => assessor.fiat_to_msats(currency)?
+			.checked_mul(invoice_request.quantity().unwrap_or(1))
+			.ok_or(Bolt12SemanticError::InvalidAmount),
+		None => Err(Bolt12SemanticError::MissingAmount),
+	}
+	.map_err(Bolt12ResponseError::SemanticError)
 }
 
 impl UnsignedInvoiceRequest {
@@ -1335,7 +1396,7 @@ mod tests {
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash, TlvStream, self};
 	use crate::offers::nonce::Nonce;
-	use crate::offers::offer::{Amount, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity};
+	use crate::offers::offer::{Amount, Currency, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
 		crate::offers::offer::OfferBuilder,
@@ -2045,7 +2106,7 @@ mod tests {
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.description("foo".to_string())
-			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 1000 })
+			.amount(Amount::Currency(Currency { iso4217_code: *b"USD", amount: 1000 }))
 			.build_unchecked()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_unchecked_and_sign();

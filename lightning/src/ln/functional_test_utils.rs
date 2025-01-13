@@ -16,8 +16,10 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
+use crate::offers::flow::OffersMessageFlow;
+use crate::offers::invoice_request::DefaultBolt12Assessor;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
 use crate::types::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
@@ -411,6 +413,15 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
+pub type TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg> = OffersMessageFlow<
+	&'node_cfg test_utils::TestKeysInterface,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	Arc<DefaultBolt12Assessor>,
+	Arc<DefaultBolt12Assessor>,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	&'chan_mon_cfg test_utils::TestLogger,
+>;
+
 #[cfg(not(feature = "dnssec"))]
 type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	DedicatedEntropy,
@@ -418,7 +429,7 @@ type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	&'chan_mon_cfg test_utils::TestLogger,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
-	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	Arc<TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg>>,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler,
@@ -431,9 +442,9 @@ type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	&'chan_mon_cfg test_utils::TestLogger,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	Arc<TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg>>,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
-	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
-	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	Arc<TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg>>,
 	IgnoringMessageHandler,
 >;
 
@@ -458,6 +469,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub keys_manager: &'chan_mon_cfg test_utils::TestKeysInterface,
 	pub node: &'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	pub onion_messenger: TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg>,
+	pub offers_handler: Arc<TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg>>,
 	pub network_graph: &'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>,
 	pub gossip_sync: P2PGossipSync<&'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>, &'chan_mon_cfg test_utils::TestChainSource, &'chan_mon_cfg test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
@@ -1188,9 +1200,17 @@ macro_rules! reload_node {
 		$new_chain_monitor = $crate::util::test_utils::TestChainMonitor::new(Some($node.chain_source), $node.tx_broadcaster.clone(), $node.logger, $node.fee_estimator, &$persister, &$node.keys_manager);
 		$node.chain_monitor = &$new_chain_monitor;
 
+		let new_assessor = $crate::sync::Arc::new($crate::offers::invoice_request::DefaultBolt12Assessor {});
+
 		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
+
+		let offers_handler = $crate::sync::Arc::new($crate::offers::flow::OffersMessageFlow::new(
+			$new_channelmanager.inbound_payment_key, $new_channelmanager.get_our_node_id(), $node.keys_manager, &$new_channelmanager, new_assessor.clone(), new_assessor, $node.message_router, $node.logger
+		));
+
 		$node.node = &$new_channelmanager;
-		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
+		$node.offers_handler = offers_handler.clone();
+		$node.onion_messenger.set_offers_handler(offers_handler);
 	};
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		reload_node!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
@@ -3330,16 +3350,20 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
+		let assessor = Arc::new(DefaultBolt12Assessor {});
+		let offers_handler = Arc::new(OffersMessageFlow::new(
+			chan_mgrs[i].inbound_payment_key, chan_mgrs[i].get_our_node_id(), cfgs[i].keys_manager, &chan_mgrs[i], assessor.clone(), assessor, &cfgs[i].message_router, cfgs[i].logger
+		));
 		#[cfg(feature = "dnssec")]
 		let onion_messenger = OnionMessenger::new(
 			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
-			&cfgs[i].message_router, &chan_mgrs[i], &chan_mgrs[i], &chan_mgrs[i],
+			&cfgs[i].message_router, offers_handler.clone(), &chan_mgrs[i], offers_handler.clone(),
 			IgnoringMessageHandler {},
 		);
 		#[cfg(not(feature = "dnssec"))]
 		let onion_messenger = OnionMessenger::new(
 			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
-			&cfgs[i].message_router, &chan_mgrs[i], &chan_mgrs[i], IgnoringMessageHandler {},
+			&cfgs[i].message_router, offers_handler.clone(), &chan_mgrs[i], IgnoringMessageHandler {},
 			IgnoringMessageHandler {},
 		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
@@ -3350,7 +3374,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 			message_router: &cfgs[i].message_router, chain_monitor: &cfgs[i].chain_monitor,
 			keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i],
 			network_graph: cfgs[i].network_graph.as_ref(), gossip_sync,
-			node_seed: cfgs[i].node_seed, onion_messenger, network_chan_count: chan_count.clone(),
+			node_seed: cfgs[i].node_seed, onion_messenger, offers_handler,
+			network_chan_count: chan_count.clone(),
 			network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
 			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
 			connect_style: Rc::clone(&connect_style),
