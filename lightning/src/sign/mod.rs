@@ -625,7 +625,7 @@ impl HTLCDescriptor {
 		chan_utils::build_htlc_input(
 			&self.commitment_txid,
 			&self.htlc,
-			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
+			self.channel_derivation_parameters.transaction_parameters.channel_type_features(),
 		)
 	}
 
@@ -635,7 +635,7 @@ impl HTLCDescriptor {
 		chan_utils::build_htlc_output(
 			self.feerate_per_kw,
 			&self.htlc,
-			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
+			self.channel_derivation_parameters.transaction_parameters.channel_type_features(),
 			revokeable_spk,
 		)
 	}
@@ -648,7 +648,7 @@ impl HTLCDescriptor {
 			&self.counterparty_sig,
 			&self.preimage,
 			witness_script,
-			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
+			self.channel_derivation_parameters.transaction_parameters.channel_type_features(),
 		)
 	}
 
@@ -880,7 +880,7 @@ pub trait ChannelSigner {
 	/// Return the total weight of the witness required to spend the justice path of a HTLC output in a
 	/// commitment transaction.
 	fn get_htlc_punishment_witness_weight(&self, offered: bool) -> u64 {
-		let features = &self.get_channel_parameters().unwrap().channel_type_features;
+		let features = self.get_channel_parameters().unwrap().channel_type_features();
 		if offered {
 			weight_revoked_offered_htlc(features)
 		} else {
@@ -898,7 +898,7 @@ pub trait ChannelSigner {
 
 	/// Weight of the witness that sweeps htlc outputs in counterparty commitment transactions
 	fn counterparty_htlc_output_witness_weight(&self, offered: bool) -> u64 {
-		let features = &self.get_channel_parameters().unwrap().channel_type_features;
+		let features = self.get_channel_parameters().unwrap().channel_type_features();
 		if offered {
 			weight_offered_htlc(features)
 		} else {
@@ -990,7 +990,7 @@ pub trait ChannelSigner {
 	/// Get the anchor output of a commit tx
 	fn get_anchor_txout(&self, is_holder_tx: bool, is_broadcaster_anchor: bool) -> Option<TxOut> {
 		let channel_parameters = self.get_channel_parameters().unwrap();
-		if channel_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			let params = if is_holder_tx {
 				channel_parameters.as_holder_broadcastable()
 			} else {
@@ -1395,7 +1395,7 @@ impl InMemorySigner {
 	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
 	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
-		self.get_channel_parameters().map(|params| &params.channel_type_features)
+		self.get_channel_parameters().map(|params| params.channel_type_features())
 	}
 
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
@@ -1771,7 +1771,7 @@ impl ChannelSigner for InMemorySigner {
 		let sighash = hash_to_message!(sighash.as_byte_array());
 		let sig = sign_with_aux_rand(&secp_ctx, &sighash, &our_htlc_private_key, &self);
 
-		let features = &self.channel_parameters.as_ref().unwrap().channel_type_features;
+		let features = self.channel_parameters.as_ref().unwrap().channel_type_features();
 		Ok(chan_utils::build_htlc_input_witness(
 			&sig,
 			&htlc_descriptor.counterparty_sig,
@@ -1826,7 +1826,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		);
 		for htlc in commitment_tx.htlcs() {
 			let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
-			let chan_type = &channel_parameters.channel_type_features;
+			let chan_type = channel_parameters.channel_type_features();
 			let htlc_tx = chan_utils::build_htlc_transaction(
 				&commitment_txid,
 				commitment_tx.feerate_per_kw(),

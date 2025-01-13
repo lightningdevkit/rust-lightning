@@ -949,6 +949,10 @@ impl ChannelTransactionParameters {
 			channel_type_features: ChannelTypeFeatures::empty(),
 		}
 	}
+
+	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
+		&self.channel_type_features
+	}
 }
 
 impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {

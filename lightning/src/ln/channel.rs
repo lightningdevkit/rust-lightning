@@ -3336,8 +3336,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), &self.channel_transaction_parameters.channel_type_features);
-		let anchors_val = if self.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
+		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.channel_type_features());
+		let anchors_val = if self.channel_transaction_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
 			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
 		} else {
@@ -4191,7 +4191,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if self.channel_type.supports_anchors_zero_fee_htlc_tx() {
 			self.channel_type.clear_anchors_zero_fee_htlc_tx();
 			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			assert!(!self.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
+			assert!(!self.channel_transaction_parameters.channel_type_features().supports_anchors_nonzero_fee_htlc_tx());
 		} else if self.channel_type.supports_scid_privacy() {
 			self.channel_type.clear_scid_privacy();
 		} else {
