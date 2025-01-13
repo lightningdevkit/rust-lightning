@@ -3082,7 +3082,7 @@ macro_rules! try_channel_entry {
 	}
 }
 
-macro_rules! remove_channel_phase {
+macro_rules! remove_channel_entry {
 	($self: ident, $peer_state: expr, $entry: expr, $shutdown_res_mut: expr) => {
 		{
 			let channel = $entry.remove_entry().1;
@@ -3858,7 +3858,7 @@ where
 					} else {
 						let mut shutdown_res = chan_phase_entry.get_mut().context_mut()
 							.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
-						remove_channel_phase!(self, peer_state, chan_phase_entry, shutdown_res);
+						remove_channel_entry!(self, peer_state, chan_phase_entry, shutdown_res);
 						shutdown_result = Some(shutdown_res);
 					}
 				},
@@ -4110,7 +4110,7 @@ where
 						(chan_phase_entry.get_mut().context_mut().force_shutdown(false, closure_reason), None)
 					},
 				};
-				let chan_phase = remove_channel_phase!(self, peer_state, chan_phase_entry, shutdown_res);
+				let chan_phase = remove_channel_entry!(self, peer_state, chan_phase_entry, shutdown_res);
 				mem::drop(peer_state);
 				mem::drop(per_peer_state);
 				self.finish_close_channel(shutdown_res);
@@ -8555,7 +8555,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let logger = WithChannelContext::from(&self.logger, context, None);
 						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
 						let mut close_res = context.force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
-						remove_channel_phase!(self, peer_state, chan_phase_entry, close_res);
+						remove_channel_entry!(self, peer_state, chan_phase_entry, close_res);
 						finish_shutdown = Some(close_res);
 					},
 				}
@@ -8604,7 +8604,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// fully delete it from tracking (the channel monitor is still around to
 							// watch for old state broadcasts)!
 							debug_assert!(tx.is_some());
-							let channel_phase = remove_channel_phase!(self, peer_state, chan_phase_entry, close_res);
+							let channel_phase = remove_channel_entry!(self, peer_state, chan_phase_entry, close_res);
 							(tx, Some(channel_phase), Some(close_res))
 						} else {
 							debug_assert!(tx.is_none());
@@ -9292,7 +9292,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
 									};
 									let mut shutdown_res = chan_phase_entry.get_mut().context_mut().force_shutdown(false, reason.clone());
-									let chan_phase = remove_channel_phase!(self, peer_state, chan_phase_entry, shutdown_res);
+									let chan_phase = remove_channel_entry!(self, peer_state, chan_phase_entry, shutdown_res);
 									failed_channels.push(shutdown_res);
 									if let Some(chan) = chan_phase.as_funded() {
 										if let Ok(update) = self.get_channel_update_for_broadcast(chan) {
