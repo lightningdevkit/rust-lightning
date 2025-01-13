@@ -161,7 +161,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(
 		&self, message: Self::CustomMessage, _context: Option<Vec<u8>>,
-		responder: Option<Responder>,
+		_custom_data: Option<Vec<u8>>, responder: Option<Responder>,
 	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		match responder {
 			Some(responder) => Some((message, responder.respond())),

@@ -191,7 +191,8 @@ impl Drop for TestCustomMessageHandler {
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(
-		&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>,
+		&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, custom_data: Option<Vec<u8>>,
+		responder: Option<Responder>,
 	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		let expectation = self.get_next_expectation();
 		assert_eq!(msg, expectation.expect);
@@ -209,7 +210,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 		match responder {
 			Some(responder) if expectation.include_reply_path => {
 				let context = MessageContext::Custom(context.unwrap_or_else(Vec::new));
-				let reply = responder.respond_with_reply_path(context);
+				let reply = responder.respond_with_reply_path(context, custom_data);
 				Some((response, reply))
 			},
 			Some(responder) => Some((response, responder.respond())),
@@ -507,7 +508,7 @@ fn async_response_over_one_blinded_hop() {
 	// 5. Expect Alice to receive the message and create a response instruction for it.
 	alice.custom_message_handler.expect_message(message.clone());
 	let response_instruction =
-		nodes[0].custom_message_handler.handle_custom_message(message, None, responder);
+		nodes[0].custom_message_handler.handle_custom_message(message, None, None, responder);
 
 	// 6. Simulate Alice asynchronously responding back to Bob with a response.
 	let (msg, instructions) = response_instruction.unwrap();
@@ -546,7 +547,7 @@ fn async_response_with_reply_path_succeeds() {
 	let responder = Responder::new(reply_path);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction =
-		alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
+		alice.custom_message_handler.handle_custom_message(message, None, None, Some(responder));
 
 	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
@@ -590,7 +591,7 @@ fn async_response_with_reply_path_fails() {
 	let responder = Responder::new(reply_path);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction =
-		alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
+		alice.custom_message_handler.handle_custom_message(message, None, None, Some(responder));
 
 	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(

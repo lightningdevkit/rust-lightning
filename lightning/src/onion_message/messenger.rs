@@ -418,17 +418,19 @@ impl Responder {
 	pub fn respond(self) -> ResponseInstruction {
 		ResponseInstruction {
 			destination: Destination::BlindedPath(self.reply_path),
-			context: None,
+			reply_data: (None, None),
 		}
 	}
 
 	/// Creates a [`ResponseInstruction`] for responding including a reply path.
 	///
 	/// Use when the recipient needs to send back a reply to us.
-	pub fn respond_with_reply_path(self, context: MessageContext) -> ResponseInstruction {
+	pub fn respond_with_reply_path(
+		self, context: MessageContext, custom_data: Option<Vec<u8>>,
+	) -> ResponseInstruction {
 		ResponseInstruction {
 			destination: Destination::BlindedPath(self.reply_path),
-			context: Some(context),
+			reply_data: (Some(context), custom_data),
 		}
 	}
 }
@@ -440,7 +442,7 @@ pub struct ResponseInstruction {
 	/// [`Destination`] rather than an explicit [`BlindedMessagePath`] simplifies the logic in
 	/// [`OnionMessenger::send_onion_message_internal`] somewhat.
 	destination: Destination,
-	context: Option<MessageContext>,
+	reply_data: (Option<MessageContext>, Option<Vec<u8>>),
 }
 
 impl ResponseInstruction {
@@ -469,7 +471,7 @@ pub enum MessageSendInstructions {
 		destination: Destination,
 		/// The context to include in the reply path we'll give the recipient so they can respond
 		/// to us.
-		context: MessageContext,
+		reply_data: (MessageContext, Option<Vec<u8>>),
 	},
 	/// Indicates that a message should be sent without including a reply path, preventing the
 	/// recipient from responding.
@@ -886,7 +888,8 @@ pub trait CustomOnionMessageHandler {
 	///
 	/// The returned [`Self::CustomMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
 	fn handle_custom_message(
-		&self, message: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>,
+		&self, message: Self::CustomMessage, context: Option<Vec<u8>>,
+		custom_data: Option<Vec<u8>>, responder: Option<Responder>,
 	) -> Option<(Self::CustomMessage, ResponseInstruction)>;
 
 	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
@@ -1332,10 +1335,14 @@ where
 			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } => {
 				(destination, Some(reply_path))
 			},
-			MessageSendInstructions::WithReplyPath { destination, context }
+			MessageSendInstructions::WithReplyPath {
+				destination,
+				reply_data: (context, custom_data),
+			}
 			| MessageSendInstructions::ForReply {
-				instructions: ResponseInstruction { destination, context: Some(context) },
-			} => match self.create_blinded_path(context) {
+				instructions:
+					ResponseInstruction { destination, reply_data: (Some(context), custom_data) },
+			} => match self.create_blinded_path(context, custom_data) {
 				Ok(reply_path) => (destination, Some(reply_path)),
 				Err(err) => {
 					log_trace!(
@@ -1349,7 +1356,7 @@ where
 			},
 			MessageSendInstructions::WithoutReplyPath { destination }
 			| MessageSendInstructions::ForReply {
-				instructions: ResponseInstruction { destination, context: None },
+				instructions: ResponseInstruction { destination, reply_data: (None, _) },
 			} => (destination, None),
 		};
 
@@ -1407,7 +1414,7 @@ where
 	}
 
 	fn create_blinded_path(
-		&self, context: MessageContext,
+		&self, context: MessageContext, custom_data: Option<Vec<u8>>,
 	) -> Result<BlindedMessagePath, SendError> {
 		let recipient = self
 			.node_signer
@@ -1424,7 +1431,7 @@ where
 				.collect::<Vec<_>>()
 		};
 
-		let recipient_tlvs = ReceiveTlvs { context: Some(context), custom_data: None };
+		let recipient_tlvs = ReceiveTlvs { context: Some(context), custom_data };
 
 		self.message_router
 			.create_blinded_paths(recipient, recipient_tlvs, peers, secp_ctx)
@@ -1932,8 +1939,12 @@ where
 								return;
 							},
 						};
-						let response_instructions =
-							self.custom_handler.handle_custom_message(msg, context, responder);
+						let response_instructions = self.custom_handler.handle_custom_message(
+							msg,
+							context,
+							custom_data,
+							responder,
+						);
 						if let Some((msg, instructions)) = response_instructions {
 							let _ = self.handle_onion_message_response(msg, instructions);
 						}
