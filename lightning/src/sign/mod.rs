@@ -807,6 +807,9 @@ pub trait ChannelSigner {
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
+
+	/// Returns the parameters of this signer
+	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters>;
 }
 
 /// Specifies the recipient of an invoice.
@@ -1177,15 +1180,6 @@ impl InMemorySigner {
 		self.get_channel_parameters().map(|params| params.funding_outpoint.as_ref()).flatten()
 	}
 
-	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
-	/// building transactions.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
-		self.channel_parameters.as_ref()
-	}
-
 	/// Returns the channel type features of the channel parameters. Should be helpful for
 	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
 	///
@@ -1390,6 +1384,10 @@ impl ChannelSigner for InMemorySigner {
 		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
+	}
+
+	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
+		self.channel_parameters.as_ref()
 	}
 }
 
