@@ -772,7 +772,7 @@ impl OutboundPayments {
 
 	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
-		retry_strategy: Retry, route_params: RouteParameters, router: &R,
+		retry_strategy: Retry, route_params: RouteParameters, router: R,
 		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
@@ -809,7 +809,7 @@ impl OutboundPayments {
 
 	pub(super) fn send_spontaneous_payment<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
 		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
-		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: &R,
+		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP
@@ -834,7 +834,7 @@ impl OutboundPayments {
 	pub(super) fn send_payment_for_bolt12_invoice<
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
 	>(
-		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: R,
 		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
 		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
@@ -896,7 +896,7 @@ impl OutboundPayments {
 	>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
-		mut route_params: RouteParameters, retry_strategy: Retry, router: &R,
+		mut route_params: RouteParameters, retry_strategy: Retry, router: R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
@@ -936,8 +936,8 @@ impl OutboundPayments {
 		};
 		let route = match self.find_initial_route(
 			payment_id, payment_hash, &recipient_onion, keysend_preimage, invoice_request,
-			&mut route_params, router, &first_hops, &inflight_htlcs, node_signer, best_block_height,
-			logger,
+			&mut route_params, router.deref(), &first_hops, &inflight_htlcs, node_signer,
+			best_block_height, logger,
 		) {
 			Ok(route) => route,
 			Err(e) => {
@@ -1085,7 +1085,7 @@ impl OutboundPayments {
 	pub(super) fn send_payment_for_static_invoice<
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
 	>(
-		&self, payment_id: PaymentId, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
+		&self, payment_id: PaymentId, router: R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
 		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
@@ -1122,7 +1122,7 @@ impl OutboundPayments {
 	}
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
-		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		&self, router: R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 		send_payment_along_path: SP,
@@ -1156,7 +1156,7 @@ impl OutboundPayments {
 			}
 			core::mem::drop(outbounds);
 			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
-				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
+				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router.deref(), first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
 			} else { break }
 		}
 
@@ -1188,7 +1188,7 @@ impl OutboundPayments {
 	fn find_initial_route<R: Deref, NS: Deref, IH, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
-		route_params: &mut RouteParameters, router: &R, first_hops: &Vec<ChannelDetails>,
+		route_params: &mut RouteParameters, router: R, first_hops: &Vec<ChannelDetails>,
 		inflight_htlcs: &IH, node_signer: &NS, best_block_height: u32, logger: &L,
 	) -> Result<Route, RetryableSendFailure>
 	where
@@ -1242,7 +1242,7 @@ impl OutboundPayments {
 	fn send_payment_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, mut route_params: RouteParameters,
-		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
+		router: R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
 	) -> Result<(), RetryableSendFailure>
@@ -1255,8 +1255,8 @@ impl OutboundPayments {
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		let route = self.find_initial_route(
-			payment_id, payment_hash, &recipient_onion, keysend_preimage, None, &mut route_params, router,
-			&first_hops, &inflight_htlcs, node_signer, best_block_height, logger,
+			payment_id, payment_hash, &recipient_onion, keysend_preimage, None, &mut route_params,
+			router.deref(), &first_hops, &inflight_htlcs, node_signer, best_block_height, logger,
 		)?;
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
@@ -1281,7 +1281,7 @@ impl OutboundPayments {
 
 	fn find_route_and_send_payment<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
-		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
+		router: R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: &SP,
 	)
@@ -1436,7 +1436,7 @@ impl OutboundPayments {
 
 	fn handle_pay_route_err<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, err: PaymentSendFailure, payment_id: PaymentId, payment_hash: PaymentHash, route: Route,
-		mut route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
+		mut route_params: RouteParameters, router: R, first_hops: Vec<ChannelDetails>,
 		inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: &SP,
 	)
@@ -2491,7 +2491,7 @@ mod tests {
 				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
 				&&keys_manager, 0).unwrap();
 			outbound_payments.find_route_and_send_payment(
-				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &&router, vec![],
+				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 				&|_| Ok(()));
 			let events = pending_events.lock().unwrap();
@@ -2502,7 +2502,7 @@ mod tests {
 		} else {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
-				Retry::Attempts(0), expired_route_params, &&router, vec![], || InFlightHtlcs::new(),
+				Retry::Attempts(0), expired_route_params, &router, vec![], || InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events, |_| Ok(())).unwrap_err();
 			if let RetryableSendFailure::PaymentExpired = err { } else { panic!("Unexpected error"); }
 		}
@@ -2535,7 +2535,7 @@ mod tests {
 				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
 				&&keys_manager, 0).unwrap();
 			outbound_payments.find_route_and_send_payment(
-				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &&router, vec![],
+				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 				&|_| Ok(()));
 			let events = pending_events.lock().unwrap();
@@ -2544,7 +2544,7 @@ mod tests {
 		} else {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
-				Retry::Attempts(0), route_params, &&router, vec![], || InFlightHtlcs::new(),
+				Retry::Attempts(0), route_params, &router, vec![], || InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events, |_| Ok(())).unwrap_err();
 			if let RetryableSendFailure::RouteNotFound = err {
 			} else { panic!("Unexpected error"); }
@@ -2592,7 +2592,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		outbound_payments.send_payment(
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
-			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
+			Retry::Attempts(0), route_params.clone(), &router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 			|_| Err(APIError::ChannelUnavailable { err: "test".to_owned() })).unwrap();
 		let mut events = pending_events.lock().unwrap();
@@ -2610,7 +2610,7 @@ mod tests {
 		// Ensure that a MonitorUpdateInProgress "error" will not result in a PaymentPathFailed event.
 		outbound_payments.send_payment(
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
-			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
+			Retry::Attempts(0), route_params.clone(), &router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 			|_| Err(APIError::MonitorUpdateInProgress)).unwrap();
 		assert_eq!(pending_events.lock().unwrap().len(), 0);
@@ -2618,7 +2618,7 @@ mod tests {
 		// Ensure that any other error will result in a PaymentPathFailed event but no blamed scid.
 		outbound_payments.send_payment(
 			PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([1; 32]),
-			Retry::Attempts(0), route_params.clone(), &&router, vec![], || InFlightHtlcs::new(),
+			Retry::Attempts(0), route_params.clone(), &router, vec![], || InFlightHtlcs::new(),
 			&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
 			|_| Err(APIError::APIMisuseError { err: "test".to_owned() })).unwrap();
 		let events = pending_events.lock().unwrap();
@@ -2804,7 +2804,7 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				&invoice, payment_id, &router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
 				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
@@ -2866,7 +2866,7 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				&invoice, payment_id, &router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
 				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
@@ -2941,7 +2941,7 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				&invoice, payment_id, &router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
 				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
@@ -2959,7 +2959,7 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				&invoice, payment_id, &router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
 				&secp_ctx, 0, &&logger, &pending_events, |_| Ok(())
 			),
@@ -2970,7 +2970,7 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				&invoice, payment_id, &router, vec![], Bolt12InvoiceFeatures::empty(),
 				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
 				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),

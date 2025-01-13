@@ -4664,7 +4664,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, retry_strategy, route_params,
-				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				&*self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				&self.pending_events, |args| self.send_payment_along_path(args))
 	}
@@ -4741,7 +4741,7 @@ where
 		let features = self.bolt12_invoice_features();
 		self.pending_outbound_payments
 			.send_payment_for_bolt12_invoice(
-				invoice, payment_id, &self.router, self.list_usable_channels(), features,
+				invoice, payment_id, &*self.router, self.list_usable_channels(), features,
 				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
@@ -4816,7 +4816,7 @@ where
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
-				payment_id, &self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				payment_id, &*self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, &self, &self.secp_ctx, best_block_height,
 				&self.logger, &self.pending_events, |args| self.send_payment_along_path(args)
 			);
@@ -4892,7 +4892,7 @@ where
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, recipient_onion,
-			payment_id, retry_strategy, route_params, &self.router, self.list_usable_channels(),
+			payment_id, retry_strategy, route_params, &*self.router, self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),  &self.entropy_source, &self.node_signer, best_block_height,
 			&self.logger, &self.pending_events, |args| self.send_payment_along_path(args))
 	}
@@ -6266,7 +6266,7 @@ where
 		}
 
 		let best_block_height = self.best_block.read().unwrap().height;
-		self.pending_outbound_payments.check_retry_payments(&self.router, || self.list_usable_channels(),
+		self.pending_outbound_payments.check_retry_payments(&*self.router, || self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height,
 			&self.pending_events, &self.logger, |args| self.send_payment_along_path(args));
 
