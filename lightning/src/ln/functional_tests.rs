@@ -6223,6 +6223,7 @@ fn test_payment_route_reaching_same_channel_twice() {
 		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 	), false, APIError::InvalidRoute { ref err },
 	assert_eq!(err, &"Path went through the same channel twice"));
+	assert!(nodes[0].node.pending_outbound_payments.pending_outbound_payments.lock().unwrap().is_empty());
 }
 
 // BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.

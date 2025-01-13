@@ -2415,6 +2415,9 @@ where
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	#[cfg(test)]
+	pub(super) pending_outbound_payments: OutboundPayments,
+	#[cfg(not(test))]
 	pending_outbound_payments: OutboundPayments,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
@@ -14762,6 +14765,7 @@ mod tests {
 			},
 			_ => panic!("unexpected error")
 		}
+		assert!(nodes[0].node.pending_outbound_payments.pending_outbound_payments.lock().unwrap().is_empty());
 	}
 
 	#[test]

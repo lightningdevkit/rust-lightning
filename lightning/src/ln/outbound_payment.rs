@@ -1740,12 +1740,26 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
+		macro_rules! remove_session_privs {
+			() => {
+				if let Some(payment) = self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id) {
+					for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.into_iter()) {
+						let removed = payment.remove(&session_priv_bytes, Some(path));
+						debug_assert!(removed, "This can't happen as the payment has an entry for this path added by callers");
+					}
+				} else {
+					debug_assert!(false, "This can't happen as the payment was added by callers");
+				}
+			}
+		}
+
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over".to_owned()}));
 		}
 		if recipient_onion.payment_secret.is_none() && route.paths.len() > 1
 			&& !route.paths.iter().any(|p| p.blinded_tail.is_some())
 		{
+			remove_session_privs!();
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_owned()}));
 		}
 		let mut total_value = 0;
@@ -1775,6 +1789,7 @@ impl OutboundPayments {
 			path_errs.push(Ok(()));
 		}
 		if path_errs.iter().any(|e| e.is_err()) {
+			remove_session_privs!();
 			return Err(PaymentSendFailure::PathParameterError(path_errs));
 		}
 		if let Some(amt_msat) = recv_value_msat {
@@ -1880,9 +1895,15 @@ impl OutboundPayments {
 	// If we failed to send any paths, remove the new PaymentId from the `pending_outbound_payments`
 	// map as the payment is free to be resent.
 	fn remove_outbound_if_all_failed(&self, payment_id: PaymentId, err: &PaymentSendFailure) {
-		if let &PaymentSendFailure::AllFailedResendSafe(_) = err {
-			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
-			debug_assert!(removed, "We should always have a pending payment to remove here");
+		match err {
+			PaymentSendFailure::AllFailedResendSafe(_)
+				| PaymentSendFailure::ParameterError(_)
+				| PaymentSendFailure::PathParameterError(_) =>
+			{
+				let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
+				debug_assert!(removed, "We should always have a pending payment to remove here");
+			},
+			_ => {}
 		}
 	}
 
