@@ -1,8 +1,0 @@
-# Backwards Compatibility
- * The `ChannelManager` deserialization semantics no longer require that
-   `ChannelMonitor`s be re-persisted after `(BlockHash, ChannelManager)::read`
-   is called prior to normal node operation. This applies to upgraded nodes
-   only *after* a startup with the old semantics completes at least once. IOW,
-   you must deserialize the `ChannelManager` with upgraded LDK, persist the
-   `ChannelMonitor`s then continue to normal startup once, and thereafter you
-   may skip the `ChannelMonitor` persistence step.

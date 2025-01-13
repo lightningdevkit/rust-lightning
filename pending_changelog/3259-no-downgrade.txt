@@ -1,4 +1,0 @@
-# Backwards Compatibility
- * Downgrading after using `ChannelManager`'s
-   `unsafe_manual_funding_transaction_generated` may cause deserialization of
-   `ChannelManager` to fail with an `Err` (#3259).

@@ -1,3 +1,177 @@
+# 0.1 - Jan XXX, 2025 - XXX
+
+## API Updates
+ * The `lightning-liquidity` crate has been moved into the `rust-lightning`
+   git tree, enabling support for both sides of the LSPS channel open
+   negotiation protocols (#3436).
+ * Since its last alpha release, `lightning-liquidity` has also gained support
+   for acting as an LSPS1 client (#3436).
+ * This release includes support for BIP 353 Human Readable Names resolution.
+   With the `dnssec` feature enabled, simply call `ChannelManager`'s
+   `pay_for_offer_from_human_readable_name` with a list of lightning nodes that
+   have the `dns_resolver` feature flag set (e.g. those running LDK with the
+   new `lightning_dns_resolver::OMDomainResolver` set up to resolve DNS queries
+   for others) and a Human Readable Name (#3346, #3179, #3283).
+ * Asynchronous `ChannelMonitorUpdate` persistence (i.e. the use of
+   `ChannelMonitorUpdateStatus::InProgress`) is now considered beta-quality.
+   There are no known issues with it, though the likelihood of unknown issues
+   is high (#3414).
+ * `ChannelManager`'s `send_payment_with_route` and `send_spontaneous_payment`
+   were removed. Use `send_payment` and `send_spontaneous_payment_with_retry`
+   (now renamed `send_spontaneous_payment`) instead (#3430).
+ * `ChannelMonitor`s no longer need to be re-persisted after deserializing the
+   `ChannelManager` before beginning normal operation. As such,
+   `ChannelManagerReadArgs::channel_monitors` no longer requires mutable
+   references (#3322). See the Backwards Compatibility section for more info.
+ * Additional information is now stored in `ChannelMonitorUpdate`s which may
+   increase the average size of `ChannelMonitorUpdate`s when claiming inbound
+   payments substantially. The expected maximum size of `ChannelMonitorUpdate`s
+   shouldn't change materially (#3322).
+ * Redundant `Event::PaymentClaimed`s will be generated more frequently on
+   startup compared to previous versions.
+   `Event::PaymentClaim{able,ed}::payment_id` has been added to allow for more
+   robust handling of redundant events on payments with duplicate
+   `PaymentHash`es (#3303, #3322).
+ * `ChannelMonitorUpdate::update_id`s no longer have a magic value (of
+   `u64::MAX`) for updates after a channel has been closed. They are now
+   always monotonically increasing (#3355).
+ * The MSRV of `lightning-transaction-sync` has been increased to rustc 1.75 due
+   to its HTTP client dependencies (#3528).
+ * The default `ProbabilisticScoringFeeParameters` values now recommend specific
+   ratios between different penalties, and default penalties now allow for
+   higher fees in order to reduce payment latency (#3495).
+ * On-chain state resolution now more aggressively batches claims into single
+   transactions, reducing on-chain fee costs when resolving multiple HTLCs for a
+   single channel force-closure. This also reduces the on-chain reserve
+   requirements for nodes using anchor channels (#3340).
+ * A `MigratableKVStore` trait was added (and implemented for
+   `FilesystemStore`), enabling easy migration between `KVStore`s (#3481).
+ * `InvoiceRequest::amount_msats` now returns the `offer`-implied amount if a
+   Bitcoin-denominated amount was set in the `offer` and no amount was set
+   directly in the `invoice_request` (#3535).
+ * `Event::OpenChannelRequest::push_msat` has been replaced with an enum in
+   preparation for the dual-funding protocol coming in a future release (#3137).
+ * `GossipVerifier` now requires a `P2PGossipSync` which holds a reference to
+   the `GossipVerifier` via an `Arc` (#3432).
+ * The `max_level_*` features were removed as the performance gain compared to
+   doing the limiting at runtime was negligible (#3431).
+ * `ChannelManager::create_bolt11_invoice` was added, deprecating the
+   `lightning::ln::invoice_utils` module (#3389).
+ * The `bech32` dependency has been upgraded to 0.11 across crates (#3270).
+ * Support for creating BOLT 12 `invoice_request`s with a static signing key
+   rather than an ephemeral one has been removed (#3264).
+ * The `Router` trait no longer extends the `MessageRouter` trait, creating an
+   extra argument to `ChannelManager` construction (#3326).
+ * The deprecated `AvailableBalances::balance_msat` has been removed in favor of
+   `ChannelMonitor::get_claimable_balances` (#3243).
+ * Deprecated re-exports of `Payment{Hash,Preimage,Secret}` and `features` were
+   removed (#3359).
+ * `bolt11_payment::*_from_zero_amount_invoice` methods were renamed
+   `*_from_variable_amount_invoice` (#3397)
+ * Offer `signing_pubkey` (and related struct names) have been renamed
+   `issuer_signing_pubkey` (#3218).
+ * `Event::PaymentForwarded::{prev,next}_node_id` were added (#3458).
+ * `Event::ChannelClosed::last_local_balance_msat` was added (#3235).
+ * `RoutingMessageHandler::handle_*` now all have a `node_id` argument (#3291).
+ * `lightning::util::persist::MonitorName` has been exposed (#3376).
+ * `ProbabilisticScorer::live_estimated_payment_success_probability` was added
+   (#3420)
+ * `EcdsaChannelSigner::sign_splicing_funding_input` was added to support an
+   eventual splicing feature (#3316).
+ * `{Payment,Offer}Id` now support lowercase-hex formatting (#3377).
+
+## Bug Fixes
+ * Fixed a rare case where a BOLT 12 payment may be made duplicatively if the
+   node crashes while processing a BOLT 12 `invoice` message (#3313).
+ * Fixed a bug where a malicious sender could cause a payment `Event` to be
+   generated with an `OfferId` using a payment with a lower amount than the
+   corresponding BOLT 12 offer would have required. The amount in the
+   `Event::Payment{Claimable,Claimed}` were still correct (#3435).
+ * The `ProbabilisticScorer` model and associated default scoring parameters
+   were tweaked to be more predictive of real-world results (#3368, #3495).
+ * `ProbabilisticScoringFeeParameters::base_penalty_amount_multiplier_msat` no
+   longer includes any pending HTLCs we already have through channels in the
+   graph, avoiding over-penalizing them in comparison to other channels (#3356).
+ * A `ChannelMonitor` will no longer be archived if a `MonitorEvent` containing
+   a preimage for another channel is pending. This fixes an issue where a
+   payment preimage needed for another channel claim is lost if events go
+   un-processed for 4038 blocks (#3450).
+ * `std` builds no longer send the full gossip state to peers that do not
+   request it (#3390).
+ * `lightning-block-sync` listeners now receive `block_connected` calls, rather
+   than always receiving `filtered_block_connected` calls (#3354).
+ * Fixed a bug where some transactions were broadcasted one block before their
+   locktime made them candidates for inclusion in the mempool (though they would
+   be automatically re-broadcasted later, #3453).
+ * `ChainMonitor` now persists `ChannelMonitor`s when their `Balance` set first
+   goes empty, making `ChannelMonitor` pruning more reliable on nodes that are
+   only online briefly (e.g. mobile nodes, #3442).
+ * BOLT 12 invoice requests now better handle intermittent internet connectivity
+   (e.g. on mobile devices with app interruptions, #3010).
+ * Broadcast-gossip `MessageSendEvent`s from the `ChannelMessageHandler` are now
+   delivered to peers even if the peer is behind in processing relayed gossip.
+   This ensures our own gossip propagates well even if we have very limited
+   upload bandwidth (#3142).
+ * Fixed a bug where calling `OutputSweeper::transactions_confirmed` with
+   transactions from anything but the latest block may have triggered a spurious
+   assertion in debug mode (#3524).
+
+## Performance Improvements
+ * LDK now verifies `channel_update` gossip messages without holding a lock,
+   allowing additional parallelism during gossip sync (#3310).
+ * LDK now checks if it already has certain gossip messages before verifying the
+   message signatures, reducing CPU usage during gossip sync after the first
+   startup (#3305).
+
+## Node Compatibility
+ * LDK now handles fields in the experimental range of BOLT 12 messages (#3237).
+
+## Backwards Compatibility
+ * Nodes with pending forwarded HTLCs or unclaimed payments cannot be
+   upgraded directly from 0.0.123 or earlier to 0.1. Instead, they must
+   first either resolve all pending HTLCs (including those pending
+   resolution on-chain), or run 0.0.124 or 0.0.125 and resolve any HTLCs that
+   were originally forwarded or received running 0.0.123 or earlier (#3355).
+ * `ChannelMonitor`s not being re-persisted after deserializing the
+   `ChannelManager` only applies to upgraded nodes *after* a startup with the
+   old semantics completes at least once. In other words, you must deserialize
+   the `ChannelManager` with an upgraded LDK, persist the `ChannelMonitor`s as
+   you would on pre-0.1 versions of LDK, then continue to normal startup once,
+   and for startups thereafter you can take advantage of the new semantics
+   avoiding redundant persistence on startup (#3322).
+ * Pending inbound payments paying a BOLT 12 `invoice` issued prior to upgrade
+   to LDK 0.1 will fail. Issued BOLT 12 `offer`s remain payable (#3435).
+ * `UserConfig::accept_mpp_keysend` was removed, thus the presence of pending
+   inbound MPP keysend payments will prevent downgrade to LDK 0.0.115 and
+   earlier (#3439).
+ * Inbound payments initialized using the removed
+   `ChannelManager::create_inbound_payment{,_for_hash}_legacy` API will no
+   longer be accepted by LDK 0.1 (#3383).
+ * Downgrading to prior versions of LDK after using `ChannelManager`'s
+   `unsafe_manual_funding_transaction_generated` may cause `ChannelManager`
+   deserialization to fail (#3259).
+ * `ChannelDetails` serialized with LDK 0.1+ read with versions prior to 0.1
+   will have `balance_msat` equal to `next_outbound_htlc_limit_msat` (#3243).
+
+## Security
+0.1 fixes a funds-theft vulnerability when paying BOLT 12 offers as well as a
+funds-lockup denial-of-service issue for anchor channels.
+ * When paying a BOLT 12 offer, if the recipient responds to our
+   `invoice_request` with an `invoice` which had an amount different from the
+   amount we intended to pay (either from the `offer` or the `amount_msats`
+   passed to `ChannelManager::pay_for_offer`), LDK would pay the amount from the
+   `invoice`. As a result, a malicious recipient could cause us to overpay the
+   amount we intended to pay (#3535).
+ * Fixed a bug where a counterparty can cause funds of ours to be locked up
+   by broadcasting a revoked commitment transaction and following HTLC
+   transactions in specific formats when using an anchor channel. The funds can
+   be recovered by upgrading to 0.1 and replaying the counterparty's broadcasted
+   transactions (using `Confirm::transactions_confirmed`) (#3537). Thanks to
+   Matt Morehouse for reporting and fixing this issue.
+ * Various denial-of-service issues in the formerly-alpha `lightning-liquidity`
+   crate have been addressed (#3436, #3493).
+
+
 # 0.0.125 - Oct 14, 2024 - "Delayed Beta Testing"
 
 ## Bug Fixes
