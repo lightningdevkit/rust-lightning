@@ -260,6 +260,19 @@ pub struct ReceiveTlvs {
 	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
 	pub context: Option<MessageContext>,
+
+	/// Custom data set by the user. If `custom_data` is `Some`, it will be provided to the message
+	/// recipient when the blinded path is used.
+	///
+	/// This field allows encoding custom data intended to be provided back when the blinded path is used.
+	///
+	/// ## Note on Forward Compatibility:
+	/// Users can encode any kind of data into the `Vec<u8>` bytes here. However, they should ensure
+	/// that the data is structured in a forward-compatible manner. This is especially important as
+	/// `ReceiveTlvs` created in one version of the software may still appear in messages received
+	/// shortly after a software upgrade. Proper forward compatibility helps prevent data loss or
+	/// misinterpretation in future versions.
+	pub custom_data: Option<Vec<u8>>,
 }
 
 impl Writeable for ForwardTlvs {
@@ -283,6 +296,7 @@ impl Writeable for ReceiveTlvs {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
 			(65537, self.context, option),
+			(65539, self.custom_data, option)
 		});
 		Ok(())
 	}

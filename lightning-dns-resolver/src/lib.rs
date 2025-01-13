@@ -332,7 +332,8 @@ mod test {
 
 		let (msg, context) =
 			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
-		let query_context = ReceiveTlvs { context: Some(MessageContext::DNSResolver(context)) };
+		let query_context =
+			ReceiveTlvs { context: Some(MessageContext::DNSResolver(context)), custom_data: None };
 		let reply_path =
 			BlindedMessagePath::one_hop(payer_id, query_context, &*payer_keys, &secp_ctx).unwrap();
 		payer.pending_messages.lock().unwrap().push((
