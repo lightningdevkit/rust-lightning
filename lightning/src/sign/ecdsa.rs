@@ -4,7 +4,7 @@ use bitcoin::transaction::Transaction;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
 use crate::ln::chan_utils::{ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment};
 use crate::ln::msgs::UnsignedChannelAnnouncement;
@@ -54,36 +54,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
-	/// Create a signature for the given input in a transaction spending a commitment transaction
-	/// HTLC output when our counterparty broadcasts an old state.
-	///
-	/// A justice transaction may claim multiple outputs at the same time if timelocks are
-	/// similar, but only a signature for the input at index `input` should be signed for here.
-	/// It may be called multiple times for same output(s) if a fee-bump is needed with regards
-	/// to an upcoming timelock expiration.
-	///
-	/// `amount` is the value of the output spent by this input, committed to in the BIP 143
-	/// signature.
-	///
-	/// `per_commitment_key` is revocation secret which was provided by our counterparty when they
-	/// revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
-	/// not allow the spending of any funds by itself (you need our holder revocation_secret to do
-	/// so).
-	///
-	/// `htlc` holds HTLC elements (hash, timelock), thus changing the format of the witness script
-	/// (which is committed to in the BIP 143 signatures).
-	///
-	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
-	/// signature and should be retried later. Once the signer is ready to provide a signature after
-	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
-	///
-	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
-	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
 	/// Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
 	/// transaction, either offered or received.
 	///
