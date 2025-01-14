@@ -49,6 +49,7 @@ where
 	/// specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0#lsps-specification-support-query)
 	/// for more information.
 	pub fn list_protocols(&self, counterparty_node_id: &PublicKey) {
+		let _msg_queue_notifier = self.pending_messages.notifier();
 		let msg = LSPS0Message::Request(
 			utils::generate_request_id(&self.entropy_source),
 			LSPS0Request::ListProtocols(ListProtocolsRequest {}),
@@ -60,6 +61,8 @@ where
 	fn handle_response(
 		&self, response: LSPS0Response, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		match response {
 			LSPS0Response::ListProtocols(ListProtocolsResponse { protocols }) => {
 				self.pending_events.enqueue(Event::LSPS0Client(

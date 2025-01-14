@@ -84,6 +84,7 @@ where
 	///
 	/// [`SupportedOptionsReady`]: crate::lsps1::event::LSPS1ClientEvent::SupportedOptionsReady
 	pub fn request_supported_options(&self, counterparty_node_id: PublicKey) -> RequestId {
+		let _msg_queue_notifier = self.pending_messages.notifier();
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 		{
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
@@ -103,8 +104,9 @@ where
 	fn handle_get_info_response(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
 	) -> Result<(), LightningError> {
-		let outer_state_lock = self.per_peer_state.write().unwrap();
+		let _event_queue_notifier = self.pending_events.notifier();
 
+		let outer_state_lock = self.per_peer_state.write().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
@@ -141,6 +143,8 @@ where
 	fn handle_get_info_error(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -191,25 +195,19 @@ where
 		&self, counterparty_node_id: &PublicKey, order: OrderParameters,
 		refund_onchain_address: Option<Address>,
 	) -> RequestId {
-		let (request_id, request_msg) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let _msg_queue_notifier = self.pending_messages.notifier();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = outer_state_lock
+			.entry(*counterparty_node_id)
+			.or_insert(Mutex::new(PeerState::default()));
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			let request =
-				LSPS1Request::CreateOrder(CreateOrderRequest { order, refund_onchain_address });
-			let msg = LSPS1Message::Request(request_id.clone(), request).into();
-			peer_state_lock.pending_create_order_requests.insert(request_id.clone());
-
-			(request_id, Some(msg))
-		};
-
-		if let Some(msg) = request_msg {
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
-		}
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
+		let request =
+			LSPS1Request::CreateOrder(CreateOrderRequest { order, refund_onchain_address });
+		let msg = LSPS1Message::Request(request_id.clone(), request).into();
+		self.pending_messages.enqueue(&counterparty_node_id, msg);
+		peer_state_lock.pending_create_order_requests.insert(request_id.clone());
 
 		request_id
 	}
@@ -218,6 +216,8 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
 		response: CreateOrderResponse,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -259,6 +259,8 @@ where
 	fn handle_create_order_error(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -310,25 +312,19 @@ where
 	pub fn check_order_status(
 		&self, counterparty_node_id: &PublicKey, order_id: OrderId,
 	) -> RequestId {
-		let (request_id, request_msg) = {
-			let mut outer_state_lock = self.per_peer_state.write().unwrap();
-			let inner_state_lock = outer_state_lock
-				.entry(*counterparty_node_id)
-				.or_insert(Mutex::new(PeerState::default()));
-			let mut peer_state_lock = inner_state_lock.lock().unwrap();
+		let _msg_queue_notifier = self.pending_messages.notifier();
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		let inner_state_lock = outer_state_lock
+			.entry(*counterparty_node_id)
+			.or_insert(Mutex::new(PeerState::default()));
+		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
-			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			peer_state_lock.pending_get_order_requests.insert(request_id.clone());
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
+		peer_state_lock.pending_get_order_requests.insert(request_id.clone());
 
-			let request = LSPS1Request::GetOrder(GetOrderRequest { order_id: order_id.clone() });
-			let msg = LSPS1Message::Request(request_id.clone(), request).into();
-
-			(request_id, Some(msg))
-		};
-
-		if let Some(msg) = request_msg {
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
-		}
+		let request = LSPS1Request::GetOrder(GetOrderRequest { order_id: order_id.clone() });
+		let msg = LSPS1Message::Request(request_id.clone(), request).into();
+		self.pending_messages.enqueue(&counterparty_node_id, msg);
 
 		request_id
 	}
@@ -337,6 +333,8 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
 		response: CreateOrderResponse,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -378,6 +376,8 @@ where
 	fn handle_get_order_error(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {

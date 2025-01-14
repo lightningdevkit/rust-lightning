@@ -111,6 +111,7 @@ where
 	pub fn request_opening_params(
 		&self, counterparty_node_id: PublicKey, token: Option<String>,
 	) -> RequestId {
+		let _msg_queue_notifier = self.pending_messages.notifier();
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		{
@@ -151,6 +152,7 @@ where
 		&self, counterparty_node_id: PublicKey, payment_size_msat: Option<u64>,
 		opening_fee_params: OpeningFeeParams,
 	) -> Result<RequestId, APIError> {
+		let _msg_queue_notifier = self.pending_messages.notifier();
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		{
@@ -183,6 +185,8 @@ where
 	fn handle_get_info_response(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -249,6 +253,8 @@ where
 	fn handle_buy_response(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: BuyResponse,
 	) -> Result<(), LightningError> {
+		let _event_queue_notifier = self.pending_events.notifier();
+
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
