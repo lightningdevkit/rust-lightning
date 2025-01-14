@@ -21,7 +21,7 @@ use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, Signe
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
-use crate::ln::channel::{CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, ChannelPhase};
+use crate::ln::channel::{CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, Channel};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
@@ -216,7 +216,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 
 		let channel_phase = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
 		match channel_phase {
-			ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) => {
+			Channel::UnfundedInboundV1(_) | Channel::UnfundedOutboundV1(_) => {
 				let chan_context = channel_phase.context_mut();
 				chan_context.holder_selected_channel_reserve_satoshis = 0;
 				chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
@@ -734,9 +734,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let (local_revocation_basepoint, local_htlc_basepoint, local_funding) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let local_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let local_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = local_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
@@ -745,9 +743,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let remote_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
@@ -762,9 +758,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let res = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
@@ -1470,9 +1464,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point, local_funding) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let local_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let local_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = local_chan.get_signer();
 		// Make the signer believe we validated another commitment, so we can release the secret
 		chan_signer.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
@@ -1486,9 +1478,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let remote_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
@@ -1517,9 +1507,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let res = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap();
+		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
@@ -7786,9 +7774,8 @@ fn test_counterparty_raa_skip_no_crash() {
 	{
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let mut guard = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let keys = guard.channel_by_id.get_mut(&channel_id).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
-		).flatten().unwrap().get_signer();
+		let keys = guard.channel_by_id.get(&channel_id).and_then(Channel::as_funded).unwrap()
+			.get_signer();
 
 		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -8523,7 +8510,7 @@ fn test_update_err_monitor_lockdown() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2) {
+		if let Some(channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2).as_funded_mut() {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 				assert_eq!(watchtower.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::InProgress);
 				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
@@ -8625,7 +8612,7 @@ fn test_concurrent_monitor_claim() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		if let ChannelPhase::Funded(ref mut channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2) {
+		if let Some(channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2).as_funded_mut() {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 				// Watchtower Alice should already have seen the block and reject the update
 				assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::InProgress);
@@ -9234,11 +9221,11 @@ fn test_duplicate_chan_id() {
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
 		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.common_fields.temporary_channel_id).unwrap() {
-			ChannelPhase::UnfundedOutboundV1(mut chan) => {
+			Channel::UnfundedOutboundV1(mut chan) => {
 				let logger = test_utils::TestLogger::new();
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 			},
-			_ => panic!("Unexpected ChannelPhase variant"),
+			_ => panic!("Unexpected Channel variant"),
 		}.unwrap()
 	};
 	check_added_monitors!(nodes[0], 0);
@@ -9940,10 +9927,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		match get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id) {
-			ChannelPhase::UnfundedOutboundV1(chan) => {
+			Channel::UnfundedOutboundV1(chan) => {
 				chan.context.holder_dust_limit_satoshis = 546;
 			},
-			_ => panic!("Unexpected ChannelPhase variant"),
+			_ => panic!("Unexpected Channel variant"),
 		}
 	}
 
