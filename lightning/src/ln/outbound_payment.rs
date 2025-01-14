@@ -801,23 +801,6 @@ impl OutboundPayments {
 			best_block_height, logger, pending_events, &send_payment_along_path)
 	}
 
-	#[cfg(test)]
-	pub(super) fn send_payment_with_route<ES: Deref, NS: Deref, F>(
-		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		payment_id: PaymentId, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
-		send_payment_along_path: F
-	) -> Result<(), PaymentSendFailure>
-	where
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		F: Fn(SendAlongPathArgs) -> Result<(), APIError>
-	{
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, recipient_onion.clone(), payment_id, None, route, None, None, entropy_source, best_block_height)?;
-		self.pay_route_internal(route, payment_hash, &recipient_onion, None, None, payment_id, None,
-			&onion_session_privs, node_signer, best_block_height, &send_payment_along_path)
-			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
-	}
-
 	pub(super) fn send_spontaneous_payment<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
 		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, retry_strategy: Retry, route_params: RouteParameters, router: &R,
