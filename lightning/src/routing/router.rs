@@ -25,6 +25,7 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
+use crate::sync::Mutex;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
 use crate::util::logger::{Level, Logger};
 use crate::crypto::chacha20::ChaCha20;
@@ -182,6 +183,53 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 				}
 			},
 		}
+	}
+}
+
+/// A wrapper around a `Router` that can cache routes intended to be used with specific
+/// `PaymentId`s. Useful for `ChannelManager::send_payment_with_route` to support sending to
+/// specific routes without requiring a custom `Router` implementation to be used.
+pub(crate) struct CachingRouter<R: Deref> where R::Target: Router {
+	pub(crate) route_cache: Mutex<HashMap<PaymentId, Route>>,
+	router: R,
+}
+
+impl<R: Deref> CachingRouter<R> where R::Target: Router {
+	pub(crate) fn new(router: R) -> Self {
+		Self { route_cache: Mutex::new(new_hash_map()), router }
+	}
+}
+
+impl<R: Deref> Router for CachingRouter<R> where R::Target: Router {
+	fn find_route(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError> {
+		self.router.find_route(payer, route_params, first_hops, inflight_htlcs)
+	}
+
+	fn find_route_with_id(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+		payment_hash: PaymentHash, payment_id: PaymentId
+	) -> Result<Route, LightningError> {
+		let mut cache = self.route_cache.lock().unwrap();
+		if let Some(route) = cache.remove(&payment_id) {
+			return Ok(route)
+		}
+		core::mem::drop(cache);
+		self.router.find_route_with_id(
+			payer, route_params, first_hops, inflight_htlcs, payment_hash, payment_id
+		)
+	}
+
+	fn create_blinded_payment_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	> (
+		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
+		amount_msats: u64, secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		self.router.create_blinded_payment_paths(recipient, first_hops, tlvs, amount_msats, secp_ctx)
 	}
 }
 

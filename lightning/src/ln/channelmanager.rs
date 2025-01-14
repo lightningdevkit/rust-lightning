@@ -55,9 +55,7 @@ use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
-use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, Router};
-#[cfg(test)]
-use crate::routing::router::Route;
+use crate::routing::router::{BlindedTail, CachingRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -2390,10 +2388,7 @@ where
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,
-	#[cfg(fuzzing)]
-	pub router: R,
-	#[cfg(not(fuzzing))]
-	router: R,
+	router: CachingRouter<R>,
 	message_router: MR,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
@@ -3503,7 +3498,7 @@ where
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
 			chain_monitor,
 			tx_broadcaster,
-			router,
+			router: CachingRouter::new(router),
 			message_router,
 
 			best_block: RwLock::new(params.best_block),
@@ -4606,21 +4601,21 @@ where
 		}
 	}
 
-	// Deprecated send method, for testing use [`Self::send_payment`] and
-	// [`TestRouter::expect_find_route`] instead.
-	//
-	// [`TestRouter::expect_find_route`]: crate::util::test_utils::TestRouter::expect_find_route
-	#[cfg(test)]
-	pub(crate) fn send_payment_with_route(
+	/// Sends a payment along a given route. See [`Self::send_payment`] for more info.
+	/// [`Route::route_params`] is required to be `Some`.
+	pub fn send_payment_with_route(
 		&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId
-	) -> Result<(), PaymentSendFailure> {
+	) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let route_params = route.route_params.clone().ok_or(RetryableSendFailure::RouteNotFound)?;
+		self.router.route_cache.lock().unwrap().insert(payment_id, route);
 		self.pending_outbound_payments
-			.send_payment_with_route(&route, payment_hash, recipient_onion, payment_id,
-				&self.entropy_source, &self.node_signer, best_block_height,
-				|args| self.send_payment_along_path(args))
+			.send_payment(payment_hash, recipient_onion, payment_id, Retry::Attempts(0),
+				route_params, &self.router, self.list_usable_channels(), ||
+				self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height,
+				&self.logger, &self.pending_events, |args| self.send_payment_along_path(args))
 	}
 
 	/// Sends a payment to the route found using the provided [`RouteParameters`], retrying failed
@@ -4649,7 +4644,8 @@ where
 	/// [`ChannelManager::list_recent_payments`] for more information.
 	///
 	/// Routes are automatically found using the [`Router] provided on startup. To fix a route for a
-	/// particular payment, match the [`PaymentId`] passed to [`Router::find_route_with_id`].
+	/// particular payment, use [`Self::send_payment_with_route`] or match the [`PaymentId`] passed to
+	/// [`Router::find_route_with_id`].
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
@@ -4664,7 +4660,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, retry_strategy, route_params,
-				&*self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				&self.pending_events, |args| self.send_payment_along_path(args))
 	}
@@ -4741,7 +4737,7 @@ where
 		let features = self.bolt12_invoice_features();
 		self.pending_outbound_payments
 			.send_payment_for_bolt12_invoice(
-				invoice, payment_id, &*self.router, self.list_usable_channels(), features,
+				invoice, payment_id, &self.router, self.list_usable_channels(), features,
 				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
@@ -4816,7 +4812,7 @@ where
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
-				payment_id, &*self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				payment_id, &self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, &self, &self.secp_ctx, best_block_height,
 				&self.logger, &self.pending_events, |args| self.send_payment_along_path(args)
 			);
@@ -4892,7 +4888,7 @@ where
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, recipient_onion,
-			payment_id, retry_strategy, route_params, &*self.router, self.list_usable_channels(),
+			payment_id, retry_strategy, route_params, &self.router, self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),  &self.entropy_source, &self.node_signer, best_block_height,
 			&self.logger, &self.pending_events, |args| self.send_payment_along_path(args))
 	}
@@ -6266,7 +6262,7 @@ where
 		}
 
 		let best_block_height = self.best_block.read().unwrap().height;
-		self.pending_outbound_payments.check_retry_payments(&*self.router, || self.list_usable_channels(),
+		self.pending_outbound_payments.check_retry_payments(&self.router, || self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height,
 			&self.pending_events, &self.logger, |args| self.send_payment_along_path(args));
 
@@ -14084,7 +14080,7 @@ where
 			fee_estimator: bounded_fee_estimator,
 			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
-			router: args.router,
+			router: CachingRouter::new(args.router),
 			message_router: args.message_router,
 
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
@@ -14331,7 +14327,7 @@ mod tests {
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
+	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
@@ -14757,14 +14753,17 @@ mod tests {
 		route.paths[1].hops[0].short_channel_id = chan_2_id;
 		route.paths[1].hops[1].short_channel_id = chan_4_id;
 
-		match nodes[0].node.send_payment_with_route(route, payment_hash,
-			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0))
-		.unwrap_err() {
-			PaymentSendFailure::ParameterError(APIError::APIMisuseError { ref err }) => {
-				assert!(regex::Regex::new(r"Payment secret is required for multi-path payments").unwrap().is_match(err))
-			},
-			_ => panic!("unexpected error")
+		nodes[0].node.send_payment_with_route(route, payment_hash,
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { reason, .. } => {
+				assert_eq!(reason.unwrap(), crate::events::PaymentFailureReason::UnexpectedError);
+			}
+			_ => panic!()
 		}
+		nodes[0].logger.assert_log_contains("lightning::ln::outbound_payment", "Payment secret is required for multi-path payments", 2);
 		assert!(nodes[0].node.pending_outbound_payments.pending_outbound_payments.lock().unwrap().is_empty());
 	}
 

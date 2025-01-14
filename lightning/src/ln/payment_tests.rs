@@ -16,7 +16,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATE
 use crate::sign::EntropySource;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -599,7 +599,7 @@ fn no_pending_leak_on_initial_send_failure() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 		), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Peer for first hop currently disconnected"));
@@ -946,7 +946,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// confirming, we will fail as it's considered still-pending...
 	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 1_000 } else { 1_000_000 });
 	match nodes[0].node.send_payment_with_route(new_route.clone(), payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
-		Err(PaymentSendFailure::DuplicatePayment) => {},
+		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -985,7 +985,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
 	match nodes[0].node.send_payment_with_route(new_route.clone(), payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
-		Err(PaymentSendFailure::DuplicatePayment) => {},
+		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1004,7 +1004,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	match nodes[0].node.send_payment_with_route(new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
-		Err(PaymentSendFailure::DuplicatePayment) => {},
+		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1548,7 +1548,7 @@ fn claimed_send_payment_idempotent() {
 			let send_result = nodes[0].node.send_payment_with_route(route.clone(), second_payment_hash,
 				RecipientOnionFields::secret_only(second_payment_secret), payment_id);
 			match send_result {
-				Err(PaymentSendFailure::DuplicatePayment) => {},
+				Err(RetryableSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 
@@ -1627,7 +1627,7 @@ fn abandoned_send_payment_idempotent() {
 			let send_result = nodes[0].node.send_payment_with_route(route.clone(), second_payment_hash,
 				RecipientOnionFields::secret_only(second_payment_secret), payment_id);
 			match send_result {
-				Err(PaymentSendFailure::DuplicatePayment) => {},
+				Err(RetryableSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 
