@@ -134,13 +134,16 @@ pub(crate) enum PendingOutboundPayment {
 	},
 }
 
+#[derive(Clone)]
 pub(crate) struct RetryableInvoiceRequest {
 	pub(crate) invoice_request: InvoiceRequest,
 	pub(crate) nonce: Nonce,
+	pub(super) needs_retry: bool,
 }
 
 impl_writeable_tlv_based!(RetryableInvoiceRequest, {
 	(0, invoice_request, required),
+	(1, needs_retry, (default_value, true)),
 	(2, nonce, required),
 });
 
@@ -760,7 +763,12 @@ pub(super) struct OutboundPayments {
 impl OutboundPayments {
 	pub(super) fn new(pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>) -> Self {
 		let has_invoice_requests = pending_outbound_payments.values().any(|payment| {
-			matches!(payment, PendingOutboundPayment::AwaitingInvoice { retryable_invoice_request: Some(_), .. })
+			matches!(
+				payment,
+				PendingOutboundPayment::AwaitingInvoice {
+					retryable_invoice_request: Some(invreq), ..
+				} if invreq.needs_retry
+			)
 		});
 
 		Self {
@@ -1003,22 +1011,21 @@ impl OutboundPayments {
 	#[cfg(async_payments)]
 	pub(super) fn static_invoice_received<ES: Deref>(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		best_block_height: u32, entropy_source: ES,
+		best_block_height: u32, duration_since_epoch: Duration, entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
 	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
-				$payment.get_mut().mark_abandoned($reason);
-				if let PendingOutboundPayment::Abandoned { reason, .. } = $payment.get() {
-					if $payment.get().remaining_parts() == 0 {
-						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
-							payment_id,
-							payment_hash: None,
-							reason: *reason,
-						}, None));
-						$payment.remove();
-					}
-				}
+				assert!(
+					matches!($payment.get(), PendingOutboundPayment::AwaitingInvoice { .. }),
+					"Generating PaymentFailed for unexpected outbound payment type can result in funds loss"
+				);
+				pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
+					payment_id,
+					payment_hash: None,
+					reason: Some($reason),
+				}, None));
+				$payment.remove();
 			}
 		}
 
@@ -1038,6 +1045,11 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::UnknownRequiredFeatures);
 						return Err(Bolt12PaymentError::UnknownRequiredFeatures)
 					}
+					if duration_since_epoch > invoice.created_at().saturating_add(invoice.relative_expiry()) {
+						abandon_with_entry!(entry, PaymentFailureReason::PaymentExpired);
+						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired))
+					}
+
 					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
 						Ok(amt) => amt,
 						Err(_) => {
@@ -2229,11 +2241,12 @@ impl OutboundPayments {
 			.iter_mut()
 			.filter_map(|(payment_id, payment)| {
 				if let PendingOutboundPayment::AwaitingInvoice {
-					retryable_invoice_request, ..
+					retryable_invoice_request: Some(invreq), ..
 				} = payment {
-					retryable_invoice_request.take().map(|retryable_invoice_request| {
-						(*payment_id, retryable_invoice_request)
-					})
+					if invreq.needs_retry {
+						invreq.needs_retry = false;
+						Some((*payment_id, invreq.clone()))
+					} else { None }
 				} else {
 					None
 				}
