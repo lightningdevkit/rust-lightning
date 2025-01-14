@@ -1624,14 +1624,23 @@ impl ChannelSigner for InMemorySigner {
 			contest_delay,
 			&keys.broadcaster_delayed_payment_key,
 		);
-		let sig = EcdsaChannelSigner::sign_justice_revoked_output(
-			self,
-			justice_tx,
-			input,
-			amount,
-			per_commitment_key,
-			secp_ctx,
-		)?;
+		let revocation_key = chan_utils::derive_private_revocation_key(
+			&secp_ctx,
+			&per_commitment_key,
+			&self.revocation_base_key,
+		);
+		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
+		let sighash = hash_to_message!(
+			&sighash_parts
+				.p2wsh_signature_hash(
+					input,
+					&witness_script,
+					Amount::from_sat(amount),
+					EcdsaSighashType::All
+				)
+				.unwrap()[..]
+		);
+		let sig = sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self);
 		let ecdsa_sig = EcdsaSignature::sighash_all(sig);
 		Ok(Witness::from(
 			&[ecdsa_sig.serialize().as_ref(), &[1][..], witness_script.as_bytes()][..],
@@ -1859,50 +1868,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
-	}
-
-	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let revocation_key = chan_utils::derive_private_revocation_key(
-			&secp_ctx,
-			&per_commitment_key,
-			&self.revocation_base_key,
-		);
-		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
-		let revocation_pubkey = RevocationKey::from_basepoint(
-			&secp_ctx,
-			&self.pubkeys().revocation_basepoint,
-			&per_commitment_point,
-		);
-		let witness_script = {
-			let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
-			let holder_selected_contest_delay =
-				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
-			let counterparty_delayedpubkey = DelayedPaymentKey::from_basepoint(
-				&secp_ctx,
-				&counterparty_keys.delayed_payment_basepoint,
-				&per_commitment_point,
-			);
-			chan_utils::get_revokeable_redeemscript(
-				&revocation_pubkey,
-				holder_selected_contest_delay,
-				&counterparty_delayedpubkey,
-			)
-		};
-		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
-		let sighash = hash_to_message!(
-			&sighash_parts
-				.p2wsh_signature_hash(
-					input,
-					&witness_script,
-					Amount::from_sat(amount),
-					EcdsaSighashType::All
-				)
-				.unwrap()[..]
-		);
-		return Ok(sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self));
 	}
 
 	fn sign_justice_revoked_htlc(
