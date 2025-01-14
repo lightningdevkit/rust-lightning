@@ -157,6 +157,7 @@ struct TestCustomMessageHandler {
 struct OnHandleCustomMessage {
 	expect: TestCustomMessage,
 	include_reply_path: bool,
+	custom_data: Option<Vec<u8>>,
 }
 
 impl TestCustomMessageHandler {
@@ -165,13 +166,25 @@ impl TestCustomMessageHandler {
 	}
 
 	fn expect_message(&self, message: TestCustomMessage) {
-		let expectation = OnHandleCustomMessage { expect: message, include_reply_path: false };
+		let expectation =
+			OnHandleCustomMessage { expect: message, include_reply_path: false, custom_data: None };
 		self.expectations.lock().unwrap().push_back(expectation);
 	}
 
 	fn expect_message_and_response(&self, message: TestCustomMessage) {
-		let expectation = OnHandleCustomMessage { expect: message, include_reply_path: true };
-		self.expectations.lock().unwrap().push_back(expectation);
+		self.expectations.lock().unwrap().push_back(OnHandleCustomMessage {
+			expect: message,
+			include_reply_path: true,
+			custom_data: None,
+		});
+	}
+
+	fn expect_message_with_custom_data(&self, message: TestCustomMessage, custom_data: Vec<u8>) {
+		self.expectations.lock().unwrap().push_back(OnHandleCustomMessage {
+			expect: message,
+			include_reply_path: false,
+			custom_data: Some(custom_data),
+		});
 	}
 
 	fn get_next_expectation(&self) -> OnHandleCustomMessage {
@@ -196,6 +209,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		let expectation = self.get_next_expectation();
 		assert_eq!(msg, expectation.expect);
+		assert_eq!(custom_data, expectation.custom_data);
 
 		let response = match msg {
 			TestCustomMessage::Ping => TestCustomMessage::Pong,
