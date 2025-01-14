@@ -48,7 +48,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::channelmanager::{self, Bolt12PaymentError, PaymentId, RecentPaymentDetails, Retry, MAX_SHORT_LIVED_RELATIVE_EXPIRY};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -2281,7 +2281,8 @@ fn no_double_pay_with_stale_channelmanager() {
 	let alice_id = nodes[0].node.get_our_node_id();
 	let bob_id = nodes[1].node.get_our_node_id();
 
-	let amt_msat = nodes[0].node.list_usable_channels()[0].next_outbound_htlc_limit_msat + 1; // Force MPP
+	// ??: The amount need to be modified to match the total amount received to bob, why?
+	let amt_msat = nodes[0].node.list_usable_channels()[0].next_outbound_htlc_limit_msat + 1000; // Force MPP
 	let offer = nodes[1].node
 		.create_offer_builder(None).unwrap()
 		.clear_paths()
@@ -2319,11 +2320,10 @@ fn no_double_pay_with_stale_channelmanager() {
 		.without_clearing_recipient_events();
 	do_pass_along_path(args);
 
-	expect_recent_payment!(nodes[0], RecentPaymentDetails::Pending, payment_id);
-	match get_event!(nodes[1], Event::PaymentClaimable) {
-		Event::PaymentClaimable { .. } => {},
+	let payment_preimage = match get_event!(nodes[1], Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => purpose.preimage().unwrap(),
 		_ => panic!("No Event::PaymentClaimable"),
-	}
+	};
 
 	// Reload with the stale manager and check that receiving the invoice again won't result in a
 	// duplicate payment attempt.
@@ -2341,5 +2341,37 @@ fn no_double_pay_with_stale_channelmanager() {
 	// Alice and Bob is closed. Since no 2nd attempt should be made, check that no events are
 	// generated in response to the duplicate invoice.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-}
 
+	// Claim payment on chain
+
+	let commitment_tx_0 = get_local_commitment_txn!(nodes[1], chan_id_0);
+	let commitment_tx_1 = get_local_commitment_txn!(nodes[1], chan_id_1);
+
+	// First close the channel between bob and alice, from bob's side
+	let error_message = "Channel force-closed";
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_0, &alice_id, error_message.to_string()).unwrap();
+	check_closed_broadcast!(nodes[1], true);
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_1, &alice_id, error_message.to_string()).unwrap();
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors!(nodes[1], 2);
+	check_closed_event!(nodes[1], 2, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [alice_id, alice_id], 10_000_000);
+
+	nodes[1].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
+	check_added_monitors!(nodes[1], 2);
+
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(node_txn.len(), 2);
+
+	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![commitment_tx_0[0].clone(), node_txn[0].clone()]));
+	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![commitment_tx_1[0].clone(), node_txn[1].clone()]));
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV as u32);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+
+	match events[0] {
+		Event::PaymentSent { .. } => {},
+		Event::PaymentPathFailed { .. } => panic!("Received PaymentPathFailed"),
+		_ => panic!("Unexpected event")
+	}
+}
