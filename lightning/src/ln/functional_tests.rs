@@ -215,15 +215,11 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 		let mut sender_node_per_peer_lock;
 		let mut sender_node_peer_state_lock;
 
-		let channel_phase = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
-		match channel_phase {
-			Channel::UnfundedInboundV1(_) | Channel::UnfundedOutboundV1(_) => {
-				let chan_context = channel_phase.context_mut();
-				chan_context.holder_selected_channel_reserve_satoshis = 0;
-				chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
-			},
-			_ => assert!(false),
-		}
+		let channel = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
+		assert!(channel.is_unfunded_v1());
+		let chan_context = channel.context_mut();
+		chan_context.holder_selected_channel_reserve_satoshis = 0;
+		chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
 	}
 
 	let funding_tx = sign_funding_transaction(&nodes[0], &nodes[1], 100_000, temp_channel_id);
@@ -9501,12 +9497,12 @@ fn test_duplicate_chan_id() {
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
-		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.common_fields.temporary_channel_id).unwrap() {
-			Channel::UnfundedOutboundV1(mut chan) => {
-				let logger = test_utils::TestLogger::new();
-				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
-			},
-			_ => panic!("Unexpected Channel variant"),
+		let mut channel = a_peer_state.channel_by_id.remove(&open_chan_2_msg.common_fields.temporary_channel_id).unwrap();
+		if let Some(mut chan) = channel.as_unfunded_outbound_v1_mut() {
+			let logger = test_utils::TestLogger::new();
+			chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
+		} else {
+			panic!("Unexpected Channel variant")
 		}.unwrap()
 	};
 	check_added_monitors!(nodes[0], 0);
@@ -10207,11 +10203,11 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	if on_holder_tx {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		match get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id) {
-			Channel::UnfundedOutboundV1(chan) => {
-				chan.context.holder_dust_limit_satoshis = 546;
-			},
-			_ => panic!("Unexpected Channel variant"),
+		let channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id);
+		if let Some(mut chan) = channel.as_unfunded_outbound_v1_mut() {
+			chan.context.holder_dust_limit_satoshis = 546;
+		} else {
+			panic!("Unexpected Channel variant");
 		}
 	}
 

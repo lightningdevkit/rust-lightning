@@ -1193,6 +1193,11 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	#[cfg(test)]
+	pub fn is_unfunded_v1(&self) -> bool {
+		matches!(self, Channel::UnfundedOutboundV1(_) | Channel::UnfundedInboundV1(_))
+	}
+
 	pub fn is_unfunded_outbound_v1(&self) -> bool {
 		matches!(self, Channel::UnfundedOutboundV1(_))
 	}
