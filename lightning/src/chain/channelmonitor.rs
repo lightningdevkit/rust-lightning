@@ -3409,16 +3409,14 @@ impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 		let countersignatory_keys =
 			&self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys;
 
-		let broadcaster_funding_key = broadcaster_keys.funding_pubkey;
-		let countersignatory_funding_key = countersignatory_keys.funding_pubkey;
 		let keys = TxCreationKeys::from_channel_static_keys(&their_per_commitment_point,
 			&broadcaster_keys, &countersignatory_keys, &self.onchain_tx_handler.secp_ctx);
 		let channel_parameters =
 			&self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
 
 		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-			to_broadcaster_value, to_countersignatory_value, broadcaster_funding_key,
-			countersignatory_funding_key, keys, feerate_per_kw, &mut nondust_htlcs,
+			to_broadcaster_value, to_countersignatory_value,
+			keys, feerate_per_kw, &mut nondust_htlcs,
 			channel_parameters, &self.onchain_tx_handler.signer, &self.onchain_tx_handler.secp_ctx, false)
 	}
 

@@ -46,9 +46,9 @@ use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
-	get_counterparty_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
-	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
-	HTLCOutputInCommitment, HolderCommitmentTransaction,
+	get_anchor_redeemscript, get_counterparty_payment_script, get_revokeable_redeemscript,
+	make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction,
+	CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::channel_keys::{
@@ -984,6 +984,29 @@ pub trait ChannelSigner {
 			secp_ctx,
 		);
 		chan_utils::get_htlc_redeemscript(htlc, params.channel_type_features(), &keys).to_p2wsh()
+	}
+
+	/// Get the anchor output of a commit tx
+	fn get_anchor_txout(&self, is_holder_tx: bool, is_broadcaster_anchor: bool) -> Option<TxOut> {
+		let channel_parameters = self.get_channel_parameters().unwrap();
+		if channel_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+			let params = if is_holder_tx {
+				channel_parameters.as_holder_broadcastable()
+			} else {
+				channel_parameters.as_counterparty_broadcastable()
+			};
+			let funding_key = if is_broadcaster_anchor {
+				params.broadcaster_pubkeys().funding_pubkey
+			} else {
+				params.countersignatory_pubkeys().funding_pubkey
+			};
+			Some(TxOut {
+				script_pubkey: get_anchor_redeemscript(&funding_key).to_p2wsh(),
+				value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
+			})
+		} else {
+			None
+		}
 	}
 }
 

@@ -3347,11 +3347,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let mut value_to_a = if local { value_to_self } else { value_to_remote };
 		let mut value_to_b = if local { value_to_remote } else { value_to_self };
-		let (funding_pubkey_a, funding_pubkey_b) = if local {
-			(self.get_holder_pubkeys().funding_pubkey, self.get_counterparty_pubkeys().funding_pubkey)
-		} else {
-			(self.get_counterparty_pubkeys().funding_pubkey, self.get_holder_pubkeys().funding_pubkey)
-		};
 
 		if value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
 			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
@@ -3373,8 +3368,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
-		                                                             funding_pubkey_a,
-		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
 		                                                             feerate_per_kw,
 		                                                             &mut included_non_dust_htlcs,
