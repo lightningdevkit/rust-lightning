@@ -48,7 +48,7 @@ use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
-	RecipientOnionFields, Retry,
+	RecipientOnionFields,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
@@ -82,7 +82,6 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::io::Cursor;
 use std::cmp::{self, Ordering};
-use std::collections::VecDeque;
 use std::mem;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
@@ -113,22 +112,14 @@ impl FeeEstimator for FuzzEstimator {
 	}
 }
 
-struct FuzzRouter {
-	pub next_routes: Mutex<VecDeque<Route>>,
-}
+struct FuzzRouter {}
 
 impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters,
 		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
 	) -> Result<Route, msgs::LightningError> {
-		if let Some(route) = self.next_routes.lock().unwrap().pop_front() {
-			return Ok(route);
-		}
-		Err(msgs::LightningError {
-			err: String::from("Not implemented"),
-			action: msgs::ErrorAction::IgnoreError,
-		})
+		unreachable!()
 	}
 
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
@@ -518,7 +509,7 @@ fn send_payment(
 		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 		amt,
 	);
-	source.router.next_routes.lock().unwrap().push_back(Route {
+	let route = Route {
 		paths: vec![Path {
 			hops: vec![RouteHop {
 				pubkey: dest.get_our_node_id(),
@@ -532,11 +523,10 @@ fn send_payment(
 			blinded_tail: None,
 		}],
 		route_params: Some(route_params.clone()),
-	});
+	};
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let payment_id = PaymentId(payment_id);
-	let res =
-		source.send_payment(payment_hash, onion, payment_id, route_params, Retry::Attempts(0));
+	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
 	match res {
 		Err(err) => {
 			panic!("Errored with {:?} on initial payment send", err);
@@ -592,7 +582,7 @@ fn send_hop_payment(
 		PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 		amt,
 	);
-	source.router.next_routes.lock().unwrap().push_back(Route {
+	let route = Route {
 		paths: vec![Path {
 			hops: vec![
 				RouteHop {
@@ -617,11 +607,10 @@ fn send_hop_payment(
 			blinded_tail: None,
 		}],
 		route_params: Some(route_params.clone()),
-	});
+	};
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	let payment_id = PaymentId(payment_id);
-	let res =
-		source.send_payment(payment_hash, onion, payment_id, route_params, Retry::Attempts(0));
+	let res = source.send_payment_with_route(route, payment_hash, onion, payment_id);
 	match res {
 		Err(err) => {
 			panic!("Errored with {:?} on initial payment send", err);
@@ -640,7 +629,7 @@ fn send_hop_payment(
 pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster {});
-	let router = FuzzRouter { next_routes: Mutex::new(VecDeque::new()) };
+	let router = FuzzRouter {};
 
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => {{
