@@ -305,6 +305,13 @@ fn ignore_unexpected_static_invoice() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
+	let recipient_tlvs = ReceiveTlvs {
+		context: Some(MessageContext::Offers(OffersContext::InvoiceRequest {
+			nonce: Nonce([42; 16]),
+		})),
+		custom_data: None,
+	};
+
 	// Initiate payment to the sender's intended offer.
 	let (offer, valid_static_invoice) =
 		create_static_invoice(&nodes[1], &nodes[2], None, &secp_ctx);
