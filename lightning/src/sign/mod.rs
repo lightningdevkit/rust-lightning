@@ -1033,7 +1033,16 @@ pub trait ChannelSigner {
 		}
 	}
 
-	/// Spend the holder anchor output
+	/// Computes the signature for a commitment transaction's anchor output used as an
+	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
+	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
+	///
+	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
+	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn spend_holder_anchor_output(
 		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()>;
@@ -1829,10 +1838,19 @@ impl ChannelSigner for InMemorySigner {
 	fn spend_holder_anchor_output(
 		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()> {
-		let anchor_sig =
-			EcdsaChannelSigner::sign_holder_anchor_input(self, anchor_tx, input_idx, secp_ctx)?;
-		let funding_pubkey = self.pubkeys().funding_pubkey;
-		Ok(chan_utils::build_anchor_input_witness(&funding_pubkey, &anchor_sig))
+		let funding_pubkey = &self.pubkeys().funding_pubkey;
+		let witness_script = chan_utils::get_anchor_redeemscript(funding_pubkey);
+		let sighash = sighash::SighashCache::new(anchor_tx)
+			.p2wsh_signature_hash(
+				input_idx,
+				&witness_script,
+				Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
+				EcdsaSighashType::All,
+			)
+			.unwrap();
+		let sig =
+			sign_with_aux_rand(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key, &self);
+		Ok(chan_utils::build_anchor_input_witness(funding_pubkey, &sig))
 	}
 }
 
@@ -1920,22 +1938,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 			self.channel_value_satoshis,
 			secp_ctx,
 		))
-	}
-
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let witness_script =
-			chan_utils::get_anchor_redeemscript(&self.holder_channel_pubkeys.funding_pubkey);
-		let sighash = sighash::SighashCache::new(&*anchor_tx)
-			.p2wsh_signature_hash(
-				input,
-				&witness_script,
-				Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
-				EcdsaSighashType::All,
-			)
-			.unwrap();
-		Ok(sign_with_aux_rand(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key, &self))
 	}
 
 	fn sign_channel_announcement_with_funding_key(

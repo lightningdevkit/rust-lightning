@@ -67,19 +67,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	fn sign_closing_transaction(
 		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
-	/// Computes the signature for a commitment transaction's anchor output used as an
-	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
-	///
-	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
-	/// signature and should be retried later. Once the signer is ready to provide a signature after
-	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
-	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
-	///
-	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
-	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
 	/// Signs a channel announcement message with our funding key proving it comes from one of the
 	/// channel participants.
 	///

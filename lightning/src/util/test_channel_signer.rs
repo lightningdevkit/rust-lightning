@@ -7,7 +7,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{self, HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction, TxCreationKeys};
 use crate::ln::channel_keys::{HtlcKey};
 use crate::ln::msgs;
@@ -366,20 +365,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		closing_tx.verify(self.inner.funding_outpoint().unwrap().into_bitcoin_outpoint())
 			.expect("derived different closing transaction");
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
-	}
-
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		debug_assert!(MIN_CHAN_DUST_LIMIT_SATOSHIS > ANCHOR_OUTPUT_VALUE_SATOSHI);
-		// As long as our minimum dust limit is enforced and is greater than our anchor output
-		// value, an anchor output can only have an index within [0, 1].
-		assert!(anchor_tx.input[input].previous_output.vout == 0 || anchor_tx.input[input].previous_output.vout == 1);
-		#[cfg(test)]
-		if !self.is_signer_available(SignerOp::SignHolderAnchorInput) {
-			return Err(());
-		}
-		EcdsaChannelSigner::sign_holder_anchor_input(&self.inner, anchor_tx, input, secp_ctx)
 	}
 
 	fn sign_channel_announcement_with_funding_key(
