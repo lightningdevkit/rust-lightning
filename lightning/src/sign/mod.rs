@@ -1661,15 +1661,23 @@ impl ChannelSigner for InMemorySigner {
 		);
 		let witness_script =
 			chan_utils::get_htlc_redeemscript(htlc, params.channel_type_features(), &keys);
-		let sig = EcdsaChannelSigner::sign_justice_revoked_htlc(
-			self,
-			justice_tx,
-			input,
-			amount,
-			per_commitment_key,
-			htlc,
-			secp_ctx,
-		)?;
+		let revocation_key = chan_utils::derive_private_revocation_key(
+			&secp_ctx,
+			&per_commitment_key,
+			&self.revocation_base_key,
+		);
+		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
+		let sighash = hash_to_message!(
+			&sighash_parts
+				.p2wsh_signature_hash(
+					input,
+					&witness_script,
+					Amount::from_sat(amount),
+					EcdsaSighashType::All
+				)
+				.unwrap()[..]
+		);
+		let sig = sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self);
 		let ecdsa_sig = EcdsaSignature::sighash_all(sig);
 		Ok(Witness::from(
 			&[
@@ -1868,56 +1876,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
-	}
-
-	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let revocation_key = chan_utils::derive_private_revocation_key(
-			&secp_ctx,
-			&per_commitment_key,
-			&self.revocation_base_key,
-		);
-		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
-		let revocation_pubkey = RevocationKey::from_basepoint(
-			&secp_ctx,
-			&self.pubkeys().revocation_basepoint,
-			&per_commitment_point,
-		);
-		let witness_script = {
-			let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
-			let counterparty_htlcpubkey = HtlcKey::from_basepoint(
-				&secp_ctx,
-				&counterparty_keys.htlc_basepoint,
-				&per_commitment_point,
-			);
-			let holder_htlcpubkey = HtlcKey::from_basepoint(
-				&secp_ctx,
-				&self.pubkeys().htlc_basepoint,
-				&per_commitment_point,
-			);
-			let chan_type = self.channel_type_features().expect(MISSING_PARAMS_ERR);
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(
-				&htlc,
-				chan_type,
-				&counterparty_htlcpubkey,
-				&holder_htlcpubkey,
-				&revocation_pubkey,
-			)
-		};
-		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
-		let sighash = hash_to_message!(
-			&sighash_parts
-				.p2wsh_signature_hash(
-					input,
-					&witness_script,
-					Amount::from_sat(amount),
-					EcdsaSighashType::All
-				)
-				.unwrap()[..]
-		);
-		return Ok(sign_with_aux_rand(secp_ctx, &sighash, &revocation_key, &self));
 	}
 
 	fn sign_counterparty_htlc_transaction(
