@@ -119,11 +119,9 @@ pub enum BumpTransactionEvent {
 	/// broadcast first, as the child anchor transaction depends on it.
 	///
 	/// The consumer should be able to sign for any of the additional inputs included within the
-	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
-	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input signature
-	/// can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`], which can then be
-	/// provided to [`build_anchor_input_witness`] along with the `funding_pubkey` to obtain the
-	/// full witness required to spend.
+	/// child anchor transaction. To sign its anchor input, a [`ChannelSigner`] should be
+	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input witness
+	/// can be computed with [`ChannelSigner::spend_holder_anchor_output`].
 	///
 	/// It is possible to receive more than one instance of this event if a valid child anchor
 	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
@@ -142,9 +140,8 @@ pub enum BumpTransactionEvent {
 	/// an empty `pending_htlcs`), confirmation of the commitment transaction can be considered to
 	/// be not urgent.
 	///
-	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
-	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_anchor_input
-	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
+	/// [`ChannelSigner`]: crate::sign::ChannelSigner
+	/// [`ChannelSigner::spend_holder_anchor_output`]: crate::sign::ChannelSigner::spend_holder_anchor_output
 	ChannelClose {
 		/// The `channel_id` of the channel which has been closed.
 		channel_id: ChannelId,
