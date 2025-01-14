@@ -358,14 +358,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
 	}
 
-	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		#[cfg(test)]
-		if !self.is_signer_available(SignerOp::SignCounterpartyHtlcTransaction) {
-			return Err(());
-		}
-		Ok(EcdsaChannelSigner::sign_counterparty_htlc_transaction(&self.inner, htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx).unwrap())
-	}
-
 	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignClosingTransaction) {
