@@ -964,7 +964,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 								self.pending_claim_events.retain(|entry| entry.0 != *claim_id);
 							}
 						}
-						break; //No need to iterate further, either tx is our or their
 					} else {
 						panic!("Inconsistencies between pending_claim_requests map and claimable_outpoints map");
 					}
