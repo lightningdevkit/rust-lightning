@@ -3178,7 +3178,7 @@ macro_rules! handle_monitor_update_completion {
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
 			updates.commitment_update, updates.order, updates.accepted_htlcs, updates.pending_update_adds,
 			updates.funding_broadcastable, updates.channel_ready,
-			updates.announcement_sigs, updates.tx_signatures);
+			updates.announcement_sigs, updates.tx_signatures, None);
 		if let Some(upd) = channel_update {
 			$peer_state.pending_msg_events.push(upd);
 		}
@@ -7442,10 +7442,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
-		tx_signatures: Option<msgs::TxSignatures>
+		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
 	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures",
+		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
 			&channel.context.channel_id(),
 			if raa.is_some() { "an" } else { "no" },
 			if commitment_update.is_some() { "a" } else { "no" },
@@ -7454,6 +7454,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if channel_ready.is_some() { "sending" } else { "without" },
 			if announcement_sigs.is_some() { "sending" } else { "without" },
 			if tx_signatures.is_some() { "sending" } else { "without" },
+			if tx_abort.is_some() { "sending" } else { "without" },
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
@@ -7483,6 +7484,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		if let Some(msg) = tx_signatures {
 			pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+				node_id: counterparty_node_id,
+				msg,
+			});
+		}
+		if let Some(msg) = tx_abort {
+			pending_msg_events.push(events::MessageSendEvent::SendTxAbort {
 				node_id: counterparty_node_id,
 				msg,
 			});
@@ -8307,26 +8314,21 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
-				if let Some(mut signing_session) = signing_session_opt {
+				if let Some(signing_session) = signing_session_opt {
 					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut().as_unfunded_v2_mut() {
 						Some(chan) => {
-							chan.funding_tx_constructed(&mut signing_session, &self.logger)
+							let (commitment_signed, funding_ready_for_sig_event_opt) =
+								chan.funding_tx_constructed(signing_session, &self.logger)
+									.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
+							(commitment_signed, funding_ready_for_sig_event_opt)
 						},
-						None => Err(ChannelError::Warn(
-							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-							.into())),
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
-					let channel = match channel_phase.into_unfunded_v2() {
-						Some(chan) => chan.into_channel(signing_session),
 						None => {
-							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
-							Err(ChannelError::Warn(
+							debug_assert!(false, "Should be in UnfundedV2 phase as checked earlier");
+							return Err(ChannelError::Warn(
 								"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-									.into()))
-						},
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					peer_state.channel_by_id.insert(channel_id, Channel::from(channel));
+									.into())).map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id));
+						}
+					};
 					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((funding_ready_for_sig_event, None));
@@ -8369,14 +8371,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match channel_phase {
 					Some(chan) => {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_phase_entry);
+						let tx_signatures_opt = try_chan_phase_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_phase_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
 							});
 						}
-						if let Some(ref funding_tx) = funding_tx_opt {
+						if let Some(ref funding_tx) = chan.context.unbroadcasted_funding() {
 							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 							{
 								let mut pending_events = self.pending_events.lock().unwrap();
@@ -8842,46 +8844,85 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let funding_txo = chan.context.get_funding_txo();
-
-					if chan.interactive_tx_signing_session.is_some() {
-						let monitor = try_chan_phase_entry!(
-							self, peer_state, chan.commitment_signed_initial_v2(msg, best_block, &self.signer_provider, &&logger),
-							chan_phase_entry);
-						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
-						if let Ok(persist_state) = monitor_res {
-							handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
-								per_peer_state, chan, INITIAL_MONITOR);
+		let (channel_id, mut funded_channel) = match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut channel_entry) => {
+				match channel_entry.get_mut() {
+					Channel::UnfundedV2(chan) => {
+						if let Some(signing_session) = chan.interactive_tx_signing_session.take() {
+							let (channel_id, channel) = channel_entry.remove_entry();
+							match channel {
+								Channel::UnfundedV2(chan) => {
+									(
+										channel_id,
+										chan.into_channel(signing_session)
+											.map_err(|(mut chan, err)|
+												convert_chan_phase_err!(self, peer_state, err, chan.context, &channel_id, UNFUNDED_CHANNEL).1
+											)?
+									)
+								}
+								_ => unreachable!("The Channel variant was determined as UnfundedV2 in the outer match"),
+							}
 						} else {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
-							try_chan_phase_entry!(self, peer_state, Err(ChannelError::Close(
-								(
-									"Channel funding outpoint was a duplicate".to_owned(),
-									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-								)
-							)), chan_phase_entry)
+							return try_chan_phase_entry!(self, peer_state, Err(ChannelError::close(
+								"Got a commitment_signed message for a V2 channel before funding transaction constructed!".into())), channel_entry);
 						}
-					} else {
+					},
+					Channel::Funded(chan) => {
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						let funding_txo = chan.context.get_funding_txo();
 						let monitor_update_opt = try_chan_phase_entry!(
-							self, peer_state, chan.commitment_signed(msg, &&logger), chan_phase_entry);
+							self, peer_state, chan.commitment_signed(msg, &&logger), channel_entry);
 						if let Some(monitor_update) = monitor_update_opt {
 							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 								peer_state, per_peer_state, chan);
 						}
+						return Ok(())
+					},
+					_ => {
+						return try_chan_phase_entry!(self, peer_state, Err(ChannelError::close(
+							"Got a commitment_signed message for an unfunded channel!".into())), channel_entry);
 					}
-					Ok(())
-				} else {
-					return try_chan_phase_entry!(self, peer_state, Err(ChannelError::close(
-						"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(
+				format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+					counterparty_node_id), msg.channel_id))
+		};
+		let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
+		let monitor = match funded_channel.commitment_signed_initial_v2(msg, best_block, &self.signer_provider, &&logger) {
+			Ok(monitor) => monitor,
+			Err(err) => {
+				let channel = &mut Channel::Funded(funded_channel);
+				return Err(convert_chan_phase_err!(self, peer_state, err, channel, &channel_id).1);
+			}
+		};
+		let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+		if let Ok(persist_state) = monitor_res {
+			let mut occupied_entry = peer_state.channel_by_id.entry(channel_id).insert(Channel::Funded(funded_channel));
+			let channel_entry = occupied_entry.get_mut();
+			match channel_entry {
+				Channel::Funded(chan) => { handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
+				per_peer_state, chan, INITIAL_MONITOR); },
+				channel => {
+					debug_assert!(false, "Expected a Channel::Funded");
+					let err = ChannelError::close(
+						"Closing due to unexpected sender error".into());
+					return Err(convert_chan_phase_err!(self, peer_state, err, channel,
+						&channel_id).1)
+				},
+			}
+		} else {
+			log_error!(logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
+			let err = ChannelError::Close(
+				(
+					"Channel funding outpoint was a duplicate".to_owned(),
+					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+				)
+			);
+			let chan = &mut Channel::Funded(funded_channel);
+			return Err(convert_chan_phase_err!(self, peer_state, err, chan, &channel_id).1);
 		}
+		Ok(())
 	}
 
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
@@ -9246,7 +9287,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.order,
-							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs, None);
+							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
+							responses.tx_signatures, responses.tx_abort);
 						debug_assert!(htlc_forwards.is_none());
 						debug_assert!(decode_update_add_htlcs.is_none());
 						if let Some(upd) = channel_update {
