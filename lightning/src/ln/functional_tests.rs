@@ -18,6 +18,7 @@ use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
+use crate::events::bump_transaction::WalletSource;
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
@@ -2760,6 +2761,264 @@ fn claim_htlc_outputs() {
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
+}
+
+// Test that the HTLC package logic removes HTLCs from the package when they are claimed by the
+// counterparty, even when the counterparty claims HTLCs from multiple packages in a single
+// transaction.
+//
+// This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
+#[test]
+fn test_multiple_package_conflicts() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut user_cfg = test_default_channel_config();
+
+	// Anchor channels are required so that multiple HTLC-Successes can be aggregated into a single
+	// transaction.
+	user_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	user_cfg.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[Some(user_cfg), Some(user_cfg), Some(user_cfg)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Since we're using anchor channels, make sure each node has a UTXO for paying fees.
+	let coinbase_tx = Transaction {
+		version: Version::TWO,
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![
+			TxOut {
+				value: Amount::ONE_BTC,
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: Amount::ONE_BTC,
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: Amount::ONE_BTC,
+				script_pubkey: nodes[2].wallet_source.get_change_script().unwrap(),
+			},
+		],
+	};
+	nodes[0].wallet_source.add_utxo(
+		bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 },
+		coinbase_tx.output[0].value,
+	);
+	nodes[1].wallet_source.add_utxo(
+		bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 },
+		coinbase_tx.output[1].value,
+	);
+	nodes[2].wallet_source.add_utxo(
+		bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 2 },
+		coinbase_tx.output[2].value,
+	);
+
+	// Create the network.
+	//   0 -- 1 -- 2
+	//
+	// Payments will be routed from node 0 to node 2.  Node 2 will force close and spend HTLCs from
+	// two of node 1's packages.  We will then verify that node 1 correctly removes the conflicting
+	// HTLC spends from its packages.
+	const CHAN_CAPACITY: u64 = 10_000_000;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, CHAN_CAPACITY, 0);
+	let (_, _, cid_1_2, funding_tx_1_2) =
+		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, CHAN_CAPACITY, 0);
+
+	// Ensure all nodes are at the same initial height.
+	let node_max_height = nodes.iter().map(|node| node.best_block_info().1).max().unwrap();
+	for node in &nodes {
+		let blocks_to_mine = node_max_height - node.best_block_info().1;
+		if blocks_to_mine > 0 {
+			connect_blocks(node, blocks_to_mine);
+		}
+	}
+
+	// Route HTLC 1.
+	let (preimage_1, payment_hash_1, ..) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	// Route HTLCs 2 and 3, with CLTVs 1 higher than HTLC 1.  The higher CLTVs will cause these
+	// HTLCs to be included in a different package than HTLC 1.
+	connect_blocks(&nodes[0], 1);
+	connect_blocks(&nodes[1], 1);
+	connect_blocks(&nodes[2], 1);
+	let (preimage_2, payment_hash_2, ..) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+	route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 900_000_000);
+
+	// Mine blocks until HTLC 1 times out in 1 block and HTLCs 2 and 3 time out in 2 blocks.
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1);
+
+	// Node 2 force closes, causing node 1 to group the HTLCs into the following packages:
+	//   Package 1: HTLC 1
+	//   Package 2: HTLCs 2 and 3
+	let node2_commit_tx = get_local_commitment_txn!(nodes[2], cid_1_2);
+	assert_eq!(node2_commit_tx.len(), 1);
+	let node2_commit_tx = &node2_commit_tx[0];
+	check_spends!(node2_commit_tx, funding_tx_1_2);
+	mine_transaction(&nodes[1], node2_commit_tx);
+	check_closed_event(
+		&nodes[1],
+		1,
+		ClosureReason::CommitmentTxConfirmed,
+		false,
+		&[nodes[2].node.get_our_node_id()],
+		CHAN_CAPACITY,
+	);
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors(&nodes[1], 1);
+
+	// Node 1 should immediately claim package 1 but has to wait a block to claim package 2.
+	let timeout_tx = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(timeout_tx.len(), 1);
+	check_spends!(timeout_tx[0], node2_commit_tx);
+	assert_eq!(timeout_tx[0].input.len(), 1);
+
+	// After one block, node 1 should also attempt to claim package 2.
+	connect_blocks(&nodes[1], 1);
+	let timeout_tx = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(timeout_tx.len(), 1);
+	check_spends!(timeout_tx[0], node2_commit_tx);
+	assert_eq!(timeout_tx[0].input.len(), 2);
+
+	// Force node 2 to broadcast an aggregated HTLC-Success transaction spending HTLCs 1 and 2.
+	// This will conflict with both of node 1's HTLC packages.
+	{
+		let broadcaster = &node_cfgs[2].tx_broadcaster;
+		let fee_estimator = &LowerBoundedFeeEstimator::new(node_cfgs[2].fee_estimator);
+		let logger = &node_cfgs[2].logger;
+		let monitor = get_monitor!(nodes[2], cid_1_2);
+		monitor.provide_payment_preimage_unsafe_legacy(
+			&payment_hash_1,
+			&preimage_1,
+			broadcaster,
+			fee_estimator,
+			logger,
+		);
+		monitor.provide_payment_preimage_unsafe_legacy(
+			&payment_hash_2,
+			&preimage_2,
+			broadcaster,
+			fee_estimator,
+			logger,
+		);
+	}
+	mine_transaction(&nodes[2], node2_commit_tx);
+	check_closed_event(
+		&nodes[2],
+		1,
+		ClosureReason::CommitmentTxConfirmed,
+		false,
+		&[nodes[1].node.get_our_node_id()],
+		CHAN_CAPACITY,
+	);
+	check_closed_broadcast!(nodes[2], true);
+	check_added_monitors(&nodes[2], 1);
+
+	let process_bump_event = |node: &Node| {
+		let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		let bump_event = match &events[0] {
+			Event::BumpTransaction(bump_event) => bump_event,
+			_ => panic!("Unexepected event"),
+		};
+		node.bump_tx_handler.handle_event(bump_event);
+
+		let mut tx = node.tx_broadcaster.txn_broadcast();
+		assert_eq!(tx.len(), 1);
+		tx.pop().unwrap()
+	};
+
+	let conflict_tx = process_bump_event(&nodes[2]);
+	assert_eq!(conflict_tx.input.len(), 3);
+	assert_eq!(conflict_tx.input[0].previous_output.txid, node2_commit_tx.compute_txid());
+	assert_eq!(conflict_tx.input[1].previous_output.txid, node2_commit_tx.compute_txid());
+	assert_eq!(conflict_tx.input[2].previous_output.txid, coinbase_tx.compute_txid());
+
+	// Mine node 2's aggregated HTLC-Success transaction on node 1, causing the package splitting
+	// logic to run.  Package 2 should get split so that only HTLC 3 gets claimed.
+	mine_transaction(&nodes[1], &conflict_tx);
+
+	// Check that node 1 only attempts to claim HTLC 3 now.  There should be no conflicting spends
+	// in the newly broadcasted transaction.
+	let broadcasted_txs = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted_txs.len(), 1);
+	let txins = &broadcasted_txs[0].input;
+	assert_eq!(txins.len(), 1);
+	assert_eq!(txins[0].previous_output.txid, node2_commit_tx.compute_txid());
+	for conflict_in in &conflict_tx.input {
+		assert_ne!(txins[0].previous_output, conflict_in.previous_output);
+	}
+
+	// Node 1 should also extract the preimages from the mined transaction and claim them upstream.
+	//
+	// Because two update_fulfill_htlc messages are created at once, the commitment_signed_dance
+	// macro doesn't work properly and we must process the first update_fulfill_htlc manually.
+	let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+	nodes[0].node.handle_update_fulfill_htlc(
+		nodes[1].node.get_our_node_id(),
+		&updates.update_fulfill_htlcs[0],
+	);
+	nodes[0]
+		.node
+		.handle_commitment_signed(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+
+	let (revoke_ack, commit_signed) =
+		get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &revoke_ack);
+	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &commit_signed);
+	check_added_monitors(&nodes[1], 4);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	let revoke_ack = match &events[1] {
+		MessageSendEvent::SendRevokeAndACK { node_id: _, msg } => msg,
+		_ => panic!("Unexpected event"),
+	};
+	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), revoke_ack);
+	expect_payment_sent!(nodes[0], preimage_1);
+
+	let updates = match &events[0] {
+		MessageSendEvent::UpdateHTLCs { node_id: _, updates } => updates,
+		_ => panic!("Unexpected event"),
+	};
+	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+	nodes[0].node.handle_update_fulfill_htlc(
+		nodes[1].node.get_our_node_id(),
+		&updates.update_fulfill_htlcs[0],
+	);
+	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+	expect_payment_sent!(nodes[0], preimage_2);
+
+	let mut events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	expect_payment_forwarded(
+		events.pop().unwrap(),
+		&nodes[1],
+		&nodes[0],
+		&nodes[2],
+		Some(1000),
+		None,
+		false,
+		true,
+		false,
+	);
+	expect_payment_forwarded(
+		events.pop().unwrap(),
+		&nodes[1],
+		&nodes[0],
+		&nodes[2],
+		Some(1000),
+		None,
+		false,
+		true,
+		false,
+	);
 }
 
 #[test]
