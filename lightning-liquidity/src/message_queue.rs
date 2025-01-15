@@ -11,10 +11,7 @@ use bitcoin::secp256k1::PublicKey;
 /// [`LiquidityManager`]: crate::LiquidityManager
 pub struct MessageQueue {
 	queue: Mutex<VecDeque<(PublicKey, LSPSMessage)>>,
-	#[cfg(feature = "std")]
-	process_msgs_callback: RwLock<Option<Box<dyn Fn() + Send + Sync + 'static>>>,
-	#[cfg(not(feature = "std"))]
-	process_msgs_callback: RwLock<Option<Box<dyn Fn() + 'static>>>,
+	process_msgs_callback: RwLock<Option<Box<dyn ProcessMessagesCallback>>>,
 }
 
 impl MessageQueue {
@@ -24,14 +21,8 @@ impl MessageQueue {
 		Self { queue, process_msgs_callback }
 	}
 
-	#[cfg(feature = "std")]
-	pub(crate) fn set_process_msgs_callback(&self, callback: impl Fn() + Send + Sync + 'static) {
-		*self.process_msgs_callback.write().unwrap() = Some(Box::new(callback));
-	}
-
-	#[cfg(not(feature = "std"))]
-	pub(crate) fn set_process_msgs_callback(&self, callback: impl Fn() + 'static) {
-		*self.process_msgs_callback.write().unwrap() = Some(Box::new(callback));
+	pub(crate) fn set_process_msgs_callback(&self, callback: Box<dyn ProcessMessagesCallback>) {
+		*self.process_msgs_callback.write().unwrap() = Some(callback);
 	}
 
 	pub(crate) fn get_and_clear_pending_msgs(&self) -> Vec<(PublicKey, LSPSMessage)> {
@@ -45,7 +36,28 @@ impl MessageQueue {
 		}
 
 		if let Some(process_msgs_callback) = self.process_msgs_callback.read().unwrap().as_ref() {
-			(process_msgs_callback)()
+			process_msgs_callback.call()
 		}
 	}
 }
+
+macro_rules! define_callback { ($($bounds: path),*) => {
+/// A callback which will be called to trigger network message processing.
+///
+/// Usually, this should call [`PeerManager::process_events`].
+///
+/// [`PeerManager::process_events`]: lightning::ln::peer_handler::PeerManager::process_events
+pub trait ProcessMessagesCallback : $($bounds +)* {
+	/// The method which is called.
+	fn call(&self);
+}
+
+impl<F: Fn() $(+ $bounds)*> ProcessMessagesCallback for F {
+	fn call(&self) { (self)(); }
+}
+} }
+
+#[cfg(feature = "std")]
+define_callback!(Send, Sync);
+#[cfg(not(feature = "std"))]
+define_callback!();
