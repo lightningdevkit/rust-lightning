@@ -1117,8 +1117,8 @@ impl PackageTemplate {
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(
-				predicted_weight, input_amounts, self.feerate_previous, feerate_strategy,
-				conf_target, fee_estimator, logger,
+				predicted_weight, input_amounts, dust_limit_sats, self.feerate_previous,
+				feerate_strategy, conf_target, fee_estimator, logger,
 			) {
 				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
 			}
@@ -1270,8 +1270,9 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 /// respect BIP125 rules 3) and 4) and if required adjust the new fee to meet the RBF policy
 /// requirement.
 fn feerate_bump<F: Deref, L: Logger>(
-	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, feerate_strategy: &FeerateStrategy,
-	conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	predicted_weight: u64, input_amounts: u64, dust_limit_sats: u64, previous_feerate: u64,
+	feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
+	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 ) -> Option<(u64, u64)>
 where
 	F::Target: FeeEstimator,
@@ -1306,6 +1307,13 @@ where
 					log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
 					return None;
 				}
+
+				let remaining_output_amount = input_amounts - bumped_fee;
+				if remaining_output_amount < dust_limit_sats {
+					log_warn!(logger, "Can't new-estimation bump new claiming tx, output amount {} would end up below dust threshold {}", remaining_output_amount, dust_limit_sats);
+					return None;
+				}
+
 				(bumped_fee, bumped_feerate)
 			},
 		}
@@ -1328,6 +1336,13 @@ where
 	let naive_new_fee = new_fee;
 	let naive_new_feerate = new_feerate;
 	let new_fee = cmp::max(new_fee, previous_fee + min_relay_fee);
+
+	let remaining_output_amount = input_amounts - new_fee;
+	if remaining_output_amount < dust_limit_sats {
+		log_warn!(logger, "Can't new-estimation bump new claiming tx, output amount {} would end up below dust threshold {}", remaining_output_amount, dust_limit_sats);
+		return None;
+	}
+
 	let new_feerate = new_fee * 1000 / predicted_weight;
 	log_trace!(logger, "Fee rate bumped by {}s from {} s/KWU ({} s) to {} s/KWU ({} s) (naive: {} s/KWU ({} s))", new_fee - previous_fee, previous_feerate, previous_fee, new_feerate, new_fee, naive_new_feerate, naive_new_fee);
 	Some((new_fee, new_feerate))
