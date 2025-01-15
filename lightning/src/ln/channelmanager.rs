@@ -6513,12 +6513,11 @@ where
 								chan.context_mut().maybe_expire_prev_config();
 								let unfunded_context = chan.unfunded_context_mut().expect("channel should be unfunded");
 								if unfunded_context.should_expire_unfunded_channel() {
-									let context = chan.context();
+									let context = chan.context_mut();
 									let logger = WithChannelContext::from(&self.logger, context, None);
 									log_error!(logger,
 										"Force-closing pending channel with ID {} for not establishing in a timely manner",
 										context.channel_id());
-									let context = chan.context_mut();
 									let mut close_res = context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
 									locked_close_channel!(self, peer_state, context, close_res);
 									shutdown_channels.push(close_res);
