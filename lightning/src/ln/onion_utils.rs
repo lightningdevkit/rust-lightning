@@ -167,6 +167,7 @@ impl<'a> PathHop for &'a TrampolineHop {
 
 trait OnionPayload<'a, 'b> {
 	type PathHopForId: PathHop + 'b;
+	type ReceiveType: OnionPayload<'a, 'b>;
 	fn new_forward(
 		hop_id: <<Self as OnionPayload<'a, 'b>>::PathHopForId as PathHop>::HopId,
 		amt_to_forward: u64, outgoing_cltv_value: u32,
@@ -174,7 +175,7 @@ trait OnionPayload<'a, 'b> {
 	fn new_receive(
 		recipient_onion: &'a RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
 		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
-	) -> Self;
+	) -> Result<Self::ReceiveType, APIError>;
 	fn new_blinded_forward(
 		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
 	) -> Self;
@@ -187,14 +188,15 @@ trait OnionPayload<'a, 'b> {
 }
 impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 	type PathHopForId = &'b RouteHop;
+	type ReceiveType = OutboundOnionPayload<'a>;
 	fn new_forward(short_channel_id: u64, amt_to_forward: u64, outgoing_cltv_value: u32) -> Self {
 		Self::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value }
 	}
 	fn new_receive(
 		recipient_onion: &'a RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
 		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
-	) -> Self {
-		Self::Receive {
+	) -> Result<Self::ReceiveType, APIError> {
+		Ok(Self::Receive {
 			payment_data: recipient_onion
 				.payment_secret
 				.map(|payment_secret| msgs::FinalOnionHopData { payment_secret, total_msat }),
@@ -203,7 +205,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 			custom_tlvs: &recipient_onion.custom_tlvs,
 			sender_intended_htlc_amt_msat,
 			cltv_expiry_height,
-		}
+		})
 	}
 	fn new_blinded_forward(
 		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
@@ -230,6 +232,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 }
 impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 	type PathHopForId = &'b TrampolineHop;
+	type ReceiveType = msgs::OutboundTrampolinePayload<'a>;
 	fn new_forward(
 		outgoing_node_id: PublicKey, amt_to_forward: u64, outgoing_cltv_value: u32,
 	) -> Self {
@@ -238,8 +241,10 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 	fn new_receive(
 		_recipient_onion: &'a RecipientOnionFields, _keysend_preimage: Option<PaymentPreimage>,
 		_sender_intended_htlc_amt_msat: u64, _total_msat: u64, _cltv_expiry_height: u32,
-	) -> Self {
-		unreachable!("Unblinded receiving is not supported for Trampoline!")
+	) -> Result<Self::ReceiveType, APIError> {
+		Err(APIError::InvalidRoute {
+			err: "Unblinded receiving is not supported for Trampoline!".to_string(),
+		})
 	}
 	fn new_blinded_forward(
 		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
@@ -456,7 +461,7 @@ where
 	H: DoubleEndedIterator<Item = OP::PathHopForId>,
 	B: ExactSizeIterator<Item = &'a BlindedHop>,
 	F: FnMut(PayloadCallbackAction, OP),
-	OP: OnionPayload<'a, 'b>,
+	OP: OnionPayload<'a, 'b, ReceiveType = OP>,
 {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
@@ -518,7 +523,7 @@ where
 						value_msat,
 						total_msat,
 						cltv,
-					),
+					)?,
 				);
 			}
 		} else {
