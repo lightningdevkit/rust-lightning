@@ -4288,7 +4288,7 @@ where
 	#[cfg(splicing)]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32,
+		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4302,7 +4302,7 @@ where
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_perkw, locktime)
+					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)
 						.map_err(|err| APIError::APIMisuseError {
 							err: format!(
 								"Cannot initiate Splicing, {}, channel ID {}", err, channel_id

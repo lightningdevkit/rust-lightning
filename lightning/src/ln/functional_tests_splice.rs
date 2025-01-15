@@ -226,7 +226,7 @@ fn test_v1_splice_in() {
 
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats: u64 = 20000;
-	let funding_feerate_perkw = 1024; // TODO
+	let funding_feerate_per_kw = 1024; // TODO
 	let locktime = 0; // TODO
 
 	// Create additional inputs
@@ -243,7 +243,7 @@ fn test_v1_splice_in() {
 			&acceptor_node.node.get_our_node_id(),
 			splice_in_sats as i64,
 			funding_inputs,
-			funding_feerate_perkw,
+			funding_feerate_per_kw,
 			locktime,
 		)
 		.unwrap();
@@ -254,7 +254,7 @@ fn test_v1_splice_in() {
 		acceptor_node.node.get_our_node_id()
 	);
 	assert_eq!(splice_init_msg.funding_contribution_satoshis, splice_in_sats as i64);
-	assert_eq!(splice_init_msg.funding_feerate_perkw, funding_feerate_perkw);
+	assert_eq!(splice_init_msg.funding_feerate_per_kw, funding_feerate_per_kw);
 	assert_eq!(splice_init_msg.funding_pubkey.to_string(), expected_initiator_funding_key);
 	assert!(splice_init_msg.require_confirmed_inputs.is_none());
 
