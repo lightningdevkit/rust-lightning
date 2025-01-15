@@ -147,7 +147,7 @@ pub enum Bolt12SemanticError {
 	UnexpectedChain,
 	/// An amount was expected but was missing.
 	MissingAmount,
-	/// The amount exceeded the total bitcoin supply.
+	/// The amount exceeded the total bitcoin supply or didn't match an expected amount.
 	InvalidAmount,
 	/// An amount was provided but was not sufficient in value.
 	InsufficientAmount,

@@ -88,6 +88,14 @@ macro_rules! invoice_builder_methods_test { (
 	$(, $self_mut: tt)?
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn amount_msats_unchecked(
+		$($self_mut)* $self: $self_type, amount_msats: u64,
+	) -> $return_type {
+		$invoice_fields.amount_msats = amount_msats;
+		$return_value
+	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(crate) fn features_unchecked(
 		$($self_mut)* $self: $self_type, features: Bolt12InvoiceFeatures
 	) -> $return_type {
