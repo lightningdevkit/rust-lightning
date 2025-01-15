@@ -3721,7 +3721,8 @@ fn do_test_sender_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bo
 	let onion_fields = RecipientOnionFields {
 		payment_secret: if spontaneous { None } else { Some(our_payment_secret) },
 		payment_metadata: None,
-		sender_custom_tlvs: sender_custom_tlvs.clone()
+		sender_custom_tlvs: sender_custom_tlvs.clone(),
+		user_custom_data: None,
 	};
 	if spontaneous {
 		nodes[0].node.send_spontaneous_payment(
@@ -3865,6 +3866,7 @@ fn test_sender_custom_tlvs_consistency() {
 	let odd_type_1	= (1 << 16)+ 1;
 	let even_type_2 = (1 << 16) + 2;
 	let odd_type_2	= (1 << 16) + 3;
+	// (1<<16) + 5 is reserved for user_custom_data.
 	let value_1 = || vec![1, 2, 3, 4];
 	let differing_value_1 = || vec![1, 2, 3, 5];
 	let value_2 = || vec![42u8; 16];
@@ -3926,7 +3928,8 @@ fn do_test_sender_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, secon
 	let onion_fields = RecipientOnionFields {
 		payment_secret: Some(our_payment_secret),
 		payment_metadata: None,
-		sender_custom_tlvs: first_tlvs
+		sender_custom_tlvs: first_tlvs,
+		user_custom_data: None,
 	};
 	let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
 			onion_fields.clone(), payment_id, &route).unwrap();
@@ -3948,7 +3951,9 @@ fn do_test_sender_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, secon
 	let onion_fields = RecipientOnionFields {
 		payment_secret: Some(our_payment_secret),
 		payment_metadata: None,
-		sender_custom_tlvs: second_tlvs
+		sender_custom_tlvs: second_tlvs,
+		user_custom_data: None,
+
 	};
 	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
 		onion_fields.clone(), amt_msat, cur_height, payment_id, &None, session_privs[1]).unwrap();
@@ -4055,6 +4060,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields {
 			payment_secret: Some(payment_secret), payment_metadata: Some(payment_metadata), sender_custom_tlvs: vec![],
+			user_custom_data: None,
 		}, payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 

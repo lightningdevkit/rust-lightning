@@ -222,6 +222,12 @@ pub enum PendingHTLCRouting {
 		/// [`Event::PaymentClaimable::onion_fields`] as
 		/// [`RecipientOnionFields::sender_custom_tlvs`].
 		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Custom TLVs set by the receiver in the blinded path used to reach them.
+		///
+		/// For HTLCs received by LDK, this will be exposed in
+		/// [`Event::PaymentClaimable::onion_fields`] as
+		/// [`RecipientOnionFields::user_custom_data`].
+		user_custom_data: Option<Vec<u8>>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
 	},
@@ -252,6 +258,11 @@ pub enum PendingHTLCRouting {
 		/// For HTLCs received by LDK, these will ultimately bubble back up as
 		/// [`RecipientOnionFields::sender_custom_tlvs`].
 		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Custom TLVs set by the receiver in the blinded path used to reach them.
+		///
+		/// For HTLCs received by LDK, these will ultimately bubble back up as
+		/// [`RecipientOnionFields::user_custom_data`].
+		user_custom_data: Option<Vec<u8>>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
 		/// Set if we are receiving a keysend to a blinded path, meaning we created the
@@ -6119,24 +6130,25 @@ where
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
 										incoming_cltv_expiry, phantom_shared_secret, sender_custom_tlvs,
-										requires_blinded_error: _
+										user_custom_data, requires_blinded_error: _
 									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
-												payment_metadata, sender_custom_tlvs };
+												payment_metadata, sender_custom_tlvs, user_custom_data };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
 											true, None)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
-										incoming_cltv_expiry, sender_custom_tlvs, requires_blinded_error: _,
-										has_recipient_created_payment_secret, payment_context, invoice_request,
+										incoming_cltv_expiry, sender_custom_tlvs, user_custom_data,
+										requires_blinded_error: _, has_recipient_created_payment_secret, payment_context, invoice_request,
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata,
 											sender_custom_tlvs,
+											user_custom_data
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, payment_context, None, onion_fields,
@@ -10645,7 +10657,7 @@ where
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
 		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
-		relative_expiry_seconds: u32
+		relative_expiry_seconds: u32,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
@@ -12603,6 +12615,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(5, sender_custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
+		(11, user_custom_data, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -12614,6 +12627,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(7, has_recipient_created_payment_secret, (default_value, false)),
 		(9, payment_context, option),
 		(11, invoice_request, option),
+		(13, user_custom_data, option),
 	},
 );
 #[cfg(trampoline)]
@@ -12632,6 +12646,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(5, sender_custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
+		(11, user_custom_data, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -12643,6 +12658,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(7, has_recipient_created_payment_secret, (default_value, false)),
 		(9, payment_context, option),
 		(11, invoice_request, option),
+		(13, user_custom_data, option),
 	},
 	(3, TrampolineForward) => {
 		(0, incoming_shared_secret, required),

@@ -1838,6 +1838,7 @@ mod fuzzy_internal_msgs {
 		pub keysend_preimage: Option<PaymentPreimage>,
 		pub invoice_request: Option<InvoiceRequest>,
 		pub sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
+		pub user_custom_data: Option<Vec<u8>>,
 	}
 
 	pub enum InboundOnionPayload {
@@ -2796,7 +2797,7 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 			},
 			Self::Receive {
 				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
-				cltv_expiry_height, ref sender_custom_tlvs,
+				cltv_expiry_height, ref sender_custom_tlvs
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_sender_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -2819,7 +2820,7 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 			},
 			Self::BlindedReceive {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
-				intro_node_blinding_point, keysend_preimage, ref invoice_request, ref sender_custom_tlvs,
+				intro_node_blinding_point, keysend_preimage, ref invoice_request, ref sender_custom_tlvs
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_sender_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -2909,7 +2910,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
-		let mut custom_tlvs = Vec::new();
+		let mut sender_custom_tlvs = Vec::new();
 
 		let tlv_len = BigSize::read(r)?;
 		let mut rd = FixedLengthReader::new(r, tlv_len.0);
@@ -2929,11 +2930,9 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			if msg_type < 1 << 16 { return Ok(false) }
 			let mut value = Vec::new();
 			msg_reader.read_to_limit(&mut value, u64::MAX)?;
-			custom_tlvs.push((msg_type, value));
+			sender_custom_tlvs.push((msg_type, value));
 			Ok(true)
 		});
-
-		let sender_custom_tlvs = custom_tlvs;
 
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
@@ -2990,6 +2989,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						keysend_preimage,
 						invoice_request,
 						sender_custom_tlvs,
+						user_custom_data: None,
 					}))
 				},
 			}
