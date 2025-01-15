@@ -1063,7 +1063,7 @@ where
 		session_priv,
 		callback,
 	)
-	.expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
+	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
 
 	if let Some(FailureLearnings {
 		network_update,
