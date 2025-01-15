@@ -83,18 +83,10 @@ macro_rules! invoice_builder_methods_common { (
 } }
 
 #[cfg(test)]
-macro_rules! invoice_builder_methods_test { (
+macro_rules! invoice_builder_methods_test_common { (
 	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr
 	$(, $self_mut: tt)?
 ) => {
-	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(crate) fn amount_msats_unchecked(
-		$($self_mut)* $self: $self_type, amount_msats: u64,
-	) -> $return_type {
-		$invoice_fields.amount_msats = amount_msats;
-		$return_value
-	}
-
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(crate) fn features_unchecked(
 		$($self_mut)* $self: $self_type, features: Bolt12InvoiceFeatures
@@ -154,4 +146,4 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 pub(super) use invoice_accessors_common;
 pub(super) use invoice_builder_methods_common;
 #[cfg(test)]
-pub(super) use invoice_builder_methods_test;
+pub(super) use invoice_builder_methods_test_common;
