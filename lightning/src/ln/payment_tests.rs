@@ -24,7 +24,7 @@ use crate::types::payment::{PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::chan_utils;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
-use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry, RetryableSendFailure};
+use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, ProbeSendFailure, Retry, RetryableSendFailure};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
@@ -1249,6 +1249,7 @@ fn sent_probe_is_probe_of_sending_node() {
 	// First check we refuse to build a single-hop probe
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[1], 100_000);
 	assert!(nodes[0].node.send_probe(route.paths[0].clone()).is_err());
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 
 	// Then build an actual two-hop probing path
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], 100_000);
@@ -4374,4 +4375,78 @@ fn test_non_strict_forwarding() {
 	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	expect_payment_failed_conditions_event(events, payment_hash, false, PaymentFailedConditions::new().blamed_scid(routed_scid));
+}
+
+#[test]
+fn remove_pending_outbounds_on_buggy_router() {
+	// Ensure that if a payment errors due to a bogus route, we'll abandon the payment and remove the
+	// pending outbound from storage.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 10_000;
+	let payment_id = PaymentId([42; 32]);
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, amt_msat);
+
+	// Extend the path by itself, essentially simulating route going through same channel twice
+	let cloned_hops = route.paths[0].hops.clone();
+	route.paths[0].hops.extend_from_slice(&cloned_hops);
+	let route_params = route.route_params.clone().unwrap();
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+
+	nodes[0].node.send_payment(
+		payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id, route_params,
+		Retry::Attempts(1) // Even though another attempt is allowed, the payment should fail
+	).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match &events[0] {
+		Event::PaymentPathFailed { failure, payment_failed_permanently, .. } => {
+			assert_eq!(failure, &PathFailure::InitialSend {
+				err: APIError::InvalidRoute { err: "Path went through the same channel twice".to_string() }
+			});
+			assert!(!payment_failed_permanently);
+		},
+		_ => panic!()
+	}
+	match events[1] {
+		Event::PaymentFailed { reason, .. } => {
+			assert_eq!(reason.unwrap(), PaymentFailureReason::UnexpectedError);
+		},
+		_ => panic!()
+	}
+	assert!(nodes[0].node.list_recent_payments().is_empty());
+}
+
+#[test]
+fn remove_pending_outbound_probe_on_buggy_path() {
+	// Ensure that if a probe errors due to a bogus route, we'll return an error and remove the
+	// pending outbound from storage.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 10_000;
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, amt_msat);
+
+	// Extend the path by itself, essentially simulating route going through same channel twice
+	let cloned_hops = route.paths[0].hops.clone();
+	route.paths[0].hops.extend_from_slice(&cloned_hops);
+
+	assert_eq!(
+		nodes[0].node.send_probe(route.paths.pop().unwrap()).unwrap_err(),
+		ProbeSendFailure::ParameterError(
+			APIError::InvalidRoute { err: "Path went through the same channel twice".to_string() }
+		)
+	);
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
