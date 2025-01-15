@@ -4344,7 +4344,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Get the splice message that can be sent during splice initiation.
 	#[cfg(splicing)]
 	pub fn get_splice_init(&self, our_funding_contribution_satoshis: i64,
-		funding_feerate_perkw: u32, locktime: u32,
+		funding_feerate_per_kw: u32, locktime: u32,
 	) -> msgs::SpliceInit {
 		// Reuse the existing funding pubkey, in spite of the channel value changing
 		// (though at this point we don't know the new value yet, due tue the optional counterparty contribution)
@@ -4353,7 +4353,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		msgs::SpliceInit {
 			channel_id: self.channel_id,
 			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_feerate_perkw,
+			funding_feerate_per_kw,
 			locktime,
 			funding_pubkey,
 			require_confirmed_inputs: None,
@@ -8116,7 +8116,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// Initiate splicing
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32,
+		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, ChannelError> {
 		// Check if a splice has been initiated already.
 		// Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways.
@@ -8164,7 +8164,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			our_funding_contribution: our_funding_contribution_satoshis,
 		});
 
-		let msg = self.context.get_splice_init(our_funding_contribution_satoshis, funding_feerate_perkw, locktime);
+		let msg = self.context.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
 		Ok(msg)
 	}
 
