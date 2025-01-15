@@ -165,7 +165,7 @@ impl DNSResolverMessageHandler for IgnoringMessageHandler {
 	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
 		None
 	}
-	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
+	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext, _custom_data: Option<Vec<u8>>) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;

@@ -1921,7 +1921,7 @@ where
 							Some(MessageContext::DNSResolver(context)) => context,
 							_ => return,
 						};
-						self.dns_resolver_handler.handle_dnssec_proof(msg, context);
+						self.dns_resolver_handler.handle_dnssec_proof(msg, context, custom_data);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
 						let context = match context {

@@ -12446,8 +12446,8 @@ where
 		None
 	}
 
-	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
-		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
+	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>) {
+		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context, custom_data);
 		#[cfg_attr(not(feature = "_test_utils"), allow(unused_mut))]
 		if let Some((completed_requests, mut offer)) = offer_opt {
 			for (name, payment_id) in completed_requests {

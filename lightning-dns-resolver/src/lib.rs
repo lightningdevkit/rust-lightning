@@ -107,9 +107,11 @@ impl<PH: Deref> DNSResolverMessageHandler for OMDomainResolver<PH>
 where
 	PH::Target: DNSResolverMessageHandler,
 {
-	fn handle_dnssec_proof(&self, proof: DNSSECProof, context: DNSResolverContext) {
+	fn handle_dnssec_proof(
+		&self, proof: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>,
+	) {
 		if let Some(proof_handler) = &self.proof_handler {
-			proof_handler.handle_dnssec_proof(proof, context);
+			proof_handler.handle_dnssec_proof(proof, context, custom_data);
 		}
 	}
 
@@ -253,8 +255,11 @@ mod test {
 			panic!();
 		}
 
-		fn handle_dnssec_proof(&self, msg: DNSSECProof, context: DNSResolverContext) {
-			let mut proof = self.resolver.handle_dnssec_proof_for_uri(msg, context).unwrap();
+		fn handle_dnssec_proof(
+			&self, msg: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>,
+		) {
+			let mut proof =
+				self.resolver.handle_dnssec_proof_for_uri(msg, context, custom_data).unwrap();
 			assert_eq!(proof.0.len(), 1);
 			let payment = proof.0.pop().unwrap();
 			let mut result = Some((payment.0, payment.1, proof.1));
