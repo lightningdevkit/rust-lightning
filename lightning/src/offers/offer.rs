@@ -91,6 +91,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::alloc::WithRoundedCapacity;
 use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -438,7 +439,7 @@ macro_rules! offer_builder_methods { (
 			}
 		}
 
-		let mut bytes = Vec::new();
+		let mut bytes = Vec::with_rounded_capacity($self.offer.serialized_length());
 		$self.offer.write(&mut bytes).unwrap();
 
 		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
