@@ -20,7 +20,7 @@ use crate::offers::invoice::{
 	InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 #[cfg(test)]
-use crate::offers::invoice_macros::invoice_builder_methods_test;
+use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::{
@@ -174,7 +174,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, StaticInvoice, mut);
 
 	#[cfg(test)]
-	invoice_builder_methods_test!(self, Self, self.invoice, Self, self, mut);
+	invoice_builder_methods_test_common!(self, Self, self.invoice, Self, self, mut);
 }
 
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
