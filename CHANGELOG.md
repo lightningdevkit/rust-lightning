@@ -1,4 +1,11 @@
-# 0.1 - Jan XXX, 2025 - XXX
+# 0.1 - Jan 15, 2025 - "Human Readable Version Numbers"
+
+The LDK 0.1 release represents an important milestone for the LDK project. While
+there are certainly many important features which are still being built, the LDK
+project has come a long way, and the LDK project is happy with the quality of
+the features included in this release. Thus, the project will begin doing patch
+releases to fix bugs in prior versions as new features continue to ship in new
+minor versions.
 
 ## API Updates
  * The `lightning-liquidity` crate has been moved into the `rust-lightning`
