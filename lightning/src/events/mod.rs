@@ -1668,10 +1668,10 @@ impl Writeable for Event {
 				13u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, path.trampoline_hops, optional_vec),
 					(2, payment_hash, option),
 					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
-					(8, path.trampoline_hops, optional_vec),
 				})
 			},
 			&Event::PaymentFailed { ref payment_id, ref payment_hash, ref reason } => {
@@ -1733,21 +1733,21 @@ impl Writeable for Event {
 				21u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, path.trampoline_hops, optional_vec),
 					(2, payment_hash, required),
 					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
-					(8, path.trampoline_hops, optional_vec),
 				})
 			},
 			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
 				23u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, path.trampoline_hops, optional_vec),
 					(2, payment_hash, required),
 					(4, path.hops, required_vec),
 					(6, short_channel_id, option),
 					(8, path.blinded_tail, option),
-					(10, path.trampoline_hops, optional_vec)
 				})
 			},
 			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
@@ -2084,10 +2084,10 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, trampoline_path, optional_vec),
 						(2, payment_hash, option),
 						(4, path, required_vec),
 						(6, blinded_tail, option),
-						(8, trampoline_path, optional_vec),
 					});
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id: payment_id.0.unwrap(),
@@ -2165,10 +2165,10 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, trampoline_path, optional_vec),
 						(2, payment_hash, required),
 						(4, path, required_vec),
 						(6, blinded_tail, option),
-						(8, trampoline_path, optional_vec)
 					});
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id: payment_id.0.unwrap(),
@@ -2182,11 +2182,11 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, trampoline_path, optional_vec),
 						(2, payment_hash, required),
 						(4, path, required_vec),
 						(6, short_channel_id, option),
 						(8, blinded_tail, option),
-						(10, trampoline_path, optional_vec)
 					});
 					Ok(Some(Event::ProbeFailed {
 						payment_id: payment_id.0.unwrap(),
