@@ -3736,7 +3736,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
-			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(htlc_above_dust, None);
+			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(Some(htlc_above_dust), None);
 
 			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
 			let remote_balance_msat = (context.channel_value_satoshis * 1000 - context.value_to_self_msat)
@@ -3942,7 +3942,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// second allows for creating a buffer to ensure a further HTLC can always be accepted/added.
 	///
 	/// Dust HTLCs are excluded.
-	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
+	fn next_remote_commit_tx_fee_msat(&self, htlc: Option<HTLCCandidate>, fee_spike_buffer_htlc: Option<()>) -> u64 {
+		debug_assert!(htlc.is_some() || fee_spike_buffer_htlc.is_some(), "At least one of the options must be set");
+
 		let context = &self;
 		assert!(!context.is_outbound());
 
@@ -3957,15 +3959,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
-		match htlc.origin {
-			HTLCInitiator::LocalOffered => {
-				if htlc.amount_msat / 1000 >= real_dust_limit_success_sat {
-					addl_htlcs += 1;
-				}
-			},
-			HTLCInitiator::RemoteOffered => {
-				if htlc.amount_msat / 1000 >= real_dust_limit_timeout_sat {
-					addl_htlcs += 1;
+		if let Some(htlc) = &htlc {
+			match htlc.origin {
+				HTLCInitiator::LocalOffered => {
+					if htlc.amount_msat / 1000 >= real_dust_limit_success_sat {
+						addl_htlcs += 1;
+					}
+				},
+				HTLCInitiator::RemoteOffered => {
+					if htlc.amount_msat / 1000 >= real_dust_limit_timeout_sat {
+						addl_htlcs += 1;
+					}
 				}
 			}
 		}
@@ -3998,7 +4002,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let num_htlcs = included_htlcs + addl_htlcs;
 		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, &context.channel_type) * 1000;
 		#[cfg(any(test, fuzzing))]
-		{
+		if let Some(htlc) = &htlc {
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
 				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type) * 1000;
@@ -5014,8 +5018,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	}
 
 	pub fn update_add_htlc<F: Deref>(
-		&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_status: PendingHTLCStatus,
-		fee_estimator: &LowerBoundedFeeEstimator<F>,
+		&mut self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<(), ChannelError> where F::Target: FeeEstimator {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
@@ -5080,7 +5083,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		{
 			let remote_commit_tx_fee_msat = if self.context.is_outbound() { 0 } else {
 				let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-				self.context.next_remote_commit_tx_fee_msat(htlc_candidate, None) // Don't include the extra fee spike buffer HTLC in calculations
+				self.context.next_remote_commit_tx_fee_msat(Some(htlc_candidate), None) // Don't include the extra fee spike buffer HTLC in calculations
 			};
 			let anchor_outputs_value_msat = if !self.context.is_outbound() && self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
@@ -5115,12 +5118,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
 		}
 
-		if self.context.channel_state.is_local_shutdown_sent() {
-			if let PendingHTLCStatus::Forward(_) = pending_forward_status {
-				panic!("ChannelManager shouldn't be trying to add a forwardable HTLC after we've started closing");
-			}
-		}
-
 		// Now update local state:
 		self.context.next_counterparty_htlc_id += 1;
 		self.context.pending_inbound_htlcs.push(InboundHTLCOutput {
@@ -5128,8 +5125,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Resolved {
-				pending_htlc_status: pending_forward_status
+			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
+				update_add_htlc: msg.clone(),
 			}),
 		});
 		Ok(())
@@ -7242,7 +7239,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		};
 		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
-			let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
+			let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat;
 			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
 					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
@@ -7262,7 +7259,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
-			let on_holder_tx_dust_htlc_exposure_msat = htlc_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
+			let on_holder_tx_dust_htlc_exposure_msat = htlc_stats.on_holder_tx_dust_exposure_msat;
 			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
 					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
@@ -7295,12 +7292,14 @@ impl<SP: Deref> FundedChannel<SP> where
 			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
 			// side, only on the sender's. Note that with anchor outputs we are no longer as
 			// sensitive to fee spikes, so we need to account for them.
-			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			//
+			// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
+			// the incoming HTLC as it has been fully committed by both sides.
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(None, Some(()));
 			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+			if pending_remote_value_msat.saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
 				return Err(("Fee spike buffer violation", 0x1000|7));
 			}
@@ -9380,7 +9379,7 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 }
 
 const SERIALIZATION_VERSION: u8 = 4;
-const MIN_SERIALIZATION_VERSION: u8 = 3;
+const MIN_SERIALIZATION_VERSION: u8 = 4;
 
 impl_writeable_tlv_based_enum_legacy!(InboundHTLCRemovalReason,;
 	(0, FailRelay),
@@ -9441,18 +9440,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		let version_to_write = if self.context.pending_inbound_htlcs.iter().any(|htlc| match htlc.state {
-			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution)|
-				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
-				matches!(htlc_resolution, InboundHTLCResolution::Pending { .. })
-			},
-			_ => false,
-		}) {
-			SERIALIZATION_VERSION
-		} else {
-			MIN_SERIALIZATION_VERSION
-		};
-		write_ver_prefix!(writer, version_to_write, MIN_SERIALIZATION_VERSION);
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
@@ -9510,27 +9498,11 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
 				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
 					1u8.write(writer)?;
-					if version_to_write <= 3 {
-						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
-							pending_htlc_status.write(writer)?;
-						} else {
-							panic!();
-						}
-					} else {
-						htlc_resolution.write(writer)?;
-					}
+					htlc_resolution.write(writer)?;
 				},
 				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
 					2u8.write(writer)?;
-					if version_to_write <= 3 {
-						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
-							pending_htlc_status.write(writer)?;
-						} else {
-							panic!();
-						}
-					} else {
-						htlc_resolution.write(writer)?;
-					}
+					htlc_resolution.write(writer)?;
 				},
 				&InboundHTLCState::Committed => {
 					3u8.write(writer)?;
@@ -10678,7 +10650,7 @@ mod tests {
 		node_a_chan.context.channel_transaction_parameters.is_outbound_from_holder = false;
 		let remote_commit_fee_3_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.context.get_channel_type()) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
-		let remote_commit_tx_fee = node_a_chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		let remote_commit_tx_fee = node_a_chan.context.next_remote_commit_tx_fee_msat(Some(htlc_candidate), None);
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
 	}
 
@@ -10720,13 +10692,13 @@ mod tests {
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_above_timeout = ((253 * htlc_timeout_tx_weight(chan.context.get_channel_type()) / 1000) + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(dust_htlc_amt_above_timeout, HTLCInitiator::LocalOffered);
-		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(Some(htlc_candidate), None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
 		let htlc_amt_below_success = ((253 * htlc_success_tx_weight(chan.context.get_channel_type()) / 1000) + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amt_below_success, HTLCInitiator::RemoteOffered);
-		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		let commitment_tx_fee = chan.context.next_remote_commit_tx_fee_msat(Some(htlc_candidate), None);
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 	}
 
