@@ -535,10 +535,23 @@ impl Writeable for Route {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		let mut blinded_tails = Vec::new();
+		let mut trampoline_paths = Vec::new();
+		let empty_trampoline_path = Vec::new();
 		for (idx, path) in self.paths.iter().enumerate() {
 			(path.hops.len() as u8).write(writer)?;
 			for hop in path.hops.iter() {
 				hop.write(writer)?;
+			}
+			if !path.trampoline_hops.is_empty() {
+				if trampoline_paths.is_empty() {
+					trampoline_paths = Vec::with_capacity(self.paths.len());
+					for _ in 0..idx {
+						trampoline_paths.push(&empty_trampoline_path);
+					}
+				}
+				trampoline_paths.push(&path.trampoline_hops);
+			} else if !trampoline_paths.is_empty() {
+				trampoline_paths.push(&empty_trampoline_path);
 			}
 			if let Some(blinded_tail) = &path.blinded_tail {
 				if blinded_tails.is_empty() {
@@ -556,6 +569,7 @@ impl Writeable for Route {
 			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
 			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
+			(4, trampoline_paths, optional_vec),
 			(5, self.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat), option),
 		});
 		Ok(())
@@ -584,8 +598,18 @@ impl Readable for Route {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
 			(3, final_value_msat, option),
+			(4, trampoline_paths, optional_vec),
 			(5, max_total_routing_fee_msat, option)
 		});
+
+		let trampoline_paths: Vec<Vec<TrampolineHop>> = trampoline_paths.unwrap_or(Vec::new());
+		if !trampoline_paths.is_empty() {
+			if trampoline_paths.len() != paths.len() { return Err(DecodeError::InvalidValue) }
+			for (path, trampoline_hops) in paths.iter_mut().zip(trampoline_paths.into_iter()) {
+				path.trampoline_hops = trampoline_hops;
+			}
+		}
+
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
 		if blinded_tails.len() != 0 {
 			if blinded_tails.len() != paths.len() { return Err(DecodeError::InvalidValue) }
