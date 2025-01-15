@@ -803,7 +803,7 @@ impl OutboundPayments {
 	{
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, recipient_onion.clone(), payment_id, None, route, None, None, entropy_source, best_block_height)?;
 		self.pay_route_internal(route, payment_hash, &recipient_onion, None, None, payment_id, None,
-			onion_session_privs, node_signer, best_block_height, &send_payment_along_path)
+			&onion_session_privs, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
@@ -983,7 +983,7 @@ impl OutboundPayments {
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, payment_id,
-			Some(route_params.final_value_msat), onion_session_privs, node_signer, best_block_height,
+			Some(route_params.final_value_msat), &onion_session_privs, node_signer, best_block_height,
 			&send_payment_along_path
 		);
 		log_info!(
@@ -992,9 +992,9 @@ impl OutboundPayments {
 		);
 		if let Err(e) = result {
 			self.handle_pay_route_err(
-				e, payment_id, payment_hash, route, route_params, router, first_hops,
-				&inflight_htlcs, entropy_source, node_signer, best_block_height, logger,
-				pending_events, &send_payment_along_path
+				e, payment_id, payment_hash, route, route_params, onion_session_privs, router, first_hops,
+				&inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events,
+				&send_payment_along_path
 			);
 		}
 		Ok(())
@@ -1269,12 +1269,16 @@ impl OutboundPayments {
 			})?;
 
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion,
-			keysend_preimage, None, payment_id, None, onion_session_privs, node_signer,
+			keysend_preimage, None, payment_id, None, &onion_session_privs, node_signer,
 			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Sending payment with id {} and hash {} returned {:?}",
 			payment_id, payment_hash, res);
 		if let Err(e) = res {
-			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path);
+			self.handle_pay_route_err(
+				e, payment_id, payment_hash, route, route_params, onion_session_privs, router, first_hops,
+				&inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events,
+				&send_payment_along_path
+			);
 		}
 		Ok(())
 	}
@@ -1426,19 +1430,25 @@ impl OutboundPayments {
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			invoice_request.as_ref(), payment_id, Some(total_msat), onion_session_privs, node_signer,
+			invoice_request.as_ref(), payment_id, Some(total_msat), &onion_session_privs, node_signer,
 			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
-			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
+			self.handle_pay_route_err(
+				e, payment_id, payment_hash, route, route_params, onion_session_privs, router, first_hops,
+				inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events,
+				send_payment_along_path
+			);
 		}
 	}
 
 	fn handle_pay_route_err<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, err: PaymentSendFailure, payment_id: PaymentId, payment_hash: PaymentHash, route: Route,
-		mut route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
-		inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS, best_block_height: u32, logger: &L,
-		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: &SP,
+		mut route_params: RouteParameters, onion_session_privs: Vec<[u8; 32]>, router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS,
+		best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: &SP,
 	)
 	where
 		R::Target: Router,
@@ -1448,6 +1458,19 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
+		macro_rules! remove_session_privs {
+			() => {
+				if let Some(payment) = self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id) {
+					for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.into_iter()) {
+						let removed = payment.remove(&session_priv_bytes, Some(path));
+						debug_assert!(removed, "This can't happen as the payment has an entry for this path added by callers");
+					}
+				} else {
+					debug_assert!(false, "This can't happen as the payment was added by callers");
+				}
+			}
+		}
+
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), logger, pending_events);
@@ -1467,11 +1490,13 @@ impl OutboundPayments {
 			},
 			PaymentSendFailure::PathParameterError(results) => {
 				log_error!(logger, "Failed to send to route due to parameter error in a single path. Your router is buggy");
+				remove_session_privs!();
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), logger, pending_events);
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::ParameterError(e) => {
 				log_error!(logger, "Failed to send to route due to parameter error: {:?}. Your router is buggy", e);
+				remove_session_privs!();
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::DuplicatePayment => debug_assert!(false), // unreachable
@@ -1542,7 +1567,7 @@ impl OutboundPayments {
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
-			None, None, payment_id, None, onion_session_privs, node_signer, best_block_height,
+			None, None, payment_id, None, &onion_session_privs, node_signer, best_block_height,
 			&send_payment_along_path
 		) {
 			Ok(()) => Ok((payment_hash, payment_id)),
@@ -1733,7 +1758,7 @@ impl OutboundPayments {
 	fn pay_route_internal<NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
-		payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>,
+		payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: &Vec<[u8; 32]>,
 		node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
 	where
@@ -1788,7 +1813,7 @@ impl OutboundPayments {
 			let mut path_res = send_payment_along_path(SendAlongPathArgs {
 				path: &path, payment_hash: &payment_hash, recipient_onion, total_value,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
-				session_priv_bytes
+				session_priv_bytes: *session_priv_bytes
 			});
 			match path_res {
 				Ok(_) => {},
@@ -1872,7 +1897,7 @@ impl OutboundPayments {
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		self.pay_route_internal(route, payment_hash, &recipient_onion,
-			keysend_preimage, None, payment_id, recv_value_msat, onion_session_privs,
+			keysend_preimage, None, payment_id, recv_value_msat, &onion_session_privs,
 			node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
@@ -1880,9 +1905,15 @@ impl OutboundPayments {
 	// If we failed to send any paths, remove the new PaymentId from the `pending_outbound_payments`
 	// map as the payment is free to be resent.
 	fn remove_outbound_if_all_failed(&self, payment_id: PaymentId, err: &PaymentSendFailure) {
-		if let &PaymentSendFailure::AllFailedResendSafe(_) = err {
-			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
-			debug_assert!(removed, "We should always have a pending payment to remove here");
+		match err {
+			PaymentSendFailure::AllFailedResendSafe(_)
+				| PaymentSendFailure::ParameterError(_)
+				| PaymentSendFailure::PathParameterError(_) =>
+			{
+				let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
+				debug_assert!(removed, "We should always have a pending payment to remove here");
+			},
+			PaymentSendFailure::DuplicatePayment | PaymentSendFailure::PartialFailure { .. }  => {}
 		}
 	}
 
