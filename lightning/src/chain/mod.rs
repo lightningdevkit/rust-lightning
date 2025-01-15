@@ -18,7 +18,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
 use crate::ln::types::ChannelId;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::impl_writeable_tlv_based;
 
@@ -260,7 +260,7 @@ pub enum ChannelMonitorUpdateStatus {
 /// application crashes.
 ///
 /// See method documentation and [`ChannelMonitorUpdateStatus`] for specific requirements.
-pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
+pub trait Watch<Signer: ChannelSigner> {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
@@ -276,7 +276,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<Signer>) -> Result<ChannelMonitorUpdateStatus, ()>;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
 	///

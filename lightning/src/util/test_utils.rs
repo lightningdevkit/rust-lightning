@@ -517,7 +517,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 			while let Some(JusticeTxData { justice_tx, value, commitment_number }) = channel_state.front() {
 				let input_idx = 0;
 				let commitment_txid = justice_tx.input[input_idx].previous_output.txid;
-				match data.sign_to_local_justice_tx(justice_tx.clone(), input_idx, value.to_sat(), *commitment_number) {
+				match data.punish_revokeable_output(justice_tx.clone(), input_idx, value.to_sat(), *commitment_number) {
 					Ok(signed_justice_tx) => {
 						let dup = self.watchtower_state.lock().unwrap()
 							.get_mut(&funding_txo).unwrap()

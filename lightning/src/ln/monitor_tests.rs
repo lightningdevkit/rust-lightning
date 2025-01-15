@@ -9,7 +9,9 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
+use alloc::collections::BTreeMap;
+
+use crate::sign::{ChannelSigner, OutputSpender, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
@@ -2901,6 +2903,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			}],
 		};
 		let mut descriptors = Vec::with_capacity(4);
+		let mut revokeable_spks = BTreeMap::new();
 		for event in events {
 			// We don't use the `BumpTransactionEventHandler` here because it does not support
 			// creating one transaction from multiple `HTLCResolution` events.
@@ -2909,7 +2912,12 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 				for htlc_descriptor in &htlc_descriptors {
 					assert!(!htlc_descriptor.htlc.offered);
 					htlc_tx.input.push(htlc_descriptor.unsigned_tx_input());
-					htlc_tx.output.push(htlc_descriptor.tx_output(&secp));
+					let revokeable_spk = revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+						.or_insert_with(|| {
+							let signer = htlc_descriptor.derive_channel_signer(&nodes[1].keys_manager);
+							signer.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, &secp)
+						}).clone();
+					htlc_tx.output.push(htlc_descriptor.tx_output(revokeable_spk));
 				}
 				descriptors.append(&mut htlc_descriptors);
 				htlc_tx.lock_time = tx_lock_time;
@@ -2920,9 +2928,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		for (idx, htlc_descriptor) in descriptors.into_iter().enumerate() {
 			let htlc_input_idx = idx + 1;
 			let signer = htlc_descriptor.derive_channel_signer(&nodes[1].keys_manager);
-			let our_sig = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
-			let witness_script = htlc_descriptor.witness_script(&secp);
-			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
+			let witness = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
+			htlc_tx.input[htlc_input_idx].witness = witness;
 		}
 		let fee_utxo_sig = {
 			let witness_script = ScriptBuf::new_p2pkh(&public_key.pubkey_hash());

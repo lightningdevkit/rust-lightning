@@ -21,11 +21,10 @@ use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::{SecretKey,PublicKey};
-use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 
 use crate::types::payment::PaymentPreimage;
-use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
+use crate::ln::chan_utils::{self, HTLCOutputInCommitment};
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
@@ -33,7 +32,7 @@ use crate::ln::msgs::DecodeError;
 use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ChannelSigner;
 use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
@@ -125,25 +124,25 @@ const HIGH_FREQUENCY_BUMP_INTERVAL: u32 = 1;
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RevokedOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	per_commitment_key: SecretKey,
 	weight: u64,
 	amount: Amount,
-	on_counterparty_tx_csv: u16,
+	on_counterparty_tx_csv: Option<u16>,
 	is_counterparty_balance_on_anchors: Option<()>,
 }
 
 impl RevokedOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: Amount, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: Amount, is_counterparty_balance_on_anchors: bool, weight: u64) -> Self {
 		RevokedOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			per_commitment_key,
-			weight: WEIGHT_REVOKED_OUTPUT,
+			weight,
 			amount,
-			on_counterparty_tx_csv,
+			on_counterparty_tx_csv: None,
 			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None }
 		}
 	}
@@ -151,12 +150,12 @@ impl RevokedOutput {
 
 impl_writeable_tlv_based!(RevokedOutput, {
 	(0, per_commitment_point, required),
-	(2, counterparty_delayed_payment_base_key, required),
-	(4, counterparty_htlc_base_key, required),
+	(2, counterparty_delayed_payment_base_key, option),
+	(4, counterparty_htlc_base_key, option),
 	(6, per_commitment_key, required),
 	(8, weight, required),
 	(10, amount, required),
-	(12, on_counterparty_tx_csv, required),
+	(12, on_counterparty_tx_csv, option),
 	(14, is_counterparty_balance_on_anchors, option)
 });
 
@@ -171,8 +170,8 @@ impl_writeable_tlv_based!(RevokedOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RevokedHTLCOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	per_commitment_key: SecretKey,
 	weight: u64,
 	amount: u64,
@@ -180,12 +179,11 @@ pub(crate) struct RevokedHTLCOutput {
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> Self {
-		let weight = if htlc.offered { weight_revoked_offered_htlc(channel_type_features) } else { weight_revoked_received_htlc(channel_type_features) };
+	pub(crate) fn build(per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, weight: u64) -> Self {
 		RevokedHTLCOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			per_commitment_key,
 			weight,
 			amount,
@@ -196,8 +194,8 @@ impl RevokedHTLCOutput {
 
 impl_writeable_tlv_based!(RevokedHTLCOutput, {
 	(0, per_commitment_point, required),
-	(2, counterparty_delayed_payment_base_key, required),
-	(4, counterparty_htlc_base_key, required),
+	(2, counterparty_delayed_payment_base_key, option),
+	(4, counterparty_htlc_base_key, option),
 	(6, per_commitment_key, required),
 	(8, weight, required),
 	(10, amount, required),
@@ -215,22 +213,24 @@ impl_writeable_tlv_based!(RevokedHTLCOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CounterpartyOfferedHTLCOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	preimage: PaymentPreimage,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	weight: u64,
 }
 
 impl CounterpartyOfferedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures, weight: u64) -> Self {
 		CounterpartyOfferedHTLCOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			preimage,
 			htlc,
 			channel_type_features,
+			weight,
 		}
 	}
 }
@@ -240,12 +240,13 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
-			(2, self.counterparty_delayed_payment_base_key, required),
-			(4, self.counterparty_htlc_base_key, required),
+			(2, self.counterparty_delayed_payment_base_key, option),
+			(4, self.counterparty_htlc_base_key, option),
 			(6, self.preimage, required),
 			(8, self.htlc, required),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
+			(12, self.weight, required),
 		});
 		Ok(())
 	}
@@ -254,32 +255,38 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 impl Readable for CounterpartyOfferedHTLCOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut per_commitment_point = RequiredWrapper(None);
-		let mut counterparty_delayed_payment_base_key = RequiredWrapper(None);
-		let mut counterparty_htlc_base_key = RequiredWrapper(None);
+		let mut counterparty_delayed_payment_base_key = None;
+		let mut counterparty_htlc_base_key = None;
 		let mut preimage = RequiredWrapper(None);
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut weight = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
-			(2, counterparty_delayed_payment_base_key, required),
-			(4, counterparty_htlc_base_key, required),
+			(2, counterparty_delayed_payment_base_key, option),
+			(4, counterparty_htlc_base_key, option),
 			(6, preimage, required),
 			(8, htlc, required),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
+			(12, weight, option),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
 
+		let channel_type_features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
+		let weight = weight.unwrap_or(weight_offered_htlc(&channel_type_features));
+
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
-			counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
-			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
+			counterparty_delayed_payment_base_key,
+			counterparty_htlc_base_key,
 			preimage: preimage.0.unwrap(),
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
+			weight,
 		})
 	}
 }
@@ -293,20 +300,22 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CounterpartyReceivedHTLCOutput {
 	per_commitment_point: PublicKey,
-	counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
-	counterparty_htlc_base_key: HtlcBasepoint,
+	counterparty_delayed_payment_base_key: Option<DelayedPaymentBasepoint>,
+	counterparty_htlc_base_key: Option<HtlcBasepoint>,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	weight: u64,
 }
 
 impl CounterpartyReceivedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures, weight: u64) -> Self {
 		CounterpartyReceivedHTLCOutput {
 			per_commitment_point,
-			counterparty_delayed_payment_base_key,
-			counterparty_htlc_base_key,
+			counterparty_delayed_payment_base_key: None,
+			counterparty_htlc_base_key: None,
 			htlc,
-			channel_type_features
+			channel_type_features,
+			weight,
 		}
 	}
 }
@@ -316,11 +325,12 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
 			(0, self.per_commitment_point, required),
-			(2, self.counterparty_delayed_payment_base_key, required),
-			(4, self.counterparty_htlc_base_key, required),
+			(2, self.counterparty_delayed_payment_base_key, option),
+			(4, self.counterparty_htlc_base_key, option),
 			(6, self.htlc, required),
 			(8, legacy_deserialization_prevention_marker, option),
 			(9, self.channel_type_features, required),
+			(10, self.weight, required),
 		});
 		Ok(())
 	}
@@ -329,29 +339,35 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 impl Readable for CounterpartyReceivedHTLCOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut per_commitment_point = RequiredWrapper(None);
-		let mut counterparty_delayed_payment_base_key = RequiredWrapper(None);
-		let mut counterparty_htlc_base_key = RequiredWrapper(None);
+		let mut counterparty_delayed_payment_base_key = None;
+		let mut counterparty_htlc_base_key = None;
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut weight = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
-			(2, counterparty_delayed_payment_base_key, required),
-			(4, counterparty_htlc_base_key, required),
+			(2, counterparty_delayed_payment_base_key, option),
+			(4, counterparty_htlc_base_key, option),
 			(6, htlc, required),
 			(8, _legacy_deserialization_prevention_marker, option),
 			(9, channel_type_features, option),
+			(10, weight, option),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
 
+		let channel_type_features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
+		let weight = weight.unwrap_or(weight_received_htlc(&channel_type_features));
+
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
-			counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
-			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
+			counterparty_delayed_payment_base_key,
+			counterparty_htlc_base_key,
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
+			weight,
 		})
 	}
 }
@@ -439,16 +455,14 @@ impl Readable for HolderHTLCOutput {
 /// Note that on upgrades, some features of existing outputs may be missed.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
-	funding_redeemscript: ScriptBuf,
 	pub(crate) funding_amount: Option<u64>,
 	channel_type_features: ChannelTypeFeatures,
 }
 
 
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: ScriptBuf, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
 		HolderFundingOutput {
-			funding_redeemscript,
 			funding_amount: Some(funding_amount),
 			channel_type_features,
 		}
@@ -459,7 +473,7 @@ impl Writeable for HolderFundingOutput {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
-			(0, self.funding_redeemscript, required),
+			(0, None::<ScriptBuf>, option),
 			(1, self.channel_type_features, required),
 			(2, legacy_deserialization_prevention_marker, option),
 			(3, self.funding_amount, option),
@@ -470,13 +484,13 @@ impl Writeable for HolderFundingOutput {
 
 impl Readable for HolderFundingOutput {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut funding_redeemscript = RequiredWrapper(None);
+		let mut _funding_redeemscript: Option<ScriptBuf> = None;
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut funding_amount = None;
 
 		read_tlv_fields!(reader, {
-			(0, funding_redeemscript, required),
+			(0, _funding_redeemscript, option),
 			(1, channel_type_features, option),
 			(2, _legacy_deserialization_prevention_marker, option),
 			(3, funding_amount, option),
@@ -485,7 +499,6 @@ impl Readable for HolderFundingOutput {
 		verify_channel_type_features(&channel_type_features, None)?;
 
 		Ok(Self {
-			funding_redeemscript: funding_redeemscript.0.unwrap(),
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
 			funding_amount
 		})
@@ -528,16 +541,11 @@ impl PackageSolvingData {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => outp.weight as usize,
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.weight as usize,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => weight_offered_htlc(&outp.channel_type_features) as usize,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => weight_received_htlc(&outp.channel_type_features) as usize,
-			PackageSolvingData::HolderHTLCOutput(ref outp) => {
-				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-				if outp.preimage.is_none() {
-					weight_offered_htlc(&outp.channel_type_features) as usize
-				} else {
-					weight_received_htlc(&outp.channel_type_features) as usize
-				}
-			},
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.weight as usize,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.weight as usize,
+			// Since HolderHLTCOutput requires external funding, we never inquire the witness
+			// weight of the HTLC transaction here. See OnchainTxHandler::generate_claim.
+			PackageSolvingData::HolderHTLCOutput(ref _outp) => unreachable!(),
 			// Since HolderFundingOutput maps to an untractable package that is already signed, its
 			// weight can be determined from the transaction itself.
 			PackageSolvingData::HolderFundingOutput(..) => unreachable!(),
@@ -601,69 +609,42 @@ impl PackageSolvingData {
 			witness: Witness::new(),
 		}
 	}
-	fn finalize_input<Signer: EcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
+	fn finalize_input<Signer: ChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
-				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, outp.on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key);
 				//TODO: should we panic on signer failure ?
-				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_output(&bumped_tx, i, outp.amount.to_sat(), &outp.per_commitment_key, &onchain_handler.secp_ctx) {
-					let mut ser_sig = sig.serialize_der().to_vec();
-					ser_sig.push(EcdsaSighashType::All as u8);
-					bumped_tx.input[i].witness.push(ser_sig);
-					bumped_tx.input[i].witness.push(vec!(1));
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				if let Ok(witness) = onchain_handler.signer.punish_revokeable_output(bumped_tx, i, outp.amount.to_sat(), &outp.per_commitment_key, &onchain_handler.secp_ctx, &outp.per_commitment_point) {
+					bumped_tx.input[i].witness = witness;
 				} else { return false; }
 			},
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
-				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 				//TODO: should we panic on signer failure ?
-				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
-					let mut ser_sig = sig.serialize_der().to_vec();
-					ser_sig.push(EcdsaSighashType::All as u8);
-					bumped_tx.input[i].witness.push(ser_sig);
-					bumped_tx.input[i].witness.push(chan_keys.revocation_key.to_public_key().serialize().to_vec());
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				if let Ok(witness) = onchain_handler.signer.punish_htlc_output(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.htlc) {
+					bumped_tx.input[i].witness = witness;
 				} else { return false; }
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
-				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
-
-				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-					let mut ser_sig = sig.serialize_der().to_vec();
-					ser_sig.push(EcdsaSighashType::All as u8);
-					bumped_tx.input[i].witness.push(ser_sig);
-					bumped_tx.input[i].witness.push(outp.preimage.0.to_vec());
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				if let Ok(witness) = onchain_handler.signer.sweep_counterparty_htlc_output(&bumped_tx, i, outp.htlc.amount_msat / 1000, &onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.htlc, Some(&outp.preimage)) {
+					bumped_tx.input[i].witness = witness;
 				}
 			},
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
-				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
-
-				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-					let mut ser_sig = sig.serialize_der().to_vec();
-					ser_sig.push(EcdsaSighashType::All as u8);
-					bumped_tx.input[i].witness.push(ser_sig);
-					// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-					bumped_tx.input[i].witness.push(vec![]);
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				if let Ok(witness) = onchain_handler.signer.sweep_counterparty_htlc_output(&bumped_tx, i, outp.htlc.amount_msat / 1000, &onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.htlc, None) {
+					bumped_tx.input[i].witness = witness;
 				}
 			},
 			_ => { panic!("API Error!"); }
 		}
 		true
 	}
-	fn get_maybe_finalized_tx<Signer: EcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
+	fn get_maybe_finalized_tx<Signer: ChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
 				onchain_handler.get_maybe_signed_htlc_tx(outpoint, &outp.preimage)
 			}
-			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				Some(onchain_handler.get_maybe_signed_holder_tx(&outp.funding_redeemscript))
+			PackageSolvingData::HolderFundingOutput(ref _outp) => {
+				Some(onchain_handler.get_maybe_signed_holder_tx())
 			}
 			_ => { panic!("API Error!"); }
 		}
@@ -969,7 +950,7 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		(inputs_weight + witnesses_weight + transaction_weight + output_weight) as u64
 	}
-	pub(crate) fn construct_malleable_package_with_external_funding<Signer: EcdsaChannelSigner>(
+	pub(crate) fn construct_malleable_package_with_external_funding<Signer: ChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
 	) -> Option<Vec<ExternalHTLCClaim>> {
 		debug_assert!(self.requires_external_funding());
@@ -987,7 +968,7 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
-	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: EcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: ChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: Amount,
 		destination_script: ScriptBuf, logger: &L
 	) -> Option<MaybeSignedTransaction> {
@@ -1010,7 +991,7 @@ impl PackageTemplate {
 		}
 		Some(MaybeSignedTransaction(bumped_tx))
 	}
-	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: EcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: ChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
 	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(!self.is_malleable());
@@ -1331,11 +1312,10 @@ where
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
+	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc, weight_revoked_received_htlc};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
-	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 
 	use bitcoin::absolute::LockTime;
 	use bitcoin::amount::Amount;
@@ -1369,7 +1349,7 @@ mod tests {
 				let secp_ctx = Secp256k1::new();
 				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, Amount::ZERO, 0, $is_counterparty_balance_on_anchors))
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_scalar, Amount::ZERO, $is_counterparty_balance_on_anchors, WEIGHT_REVOKED_OUTPUT))
 			}
 		}
 	}
@@ -1382,7 +1362,9 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: 1_000_000, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()))
+				let features = &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				let witness_weight = weight_revoked_received_htlc(features);
+				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, dumb_scalar, 1_000_000 / 1_000, htlc, witness_weight))
 			}
 		}
 	}
@@ -1395,7 +1377,8 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: $expiry, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), htlc, $features))
+				let weight = weight_received_htlc(&$features);
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, htlc, $features, weight))
 			}
 		}
 	}
@@ -1409,7 +1392,8 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), preimage, htlc, $features))
+				let weight = weight_offered_htlc(&$features);
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, $features, weight))
 			}
 		}
 	}
@@ -1433,7 +1417,7 @@ mod tests {
 
 	macro_rules! dumb_funding_output {
 		() => {
-			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(ScriptBuf::new(), 0, ChannelTypeFeatures::only_static_remote_key()))
+			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(0, ChannelTypeFeatures::only_static_remote_key()))
 		}
 	}
 

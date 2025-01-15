@@ -20,13 +20,10 @@ use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::chan_utils::{
-	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
-	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, HTLCOutputInCommitment
-};
+use crate::ln::chan_utils::HTLCOutputInCommitment;
 use crate::prelude::*;
 use crate::sign::{
-	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT
+	ChannelDerivationParameters, ChannelSigner, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sync::Mutex;
@@ -122,11 +119,9 @@ pub enum BumpTransactionEvent {
 	/// broadcast first, as the child anchor transaction depends on it.
 	///
 	/// The consumer should be able to sign for any of the additional inputs included within the
-	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
-	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input signature
-	/// can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`], which can then be
-	/// provided to [`build_anchor_input_witness`] along with the `funding_pubkey` to obtain the
-	/// full witness required to spend.
+	/// child anchor transaction. To sign its anchor input, a [`ChannelSigner`] should be
+	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input witness
+	/// can be computed with [`ChannelSigner::spend_holder_anchor_output`].
 	///
 	/// It is possible to receive more than one instance of this event if a valid child anchor
 	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
@@ -145,9 +140,8 @@ pub enum BumpTransactionEvent {
 	/// an empty `pending_htlcs`), confirmation of the commitment transaction can be considered to
 	/// be not urgent.
 	///
-	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
-	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_anchor_input
-	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
+	/// [`ChannelSigner`]: crate::sign::ChannelSigner
+	/// [`ChannelSigner::spend_holder_anchor_output`]: crate::sign::ChannelSigner::spend_holder_anchor_output
 	ChannelClose {
 		/// The `channel_id` of the channel which has been closed.
 		channel_id: ChannelId,
@@ -189,7 +183,7 @@ pub enum BumpTransactionEvent {
 	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
 	/// HTLC transaction. To sign HTLC inputs, an [`EcdsaChannelSigner`] should be re-derived
 	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's signature can be
-	/// computed with [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be
+	/// computed with [`ChannelSigner::sign_holder_htlc_transaction`], which can then be
 	/// provided to [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required
 	/// to spend.
 	///
@@ -204,7 +198,7 @@ pub enum BumpTransactionEvent {
 	/// to the HTLC transaction is greater in value than the HTLCs being claimed.
 	///
 	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
-	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_htlc_transaction
+	/// [`ChannelSigner::sign_holder_htlc_transaction`]: crate::sign::ChannelSigner::sign_holder_htlc_transaction
 	HTLCResolution {
 		/// The `channel_id` of the channel which has been closed.
 		channel_id: ChannelId,
@@ -611,6 +605,9 @@ where
 		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
+		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
+		let anchor_input_witness_weight = signer.get_holder_anchor_input_witness_weight();
+
 		// Our commitment transaction already has fees allocated to it, so we should take them into
 		// account. We do so by pretending the commitment transaction's fee and weight are part of
 		// the anchor input.
@@ -618,7 +615,7 @@ where
 		let commitment_tx_fee_sat = Amount::from_sat(commitment_tx_fee_sat);
 		anchor_utxo.value += commitment_tx_fee_sat;
 		let starting_package_and_fixed_input_satisfaction_weight =
-			commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+			commitment_tx.weight().to_wu() + anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT;
 		let mut package_and_fixed_input_satisfaction_weight =
 			starting_package_and_fixed_input_satisfaction_weight;
 
@@ -643,7 +640,7 @@ where
 				output: vec![],
 			};
 
-			let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT +
+			let total_satisfaction_weight = anchor_input_witness_weight + EMPTY_SCRIPT_SIG_WEIGHT +
 				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
 			let total_input_amount = must_spend_amount +
 				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
@@ -689,9 +686,8 @@ where
 			log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
 
-			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
-			let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
-			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+			let anchor_witness = signer.spend_holder_anchor_output(&anchor_tx, 0, &self.secp)?;
+			anchor_tx.input[0].witness = anchor_witness;
 
 			#[cfg(debug_assertions)] {
 				let signed_tx_weight = anchor_tx.weight().to_wu();
@@ -728,19 +724,26 @@ where
 			output: vec![],
 		};
 		let mut must_spend = Vec::with_capacity(htlc_descriptors.len());
+		let mut signers_and_revokeable_spks = BTreeMap::new();
 		for htlc_descriptor in htlc_descriptors {
+			// TODO: avoid having mutable references flying around
+			let (_, revokeable_spk, witness_weight) = signers_and_revokeable_spks.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+				.or_insert_with(|| {
+					let signer = htlc_descriptor.derive_channel_signer(&self.signer_provider);
+					let revokeable_spk = signer.get_revokeable_spk(true, htlc_descriptor.per_commitment_number, &htlc_descriptor.per_commitment_point, &self.secp);
+					// TODO: cache this, it does not change throughout the lifetime of the channel
+					let witness_weight = signer.get_holder_htlc_transaction_witness_weight(htlc_descriptor.preimage.is_some());
+					(signer, revokeable_spk, witness_weight)
+				});
+
 			let htlc_input = htlc_descriptor.unsigned_tx_input();
 			must_spend.push(Input {
 				outpoint: htlc_input.previous_output.clone(),
 				previous_utxo: htlc_descriptor.previous_utxo(&self.secp),
-				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + if htlc_descriptor.preimage.is_some() {
-					HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT
-				} else {
-					HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT
-				},
+				satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + *witness_weight,
 			});
 			htlc_tx.input.push(htlc_input);
-			let htlc_output = htlc_descriptor.tx_output(&self.secp);
+			let htlc_output = htlc_descriptor.tx_output(revokeable_spk.clone());
 			htlc_tx.output.push(htlc_output);
 		}
 
@@ -789,13 +792,11 @@ where
 		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_psbt.unsigned_tx.compute_txid());
 		htlc_tx = self.utxo_source.sign_psbt(htlc_psbt)?;
 
-		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
-				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
-			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
-			let witness_script = htlc_descriptor.witness_script(&self.secp);
-			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);
+			// Unwrap because we derived the corresponding signers for all htlc descriptors further above
+			let signer  = &signers_and_revokeable_spks.get(&htlc_descriptor.channel_derivation_parameters.keys_id).unwrap().0;
+			let witness = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
+			htlc_tx.input[idx].witness = witness;
 		}
 
 		#[cfg(debug_assertions)] {
@@ -857,7 +858,7 @@ mod tests {
 	use super::*;
 
 	use crate::io::Cursor;
-	use crate::ln::chan_utils::ChannelTransactionParameters;
+	use crate::ln::chan_utils::{ANCHOR_INPUT_WITNESS_WEIGHT, ChannelTransactionParameters};
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
 	use crate::sign::KeysManager;
