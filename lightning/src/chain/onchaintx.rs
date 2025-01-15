@@ -215,6 +215,7 @@ pub(crate) enum OnchainClaim {
 }
 
 /// Represents the different feerate strategies a pending request can use when generating a claim.
+#[derive(Debug)]
 pub(crate) enum FeerateStrategy {
 	/// We must reuse the most recently used feerate, if any.
 	RetryPrevious,
