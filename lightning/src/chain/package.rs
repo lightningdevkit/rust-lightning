@@ -1276,10 +1276,13 @@ fn feerate_bump<F: Deref, L: Logger>(
 where
 	F::Target: FeeEstimator,
 {
+	let previous_fee = previous_feerate * predicted_weight / 1000;
+
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) =
 		compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger)
 	{
+		log_trace!(logger, "Initiating fee rate bump from {} s/KWU ({} s) to {} s/KWU ({} s)", previous_feerate, previous_fee, new_feerate, new_fee);
 		match feerate_strategy {
 			FeerateStrategy::RetryPrevious => {
 				let previous_fee = previous_feerate * predicted_weight / 1000;
@@ -1297,6 +1300,8 @@ where
 				// ...else just increase the previous feerate by 25% (because that's a nice number)
 				let bumped_feerate = previous_feerate + (previous_feerate / 4);
 				let bumped_fee = bumped_feerate * predicted_weight / 1000;
+				log_trace!(logger, "Attempting forced 25% fee rate bump from {} s/KWU ({} s) to {} s/KWU ({} s)", previous_feerate, previous_fee, bumped_feerate, bumped_fee);
+
 				if input_amounts <= bumped_fee {
 					log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
 					return None;
@@ -1316,17 +1321,16 @@ where
 		return Some((new_fee, new_feerate));
 	}
 
-	let previous_fee = previous_feerate * predicted_weight / 1000;
 	let min_relay_fee = INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT * predicted_weight / 1000;
 	// BIP 125 Opt-in Full Replace-by-Fee Signaling
 	// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
 	//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
-	let new_fee = if new_fee < previous_fee + min_relay_fee {
-		new_fee + previous_fee + min_relay_fee - new_fee
-	} else {
-		new_fee
-	};
-	Some((new_fee, new_fee * 1000 / predicted_weight))
+	let naive_new_fee = new_fee;
+	let naive_new_feerate = new_feerate;
+	let new_fee = cmp::max(new_fee, previous_fee + min_relay_fee);
+	let new_feerate = new_fee * 1000 / predicted_weight;
+	log_trace!(logger, "Fee rate bumped by {}s from {} s/KWU ({} s) to {} s/KWU ({} s) (naive: {} s/KWU ({} s))", new_fee - previous_fee, previous_feerate, previous_fee, new_feerate, new_fee, naive_new_feerate, naive_new_fee);
+	Some((new_fee, new_feerate))
 }
 
 #[cfg(test)]
