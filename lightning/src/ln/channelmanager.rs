@@ -9455,43 +9455,61 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |phase: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
 			let node_id = phase.context().get_counterparty_node_id();
-			match (phase.signer_maybe_unblocked(self.chain_hash, &self.logger), phase.as_funded()) {
-				(Some(msgs), Some(chan)) => {
-					let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
-						node_id,
-						updates,
-					});
-					let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+			if let Some(msgs) = phase.signer_maybe_unblocked(self.chain_hash, &self.logger) {
+				if let Some(msg) = msgs.open_channel {
+					pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 						node_id,
 						msg,
 					});
-					match (cu_msg, raa_msg) {
-						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
-							pending_msg_events.push(cu);
-							pending_msg_events.push(raa);
-						},
-						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
-							pending_msg_events.push(raa);
-							pending_msg_events.push(cu);
-						},
-						(Some(cu), _) => pending_msg_events.push(cu),
-						(_, Some(raa)) => pending_msg_events.push(raa),
-						(_, _) => {},
-					}
-					if let Some(msg) = msgs.funding_signed {
-						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-							node_id,
-							msg,
-						});
-					}
+				}
+				if let Some(msg) = msgs.funding_created {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.accept_channel {
+					pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+						node_id,
+						msg,
+					});
+				}
+				let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
+					node_id,
+					updates,
+				});
+				let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+					node_id,
+					msg,
+				});
+				match (cu_msg, raa_msg) {
+					(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+						pending_msg_events.push(cu);
+						pending_msg_events.push(raa);
+					},
+					(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+						pending_msg_events.push(raa);
+						pending_msg_events.push(cu);
+					},
+					(Some(cu), _) => pending_msg_events.push(cu),
+					(_, Some(raa)) => pending_msg_events.push(raa),
+					(_, _) => {},
+				}
+				if let Some(msg) = msgs.funding_signed {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.closing_signed {
+					pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(chan) = phase.as_funded() {
 					if let Some(msg) = msgs.channel_ready {
 						send_channel_ready!(self, pending_msg_events, chan, msg);
-					}
-					if let Some(msg) = msgs.closing_signed {
-						pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-							node_id,
-							msg,
-						});
 					}
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
 						let channel_id = chan.context.channel_id();
@@ -9506,30 +9524,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 						}
 					}
-					msgs.shutdown_result
-				},
-				(Some(msgs), None) => {
-					if let Some(msg) = msgs.open_channel {
-						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-							node_id,
-							msg,
-						});
-					}
-					if let Some(msg) = msgs.funding_created {
-						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-							node_id,
-							msg,
-						});
-					}
-					if let Some(msg) = msgs.accept_channel {
-						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-							node_id,
-							msg,
-						});
-					}
-					None
+				} else {
+					// We don't know how to handle a channel_ready or signed_closing_tx for a
+					// non-funded channel.
+					debug_assert!(msgs.channel_ready.is_none());
+					debug_assert!(msgs.signed_closing_tx.is_none());
 				}
-				(None, _) => None,
+				msgs.shutdown_result
+			} else {
+				None
 			}
 		};
 
