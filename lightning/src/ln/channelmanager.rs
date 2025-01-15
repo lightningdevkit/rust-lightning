@@ -11632,6 +11632,7 @@ where
 			msg.channel_id)), counterparty_node_id);
 	}
 
+	/// TODO(splicing): Implement persisting
 	#[cfg(splicing)]
 	fn handle_splice_init(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceInit) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
@@ -11646,6 +11647,7 @@ where
 		});
 	}
 
+	/// TODO(splicing): Implement persisting
 	#[cfg(splicing)]
 	fn handle_splice_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceAck) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
