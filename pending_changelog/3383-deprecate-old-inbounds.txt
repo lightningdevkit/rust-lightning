@@ -1,6 +1,0 @@
-# Backwards Compatibility
-* Pending inbound payments added in versions 0.0.116 or earlier using the
-	`create_inbound_payment{,_for_hash}_legacy` API will be ignored on `ChannelManager`
-	deserialization and fail to be received
-
-
