@@ -30,7 +30,7 @@ use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
-use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
+use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters, TrampolineHop};
 use crate::sign::SpendableOutputDescriptor;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
@@ -1185,12 +1185,12 @@ pub enum Event {
 		/// events generated or serialized by versions prior to 0.0.122.
 		next_user_channel_id: Option<u128>,
 		/// The node id of the previous node.
-		/// 
+		///
 		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
 		/// versions prior to 0.1
 		prev_node_id: Option<PublicKey>,
 		/// The node id of the next node.
-		/// 
+		///
 		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
 		/// versions prior to 0.1
 		next_node_id: Option<PublicKey>,
@@ -1584,6 +1584,7 @@ impl Writeable for Event {
 					(9, None::<RouteParameters>, option), // retry in LDK versions prior to 0.0.115
 					(11, payment_id, option),
 					(13, failure, required),
+					(15, path.trampoline_hops, optional_vec),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -1667,6 +1668,7 @@ impl Writeable for Event {
 				13u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, path.trampoline_hops, optional_vec),
 					(2, payment_hash, option),
 					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
@@ -1731,6 +1733,7 @@ impl Writeable for Event {
 				21u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, path.trampoline_hops, optional_vec),
 					(2, payment_hash, required),
 					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
@@ -1740,6 +1743,7 @@ impl Writeable for Event {
 				23u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, path.trampoline_hops, optional_vec),
 					(2, payment_hash, required),
 					(4, path.hops, required_vec),
 					(6, short_channel_id, option),
@@ -1919,6 +1923,7 @@ impl MaybeReadable for Event {
 					let mut network_update = None;
 					let mut blinded_tail: Option<BlindedTail> = None;
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
+					let mut trampoline_path: Option<Vec<TrampolineHop>> = Some(vec![]);
 					let mut short_channel_id = None;
 					let mut payment_id = None;
 					let mut failure_opt = None;
@@ -1933,6 +1938,7 @@ impl MaybeReadable for Event {
 						(7, short_channel_id, option),
 						(11, payment_id, option),
 						(13, failure_opt, upgradable_option),
+						(15, trampoline_path, optional_vec),
 					});
 					let failure = failure_opt.unwrap_or_else(|| PathFailure::OnPath { network_update });
 					Ok(Some(Event::PaymentPathFailed {
@@ -1940,7 +1946,7 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						failure,
-						path: Path { hops: path.unwrap(), blinded_tail },
+						path: Path { hops: path.unwrap(), trampoline_hops: trampoline_path.unwrap_or(vec![]), blinded_tail },
 						short_channel_id,
 						#[cfg(test)]
 						error_code,
@@ -2078,6 +2084,7 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, trampoline_path, optional_vec),
 						(2, payment_hash, option),
 						(4, path, required_vec),
 						(6, blinded_tail, option),
@@ -2085,7 +2092,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash,
-						path: Path { hops: path, blinded_tail },
+						path: Path { hops: path, trampoline_hops: trampoline_path.unwrap_or(vec![]), blinded_tail },
 					}))
 				};
 				f()
@@ -2158,6 +2165,7 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, trampoline_path, optional_vec),
 						(2, payment_hash, required),
 						(4, path, required_vec),
 						(6, blinded_tail, option),
@@ -2165,7 +2173,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, blinded_tail },
+						path: Path { hops: path, trampoline_hops: trampoline_path.unwrap_or(vec![]), blinded_tail },
 					}))
 				};
 				f()
@@ -2174,6 +2182,7 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, trampoline_path, optional_vec),
 						(2, payment_hash, required),
 						(4, path, required_vec),
 						(6, short_channel_id, option),
@@ -2182,7 +2191,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeFailed {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, blinded_tail },
+						path: Path { hops: path, trampoline_hops: trampoline_path.unwrap_or(vec![]), blinded_tail },
 						short_channel_id,
 					}))
 				};
