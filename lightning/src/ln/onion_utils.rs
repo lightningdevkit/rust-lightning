@@ -527,7 +527,13 @@ where
 				);
 			}
 		} else {
-			let payload = OP::new_forward(last_hop_id.unwrap(), value_msat, cltv);
+			let payload = OP::new_forward(
+				last_hop_id.ok_or(APIError::InvalidRoute {
+					err: "Next hop ID must be known for non-final hops".to_string(),
+				})?,
+				value_msat,
+				cltv,
+			);
 			callback(PayloadCallbackAction::PushFront, payload);
 		}
 		cur_value_msat += hop.fee_msat();
