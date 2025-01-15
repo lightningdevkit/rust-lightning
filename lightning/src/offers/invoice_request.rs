@@ -665,6 +665,15 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 		$contents.amount_msats()
 	}
 
+	/// Returns whether an amount was set in the request; otherwise, if [`amount_msats`] is `Some`
+	/// then it was inferred from the [`Offer::amount`] and [`quantity`].
+	///
+	/// [`amount_msats`]: Self::amount_msats
+	/// [`quantity`]: Self::quantity
+	pub fn has_amount_msats(&$self) -> bool {
+		$contents.has_amount_msats()
+	}
+
 	/// Features pertaining to requesting an invoice.
 	pub fn invoice_request_features(&$self) -> &InvoiceRequestFeatures {
 		&$contents.features()
@@ -983,6 +992,10 @@ impl InvoiceRequestContents {
 				Some(Amount::Currency { .. }) => None,
 				None => { debug_assert!(false); None},
 			})
+	}
+
+	pub(super) fn has_amount_msats(&self) -> bool {
+		self.inner.amount_msats().is_some()
 	}
 
 	pub(super) fn features(&self) -> &InvoiceRequestFeatures {
@@ -1669,6 +1682,7 @@ mod tests {
 			.amount_msats(1000).unwrap()
 			.build_and_sign().unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert!(invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
@@ -1680,6 +1694,7 @@ mod tests {
 			.amount_msats(1000).unwrap()
 			.build_and_sign().unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert!(invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, Some(1000));
 
@@ -1690,6 +1705,7 @@ mod tests {
 			.amount_msats(1001).unwrap()
 			.build_and_sign().unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert!(invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1001));
 		assert_eq!(tlv_stream.amount, Some(1001));
 
@@ -1774,6 +1790,7 @@ mod tests {
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert!(!invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(tlv_stream.amount, None);
 
@@ -1785,6 +1802,7 @@ mod tests {
 			.quantity(2).unwrap()
 			.build_and_sign().unwrap();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert!(!invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), Some(2000));
 		assert_eq!(tlv_stream.amount, None);
 
@@ -1794,6 +1812,7 @@ mod tests {
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_unchecked_and_sign();
 		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert!(!invoice_request.has_amount_msats());
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(tlv_stream.amount, None);
 	}
