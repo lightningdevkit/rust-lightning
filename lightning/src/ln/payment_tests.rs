@@ -3690,20 +3690,20 @@ fn claim_from_closed_chan() {
 }
 
 #[test]
-fn test_custom_tlvs_basic() {
-	do_test_custom_tlvs(false, false, false);
-	do_test_custom_tlvs(true, false, false);
+fn test_sender_custom_tlvs_basic() {
+	do_test_sender_custom_tlvs(false, false, false);
+	do_test_sender_custom_tlvs(true, false, false);
 }
 
 #[test]
-fn test_custom_tlvs_explicit_claim() {
-	// Test that when receiving even custom TLVs the user must explicitly accept in case they
+fn test_sender_custom_tlvs_explicit_claim() {
+	// Test that when receiving even sender custom TLVs the user must explicitly accept in case they
 	// are unknown.
-	do_test_custom_tlvs(false, true, false);
-	do_test_custom_tlvs(false, true, true);
+	do_test_sender_custom_tlvs(false, true, false);
+	do_test_sender_custom_tlvs(false, true, true);
 }
 
-fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
+fn do_test_sender_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None; 2]);
@@ -3714,14 +3714,14 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	let amt_msat = 100_000;
 	let (mut route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
 	let payment_id = PaymentId(our_payment_hash.0);
-	let custom_tlvs = vec![
+	let sender_custom_tlvs = vec![
 		(if even_tlvs { 5482373482 } else { 5482373483 }, vec![1, 2, 3, 4]),
 		(5482373487, vec![0x42u8; 16]),
 	];
 	let onion_fields = RecipientOnionFields {
 		payment_secret: if spontaneous { None } else { Some(our_payment_secret) },
 		payment_metadata: None,
-		custom_tlvs: custom_tlvs.clone()
+		sender_custom_tlvs: sender_custom_tlvs.clone()
 	};
 	if spontaneous {
 		nodes[0].node.send_spontaneous_payment(
@@ -3746,24 +3746,24 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentClaimable { ref onion_fields, .. } => {
-			assert_eq!(onion_fields.clone().unwrap().custom_tlvs().clone(), custom_tlvs);
+			assert_eq!(onion_fields.clone().unwrap().sender_custom_tlvs().clone(), sender_custom_tlvs);
 		},
 		_ => panic!("Unexpected event"),
 	}
 
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
-			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
+			nodes[1].node.claim_funds_with_known_sender_custom_tlvs(our_payment_preimage);
 			let expected_total_fee_msat = pass_claimed_payment_along_route(
 				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage)
-					.with_custom_tlvs(custom_tlvs)
+					.with_sender_custom_tlvs(sender_custom_tlvs)
 			);
 			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
 		},
 		(false, false) => {
 			claim_payment_along_route(
 				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage)
-					.with_custom_tlvs(custom_tlvs)
+					.with_sender_custom_tlvs(sender_custom_tlvs)
 			);
 		},
 		(false, true) => {
@@ -3776,8 +3776,8 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 }
 
 #[test]
-fn test_retry_custom_tlvs() {
-	// Test that custom TLVs are successfully sent on retries
+fn test_retry_sender_custom_tlvs() {
+	// Test that sender custom TLVs are successfully sent on retries
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -3797,9 +3797,9 @@ fn test_retry_custom_tlvs() {
 	let payment_id = PaymentId(payment_hash.0);
 	let mut route_params = route.route_params.clone().unwrap();
 
-	let custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
+	let sender_custom_tlvs = vec![((1 << 16) + 1, vec![0x42u8; 16])];
 	let onion_fields = RecipientOnionFields::secret_only(payment_secret);
-	let onion_fields = onion_fields.with_custom_tlvs(custom_tlvs.clone()).unwrap();
+	let onion_fields = onion_fields.with_sender_custom_tlvs(sender_custom_tlvs.clone()).unwrap();
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, onion_fields,
@@ -3851,16 +3851,16 @@ fn test_retry_custom_tlvs() {
 	let path = &[&nodes[1], &nodes[2]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, 1_000_000, payment_hash, events.pop().unwrap())
 		.with_payment_secret(payment_secret)
-		.with_custom_tlvs(custom_tlvs.clone());
+		.with_sender_custom_tlvs(sender_custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
-			.with_custom_tlvs(custom_tlvs)
+			.with_sender_custom_tlvs(sender_custom_tlvs)
 	);
 }
 
 #[test]
-fn test_custom_tlvs_consistency() {
+fn test_sender_custom_tlvs_consistency() {
 	let even_type_1 = 1 << 16;
 	let odd_type_1	= (1 << 16)+ 1;
 	let even_type_2 = (1 << 16) + 2;
@@ -3870,32 +3870,32 @@ fn test_custom_tlvs_consistency() {
 	let value_2 = || vec![42u8; 16];
 
 	// Drop missing odd tlvs
-	do_test_custom_tlvs_consistency(
+	do_test_sender_custom_tlvs_consistency(
 		vec![(odd_type_1, value_1()), (odd_type_2, value_2())],
 		vec![(odd_type_1, value_1())],
 		Some(vec![(odd_type_1, value_1())]),
 	);
 	// Drop non-matching odd tlvs
-	do_test_custom_tlvs_consistency(
+	do_test_sender_custom_tlvs_consistency(
 		vec![(odd_type_1, value_1()), (odd_type_2, value_2())],
 		vec![(odd_type_1, differing_value_1()), (odd_type_2, value_2())],
 		Some(vec![(odd_type_2, value_2())]),
 	);
 	// Fail missing even tlvs
-	do_test_custom_tlvs_consistency(
+	do_test_sender_custom_tlvs_consistency(
 		vec![(odd_type_1, value_1()), (even_type_2, value_2())],
 		vec![(odd_type_1, value_1())],
 		None,
 	);
 	// Fail non-matching even tlvs
-	do_test_custom_tlvs_consistency(
+	do_test_sender_custom_tlvs_consistency(
 		vec![(even_type_1, value_1()), (odd_type_2, value_2())],
 		vec![(even_type_1, differing_value_1()), (odd_type_2, value_2())],
 		None,
 	);
 }
 
-fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs: Vec<(u64, Vec<u8>)>,
+fn do_test_sender_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs: Vec<(u64, Vec<u8>)>,
 	expected_receive_tlvs: Option<Vec<(u64, Vec<u8>)>>) {
 
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -3926,7 +3926,7 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 	let onion_fields = RecipientOnionFields {
 		payment_secret: Some(our_payment_secret),
 		payment_metadata: None,
-		custom_tlvs: first_tlvs
+		sender_custom_tlvs: first_tlvs
 	};
 	let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
 			onion_fields.clone(), payment_id, &route).unwrap();
@@ -3948,7 +3948,7 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 	let onion_fields = RecipientOnionFields {
 		payment_secret: Some(our_payment_secret),
 		payment_metadata: None,
-		custom_tlvs: second_tlvs
+		sender_custom_tlvs: second_tlvs
 	};
 	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
 		onion_fields.clone(), amt_msat, cur_height, payment_id, &None, session_privs[1]).unwrap();
@@ -3982,14 +3982,14 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentClaimable { ref onion_fields, .. } => {
-				assert_eq!(onion_fields.clone().unwrap().custom_tlvs, expected_tlvs);
+				assert_eq!(onion_fields.clone().unwrap().sender_custom_tlvs, expected_tlvs);
 			},
 			_ => panic!("Unexpected event"),
 		}
 
 		do_claim_payment_along_route(
 			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], our_payment_preimage)
-				.with_custom_tlvs(expected_tlvs)
+				.with_sender_custom_tlvs(expected_tlvs)
 		);
 		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true, true);
 	} else {
@@ -4054,7 +4054,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields {
-			payment_secret: Some(payment_secret), payment_metadata: Some(payment_metadata), custom_tlvs: vec![],
+			payment_secret: Some(payment_secret), payment_metadata: Some(payment_metadata), sender_custom_tlvs: vec![],
 		}, payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
@@ -4267,7 +4267,7 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 }
 
 #[test]
-fn peel_payment_onion_custom_tlvs() {
+fn peel_payment_onion_sender_custom_tlvs() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -4281,7 +4281,7 @@ fn peel_payment_onion_custom_tlvs() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
 	let mut recipient_onion = RecipientOnionFields::spontaneous_empty()
-		.with_custom_tlvs(vec![(414141, vec![42; 1200])]).unwrap();
+		.with_sender_custom_tlvs(vec![(414141, vec![42; 1200])]).unwrap();
 	let prng_seed = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 	let session_priv = SecretKey::from_slice(&prng_seed[..]).expect("RNG is busted");
 	let keysend_preimage = PaymentPreimage([42; 32]);
@@ -4309,12 +4309,12 @@ fn peel_payment_onion_custom_tlvs() {
 	assert_eq!(peeled_onion.incoming_amt_msat, Some(amt_msat));
 	match peeled_onion.routing {
 		PendingHTLCRouting::ReceiveKeysend {
-			payment_data, payment_metadata, custom_tlvs, ..
+			payment_data, payment_metadata, sender_custom_tlvs, ..
 		} => {
 			#[cfg(not(c_bindings))]
-			assert_eq!(&custom_tlvs, recipient_onion.custom_tlvs());
+			assert_eq!(&sender_custom_tlvs, recipient_onion.sender_custom_tlvs());
 			#[cfg(c_bindings)]
-			assert_eq!(custom_tlvs, recipient_onion.custom_tlvs());
+			assert_eq!(sender_custom_tlvs, recipient_onion.sender_custom_tlvs());
 			assert!(payment_metadata.is_none());
 			assert!(payment_data.is_none());
 		},

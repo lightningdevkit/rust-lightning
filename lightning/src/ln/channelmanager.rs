@@ -216,12 +216,12 @@ pub enum PendingHTLCRouting {
 		/// provide the onion shared secret used to decrypt the next level of forwarding
 		/// instructions.
 		phantom_shared_secret: Option<[u8; 32]>,
-		/// Custom TLVs which were set by the sender.
+		/// Sender custom TLVs which were set by the sender.
 		///
 		/// For HTLCs received by LDK, this will ultimately be exposed in
 		/// [`Event::PaymentClaimable::onion_fields`] as
-		/// [`RecipientOnionFields::custom_tlvs`].
-		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// [`RecipientOnionFields::sender_custom_tlvs`].
+		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
 	},
@@ -247,11 +247,11 @@ pub enum PendingHTLCRouting {
 		///
 		/// Used to track when we should expire pending HTLCs that go unclaimed.
 		incoming_cltv_expiry: u32,
-		/// Custom TLVs which were set by the sender.
+		/// Sender custom TLVs which were set by the sender.
 		///
 		/// For HTLCs received by LDK, these will ultimately bubble back up as
-		/// [`RecipientOnionFields::custom_tlvs`].
-		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// [`RecipientOnionFields::sender_custom_tlvs`].
+		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
 		/// Set if we are receiving a keysend to a blinded path, meaning we created the
@@ -984,17 +984,17 @@ struct ClaimablePayments {
 impl ClaimablePayments {
 	/// Moves a payment from [`Self::claimable_payments`] to [`Self::pending_claiming_payments`].
 	///
-	/// If `custom_tlvs_known` is false and custom even TLVs are set by the sender, the set of
+	/// If `sender_custom_tlvs_known` is false and custom even TLVs are set by the sender, the set of
 	/// pending HTLCs will be returned in the `Err` variant of this method. They MUST then be
 	/// failed by the caller as they will not be in either [`Self::claimable_payments`] or
 	/// [`Self::pending_claiming_payments`].
 	///
-	/// If `custom_tlvs_known` is true, and a matching payment is found, it will always be moved.
+	/// If `sender_custom_tlvs_known` is true, and a matching payment is found, it will always be moved.
 	///
 	/// If no payment is found, `Err(Vec::new())` is returned.
 	fn begin_claiming_payment<L: Deref, S: Deref>(
 		&mut self, payment_hash: PaymentHash, node_signer: &S, logger: &L,
-		inbound_payment_id_secret: &[u8; 32], custom_tlvs_known: bool,
+		inbound_payment_id_secret: &[u8; 32], sender_custom_tlvs_known: bool,
 	) -> Result<(Vec<ClaimableHTLC>, ClaimingPayment), Vec<ClaimableHTLC>>
 		where L::Target: Logger, S::Target: NodeSigner,
 	{
@@ -1011,10 +1011,10 @@ impl ClaimablePayments {
 					}
 				}
 
-				if let Some(RecipientOnionFields { custom_tlvs, .. }) = &payment.onion_fields {
-					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+				if let Some(RecipientOnionFields { sender_custom_tlvs, .. }) = &payment.onion_fields {
+					if !sender_custom_tlvs_known && sender_custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
 						log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
-							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+							&payment_hash, log_iter!(sender_custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
 						return Err(payment.htlcs);
 					}
 				}
@@ -6118,25 +6118,25 @@ where
 								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
-										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
+										incoming_cltv_expiry, phantom_shared_secret, sender_custom_tlvs,
 										requires_blinded_error: _
 									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
-												payment_metadata, custom_tlvs };
+												payment_metadata, sender_custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
 											true, None)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
-										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _,
+										incoming_cltv_expiry, sender_custom_tlvs, requires_blinded_error: _,
 										has_recipient_created_payment_secret, payment_context, invoice_request,
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata,
-											custom_tlvs,
+											sender_custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, payment_context, None, onion_fields,
@@ -7001,9 +7001,9 @@ where
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// This function will fail the payment if it has custom TLVs with even type numbers, as we
-	/// will assume they are unknown. If you intend to accept even custom TLVs, you should use
-	/// [`claim_funds_with_known_custom_tlvs`].
+	/// This function will fail the payment if it has sender custom TLVs with even type numbers, as we
+	/// will assume they are unknown. If you intend to accept even sender custom TLVs, you should use
+	/// [`claim_funds_with_known_sender_custom_tlvs`].
 	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
@@ -7011,12 +7011,12 @@ where
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	/// [`claim_funds_with_known_custom_tlvs`]: Self::claim_funds_with_known_custom_tlvs
+	/// [`claim_funds_with_known_sender_custom_tlvs`]: Self::claim_funds_with_known_sender_custom_tlvs
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
 		self.claim_payment_internal(payment_preimage, false);
 	}
 
-	/// This is a variant of [`claim_funds`] that allows accepting a payment with custom TLVs with
+	/// This is a variant of [`claim_funds`] that allows accepting a payment with sender custom TLVs with
 	/// even type numbers.
 	///
 	/// # Note
@@ -7025,11 +7025,11 @@ where
 	/// claim, otherwise you may unintentionally agree to some protocol you do not understand.
 	///
 	/// [`claim_funds`]: Self::claim_funds
-	pub fn claim_funds_with_known_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
+	pub fn claim_funds_with_known_sender_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
 		self.claim_payment_internal(payment_preimage, true);
 	}
 
-	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
+	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, sender_custom_tlvs_known: bool) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -7037,7 +7037,7 @@ where
 		let (sources, claiming_payment) = {
 			let res = self.claimable_payments.lock().unwrap().begin_claiming_payment(
 				payment_hash, &self.node_signer, &self.logger, &self.inbound_payment_id_secret,
-				custom_tlvs_known,
+				sender_custom_tlvs_known,
 			);
 
 			match res {
@@ -12600,7 +12600,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
-		(5, custom_tlvs, optional_vec),
+		(5, sender_custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
 	},
@@ -12610,7 +12610,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
-		(5, custom_tlvs, optional_vec),
+		(5, sender_custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
 		(9, payment_context, option),
 		(11, invoice_request, option),
@@ -12629,7 +12629,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
-		(5, custom_tlvs, optional_vec),
+		(5, sender_custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
 		(9, payment_context, option),
 	},
@@ -12639,7 +12639,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
-		(5, custom_tlvs, optional_vec),
+		(5, sender_custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
 		(9, payment_context, option),
 		(11, invoice_request, option),
@@ -15771,7 +15771,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]),
 				total_msat: sender_intended_amt_msat,
 			}),
-			custom_tlvs: Vec::new(),
+			sender_custom_tlvs: Vec::new(),
 		});
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
@@ -15794,7 +15794,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]),
 				total_msat: sender_intended_amt_msat,
 			}),
-			custom_tlvs: Vec::new(),
+			sender_custom_tlvs: Vec::new(),
 		});
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
@@ -15819,7 +15819,7 @@ mod tests {
 				payment_secret: PaymentSecret([0; 32]),
 				total_msat: 100,
 			}),
-			custom_tlvs: Vec::new(),
+			sender_custom_tlvs: Vec::new(),
 		}), [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
 
 		// Should not return an error as this condition:

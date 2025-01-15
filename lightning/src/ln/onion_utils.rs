@@ -205,7 +205,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 				.map(|payment_secret| msgs::FinalOnionHopData { payment_secret, total_msat }),
 			payment_metadata: recipient_onion.payment_metadata.as_ref(),
 			keysend_preimage,
-			custom_tlvs: &recipient_onion.custom_tlvs,
+			sender_custom_tlvs: &recipient_onion.sender_custom_tlvs,
 			sender_intended_htlc_amt_msat,
 			cltv_expiry_height,
 		})
@@ -219,7 +219,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
 		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
-		custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
+		sender_custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
 	) -> Self {
 		Self::BlindedReceive {
 			sender_intended_htlc_amt_msat,
@@ -229,7 +229,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 			intro_node_blinding_point,
 			keysend_preimage,
 			invoice_request,
-			custom_tlvs,
+			sender_custom_tlvs,
 		}
 	}
 
@@ -272,7 +272,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 		sender_intended_htlc_amt_msat: u64, total_msat: u64, cltv_expiry_height: u32,
 		encrypted_tlvs: &'a Vec<u8>, intro_node_blinding_point: Option<PublicKey>,
 		keysend_preimage: Option<PaymentPreimage>, _invoice_request: Option<&'a InvoiceRequest>,
-		custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
+		sender_custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
 	) -> Self {
 		Self::BlindedReceive {
 			sender_intended_htlc_amt_msat,
@@ -281,7 +281,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 			encrypted_tlvs,
 			intro_node_blinding_point,
 			keysend_preimage,
-			custom_tlvs,
+			sender_custom_tlvs,
 		}
 	}
 
@@ -539,7 +539,7 @@ where
 									blinding_point.take(),
 									*keysend_preimage,
 									invoice_request,
-									&recipient_onion.custom_tlvs,
+									&recipient_onion.sender_custom_tlvs,
 								),
 							);
 						} else {

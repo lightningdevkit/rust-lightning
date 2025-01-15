@@ -104,7 +104,7 @@ pub(crate) enum PendingOutboundPayment {
 		payment_metadata: Option<Vec<u8>>,
 		keysend_preimage: Option<PaymentPreimage>,
 		invoice_request: Option<InvoiceRequest>,
-		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Present iff the payment was serialized on 0.0.103+.
 		pending_fee_msat: Option<u64>,
@@ -493,7 +493,7 @@ pub enum RetryableSendFailure {
 	/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
-	/// The [`RecipientOnionFields::payment_metadata`], [`RecipientOnionFields::custom_tlvs`], or
+	/// The [`RecipientOnionFields::payment_metadata`], [`RecipientOnionFields::sender_custom_tlvs`], or
 	/// [`BlindedPaymentPath`]s provided are too large and caused us to exceed the maximum onion
 	/// packet size of 1300 bytes.
 	///
@@ -650,13 +650,13 @@ pub struct RecipientOnionFields {
 	/// [`Self::payment_secret`] and while nearly all lightning senders support secrets, metadata
 	/// may not be supported as universally.
 	pub payment_metadata: Option<Vec<u8>>,
-	/// See [`Self::custom_tlvs`] for more info.
-	pub(super) custom_tlvs: Vec<(u64, Vec<u8>)>,
+	/// See [`Self::sender_custom_tlvs`] for more info.
+	pub(super) sender_custom_tlvs: Vec<(u64, Vec<u8>)>,
 }
 
 impl_writeable_tlv_based!(RecipientOnionFields, {
 	(0, payment_secret, option),
-	(1, custom_tlvs, optional_vec),
+	(1, sender_custom_tlvs, optional_vec),
 	(2, payment_metadata, option),
 });
 
@@ -665,7 +665,7 @@ impl RecipientOnionFields {
 	/// set of onion fields for today's BOLT11 invoices - most nodes require a [`PaymentSecret`]
 	/// but do not require or provide any further data.
 	pub fn secret_only(payment_secret: PaymentSecret) -> Self {
-		Self { payment_secret: Some(payment_secret), payment_metadata: None, custom_tlvs: Vec::new() }
+		Self { payment_secret: Some(payment_secret), payment_metadata: None, sender_custom_tlvs: Vec::new() }
 	}
 
 	/// Creates a new [`RecipientOnionFields`] with no fields. This generally does not create
@@ -677,10 +677,10 @@ impl RecipientOnionFields {
 	/// [`ChannelManager::send_spontaneous_payment`]: super::channelmanager::ChannelManager::send_spontaneous_payment
 	/// [`RecipientOnionFields::secret_only`]: RecipientOnionFields::secret_only
 	pub fn spontaneous_empty() -> Self {
-		Self { payment_secret: None, payment_metadata: None, custom_tlvs: Vec::new() }
+		Self { payment_secret: None, payment_metadata: None, sender_custom_tlvs: Vec::new() }
 	}
 
-	/// Creates a new [`RecipientOnionFields`] from an existing one, adding custom TLVs. Each
+	/// Creates a new [`RecipientOnionFields`] from an existing one, adding sender custom TLVs. Each
 	/// TLV is provided as a `(u64, Vec<u8>)` for the type number and serialized value
 	/// respectively. TLV type numbers must be unique and within the range
 	/// reserved for custom types, i.e. >= 2^16, otherwise this method will return `Err(())`.
@@ -688,11 +688,11 @@ impl RecipientOnionFields {
 	/// This method will also error for types in the experimental range which have been
 	/// standardized within the protocol, which only includes 5482373484 (keysend) for now.
 	///
-	/// See [`Self::custom_tlvs`] for more info.
-	pub fn with_custom_tlvs(mut self, mut custom_tlvs: Vec<(u64, Vec<u8>)>) -> Result<Self, ()> {
-		custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
+	/// See [`Self::sender_custom_tlvs`] for more info.
+	pub fn with_sender_custom_tlvs(mut self, mut sender_custom_tlvs: Vec<(u64, Vec<u8>)>) -> Result<Self, ()> {
+		sender_custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 		let mut prev_type = None;
-		for (typ, _) in custom_tlvs.iter() {
+		for (typ, _) in sender_custom_tlvs.iter() {
 			if *typ < 1 << 16 { return Err(()); }
 			if *typ == 5482373484 { return Err(()); } // keysend
 			if *typ == 77_777 { return Err(()); } // invoice requests for async payments
@@ -702,38 +702,38 @@ impl RecipientOnionFields {
 			}
 			prev_type = Some(*typ);
 		}
-		self.custom_tlvs = custom_tlvs;
+		self.sender_custom_tlvs = sender_custom_tlvs;
 		Ok(self)
 	}
 
-	/// Gets the custom TLVs that will be sent or have been received.
+	/// Gets the sender custom TLVs that will be sent or have been received.
 	///
-	/// Custom TLVs allow sending extra application-specific data with a payment. They provide
+	/// Sender custom TLVs allow sending extra application-specific data with a payment. They provide
 	/// additional flexibility on top of payment metadata, as while other implementations may
-	/// require `payment_metadata` to reflect metadata provided in an invoice, custom TLVs
+	/// require `payment_metadata` to reflect metadata provided in an invoice, sender custom TLVs
 	/// do not have this restriction.
 	///
 	/// Note that if this field is non-empty, it will contain strictly increasing TLVs, each
 	/// represented by a `(u64, Vec<u8>)` for its type number and serialized value respectively.
-	/// This is validated when setting this field using [`Self::with_custom_tlvs`].
+	/// This is validated when setting this field using [`Self::with_sender_custom_tlvs`].
 	#[cfg(not(c_bindings))]
-	pub fn custom_tlvs(&self) -> &Vec<(u64, Vec<u8>)> {
-		&self.custom_tlvs
+	pub fn sender_custom_tlvs(&self) -> &Vec<(u64, Vec<u8>)> {
+		&self.sender_custom_tlvs
 	}
 
-	/// Gets the custom TLVs that will be sent or have been received.
+	/// Gets the sender custom TLVs that will be sent or have been received.
 	///
-	/// Custom TLVs allow sending extra application-specific data with a payment. They provide
+	/// Sender custom TLVs allow sending extra application-specific data with a payment. They provide
 	/// additional flexibility on top of payment metadata, as while other implementations may
-	/// require `payment_metadata` to reflect metadata provided in an invoice, custom TLVs
+	/// require `payment_metadata` to reflect metadata provided in an invoice, sender custom TLVs
 	/// do not have this restriction.
 	///
 	/// Note that if this field is non-empty, it will contain strictly increasing TLVs, each
 	/// represented by a `(u64, Vec<u8>)` for its type number and serialized value respectively.
-	/// This is validated when setting this field using [`Self::with_custom_tlvs`].
+	/// This is validated when setting this field using [`Self::with_sender_custom_tlvs`].
 	#[cfg(c_bindings)]
-	pub fn custom_tlvs(&self) -> Vec<(u64, Vec<u8>)> {
-		self.custom_tlvs.clone()
+	pub fn sender_custom_tlvs(&self) -> Vec<(u64, Vec<u8>)> {
+		self.sender_custom_tlvs.clone()
 	}
 
 	/// When we have received some HTLC(s) towards an MPP payment, as we receive further HTLC(s) we
@@ -747,8 +747,8 @@ impl RecipientOnionFields {
 		if self.payment_secret != further_htlc_fields.payment_secret { return Err(()); }
 		if self.payment_metadata != further_htlc_fields.payment_metadata { return Err(()); }
 
-		let tlvs = &mut self.custom_tlvs;
-		let further_tlvs = &mut further_htlc_fields.custom_tlvs;
+		let tlvs = &mut self.sender_custom_tlvs;
+		let further_tlvs = &mut further_htlc_fields.sender_custom_tlvs;
 
 		let even_tlvs = tlvs.iter().filter(|(typ, _)| *typ % 2 == 0);
 		let further_even_tlvs = further_tlvs.iter().filter(|(typ, _)| *typ % 2 == 0);
@@ -943,7 +943,7 @@ impl OutboundPayments {
 		let recipient_onion = RecipientOnionFields {
 			payment_secret: None,
 			payment_metadata: None,
-			custom_tlvs: vec![],
+			sender_custom_tlvs: vec![],
 		};
 		let route = match self.find_initial_route(
 			payment_id, payment_hash, &recipient_onion, keysend_preimage, invoice_request,
@@ -1369,7 +1369,7 @@ impl OutboundPayments {
 					match payment.get() {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata,
-							custom_tlvs, pending_amt_msat, invoice_request, ..
+							sender_custom_tlvs, pending_amt_msat, invoice_request, ..
 						} => {
 							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 							let retry_amt_msat = route.get_total_amount();
@@ -1389,7 +1389,7 @@ impl OutboundPayments {
 							let recipient_onion = RecipientOnionFields {
 								payment_secret: *payment_secret,
 								payment_metadata: payment_metadata.clone(),
-								custom_tlvs: custom_tlvs.clone(),
+								sender_custom_tlvs: sender_custom_tlvs.clone(),
 							};
 							let keysend_preimage = *keysend_preimage;
 							let invoice_request = invoice_request.clone();
@@ -1693,7 +1693,7 @@ impl OutboundPayments {
 			payment_metadata: recipient_onion.payment_metadata,
 			keysend_preimage,
 			invoice_request,
-			custom_tlvs: recipient_onion.custom_tlvs,
+			sender_custom_tlvs: recipient_onion.sender_custom_tlvs,
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
 			remaining_max_total_routing_fee_msat:
@@ -2310,7 +2310,7 @@ impl OutboundPayments {
 					payment_metadata: None, // only used for retries, and we'll never retry on startup
 					keysend_preimage: None, // only used for retries, and we'll never retry on startup
 					invoice_request: None, // only used for retries, and we'll never retry on startup
-					custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
+					sender_custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
 					pending_amt_msat: path_amt,
 					pending_fee_msat: Some(path_fee),
 					total_msat: path_amt,
@@ -2395,7 +2395,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(6, total_msat, required),
 		(7, payment_metadata, option),
 		(8, pending_amt_msat, required),
-		(9, custom_tlvs, optional_vec),
+		(9, sender_custom_tlvs, optional_vec),
 		(10, starting_block_height, required),
 		(11, remaining_max_total_routing_fee_msat, option),
 		(13, invoice_request, option),
@@ -2468,25 +2468,25 @@ mod tests {
 	use alloc::collections::VecDeque;
 
 	#[test]
-	fn test_recipient_onion_fields_with_custom_tlvs() {
+	fn test_recipient_onion_fields_with_sender_custom_tlvs() {
 		let onion_fields = RecipientOnionFields::spontaneous_empty();
 
 		let bad_type_range_tlvs = vec![
 			(0, vec![42]),
 			(1, vec![42; 32]),
 		];
-		assert!(onion_fields.clone().with_custom_tlvs(bad_type_range_tlvs).is_err());
+		assert!(onion_fields.clone().with_sender_custom_tlvs(bad_type_range_tlvs).is_err());
 
 		let keysend_tlv = vec![
 			(5482373484, vec![42; 32]),
 		];
-		assert!(onion_fields.clone().with_custom_tlvs(keysend_tlv).is_err());
+		assert!(onion_fields.clone().with_sender_custom_tlvs(keysend_tlv).is_err());
 
 		let good_tlvs = vec![
 			((1 << 16) + 1, vec![42]),
 			((1 << 16) + 3, vec![42; 32]),
 		];
-		assert!(onion_fields.with_custom_tlvs(good_tlvs).is_ok());
+		assert!(onion_fields.with_sender_custom_tlvs(good_tlvs).is_ok());
 	}
 
 	#[test]
