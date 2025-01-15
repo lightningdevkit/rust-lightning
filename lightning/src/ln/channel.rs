@@ -4347,7 +4347,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> msgs::SpliceInit {
 		// Reuse the existing funding pubkey, in spite of the channel value changing
-		// (though at this point we don't know the new value yet, due tue the optional counterparty contribution)
+		// (though at this point we don't know the new value yet, due to the optional counterparty contribution)
 		// Note that channel_keys_id is supposed NOT to change
 		let funding_pubkey = self.get_holder_pubkeys().funding_pubkey.clone();
 		msgs::SpliceInit {
@@ -8119,7 +8119,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, ChannelError> {
 		// Check if a splice has been initiated already.
-		// Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways.
+		// Note: only a single outstanding splice is supported (per spec)
 		if let Some(splice_info) = &self.pending_splice_pre {
 			return Err(ChannelError::Warn(format!(
 				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution
@@ -8129,6 +8129,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			return Err(ChannelError::Warn(format!("Cannot initiate splicing, as channel is not Ready")));
 		}
+
+		// TODO(splicing): check for quiescence
 
 		let pre_channel_value = self.context.get_value_satoshis();
 		// Sanity check: capacity cannot decrease below 0
@@ -8146,7 +8148,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		// Note: post-splice channel value is not yet known at this point, counterpary contribution is not known
+		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
 		// Check that inputs are sufficient to cover our contribution
