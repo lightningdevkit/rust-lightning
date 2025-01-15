@@ -4273,7 +4273,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// The channel value is an input as opposed to using from self, so that this can be used in case of splicing
 	/// to checks with new channel value (before being comitted to it).
 	#[cfg(splicing)]
-	pub fn check_balance_meets_reserve_requirements(&self, balance: u64, channel_value: u64) -> Result<(), ChannelError> {
+	pub fn check_balance_meets_v2_reserve_requirements(&self, balance: u64, channel_value: u64) -> Result<(), ChannelError> {
 		if balance == 0 {
 			return Ok(());
 		}
@@ -8576,7 +8576,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution_satoshis);
 		// Early check for reserve requirement, assuming maximum balance of full channel value
 		// This will also be checked later at tx_complete
-		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
+		let _res = self.context.check_balance_meets_v2_reserve_requirements(post_balance, post_channel_value)?;
 
 		// TODO(splicing): Store msg.funding_pubkey
 		// TODO(splicing): Apply start of splice (splice_start)
@@ -8615,7 +8615,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution);
 		// Early check for reserve requirement, assuming maximum balance of full channel value
 		// This will also be checked later at tx_complete
-		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
+		let _res = self.context.check_balance_meets_v2_reserve_requirements(post_balance, post_channel_value)?;
 		Ok(())
 	}
 
