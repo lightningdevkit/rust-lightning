@@ -14,7 +14,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
-use crate::blinded_path::utils;
+use crate::blinded_path::utils::{self, WithPadding};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
@@ -445,7 +445,6 @@ impl Writeable for UnauthenticatedReceiveTlvs {
 
 impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// TODO: write padding
 		match self {
 			Self::Forward(tlvs) => tlvs.write(w)?,
 			Self::Receive(tlvs) => tlvs.write(w)?,
@@ -494,6 +493,20 @@ impl Readable for BlindedPaymentTlvs {
 	}
 }
 
+/// Represents the padding round off size (in bytes) that
+/// is used to pad payment bilnded path's [`BlindedHop`]
+/// when the payee tlvs comes from an [`Offer`].
+///
+/// [`Offer`]: crate::offers::offer::Offer
+pub(crate) const OFFER_PAYMENT_PADDING_ROUND_OFF: usize = 31;
+
+/// Represents the padding round off size (in bytes) that
+/// is used to pad payment bilnded path's [`BlindedHop`] when
+/// the payee tlvs comes from an [`Refund`].
+///
+/// [`Refund`]: crate::offers::refund::Refund
+pub(crate) const REFUND_PAYMENT_PADDING_ROUND_OFF: usize = 29;
+
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode],
@@ -504,7 +517,12 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let tlvs = intermediate_nodes.iter().map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 
-	let path = pks.zip(tlvs);
+	let round_off = match &payee_tlvs.tlvs.payment_context {
+		PaymentContext::Bolt12Offer(_) => OFFER_PAYMENT_PADDING_ROUND_OFF,
+		PaymentContext::Bolt12Refund(_) => REFUND_PAYMENT_PADDING_ROUND_OFF,
+	};
+
+	let path = pks.zip(tlvs.map(|tlv| WithPadding { tlvs: tlv, round_off }));
 
 	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }

@@ -12,9 +12,12 @@ use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use crate::blinded_path;
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12RefundContext, PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, UnauthenticatedReceiveTlvs, OFFER_PAYMENT_PADDING_ROUND_OFF, REFUND_PAYMENT_PADDING_ROUND_OFF};
+use crate::blinded_path::utils::is_padded;
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
 use crate::ln::types::ChannelId;
+use crate::offers::invoice_request::InvoiceRequestFields;
+use crate::offers::offer::OfferId;
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
@@ -317,7 +320,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
-	route_params.payment_params.max_path_length = 17;
+	route_params.payment_params.max_path_length = 16;
 
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -840,6 +843,8 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
+
+	route_params.payment_params.max_path_length = 17;
 
 	let route = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		let mut route = get_route(&nodes[0], &route_params).unwrap();
@@ -1510,6 +1515,134 @@ fn fails_receive_tlvs_authentication() {
 		&nodes[0], payment_hash, true,
 		PaymentFailedConditions::new().expected_htlc_error_data(0x4000 | 22, &[]),
 	);
+}
+
+#[test]
+fn blinded_offer_payment_path_padding() {
+	// Make sure that for a blinded payment path, all encrypted payloads are padded to equal lengths.
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
+	let chan_upd_3_4 = create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0).0.contents;
+
+	// Get all our nodes onto the same height so payments don't fail for CLTV violations.
+	connect_blocks(&nodes[0], nodes[4].best_block_info().1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], nodes[4].best_block_info().1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], nodes[4].best_block_info().1 - nodes[2].best_block_info().1);
+	assert_eq!(nodes[4].best_block_info().1, nodes[3].best_block_info().1);
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
+
+	// Create custom blinded path with offer's payee tlvs
+	let blinded_path = {
+		let mut intermediate_nodes = Vec::new();
+		let mut intro_node_min_htlc_opt = Some(1);
+		let mut intro_node_max_htlc_opt = Some(1_0000_0000);
+		let node_ids: Vec<PublicKey> = nodes.iter().skip(2).map(|n| n.node.get_our_node_id()).collect();
+		let channel_upds = &[&chan_upd_2_3, &chan_upd_3_4];
+		let keys_manager = &chanmon_cfgs[4].keys_manager;
+		for (idx, (node_id, chan_upd)) in node_ids.iter().zip(channel_upds).enumerate() {
+			intermediate_nodes.push(PaymentForwardNode {
+				node_id: *node_id,
+				tlvs: ForwardTlvs {
+					short_channel_id: chan_upd.short_channel_id,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: chan_upd.cltv_expiry_delta,
+						fee_proportional_millionths: chan_upd.fee_proportional_millionths,
+						fee_base_msat: chan_upd.fee_base_msat,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: u32::max_value(),
+						htlc_minimum_msat: intro_node_min_htlc_opt.take()
+							.unwrap_or_else(|| channel_upds[idx - 1].htlc_minimum_msat),
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
+				},
+				htlc_maximum_msat: intro_node_max_htlc_opt.take()
+					.unwrap_or_else(|| channel_upds[idx - 1].htlc_maximum_msat),
+			});
+		}
+
+		let payee_tlvs = UnauthenticatedReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat:
+					intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
+			},
+			payment_context: PaymentContext::Bolt12Offer(Bolt12OfferContext {
+				offer_id: OfferId([0; 32]),
+				invoice_request: InvoiceRequestFields {
+					payer_signing_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
+					quantity: None,
+					payer_note_truncated: None,
+					human_readable_name: None,
+				}
+			})
+		};
+
+		let nonce = Nonce([42u8; 16]);
+		let expanded_key = keys_manager.get_inbound_payment_key();
+		let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+
+		let mut secp_ctx = Secp256k1::new();
+		BlindedPaymentPath::new(
+			&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
+			intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
+			TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
+		).unwrap()
+	};
+
+	assert!(is_padded(&blinded_path.blinded_hops(), OFFER_PAYMENT_PADDING_ROUND_OFF));
+
+	let route_params = RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(vec![blinded_path]), amt_msat);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
+}
+
+#[test]
+fn blinded_refund_payment_path_padding() {
+	// Make sure that for a blinded payment path, all encrypted payloads are padded to equal lengths.
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
+	let chan_upd_3_4 = create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0).0.contents;
+
+	// Get all our nodes onto the same height so payments don't fail for CLTV violations.
+	connect_blocks(&nodes[0], nodes[4].best_block_info().1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], nodes[4].best_block_info().1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], nodes[4].best_block_info().1 - nodes[2].best_block_info().1);
+	assert_eq!(nodes[4].best_block_info().1, nodes[3].best_block_info().1);
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
+
+	let blinded_path = blinded_payment_path(payment_secret, 1, 1_0000_0000,
+		nodes.iter().skip(2).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_2_3, &chan_upd_3_4],
+		&chanmon_cfgs[4].keys_manager
+	);
+
+	assert!(is_padded(&blinded_path.blinded_hops(), REFUND_PAYMENT_PADDING_ROUND_OFF));
+
+	let route_params = RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(vec![blinded_path]), amt_msat);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
 }
 
 fn secret_from_hex(hex: &str) -> SecretKey {

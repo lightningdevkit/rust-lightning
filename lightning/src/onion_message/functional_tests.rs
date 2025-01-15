@@ -10,7 +10,8 @@
 //! Onion message testing and test utilities live here.
 
 use crate::blinded_path::EmptyNodeIdLookUp;
-use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageForwardNode, MessageContext, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext, MessageForwardNode, OffersContext, MESSAGE_PADDING_ROUND_OFF};
+use crate::blinded_path::utils::is_padded;
 use crate::events::{Event, EventsProvider};
 use crate::types::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -560,6 +561,51 @@ fn too_big_packet_error() {
 	};
 	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
+}
+
+#[test]
+fn test_blinded_path_padding_for_full_length_path() {
+	// Check that for a full blinded path, all encrypted payload are padded to rounded-off length.
+	let nodes = create_nodes(4);
+	let test_msg = TestCustomMessage::Pong;
+
+	let secp_ctx = Secp256k1::new();
+	let intermediate_nodes = [
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
+	];
+	// Update the context to create a larger final receive TLVs, ensuring that
+	// the hop sizes vary before padding.
+	let context = MessageContext::Custom(vec![0u8; 42]);
+	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
+
+	assert!(is_padded(&blinded_path.blinded_hops(), MESSAGE_PADDING_ROUND_OFF));
+
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
+	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
+}
+
+#[test]
+fn test_blinded_path_no_padding_for_compact_path() {
+	// Check that for a compact blinded path, no padding is applied.
+	let nodes = create_nodes(4);
+	let secp_ctx = Secp256k1::new();
+
+	// Include some short_channel_id, so that MessageRouter uses this to create compact blinded paths.
+	let intermediate_nodes = [
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: Some(24) },
+		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: Some(25) },
+	];
+	// Update the context to create a larger final receive TLVs, ensuring that
+	// the hop sizes vary before padding.
+	let context = MessageContext::Custom(vec![0u8; 42]);
+	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
+
+	assert!(!is_padded(&blinded_path.blinded_hops(), MESSAGE_PADDING_ROUND_OFF));
 }
 
 #[test]
