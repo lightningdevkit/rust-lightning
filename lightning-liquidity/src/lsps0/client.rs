@@ -46,7 +46,7 @@ where
 	/// Calls LSPS0 / bLIP-50's `list_protocols`.
 	///
 	/// Please refer to the [LSPS0 / bLIP-50
-	/// specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query#lsps-specification-support-query)
+	/// specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 	/// for more information.
 	pub fn list_protocols(&self, counterparty_node_id: &PublicKey) {
 		let msg = LSPS0Message::Request(
