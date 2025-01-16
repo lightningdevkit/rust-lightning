@@ -43,7 +43,6 @@ use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
@@ -202,14 +201,14 @@ impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 /// Note that this holds a mutex in [`ChainMonitor`] and may block other events until it is
 /// released.
 pub struct LockedChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
-	lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
-	funding_txo: OutPoint,
+	lock: RwLockReadGuard<'a, HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
+	channel_id: ChannelId,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
 	type Target = ChannelMonitor<ChannelSigner>;
 	fn deref(&self) -> &ChannelMonitor<ChannelSigner> {
-		&self.lock.get(&self.funding_txo).expect("Checked at construction").monitor
+		&self.lock.get(&self.channel_id).expect("Checked at construction").monitor
 	}
 }
 
@@ -236,7 +235,7 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
         L::Target: Logger,
         P::Target: Persist<ChannelSigner>,
 {
-	monitors: RwLock<HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+	monitors: RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -276,12 +275,12 @@ where C::Target: chain::Filter,
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
 		let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-		let funding_outpoints = hash_set_from_iter(self.monitors.read().unwrap().keys().cloned());
-		let channel_count = funding_outpoints.len();
-		for funding_outpoint in funding_outpoints.iter() {
+		let channel_ids = hash_set_from_iter(self.monitors.read().unwrap().keys().cloned());
+		let channel_count = channel_ids.len();
+		for channel_id in channel_ids.iter() {
 			let monitor_lock = self.monitors.read().unwrap();
-			if let Some(monitor_state) = monitor_lock.get(funding_outpoint) {
-				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state, channel_count).is_err() {
+			if let Some(monitor_state) = monitor_lock.get(channel_id) {
+				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, channel_id, &monitor_state, channel_count).is_err() {
 					// Take the monitors lock for writing so that we poison it and any future
 					// operations going forward fail immediately.
 					core::mem::drop(monitor_lock);
@@ -292,11 +291,11 @@ where C::Target: chain::Filter,
 			}
 		}
 
-		// do some followup cleanup if any funding outpoints were added in between iterations
+		// Do another pass to handle any monitors added in between iterations.
 		let monitor_states = self.monitors.write().unwrap();
-		for (funding_outpoint, monitor_state) in monitor_states.iter() {
-			if !funding_outpoints.contains(funding_outpoint) {
-				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, funding_outpoint, &monitor_state, channel_count).is_err() {
+		for (channel_id, monitor_state) in monitor_states.iter() {
+			if !channel_ids.contains(channel_id) {
+				if self.update_monitor_with_chain_data(header, best_height, txdata, &process, channel_id, &monitor_state, channel_count).is_err() {
 					log_error!(self.logger, "{}", err_str);
 					panic!("{}", err_str);
 				}
@@ -315,7 +314,7 @@ where C::Target: chain::Filter,
 	}
 
 	fn update_monitor_with_chain_data<FN>(
-		&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN, funding_outpoint: &OutPoint,
+		&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN, channel_id: &ChannelId,
 		monitor_state: &MonitorHolder<ChannelSigner>, channel_count: usize,
 	) -> Result<(), ()> where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
 		let monitor = &monitor_state.monitor;
@@ -323,11 +322,10 @@ where C::Target: chain::Filter,
 
 		let mut txn_outputs = process(monitor, txdata);
 
-		let get_partition_key = |funding_outpoint: &OutPoint| {
-			let funding_txid_hash = funding_outpoint.txid.to_raw_hash();
-			let funding_txid_hash_bytes = funding_txid_hash.as_byte_array();
-			let funding_txid_u32 = u32::from_be_bytes([funding_txid_hash_bytes[0], funding_txid_hash_bytes[1], funding_txid_hash_bytes[2], funding_txid_hash_bytes[3]]);
-			funding_txid_u32.wrapping_add(best_height.unwrap_or_default())
+		let get_partition_key = |channel_id: &ChannelId| {
+			let channel_id_bytes = channel_id.0;
+			let channel_id_u32 = u32::from_be_bytes([channel_id_bytes[0], channel_id_bytes[1], channel_id_bytes[2], channel_id_bytes[3]]);
+			channel_id_u32.wrapping_add(best_height.unwrap_or_default())
 		};
 
 		let partition_factor = if channel_count < 15 {
@@ -337,14 +335,15 @@ where C::Target: chain::Filter,
 		};
 
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
-		if has_pending_claims || get_partition_key(funding_outpoint) % partition_factor == 0 {
+		if has_pending_claims || get_partition_key(channel_id) % partition_factor == 0 {
 			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
 			// Even though we don't track monitor updates from chain-sync as pending, we still want
 			// updates per-channel to be well-ordered so that users don't see a
 			// `ChannelMonitorUpdate` after a channel persist for a channel with the same
 			// `latest_update_id`.
 			let _pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor) {
+			let funding_txo = monitor.get_funding_txo().0;
+			match self.persister.update_persisted_channel(funding_txo, None, monitor) {
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(logger, "Finished syncing Channel Monitor for channel {} for block-data",
 						log_funding_info!(monitor)
@@ -410,9 +409,9 @@ where C::Target: chain::Filter,
 	pub fn get_claimable_balances(&self, ignored_channels: &[&ChannelDetails]) -> Vec<Balance> {
 		let mut ret = Vec::new();
 		let monitor_states = self.monitors.read().unwrap();
-		for (_, monitor_state) in monitor_states.iter().filter(|(funding_outpoint, _)| {
+		for (_, monitor_state) in monitor_states.iter().filter(|(channel_id, _)| {
 			for chan in ignored_channels {
-				if chan.funding_txo.as_ref() == Some(funding_outpoint) {
+				if chan.channel_id == **channel_id {
 					return false;
 				}
 			}
@@ -428,10 +427,10 @@ where C::Target: chain::Filter,
 	///
 	/// Note that the result holds a mutex over our monitor set, and should not be held
 	/// indefinitely.
-	pub fn get_monitor(&self, funding_txo: OutPoint) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
+	pub fn get_monitor(&self, channel_id: ChannelId) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
 		let lock = self.monitors.read().unwrap();
-		if lock.get(&funding_txo).is_some() {
-			Ok(LockedChannelMonitor { lock, funding_txo })
+		if lock.get(&channel_id).is_some() {
+			Ok(LockedChannelMonitor { lock, channel_id })
 		} else {
 			Err(())
 		}
@@ -441,39 +440,36 @@ where C::Target: chain::Filter,
 	///
 	/// Note that [`ChannelMonitor`]s are not removed when a channel is closed as they are always
 	/// monitoring for on-chain state resolutions.
-	pub fn list_monitors(&self) -> Vec<(OutPoint, ChannelId)> {
-		self.monitors.read().unwrap().iter().map(|(outpoint, monitor_holder)| {
-			let channel_id = monitor_holder.monitor.channel_id();
-			(*outpoint, channel_id)
-		}).collect()
+	pub fn list_monitors(&self) -> Vec<ChannelId> {
+		self.monitors.read().unwrap().keys().copied().collect()
 	}
 
 	#[cfg(not(c_bindings))]
-	/// Lists the pending updates for each [`ChannelMonitor`] (by `OutPoint` being monitored).
+	/// Lists the pending updates for each [`ChannelMonitor`] (by `ChannelId` being monitored).
 	/// Each `Vec<u64>` contains `update_id`s from [`ChannelMonitor::get_latest_update_id`] for updates
 	/// that have not yet been fully persisted. Note that if a full monitor is persisted all the pending
 	/// monitor updates must be individually marked completed by calling [`ChainMonitor::channel_monitor_updated`].
-	pub fn list_pending_monitor_updates(&self) -> HashMap<OutPoint, Vec<u64>> {
-		hash_map_from_iter(self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
-			(*outpoint, holder.pending_monitor_updates.lock().unwrap().clone())
+	pub fn list_pending_monitor_updates(&self) -> HashMap<ChannelId, Vec<u64>> {
+		hash_map_from_iter(self.monitors.read().unwrap().iter().map(|(channel_id, holder)| {
+			(*channel_id, holder.pending_monitor_updates.lock().unwrap().clone())
 		}))
 	}
 
 	#[cfg(c_bindings)]
-	/// Lists the pending updates for each [`ChannelMonitor`] (by `OutPoint` being monitored).
+	/// Lists the pending updates for each [`ChannelMonitor`] (by `ChannelId` being monitored).
 	/// Each `Vec<u64>` contains `update_id`s from [`ChannelMonitor::get_latest_update_id`] for updates
 	/// that have not yet been fully persisted. Note that if a full monitor is persisted all the pending
 	/// monitor updates must be individually marked completed by calling [`ChainMonitor::channel_monitor_updated`].
-	pub fn list_pending_monitor_updates(&self) -> Vec<(OutPoint, Vec<u64>)> {
-		self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
-			(*outpoint, holder.pending_monitor_updates.lock().unwrap().clone())
+	pub fn list_pending_monitor_updates(&self) -> Vec<(ChannelId, Vec<u64>)> {
+		self.monitors.read().unwrap().iter().map(|(channel_id, holder)| {
+			(*channel_id, holder.pending_monitor_updates.lock().unwrap().clone())
 		}).collect()
 	}
 
 
 	#[cfg(test)]
-	pub fn remove_monitor(&self, funding_txo: &OutPoint) -> ChannelMonitor<ChannelSigner> {
-		self.monitors.write().unwrap().remove(funding_txo).unwrap().monitor
+	pub fn remove_monitor(&self, channel_id: &ChannelId) -> ChannelMonitor<ChannelSigner> {
+		self.monitors.write().unwrap().remove(channel_id).unwrap().monitor
 	}
 
 	/// Indicates the persistence of a [`ChannelMonitor`] has completed after
@@ -496,10 +492,10 @@ where C::Target: chain::Filter,
 	///
 	/// Returns an [`APIError::APIMisuseError`] if `funding_txo` does not match any currently
 	/// registered [`ChannelMonitor`]s.
-	pub fn channel_monitor_updated(&self, funding_txo: OutPoint, completed_update_id: u64) -> Result<(), APIError> {
+	pub fn channel_monitor_updated(&self, channel_id: ChannelId, completed_update_id: u64) -> Result<(), APIError> {
 		let monitors = self.monitors.read().unwrap();
-		let monitor_data = if let Some(mon) = monitors.get(&funding_txo) { mon } else {
-			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", funding_txo) });
+		let monitor_data = if let Some(mon) = monitors.get(&channel_id) { mon } else {
+			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching channel ID {} found", channel_id) });
 		};
 		let mut pending_monitor_updates = monitor_data.pending_monitor_updates.lock().unwrap();
 		pending_monitor_updates.retain(|update_id| *update_id != completed_update_id);
@@ -507,9 +503,9 @@ where C::Target: chain::Filter,
 		// Note that we only check for pending non-chainsync monitor updates and we don't track monitor
 		// updates resulting from chainsync in `pending_monitor_updates`.
 		let monitor_is_pending_updates = monitor_data.has_pending_updates(&pending_monitor_updates);
-		log_debug!(self.logger, "Completed off-chain monitor update {} for channel with funding outpoint {:?}, {}",
+		log_debug!(self.logger, "Completed off-chain monitor update {} for channel with channel ID {}, {}",
 			completed_update_id,
-			funding_txo,
+			channel_id,
 			if monitor_is_pending_updates {
 				"still have pending off-chain updates"
 			} else {
@@ -520,9 +516,10 @@ where C::Target: chain::Filter,
 			// Completed event.
 			return Ok(());
 		}
-		let channel_id = monitor_data.monitor.channel_id();
+		let funding_txo = monitor_data.monitor.get_funding_txo().0;
 		self.pending_monitor_events.lock().unwrap().push((funding_txo, channel_id, vec![MonitorEvent::Completed {
-			funding_txo, channel_id,
+			funding_txo,
+			channel_id,
 			monitor_update_id: monitor_data.monitor.get_latest_update_id(),
 		}], monitor_data.monitor.get_counterparty_node_id()));
 
@@ -534,13 +531,11 @@ where C::Target: chain::Filter,
 	/// chain::Watch API wherein we mark a monitor fully-updated by just calling
 	/// channel_monitor_updated once with the highest ID.
 	#[cfg(any(test, fuzzing))]
-	pub fn force_channel_monitor_updated(&self, funding_txo: OutPoint, monitor_update_id: u64) {
+	pub fn force_channel_monitor_updated(&self, channel_id: ChannelId, monitor_update_id: u64) {
 		let monitors = self.monitors.read().unwrap();
-		let (counterparty_node_id, channel_id) = if let Some(m) = monitors.get(&funding_txo) {
-			(m.monitor.get_counterparty_node_id(), m.monitor.channel_id())
-		} else {
-			(None, ChannelId::v1_from_funding_outpoint(funding_txo))
-		};
+		let monitor = &monitors.get(&channel_id).unwrap().monitor;
+		let counterparty_node_id = monitor.get_counterparty_node_id();
+		let funding_txo = monitor.get_funding_txo().0;
 		self.pending_monitor_events.lock().unwrap().push((funding_txo, channel_id, vec![MonitorEvent::Completed {
 			funding_txo,
 			channel_id,
@@ -570,10 +565,10 @@ where C::Target: chain::Filter,
 		// Sadly we can't hold the monitors read lock through an async call. Thus we have to do a
 		// crazy dance to process a monitor's events then only remove them once we've done so.
 		let mons_to_process = self.monitors.read().unwrap().keys().cloned().collect::<Vec<_>>();
-		for funding_txo in mons_to_process {
+		for channel_id in mons_to_process {
 			let mut ev;
 			match super::channelmonitor::process_events_body!(
-				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), self.logger, ev, handler(ev).await) {
+				self.monitors.read().unwrap().get(&channel_id).map(|m| &m.monitor), self.logger, ev, handler(ev).await) {
 				Ok(()) => {},
 				Err(ReplayEvent ()) => {
 					self.event_notifier.notify();
@@ -612,10 +607,10 @@ where C::Target: chain::Filter,
 	/// signature generation failure.
 	///
 	/// `monitor_opt` can be used as a filter to only trigger them for a specific channel monitor.
-	pub fn signer_unblocked(&self, monitor_opt: Option<OutPoint>) {
+	pub fn signer_unblocked(&self, monitor_opt: Option<ChannelId>) {
 		let monitors = self.monitors.read().unwrap();
-		if let Some(funding_txo) = monitor_opt {
-			if let Some(monitor_holder) = monitors.get(&funding_txo) {
+		if let Some(channel_id) = monitor_opt {
+			if let Some(monitor_holder) = monitors.get(&channel_id) {
 				monitor_holder.monitor.signer_unblocked(
 					&*self.broadcaster, &*self.fee_estimator, &self.logger
 				)
@@ -640,27 +635,27 @@ where C::Target: chain::Filter,
 	/// data could be moved to an archive location or removed entirely.
 	pub fn archive_fully_resolved_channel_monitors(&self) {
 		let mut have_monitors_to_prune = false;
-		for (funding_txo, monitor_holder) in self.monitors.read().unwrap().iter() {
+		for monitor_holder in self.monitors.read().unwrap().values() {
 			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
 			let (is_fully_resolved, needs_persistence) = monitor_holder.monitor.check_and_update_full_resolution_status(&logger);
 			if is_fully_resolved {
 				have_monitors_to_prune = true;
 			}
 			if needs_persistence {
-				self.persister.update_persisted_channel(*funding_txo, None, &monitor_holder.monitor);
+				self.persister.update_persisted_channel(monitor_holder.monitor.get_funding_txo().0, None, &monitor_holder.monitor);
 			}
 		}
 		if have_monitors_to_prune {
 			let mut monitors = self.monitors.write().unwrap();
-			monitors.retain(|funding_txo, monitor_holder| {
+			monitors.retain(|channel_id, monitor_holder| {
 				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
 				let (is_fully_resolved, _) = monitor_holder.monitor.check_and_update_full_resolution_status(&logger);
 				if is_fully_resolved {
 					log_info!(logger,
-						"Archiving fully resolved ChannelMonitor for funding txo {}",
-						funding_txo
+						"Archiving fully resolved ChannelMonitor for channel ID {}",
+						channel_id
 					);
-					self.persister.archive_persisted_channel(*funding_txo);
+					self.persister.archive_persisted_channel(monitor_holder.monitor.get_funding_txo().0);
 					false
 				} else {
 					true
@@ -761,12 +756,12 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
-	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
+	fn watch_channel(&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
-		let entry = match monitors.entry(funding_outpoint) {
+		let entry = match monitors.entry(channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				log_error!(logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
+				log_error!(logger, "Failed to add new channel data: channel monitor for given channel ID is already present");
 				return Err(());
 			},
 			hash_map::Entry::Vacant(e) => e,
@@ -774,7 +769,7 @@ where C::Target: chain::Filter,
 		log_trace!(logger, "Got new ChannelMonitor for channel {}", log_funding_info!(monitor));
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
-		let persist_res = self.persister.persist_new_channel(funding_outpoint, &monitor);
+		let persist_res = self.persister.persist_new_channel(monitor.get_funding_txo().0, &monitor);
 		match persist_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_info!(logger, "Persistence of new ChannelMonitor for channel {} in progress", log_funding_info!(monitor));
@@ -799,13 +794,13 @@ where C::Target: chain::Filter,
 		Ok(persist_res)
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
+	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
 		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
-		let channel_id = update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
+		debug_assert_eq!(update.channel_id.unwrap(), channel_id);
 		// Update the monitor that watches the channel referred to by the given outpoint.
 		let monitors = self.monitors.read().unwrap();
-		match monitors.get(&funding_txo) {
+		match monitors.get(&channel_id) {
 			None => {
 				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(channel_id), None);
 				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
@@ -830,6 +825,7 @@ where C::Target: chain::Filter,
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
 				let update_id = update.update_id;
+				let funding_txo = monitor.get_funding_txo().0;
 				let persist_res = if update_res.is_err() {
 					// Even if updating the monitor returns an error, the monitor's state will
 					// still be changed. Therefore, we should persist the updated monitor despite the error.
@@ -882,10 +878,10 @@ where C::Target: chain::Filter,
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
 			if monitor_events.len() > 0 {
-				let monitor_outpoint = monitor_state.monitor.get_funding_txo().0;
+				let monitor_funding_txo = monitor_state.monitor.get_funding_txo().0;
 				let monitor_channel_id = monitor_state.monitor.channel_id();
 				let counterparty_node_id = monitor_state.monitor.get_counterparty_node_id();
-				pending_monitor_events.push((monitor_outpoint, monitor_channel_id, monitor_events, counterparty_node_id));
+				pending_monitor_events.push((monitor_funding_txo, monitor_channel_id, monitor_events, counterparty_node_id));
 			}
 		}
 		pending_monitor_events
@@ -946,7 +942,7 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 
 		// Route two payments to be claimed at the same time.
 		let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
@@ -963,7 +959,7 @@ mod tests {
 
 		let persistences = chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clone();
 		assert_eq!(persistences.len(), 1);
-		let (funding_txo, updates) = persistences.iter().next().unwrap();
+		let (_, updates) = persistences.iter().next().unwrap();
 		assert_eq!(updates.len(), 2);
 
 		// Note that updates is a HashMap so the ordering here is actually random. This shouldn't
@@ -972,23 +968,23 @@ mod tests {
 		let next_update = update_iter.next().unwrap().clone();
 		// Should contain next_update when pending updates listed.
 		#[cfg(not(c_bindings))]
-		assert!(nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().get(funding_txo)
+		assert!(nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().get(&channel_id)
 			.unwrap().contains(&next_update));
 		#[cfg(c_bindings)]
 		assert!(nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().iter()
-			.find(|(txo, _)| txo == funding_txo).unwrap().1.contains(&next_update));
-		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, next_update.clone()).unwrap();
+			.find(|(chan_id, _)| *chan_id == channel_id).unwrap().1.contains(&next_update));
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(channel_id, next_update.clone()).unwrap();
 		// Should not contain the previously pending next_update when pending updates listed.
 		#[cfg(not(c_bindings))]
-		assert!(!nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().get(funding_txo)
+		assert!(!nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().get(&channel_id)
 			.unwrap().contains(&next_update));
 		#[cfg(c_bindings)]
 		assert!(!nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().iter()
-			.find(|(txo, _)| txo == funding_txo).unwrap().1.contains(&next_update));
+			.find(|(chan_id, _)| *chan_id == channel_id).unwrap().1.contains(&next_update));
 		assert!(nodes[1].chain_monitor.release_pending_monitor_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, update_iter.next().unwrap().clone()).unwrap();
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(channel_id, update_iter.next().unwrap().clone()).unwrap();
 
 		let claim_events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(claim_events.len(), 2);

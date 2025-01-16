@@ -25,6 +25,7 @@ use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
 
+use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 
 use crate::prelude::*;
@@ -256,11 +257,16 @@ fn test_manager_serialize_deserialize_events() {
 	node_a.node.funding_transaction_generated(temporary_channel_id, node_b.node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(node_a, 0);
 
-	node_b.node.handle_funding_created(node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
+	let funding_created = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id());
+	let channel_id = ChannelId::v1_from_funding_txid(
+		funding_created.funding_txid.as_byte_array(), funding_created.funding_output_index
+	);
+
+	node_b.node.handle_funding_created(node_a.node.get_our_node_id(), &funding_created);
 	{
 		let mut added_monitors = node_b.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 
@@ -269,7 +275,7 @@ fn test_manager_serialize_deserialize_events() {
 	{
 		let mut added_monitors = node_a.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 	// Normally, this is where node_a would broadcast the funding transaction, but the test de/serializes first instead
@@ -368,7 +374,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_stale_monitors_serialized = Vec::new();
 	for chan_id_iter in &[chan_id_1, chan_id_2, channel_id] {
 		let mut writer = test_utils::TestVecWriter(Vec::new());
-		get_monitor!(nodes[0], chan_id_iter).write(&mut writer).unwrap();
+		get_monitor!(nodes[0], *chan_id_iter).write(&mut writer).unwrap();
 		node_0_stale_monitors_serialized.push(writer.0);
 	}
 
@@ -386,7 +392,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// nodes[3])
 	let mut node_0_monitors_serialized = Vec::new();
 	for chan_id_iter in &[chan_id_1, chan_id_2, channel_id] {
-		node_0_monitors_serialized.push(get_monitor!(nodes[0], chan_id_iter).encode());
+		node_0_monitors_serialized.push(get_monitor!(nodes[0], *chan_id_iter).encode());
 	}
 
 	logger = test_utils::TestLogger::new();
@@ -450,8 +456,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	assert!(nodes_0_read.is_empty());
 
 	for monitor in node_0_monitors.drain(..) {
-		let funding_outpoint = monitor.get_funding_txo().0;
-		assert_eq!(nodes[0].chain_monitor.watch_channel(funding_outpoint, monitor),
+		assert_eq!(nodes[0].chain_monitor.watch_channel(monitor.channel_id(), monitor),
 			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -835,10 +840,10 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// monitors and ChannelManager, for use later, if we don't want to persist both monitors.
 	let mut original_monitor = test_utils::TestVecWriter(Vec::new());
 	if !persist_both_monitors {
-		for (outpoint, channel_id) in nodes[3].chain_monitor.chain_monitor.list_monitors() {
+		for channel_id in nodes[3].chain_monitor.chain_monitor.list_monitors() {
 			if channel_id == chan_id_not_persisted {
 				assert!(original_monitor.0.is_empty());
-				nodes[3].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut original_monitor).unwrap();
+				nodes[3].chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().write(&mut original_monitor).unwrap();
 			}
 		}
 	}
@@ -855,18 +860,18 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// crashed in between the two persistence calls - using one old ChannelMonitor and one new one,
 	// with the old ChannelManager.
 	let mut updated_monitor = test_utils::TestVecWriter(Vec::new());
-	for (outpoint, channel_id) in nodes[3].chain_monitor.chain_monitor.list_monitors() {
+	for channel_id in nodes[3].chain_monitor.chain_monitor.list_monitors() {
 		if channel_id == chan_id_persisted {
 			assert!(updated_monitor.0.is_empty());
-			nodes[3].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut updated_monitor).unwrap();
+			nodes[3].chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().write(&mut updated_monitor).unwrap();
 		}
 	}
 	// If `persist_both_monitors` is set, get the second monitor here as well
 	if persist_both_monitors {
-		for (outpoint, channel_id) in nodes[3].chain_monitor.chain_monitor.list_monitors() {
+		for channel_id in nodes[3].chain_monitor.chain_monitor.list_monitors() {
 			if channel_id == chan_id_not_persisted {
 				assert!(original_monitor.0.is_empty());
-				nodes[3].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut original_monitor).unwrap();
+				nodes[3].chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().write(&mut original_monitor).unwrap();
 			}
 		}
 	}

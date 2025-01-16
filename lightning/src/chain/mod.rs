@@ -261,7 +261,7 @@ pub enum ChannelMonitorUpdateStatus {
 ///
 /// See method documentation and [`ChannelMonitorUpdateStatus`] for specific requirements.
 pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
-	/// Watches a channel identified by `funding_txo` using `monitor`.
+	/// Watches a channel identified by `channel_id` using `monitor`.
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
@@ -270,15 +270,15 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// A return of `Err(())` indicates that the channel should immediately be force-closed without
 	/// broadcasting the funding transaction.
 	///
-	/// If the given `funding_txo` has previously been registered via `watch_channel`, `Err(())`
+	/// If the given `channel_id` has previously been registered via `watch_channel`, `Err(())`
 	/// must be returned.
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
+	fn watch_channel(&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
 
-	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
+	/// Updates a channel identified by `channel_id` by applying `update` to its monitor.
 	///
 	/// Implementations must call [`ChannelMonitor::update_monitor`] with the given update. This
 	/// may fail (returning an `Err(())`), in which case this should return
@@ -293,7 +293,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
+	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.

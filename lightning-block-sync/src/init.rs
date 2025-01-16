@@ -125,7 +125,7 @@ where
 ///
 /// 	// Allow the chain monitor to watch any channels.
 /// 	let monitor = monitor_listener.0;
-/// 	chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+/// 	chain_monitor.watch_channel(monitor.channel_id(), monitor);
 ///
 /// 	// Create an SPV client to notify the chain monitor and channel manager of block events.
 /// 	let chain_poller = poll::ChainPoller::new(block_source, Network::Bitcoin);

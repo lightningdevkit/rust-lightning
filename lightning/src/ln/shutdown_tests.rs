@@ -1368,8 +1368,8 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	expect_channel_shutdown_state!(nodes[0], chan_id, ChannelShutdownState::ResolvingHTLCs);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
-	let (outpoint, latest_update, _) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
-	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+	let (latest_update, _) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 
 	let as_raa_closing_signed = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_raa_closing_signed.len(), 2);

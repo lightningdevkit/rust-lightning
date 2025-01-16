@@ -1725,7 +1725,7 @@ where
 ///
 /// // Move the monitors to the ChannelManager's chain::Watch parameter
 /// for monitor in channel_monitors {
-///     chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+///     chain_monitor.watch_channel(monitor.channel_id(), monitor);
 /// }
 /// # Ok(())
 /// # }
@@ -3320,7 +3320,7 @@ macro_rules! handle_new_monitor_update {
 				$in_flight_updates.len() - 1
 			});
 		if $self.background_events_processed_since_startup.load(Ordering::Acquire) {
-			let update_res = $self.chain_monitor.update_channel($funding_txo, &$in_flight_updates[$update_idx]);
+			let update_res = $self.chain_monitor.update_channel($chan_id, &$in_flight_updates[$update_idx]);
 			handle_new_monitor_update!($self, update_res, $logger, $chan_id, _internal, $completed)
 		} else {
 			// We blindly assume that the ChannelMonitorUpdate will be regenerated on startup if we
@@ -6327,10 +6327,10 @@ where
 
 		for event in background_events.drain(..) {
 			match event {
-				BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((funding_txo, _channel_id, update)) => {
+				BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((_funding_txo, channel_id, update)) => {
 					// The channel has already been closed, so no use bothering to care about the
 					// monitor updating completing.
-					let _ = self.chain_monitor.update_channel(funding_txo, &update);
+					let _ = self.chain_monitor.update_channel(channel_id, &update);
 				},
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, channel_id, update } => {
 					self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
@@ -8135,7 +8135,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						fail_chan!("The funding_created message had the same funding_txid as an existing channel - funding is not possible");
 					},
 					hash_map::Entry::Vacant(i_e) => {
-						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							i_e.insert(chan.context.get_counterparty_node_id());
 							mem::drop(outpoint_to_peer_lock);
@@ -8160,8 +8160,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Ok(())
 						} else {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
-							fail_chan!("Duplicate funding outpoint");
+							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
+							fail_chan!("Duplicate channel ID");
 						}
 					}
 				}
@@ -8187,10 +8187,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
 					.and_then(|(funded_chan, monitor)| {
 						self.chain_monitor
-							.watch_channel(funded_chan.context.get_funding_txo().unwrap(), monitor)
+							.watch_channel(funded_chan.context.channel_id(), monitor)
 							.map(|persist_status| (funded_chan, persist_status))
 							.map_err(|()| {
-								ChannelError::close("Channel funding outpoint was a duplicate".to_owned())
+								ChannelError::close("Channel ID was a duplicate".to_owned())
 							})
 					})
 				{
@@ -8796,16 +8796,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let monitor = try_channel_entry!(
 							self, peer_state, chan.commitment_signed_initial_v2(msg, best_block, &self.signer_provider, &&logger),
 							chan_entry);
-						let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+						let monitor_res = self.chain_monitor.watch_channel(monitor.channel_id(), monitor);
 						if let Ok(persist_state) = monitor_res {
 							handle_new_monitor_update!(self, persist_state, peer_state_lock, peer_state,
 								per_peer_state, chan, INITIAL_MONITOR);
 						} else {
 							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the funding outpoint was duplicated");
+							log_error!(logger, "Persisting initial ChannelMonitor failed, implying the channel ID was duplicated");
 							try_channel_entry!(self, peer_state, Err(ChannelError::Close(
 								(
-									"Channel funding outpoint was a duplicate".to_owned(),
+									"Channel ID was a duplicate".to_owned(),
 									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 								)
 							)), chan_entry)

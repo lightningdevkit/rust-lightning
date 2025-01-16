@@ -255,8 +255,8 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 
 fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	// Ensure `get_claimable_balances`' self-tests never panic
-	for (funding_outpoint, _channel_id) in node.chain_monitor.chain_monitor.list_monitors() {
-		node.chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances();
+	for channel_id in node.chain_monitor.chain_monitor.list_monitors() {
+		node.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().get_claimable_balances();
 	}
 }
 
@@ -554,9 +554,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 			channel_keys_id = Some(context.channel_keys_id);
 		}
 
-		let monitor = self.chain_monitor.chain_monitor.list_monitors().into_iter()
-			.find(|(_, channel_id)| *channel_id == *chan_id)
-			.and_then(|(funding_txo, _)| self.chain_monitor.chain_monitor.get_monitor(funding_txo).ok());
+		let monitor = self.chain_monitor.chain_monitor.get_monitor(*chan_id).ok();
 		if let Some(monitor) = monitor {
 			monitor.do_mut_signer_call(|signer| {
 				channel_keys_id = channel_keys_id.or(Some(signer.inner.channel_keys_id()));
@@ -695,9 +693,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let feeest = test_utils::TestFeeEstimator::new(253);
 			let mut deserialized_monitors = Vec::new();
 			{
-				for (outpoint, _channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
+				for channel_id in self.chain_monitor.chain_monitor.list_monitors() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
-					self.chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut w).unwrap();
+					self.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 						&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
@@ -739,8 +737,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				let funding_outpoint = deserialized_monitor.get_funding_txo().0;
-				if chain_monitor.watch_channel(funding_outpoint, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
+				let channel_id = deserialized_monitor.channel_id();
+				if chain_monitor.watch_channel(channel_id, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
 					panic!();
 				}
 			}
@@ -1038,20 +1036,7 @@ macro_rules! get_channel_type_features {
 macro_rules! get_monitor {
 	($node: expr, $channel_id: expr) => {
 		{
-			use bitcoin::hashes::Hash;
-			let mut monitor = None;
-			// Assume funding vout is either 0 or 1 blindly
-			for index in 0..2 {
-				if let Ok(mon) = $node.chain_monitor.chain_monitor.get_monitor(
-					$crate::chain::transaction::OutPoint {
-						txid: bitcoin::Txid::from_slice(&$channel_id.0[..]).unwrap(), index
-					})
-				{
-					monitor = Some(mon);
-					break;
-				}
-			}
-			monitor.unwrap()
+			$node.chain_monitor.chain_monitor.get_monitor($channel_id).unwrap()
 		}
 	}
 }
@@ -1172,8 +1157,8 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	assert!(node_read.is_empty());
 
 	for monitor in monitors_read.drain(..) {
-		let funding_outpoint = monitor.get_funding_txo().0;
-		assert_eq!(node.chain_monitor.watch_channel(funding_outpoint, monitor),
+		let channel_id = monitor.channel_id();
+		assert_eq!(node.chain_monitor.watch_channel(channel_id, monitor),
 			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(node, 1);
 	}
@@ -1277,7 +1262,7 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 }
 
 pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: ChannelId) -> Transaction {
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, &node_b.node.get_our_node_id(), channel_value, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
 	assert!(node_a.node.funding_transaction_generated(temporary_channel_id, node_b.node.get_our_node_id(), tx.clone()).is_ok());
@@ -1285,11 +1270,16 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 
 	let funding_created_msg = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id());
 	assert_eq!(funding_created_msg.temporary_channel_id, expected_temporary_channel_id);
+
+	let channel_id = ChannelId::v1_from_funding_txid(
+		funding_created_msg.funding_txid.as_byte_array(), funding_created_msg.funding_output_index
+	);
+
 	node_b.node.handle_funding_created(node_a.node.get_our_node_id(), &funding_created_msg);
 	{
 		let mut added_monitors = node_b.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 	expect_channel_pending_event(&node_b, &node_a.node.get_our_node_id());
@@ -1298,7 +1288,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	{
 		let mut added_monitors = node_a.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 	expect_channel_pending_event(&node_a, &node_b.node.get_our_node_id());
