@@ -1133,6 +1133,7 @@ pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 /// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
 /// its variants containing an appropriate channel struct.
 enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
+	Undefined,
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
@@ -1146,6 +1147,7 @@ impl<SP: Deref> Channel<SP> where
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
 		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
@@ -1155,6 +1157,7 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
@@ -1164,6 +1167,7 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
 		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(_) => { debug_assert!(false); None },
 			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
@@ -1252,6 +1256,7 @@ impl<SP: Deref> Channel<SP> where
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<SignerResumeUpdates> where L::Target: Logger {
 		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
@@ -1292,6 +1297,7 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn is_resumable(&self) -> bool {
 		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(_) => false,
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
 			ChannelPhase::UnfundedInboundV1(_) => false,
@@ -1303,6 +1309,7 @@ impl<SP: Deref> Channel<SP> where
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<OpenChannelMessage> where L::Target: Logger {
 		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(_) => None,
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
@@ -1344,6 +1351,7 @@ impl<SP: Deref> Channel<SP> where
 		L::Target: Logger,
 	{
 		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
 			ChannelPhase::Funded(_) => Ok(None),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
