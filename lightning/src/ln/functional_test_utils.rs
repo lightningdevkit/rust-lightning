@@ -712,7 +712,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			{
 				let mut channel_monitors = new_hash_map();
 				for monitor in deserialized_monitors.iter() {
-					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
+					channel_monitors.insert(monitor.channel_id(), monitor);
 				}
 
 				let scorer = RwLock::new(test_utils::TestScorer::new());
@@ -1138,7 +1138,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	let (_, node_deserialized) = {
 		let mut channel_monitors = new_hash_map();
 		for monitor in monitors_read.iter() {
-			assert!(channel_monitors.insert(monitor.get_funding_txo().0, monitor).is_none());
+			assert!(channel_monitors.insert(monitor.channel_id(), monitor).is_none());
 		}
 		<(BlockHash, TestChannelManager<'b, 'c>)>::read(&mut node_read, ChannelManagerReadArgs {
 			default_config,

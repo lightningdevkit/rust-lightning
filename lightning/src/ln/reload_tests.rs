@@ -432,7 +432,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
-		channel_monitors: node_0_stale_monitors.iter().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
+		channel_monitors: node_0_stale_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
 	}) { } else {
 		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
 	};
@@ -450,7 +450,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
-		channel_monitors: node_0_monitors.iter().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
+		channel_monitors: node_0_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
 	}).unwrap();
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());

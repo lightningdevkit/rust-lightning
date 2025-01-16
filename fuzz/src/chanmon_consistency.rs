@@ -173,7 +173,6 @@ struct LatestMonitorState {
 	/// A set of (monitor id, serialized `ChannelMonitor`)s which we're currently "persisting",
 	/// from LDK's perspective.
 	pending_monitors: Vec<(u64, Vec<u8>)>,
-	funding_txo: OutPoint,
 }
 
 struct TestChainMonitor {
@@ -219,14 +218,12 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();
 		let monitor_id = monitor.get_latest_update_id();
-		let funding_txo = monitor.get_funding_txo().0;
 		let res = self.chain_monitor.watch_channel(channel_id, monitor);
 		let state = match res {
 			Ok(chain::ChannelMonitorUpdateStatus::Completed) => LatestMonitorState {
 				persisted_monitor_id: monitor_id,
 				persisted_monitor: ser.0,
 				pending_monitors: Vec::new(),
-				funding_txo,
 			},
 			Ok(chain::ChannelMonitorUpdateStatus::InProgress) => {
 				panic!("The test currently doesn't test initial-persistence via the async pipeline")
@@ -716,7 +713,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (channel_id, mut prev_state) in old_monitors.drain() {
 				monitors.insert(
-					prev_state.funding_txo,
+					channel_id,
 					<(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 						&mut Cursor::new(&prev_state.persisted_monitor),
 						(&*$keys_manager, &*$keys_manager),
@@ -731,8 +728,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				chain_monitor.latest_monitors.lock().unwrap().insert(channel_id, prev_state);
 			}
 			let mut monitor_refs = new_hash_map();
-			for (outpoint, monitor) in monitors.iter() {
-				monitor_refs.insert(*outpoint, monitor);
+			for (channel_id, monitor) in monitors.iter() {
+				monitor_refs.insert(*channel_id, monitor);
 			}
 
 			let read_args = ChannelManagerReadArgs {
@@ -755,9 +752,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					.1,
 				chain_monitor.clone(),
 			);
-			for (_, mon) in monitors.drain() {
+			for (channel_id, mon) in monitors.drain() {
 				assert_eq!(
-					chain_monitor.chain_monitor.watch_channel(mon.channel_id(), mon),
+					chain_monitor.chain_monitor.watch_channel(channel_id, mon),
 					Ok(ChannelMonitorUpdateStatus::Completed)
 				);
 			}
