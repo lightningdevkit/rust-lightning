@@ -18,7 +18,7 @@ use bitcoin::ecdsa::Signature as EcdsaSignature;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::opcodes;
-use bitcoin::script::{Builder, Script, ScriptBuf};
+use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
@@ -623,18 +623,6 @@ impl HTLCDescriptor {
 			&self.htlc,
 			self.channel_derivation_parameters.transaction_parameters.channel_type_features(),
 			revokeable_spk,
-		)
-	}
-
-	/// Returns the fully signed witness required to spend the HTLC output in the commitment
-	/// transaction.
-	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
-		chan_utils::build_htlc_input_witness(
-			signature,
-			&self.counterparty_sig,
-			&self.preimage,
-			witness_script,
-			self.channel_derivation_parameters.transaction_parameters.channel_type_features(),
 		)
 	}
 

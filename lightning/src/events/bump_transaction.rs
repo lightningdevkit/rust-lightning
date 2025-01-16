@@ -182,10 +182,8 @@ pub enum BumpTransactionEvent {
 	///
 	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
 	/// HTLC transaction. To sign HTLC inputs, an [`EcdsaChannelSigner`] should be re-derived
-	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's signature can be
-	/// computed with [`ChannelSigner::sign_holder_htlc_transaction`], which can then be
-	/// provided to [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required
-	/// to spend.
+	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's witness can be
+	/// computed with [`ChannelSigner::sign_holder_htlc_transaction`].
 	///
 	/// It is possible to receive more than one instance of this event if a valid HTLC transaction
 	/// is never broadcast or is but not with a sufficient fee to be mined. Care should be taken by
