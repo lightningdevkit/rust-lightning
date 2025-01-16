@@ -165,22 +165,6 @@ pub struct StaticPaymentOutputDescriptor {
 	pub witness_weight: u64,
 }
 
-impl StaticPaymentOutputDescriptor {
-	/// Returns the `witness_script` of the spendable output.
-	///
-	/// Note that this will only return `Some` for [`StaticPaymentOutputDescriptor`]s that
-	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
-	pub fn witness_script(&self) -> Option<ScriptBuf> {
-		self.channel_transaction_parameters.as_ref().and_then(|channel_params| {
-			if channel_params.supports_anchors() {
-				let payment_point = channel_params.holder_pubkeys.payment_point;
-				Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
-			} else {
-				None
-			}
-		})
-	}
-}
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 	(0, outpoint, required),
 	(2, output, required),
@@ -405,10 +389,21 @@ impl SpendableOutputDescriptor {
 					..Default::default()
 				}
 			},
-			SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => bitcoin::psbt::Input {
-				witness_utxo: Some(descriptor.output.clone()),
-				witness_script: descriptor.witness_script(),
-				..Default::default()
+			SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
+				let witness_script =
+					descriptor.channel_transaction_parameters.as_ref().and_then(|channel_params| {
+						channel_params.supports_anchors().then(|| {
+							let payment_point = channel_params.holder_pubkeys.payment_point;
+							chan_utils::get_to_countersignatory_with_anchors_redeemscript(
+								&payment_point,
+							)
+						})
+					});
+				bitcoin::psbt::Input {
+					witness_utxo: Some(descriptor.output.clone()),
+					witness_script,
+					..Default::default()
+				}
 			},
 		}
 	}
