@@ -11415,6 +11415,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
 	features.set_route_blinding_optional();
+	features.set_provide_peer_backup_storage_optional();
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
