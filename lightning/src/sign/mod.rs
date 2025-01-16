@@ -115,16 +115,8 @@ pub struct DelayedPaymentOutputDescriptor {
 	///
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.123 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
-}
-
-impl DelayedPaymentOutputDescriptor {
-	/// The maximum length a well-formed witness spending one of these should have.
-	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
-	/// shorter.
-	// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
-	// redeemscript push length.
-	pub const MAX_WITNESS_LENGTH: u64 =
-		1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1;
+	/// Witness weight
+	pub witness_weight: u64,
 }
 
 impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
@@ -136,6 +128,8 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(10, channel_keys_id, required),
 	(12, channel_value_satoshis, required),
 	(13, channel_transaction_parameters, option),
+	// Don't break downgrades ?
+	(15, witness_weight, (default_value, 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1)),
 });
 
 pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
@@ -483,7 +477,7 @@ impl SpendableOutputDescriptor {
 						sequence: Sequence(descriptor.to_self_delay as u32),
 						witness: Witness::new(),
 					});
-					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					witness_weight += descriptor.witness_weight;
 					#[cfg(feature = "grind_signatures")]
 					{
 						// Guarantees a low R signature
@@ -1062,6 +1056,16 @@ pub trait ChannelSigner {
 		} else {
 			P2WPKH_WITNESS_WEIGHT
 		}
+	}
+
+	/// Gets the weight of the witness that spends a `to_local` output
+	fn get_to_local_witness_weight(&self) -> u64 {
+		// The maximum length a well-formed witness spending one of these should have.
+		// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
+		// shorter.
+		// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
+		// redeemscript push length.
+		1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1
 	}
 }
 

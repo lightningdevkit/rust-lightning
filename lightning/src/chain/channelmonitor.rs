@@ -4631,6 +4631,7 @@ impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 						channel_keys_id: self.channel_keys_id,
 						channel_value_satoshis: self.channel_value_satoshis,
 						channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
+						witness_weight: signer.get_to_local_witness_weight(),
 					}));
 				}
 			}
