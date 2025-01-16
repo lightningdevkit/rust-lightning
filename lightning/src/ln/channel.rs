@@ -1124,9 +1124,15 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
-/// The `Channel` enum describes the current phase in life of a lightning channel with each of
+/// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
+/// funding phases.
+pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
+	phase: ChannelPhase<SP>,
+}
+
+/// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
 /// its variants containing an appropriate channel struct.
-pub(super) enum Channel<SP: Deref> where SP::Target: SignerProvider {
+enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
@@ -1139,38 +1145,38 @@ impl<SP: Deref> Channel<SP> where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
-		match self {
-			Channel::Funded(chan) => &chan.context,
-			Channel::UnfundedOutboundV1(chan) => &chan.context,
-			Channel::UnfundedInboundV1(chan) => &chan.context,
-			Channel::UnfundedV2(chan) => &chan.context,
+		match &self.phase {
+			ChannelPhase::Funded(chan) => &chan.context,
+			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
+			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
+			ChannelPhase::UnfundedV2(chan) => &chan.context,
 		}
 	}
 
 	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		match self {
-			Channel::Funded(ref mut chan) => &mut chan.context,
-			Channel::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
-			Channel::UnfundedInboundV1(ref mut chan) => &mut chan.context,
-			Channel::UnfundedV2(ref mut chan) => &mut chan.context,
+		match &mut self.phase {
+			ChannelPhase::Funded(chan) => &mut chan.context,
+			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
+			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
+			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
 		}
 	}
 
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
-		match self {
-			Channel::Funded(_) => { debug_assert!(false); None },
-			Channel::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
-			Channel::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
-			Channel::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
+		match &mut self.phase {
+			ChannelPhase::Funded(_) => { debug_assert!(false); None },
+			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
 		}
 	}
 
 	pub fn is_funded(&self) -> bool {
-		matches!(self, Channel::Funded(_))
+		matches!(self.phase, ChannelPhase::Funded(_))
 	}
 
 	pub fn as_funded(&self) -> Option<&FundedChannel<SP>> {
-		if let Channel::Funded(channel) = self {
+		if let ChannelPhase::Funded(channel) = &self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1178,7 +1184,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_funded_mut(&mut self) -> Option<&mut FundedChannel<SP>> {
-		if let Channel::Funded(channel) = self {
+		if let ChannelPhase::Funded(channel) = &mut self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1186,7 +1192,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_unfunded_outbound_v1_mut(&mut self) -> Option<&mut OutboundV1Channel<SP>> {
-		if let Channel::UnfundedOutboundV1(channel) = self {
+		if let ChannelPhase::UnfundedOutboundV1(channel) = &mut self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1195,15 +1201,15 @@ impl<SP: Deref> Channel<SP> where
 
 	#[cfg(test)]
 	pub fn is_unfunded_v1(&self) -> bool {
-		matches!(self, Channel::UnfundedOutboundV1(_) | Channel::UnfundedInboundV1(_))
+		matches!(self.phase, ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_))
 	}
 
 	pub fn is_unfunded_outbound_v1(&self) -> bool {
-		matches!(self, Channel::UnfundedOutboundV1(_))
+		matches!(self.phase, ChannelPhase::UnfundedOutboundV1(_))
 	}
 
 	pub fn into_unfunded_outbound_v1(self) -> Result<OutboundV1Channel<SP>, Self> {
-		if let Channel::UnfundedOutboundV1(channel) = self {
+		if let ChannelPhase::UnfundedOutboundV1(channel) = self.phase {
 			Ok(channel)
 		} else {
 			Err(self)
@@ -1211,7 +1217,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn into_unfunded_inbound_v1(self) -> Result<InboundV1Channel<SP>, Self> {
-		if let Channel::UnfundedInboundV1(channel) = self {
+		if let ChannelPhase::UnfundedInboundV1(channel) = self.phase {
 			Ok(channel)
 		} else {
 			Err(self)
@@ -1219,7 +1225,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_unfunded_v2(&self) -> Option<&PendingV2Channel<SP>> {
-		if let Channel::UnfundedV2(channel) = self {
+		if let ChannelPhase::UnfundedV2(channel) = &self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1227,7 +1233,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_unfunded_v2_mut(&mut self) -> Option<&mut PendingV2Channel<SP>> {
-		if let Channel::UnfundedV2(channel) = self {
+		if let ChannelPhase::UnfundedV2(channel) = &mut self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1235,7 +1241,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn into_unfunded_v2(self) -> Option<PendingV2Channel<SP>> {
-		if let Channel::UnfundedV2(channel) = self {
+		if let ChannelPhase::UnfundedV2(channel) = self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1245,9 +1251,9 @@ impl<SP: Deref> Channel<SP> where
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<SignerResumeUpdates> where L::Target: Logger {
-		match self {
-			Channel::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
-			Channel::UnfundedOutboundV1(chan) => {
+		match &mut self.phase {
+			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
 				Some(SignerResumeUpdates {
 					commitment_update: None,
@@ -1263,7 +1269,7 @@ impl<SP: Deref> Channel<SP> where
 					shutdown_result: None,
 				})
 			},
-			Channel::UnfundedInboundV1(chan) => {
+			ChannelPhase::UnfundedInboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
 				let accept_channel = chan.signer_maybe_unblocked(&&logger);
 				Some(SignerResumeUpdates {
@@ -1280,30 +1286,30 @@ impl<SP: Deref> Channel<SP> where
 					shutdown_result: None,
 				})
 			},
-			Channel::UnfundedV2(_) => None,
+			ChannelPhase::UnfundedV2(_) => None,
 		}
 	}
 
 	pub fn is_resumable(&self) -> bool {
-		match self {
-			Channel::Funded(_) => false,
-			Channel::UnfundedOutboundV1(chan) => chan.is_resumable(),
-			Channel::UnfundedInboundV1(_) => false,
-			Channel::UnfundedV2(_) => false,
+		match &self.phase {
+			ChannelPhase::Funded(_) => false,
+			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
+			ChannelPhase::UnfundedInboundV1(_) => false,
+			ChannelPhase::UnfundedV2(_) => false,
 		}
 	}
 
 	pub fn maybe_get_open_channel<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<OpenChannelMessage> where L::Target: Logger {
-		match self {
-			Channel::Funded(_) => None,
-			Channel::UnfundedOutboundV1(chan) => {
+		match &mut self.phase {
+			ChannelPhase::Funded(_) => None,
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
 				chan.get_open_channel(chain_hash, &&logger)
 					.map(|msg| OpenChannelMessage::V1(msg))
 			},
-			Channel::UnfundedInboundV1(_) => {
+			ChannelPhase::UnfundedInboundV1(_) => {
 				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 				// they are not persisted and won't be recovered after a crash.
 				// Therefore, they shouldn't exist at this point.
@@ -1311,7 +1317,7 @@ impl<SP: Deref> Channel<SP> where
 				None
 			},
 			#[cfg(dual_funding)]
-			Channel::UnfundedV2(chan) => {
+			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
 					Some(OpenChannelMessage::V2(chan.get_open_channel_v2(chain_hash)))
 				} else {
@@ -1323,7 +1329,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			},
 			#[cfg(not(dual_funding))]
-			Channel::UnfundedV2(_) => {
+			ChannelPhase::UnfundedV2(_) => {
 				debug_assert!(false);
 				None
 			},
@@ -1337,16 +1343,16 @@ impl<SP: Deref> Channel<SP> where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		match self {
-			Channel::Funded(_) => Ok(None),
-			Channel::UnfundedOutboundV1(chan) => {
+		match &mut self.phase {
+			ChannelPhase::Funded(_) => Ok(None),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
 				chan.maybe_handle_error_without_close(chain_hash, fee_estimator, &&logger)
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
-			Channel::UnfundedInboundV1(_) => Ok(None),
+			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
 			#[cfg(dual_funding)]
-			Channel::UnfundedV2(chan) => {
+			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
 					chan.maybe_handle_error_without_close(chain_hash, fee_estimator)
 						.map(|msg| Some(OpenChannelMessage::V2(msg)))
@@ -1355,7 +1361,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			},
 			#[cfg(not(dual_funding))]
-			Channel::UnfundedV2(_) => {
+			ChannelPhase::UnfundedV2(_) => {
 				debug_assert!(false);
 				Ok(None)
 			},
@@ -1369,7 +1375,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: OutboundV1Channel<SP>) -> Self {
-		Channel::UnfundedOutboundV1(channel)
+		Channel {
+			phase: ChannelPhase::UnfundedOutboundV1(channel),
+		}
 	}
 }
 
@@ -1379,7 +1387,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: InboundV1Channel<SP>) -> Self {
-		Channel::UnfundedInboundV1(channel)
+		Channel {
+			phase: ChannelPhase::UnfundedInboundV1(channel),
+		}
 	}
 }
 
@@ -1389,7 +1399,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: PendingV2Channel<SP>) -> Self {
-		Channel::UnfundedV2(channel)
+		Channel {
+			phase: ChannelPhase::UnfundedV2(channel),
+		}
 	}
 }
 
@@ -1399,7 +1411,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: FundedChannel<SP>) -> Self {
-		Channel::Funded(channel)
+		Channel {
+			phase: ChannelPhase::Funded(channel),
+		}
 	}
 }
 

@@ -9502,7 +9502,7 @@ fn test_duplicate_chan_id() {
 			let logger = test_utils::TestLogger::new();
 			chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 		} else {
-			panic!("Unexpected Channel variant")
+			panic!("Unexpected Channel phase")
 		}.unwrap()
 	};
 	check_added_monitors!(nodes[0], 0);
@@ -10207,7 +10207,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		if let Some(mut chan) = channel.as_unfunded_outbound_v1_mut() {
 			chan.context.holder_dust_limit_satoshis = 546;
 		} else {
-			panic!("Unexpected Channel variant");
+			panic!("Unexpected Channel phase");
 		}
 	}
 
