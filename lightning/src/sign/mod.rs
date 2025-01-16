@@ -167,6 +167,8 @@ pub struct StaticPaymentOutputDescriptor {
 	///
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.117 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
+	/// Witness weight
+	pub witness_weight: u64,
 }
 
 impl StaticPaymentOutputDescriptor {
@@ -184,20 +186,6 @@ impl StaticPaymentOutputDescriptor {
 			}
 		})
 	}
-
-	/// The maximum length a well-formed witness spending one of these should have.
-	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
-	/// shorter.
-	pub fn max_witness_length(&self) -> u64 {
-		if self.channel_transaction_parameters.as_ref().map_or(false, |p| p.supports_anchors()) {
-			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
-				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
-			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
-				1 /* witness script push */ + witness_script_weight
-		} else {
-			P2WPKH_WITNESS_WEIGHT
-		}
-	}
 }
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 	(0, outpoint, required),
@@ -205,6 +193,15 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 	(4, channel_keys_id, required),
 	(6, channel_value_satoshis, required),
 	(7, channel_transaction_parameters, option),
+	// Don't break downgrades ?
+	(9, witness_weight, (default_value,
+		if channel_transaction_parameters.as_ref().map_or(false, |p: &ChannelTransactionParameters| p.supports_anchors()) {
+			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ + 1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
+			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ + 1 /* witness script push */ + witness_script_weight
+		} else {
+			P2WPKH_WITNESS_WEIGHT
+		})
+	),
 });
 
 /// Describes the necessary information to spend a spendable output.
@@ -468,7 +465,7 @@ impl SpendableOutputDescriptor {
 						sequence,
 						witness: Witness::new(),
 					});
-					witness_weight += descriptor.max_witness_length();
+					witness_weight += descriptor.witness_weight;
 					#[cfg(feature = "grind_signatures")]
 					{
 						// Guarantees a low R signature
@@ -1050,6 +1047,21 @@ pub trait ChannelSigner {
 	/// Get the weight of the witness to spend the holder anchor input
 	fn get_holder_anchor_input_witness_weight(&self) -> u64 {
 		ANCHOR_INPUT_WITNESS_WEIGHT
+	}
+
+	/// Gets the weight of the witness that spends a `to_remote` output
+	fn get_to_remote_witness_weight(&self) -> u64 {
+		// The maximum length a well-formed witness spending one of these should have.
+		// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
+		// shorter.
+		if self.get_channel_parameters().as_ref().map_or(false, |p| p.supports_anchors()) {
+			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
+				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
+			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
+				1 /* witness script push */ + witness_script_weight
+		} else {
+			P2WPKH_WITNESS_WEIGHT
+		}
 	}
 }
 

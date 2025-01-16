@@ -4611,6 +4611,7 @@ impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn get_spendable_outputs(&self, tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
 		let mut spendable_outputs = Vec::new();
+		let signer = &self.onchain_tx_handler.signer;
 		for (i, outp) in tx.output.iter().enumerate() {
 			if outp.script_pubkey == self.destination_script {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
@@ -4640,6 +4641,7 @@ impl<Signer: ChannelSigner> ChannelMonitorImpl<Signer> {
 					channel_keys_id: self.channel_keys_id,
 					channel_value_satoshis: self.channel_value_satoshis,
 					channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
+					witness_weight: signer.get_to_remote_witness_weight(),
 				}));
 			}
 			if self.shutdown_script.as_ref() == Some(&outp.script_pubkey) {
