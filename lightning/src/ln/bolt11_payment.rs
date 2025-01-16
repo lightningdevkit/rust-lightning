@@ -12,7 +12,7 @@
 use bitcoin::hashes::Hash;
 use lightning_invoice::Bolt11Invoice;
 
-use crate::ln::channelmanager::RecipientOnionFields;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::types::payment::PaymentHash;
 
@@ -161,9 +161,10 @@ mod tests {
 	#[test]
 	fn payment_metadata_end_to_end() {
 		use crate::events::Event;
-		use crate::ln::channelmanager::{PaymentId, Retry};
+		use crate::ln::channelmanager::PaymentId;
 		use crate::ln::functional_test_utils::*;
 		use crate::ln::msgs::ChannelMessageHandler;
+		use crate::ln::outbound_payment::Retry;
 
 		// Test that a payment metadata read from an invoice passed to `pay_invoice` makes it all
 		// the way out through the `PaymentClaimable` event.

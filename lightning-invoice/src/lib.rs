@@ -86,7 +86,9 @@ pub use crate::ser::Base32Iterable;
 #[allow(missing_docs)]
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Bolt11ParseError {
-	Bech32Error(CheckedHrpstringError),
+	Bech32Error(
+		/// This is not exported to bindings users as the specific error isn't all that useful.
+		CheckedHrpstringError),
 	ParseAmountError(ParseIntError),
 	MalformedSignature(bitcoin::secp256k1::Error),
 	BadPrefix,

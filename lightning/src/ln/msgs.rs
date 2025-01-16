@@ -443,10 +443,6 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
-/// A randomly chosen number that is used to identify inputs within an interactive transaction
-/// construction.
-pub type SerialId = u64;
-
 /// An `stfu` (quiescence) message to be sent by or received from the stfu initiator.
 ///
 // TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/1160
@@ -514,7 +510,7 @@ pub struct TxAddInput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: SerialId,
+	pub serial_id: u64,
 	/// Serialized transaction that contains the output this input spends to verify that it is non
 	/// malleable.
 	pub prevtx: TransactionU16LenLimited,
@@ -535,7 +531,7 @@ pub struct TxAddOutput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: SerialId,
+	pub serial_id: u64,
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
@@ -550,7 +546,7 @@ pub struct TxRemoveInput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the input to be removed
-	pub serial_id: SerialId,
+	pub serial_id: u64,
 }
 
 /// A [`tx_remove_output`] message for removing an output during interactive transaction construction.
@@ -561,7 +557,7 @@ pub struct TxRemoveOutput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the output to be removed
-	pub serial_id: SerialId,
+	pub serial_id: u64,
 }
 
 /// [`A tx_complete`] message signalling the conclusion of a peer's transaction contributions during
@@ -1167,16 +1163,17 @@ impl FromStr for SocketAddress {
 }
 
 /// Represents the set of gossip messages that require a signature from a node's identity key.
-pub enum UnsignedGossipMessage<'a> {
+#[derive(Clone)]
+pub enum UnsignedGossipMessage {
 	/// An unsigned channel announcement.
-	ChannelAnnouncement(&'a UnsignedChannelAnnouncement),
+	ChannelAnnouncement(UnsignedChannelAnnouncement),
 	/// An unsigned channel update.
-	ChannelUpdate(&'a UnsignedChannelUpdate),
+	ChannelUpdate(UnsignedChannelUpdate),
 	/// An unsigned node announcement.
-	NodeAnnouncement(&'a UnsignedNodeAnnouncement)
+	NodeAnnouncement(UnsignedNodeAnnouncement)
 }
 
-impl<'a> Writeable for UnsignedGossipMessage<'a> {
+impl Writeable for UnsignedGossipMessage {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			UnsignedGossipMessage::ChannelAnnouncement(ref msg) => msg.write(writer),

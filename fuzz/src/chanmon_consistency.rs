@@ -48,13 +48,13 @@ use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
-	RecipientOnionFields, Retry,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
 	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
+use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;

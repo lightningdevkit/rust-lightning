@@ -127,7 +127,7 @@ use core::time::Duration;
 use core::ops::Deref;
 use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub(crate) use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 #[cfg(test)]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::script::ShutdownScript;
@@ -456,11 +456,11 @@ pub trait Verification {
 	/// [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256>;
+	) -> [u8; 32];
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
 }
 
@@ -469,15 +469,16 @@ impl Verification for PaymentHash {
 	/// along with the given [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_hash(*self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_payment_hash(*self, nonce, expanded_key).to_byte_array()
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::InboundPayment`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
 	}
 }
@@ -485,13 +486,14 @@ impl Verification for PaymentHash {
 impl Verification for UnauthenticatedReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_payment_tlvs(self, nonce, expanded_key).to_byte_array()
 	}
 
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
 	}
 }
@@ -512,16 +514,17 @@ impl PaymentId {
 	#[cfg(async_payments)]
 	pub fn hmac_for_async_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_async_payment_id(*self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_async_payment_id(*self, nonce, expanded_key).to_byte_array()
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`AsyncPaymentsContext::OutboundPayment`].
 	#[cfg(async_payments)]
 	pub fn verify_for_async_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_async_payment_id(*self, hmac, nonce, expanded_key)
 	}
 }
@@ -531,15 +534,16 @@ impl Verification for PaymentId {
 	/// along with the given [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key).to_byte_array()
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_offer_payment_id(*self, hmac, nonce, expanded_key)
 	}
 }
@@ -1466,8 +1470,6 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		Arc<L>,
 		Arc<KeysManager>,
 		Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 	>>,
 	Arc<DefaultMessageRouter<
 		Arc<NetworkGraph<Arc<L>>>,
@@ -1502,8 +1504,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 			&'g L,
 			&'c KeysManager,
 			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
 		>,
 		&'i DefaultMessageRouter<
 			&'f NetworkGraph<&'g L>,
@@ -1669,7 +1669,7 @@ where
 /// #     fee_estimator: &dyn lightning::chain::chaininterface::FeeEstimator,
 /// #     chain_monitor: &dyn lightning::chain::Watch<lightning::sign::InMemorySigner>,
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
-/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
+/// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
 /// #     logger: &L,
 /// #     entropy_source: &ES,
@@ -1990,7 +1990,8 @@ where
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 /// # use lightning::routing::router::RouteParameters;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2093,7 +2094,8 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::offer::Offer;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2149,7 +2151,8 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails};
+/// # use lightning::ln::outbound_payment::Retry;
 /// # use lightning::offers::parse::Bolt12SemanticError;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -4514,7 +4517,7 @@ where
 		// If we returned an error and the `node_signer` cannot provide a signature for whatever
 		// reason`, we wouldn't be able to receive inbound payments through the corresponding
 		// channel.
-		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
+		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(unsigned.clone())).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -4726,9 +4729,9 @@ where
 	///
 	/// [timer tick]: Self::timer_tick_occurred
 	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
+		&self, invoice: &Bolt12Invoice, context: Option<OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.verify_bolt12_invoice(invoice, context) {
+		match self.verify_bolt12_invoice(invoice, context.as_ref()) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
@@ -5388,7 +5391,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_partial_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config_update: &ChannelConfigUpdate,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config_update: &ChannelConfigUpdate,
 	) -> Result<(), APIError> {
 		if config_update.cltv_expiry_delta.map(|delta| delta < MIN_CLTV_EXPIRY_DELTA).unwrap_or(false) {
 			return Err(APIError::APIMisuseError {
@@ -5403,14 +5406,14 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if !peer_state.has_channel(channel_id) {
 				return Err(APIError::ChannelUnavailable {
 					err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, counterparty_node_id),
 				});
 			};
 		}
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if let Some(channel_phase) = peer_state.channel_by_id.get_mut(channel_id) {
 				let mut config = channel_phase.context().config();
 				config.apply(config_update);
@@ -5465,7 +5468,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config: &ChannelConfig,
 	) -> Result<(), APIError> {
 		return self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into());
 	}

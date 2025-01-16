@@ -883,9 +883,6 @@ pub trait NodeSigner {
 
 	/// Signs the [`TaggedHash`] of a BOLT 12 invoice.
 	///
-	/// May be called by a function passed to [`UnsignedBolt12Invoice::sign`] where `invoice` is the
-	/// callee.
-	///
 	/// Implementors may check that the `invoice` is expected rather than blindly signing the tagged
 	/// hash. An `Ok` result should sign `invoice.tagged_hash().as_digest()` with the node's signing
 	/// key or an ephemeral key to preserve privacy, whichever is associated with
@@ -2513,11 +2510,11 @@ impl EntropySource for RandomBytes {
 	}
 }
 
-// Ensure that EcdsaChannelSigner can have a vtable
-#[test]
+// Ensure that EcdsaChannelSigner can have a vtable - not required in bindings
+/*#[test]
 pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
-}
+}*/
 
 #[cfg(ldk_bench)]
 pub mod benches {

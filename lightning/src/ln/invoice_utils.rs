@@ -713,7 +713,8 @@ mod test {
 	use crate::sign::PhantomKeysManager;
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
-	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
+	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId};
+	use crate::ln::outbound_payment::{RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::routing::router::{PaymentParameters, RouteParameters};

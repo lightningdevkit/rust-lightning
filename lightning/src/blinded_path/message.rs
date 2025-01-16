@@ -143,13 +143,12 @@ impl BlindedMessagePath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
-		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
@@ -344,7 +343,7 @@ pub enum OffersContext {
 		/// used with an [`InvoiceError`].
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Option<Hmac<Sha256>>,
+		hmac: Option<[u8; 32]>,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -369,7 +368,7 @@ pub enum OffersContext {
 		/// used to log the received [`InvoiceError`].
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Hmac<Sha256>,
+		hmac: [u8; 32],
 	},
 }
 
@@ -400,7 +399,7 @@ pub enum AsyncPaymentsContext {
 		///
 		/// Prevents the recipient from being able to deanonymize us by creating a blinded path to us
 		/// containing the expected [`PaymentId`].
-		hmac: Hmac<Sha256>,
+		hmac: [u8; 32],
 	},
 }
 

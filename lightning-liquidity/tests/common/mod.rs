@@ -80,8 +80,6 @@ type ChannelManager = channelmanager::ChannelManager<
 			Arc<test_utils::TestLogger>,
 			Arc<KeysManager>,
 			Arc<LockingWrapper<TestScorer>>,
-			(),
-			TestScorer,
 		>,
 	>,
 	Arc<
@@ -286,10 +284,11 @@ impl lightning::util::ser::Writeable for TestScorer {
 }
 
 impl ScoreLookUp for TestScorer {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = ();
 	fn channel_penalty_msat(
 		&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage,
-		_score_params: &Self::ScoreParams,
+		_score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters,
 	) -> u64 {
 		unimplemented!();
 	}
