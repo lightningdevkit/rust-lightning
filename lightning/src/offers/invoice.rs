@@ -120,7 +120,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 #[cfg(test)]
-use crate::offers::invoice_macros::invoice_builder_methods_test;
+use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_request::{EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef, INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
@@ -342,7 +342,7 @@ macro_rules! invoice_builder_methods { (
 	pub(crate) fn amount_msats(
 		invoice_request: &InvoiceRequest
 	) -> Result<u64, Bolt12SemanticError> {
-		match invoice_request.amount_msats() {
+		match invoice_request.contents.inner.amount_msats() {
 			Some(amount_msats) => Ok(amount_msats),
 			None => match invoice_request.contents.inner.offer.amount() {
 				Some(Amount::Bitcoin { amount_msats }) => {
@@ -380,6 +380,20 @@ macro_rules! invoice_builder_methods { (
 	}
 } }
 
+#[cfg(test)]
+macro_rules! invoice_builder_methods_test { (
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+	$(, $self_mut: tt)?
+) => {
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn amount_msats_unchecked(
+		$($self_mut)* $self: $self_type, amount_msats: u64,
+	) -> $return_type {
+		$self.invoice.fields_mut().amount_msats = amount_msats;
+		$return_value
+	}
+} }
+
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, Self);
 }
@@ -393,7 +407,9 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	invoice_builder_methods_common!(self, Self, self.invoice.fields_mut(), Self, self, Bolt12Invoice, mut);
 
 	#[cfg(test)]
-	invoice_builder_methods_test!(self, Self, self.invoice.fields_mut(), Self, self, mut);
+	invoice_builder_methods_test!(self, Self, Self, self, mut);
+	#[cfg(test)]
+	invoice_builder_methods_test_common!(self, Self, self.invoice.fields_mut(), Self, self, mut);
 }
 
 #[cfg(all(c_bindings, not(test)))]
@@ -408,7 +424,8 @@ impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, ExplicitSigningPubkey);
 	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, Bolt12Invoice);
-	invoice_builder_methods_test!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
+	invoice_builder_methods_test!(self, &mut Self, &mut Self, self);
+	invoice_builder_methods_test_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
 }
 
 #[cfg(all(c_bindings, not(test)))]
@@ -423,7 +440,8 @@ impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, DerivedSigningPubkey);
 	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, Bolt12Invoice);
-	invoice_builder_methods_test!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
+	invoice_builder_methods_test!(self, &mut Self, &mut Self, self);
+	invoice_builder_methods_test_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
 }
 
 #[cfg(c_bindings)]
@@ -1531,6 +1549,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 					experimental_offer_tlv_stream, experimental_invoice_request_tlv_stream,
 				)
 			)?;
+
+			if amount_msats != refund.amount_msats() {
+				return Err(Bolt12SemanticError::InvalidAmount);
+			}
+
 			Ok(InvoiceContents::ForRefund { refund, fields })
 		} else {
 			let invoice_request = InvoiceRequestContents::try_from(
@@ -1539,6 +1562,13 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 					experimental_offer_tlv_stream, experimental_invoice_request_tlv_stream,
 				)
 			)?;
+
+			if let Some(requested_amount_msats) = invoice_request.amount_msats() {
+				if amount_msats != requested_amount_msats {
+					return Err(Bolt12SemanticError::InvalidAmount);
+				}
+			}
+
 			Ok(InvoiceContents::ForOffer { invoice_request, fields })
 		}
 	}
@@ -2704,6 +2734,69 @@ mod tests {
 			Err(e) => {
 				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidSigningPubkey));
 			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_wrong_amount() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
+		let invoice = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.amount_msats_unchecked(2000)
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match Bolt12Invoice::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
+		}
+
+		let invoice = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.amount_msats(1000).unwrap()
+			.build_and_sign().unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.amount_msats_unchecked(2000)
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match Bolt12Invoice::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
+		}
+
+		let invoice = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap()
+			.respond_using_derived_keys_no_std(
+				payment_paths(), payment_hash(), now(), &expanded_key, &entropy
+			)
+			.unwrap()
+			.amount_msats_unchecked(2000)
+			.build_and_sign(&secp_ctx).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match Bolt12Invoice::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
 		}
 	}
 

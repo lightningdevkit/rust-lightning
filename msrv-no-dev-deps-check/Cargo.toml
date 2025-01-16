@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 lightning = { path = "../lightning" }
 lightning-block-sync = { path = "../lightning-block-sync", features = [ "rest-client", "rpc-client" ] }
-lightning-transaction-sync = { path = "../lightning-transaction-sync", features = [ "esplora-async-https", "electrum" ] }
 lightning-invoice = { path = "../lightning-invoice" }
 lightning-net-tokio = { path = "../lightning-net-tokio" }
 lightning-persister = { path = "../lightning-persister" }

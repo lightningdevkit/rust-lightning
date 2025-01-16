@@ -83,7 +83,7 @@ macro_rules! invoice_builder_methods_common { (
 } }
 
 #[cfg(test)]
-macro_rules! invoice_builder_methods_test { (
+macro_rules! invoice_builder_methods_test_common { (
 	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr
 	$(, $self_mut: tt)?
 ) => {
@@ -109,9 +109,6 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
 	/// privacy is lost if a public node id is used for
 	#[doc = concat!("[`", stringify!($invoice_type), "::signing_pubkey`].")]
-	///
-	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
-	/// matched in another language.
 	pub fn payment_paths(&$self) -> &[BlindedPaymentPath] {
 		$contents.payment_paths()
 	}
@@ -149,4 +146,4 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 pub(super) use invoice_accessors_common;
 pub(super) use invoice_builder_methods_common;
 #[cfg(test)]
-pub(super) use invoice_builder_methods_test;
+pub(super) use invoice_builder_methods_test_common;
