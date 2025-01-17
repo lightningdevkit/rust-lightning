@@ -1460,10 +1460,24 @@ impl OutboundPayments {
 	{
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
+				self.remove_session_privs(payment_id, route.paths.iter().zip(onion_session_privs.iter()));
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), logger, pending_events);
 				self.find_route_and_send_payment(payment_hash, payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(mut retry), results, .. } => {
+				debug_assert_eq!(results.len(), route.paths.len());
+				debug_assert_eq!(results.len(), onion_session_privs.len());
+				let failed_paths = results.iter().zip(route.paths.iter().zip(onion_session_privs.iter()))
+					.filter_map(|(path_res, (path, session_priv))| {
+						match path_res {
+							// While a MonitorUpdateInProgress is an Err(_), the payment is still
+							// considered "in flight" and we shouldn't remove it from the
+							// PendingOutboundPayment set.
+							Ok(_) | Err(APIError::MonitorUpdateInProgress) => None,
+							_ => Some((path, session_priv))
+						}
+					});
+				self.remove_session_privs(payment_id, failed_paths);
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), logger, pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
@@ -1477,13 +1491,13 @@ impl OutboundPayments {
 			},
 			PaymentSendFailure::PathParameterError(results) => {
 				log_error!(logger, "Failed to send to route due to parameter error in a single path. Your router is buggy");
-				self.remove_session_privs(payment_id, &route, onion_session_privs);
+				self.remove_session_privs(payment_id, route.paths.iter().zip(onion_session_privs.iter()));
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), logger, pending_events);
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::ParameterError(e) => {
 				log_error!(logger, "Failed to send to route due to parameter error: {:?}. Your router is buggy", e);
-				self.remove_session_privs(payment_id, &route, onion_session_privs);
+				self.remove_session_privs(payment_id, route.paths.iter().zip(onion_session_privs.iter()));
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::DuplicatePayment => debug_assert!(false), // unreachable
@@ -1525,12 +1539,12 @@ impl OutboundPayments {
 
 	// If a payment fails after adding the pending payment but before any HTLCs are locked into
 	// channels, we need to clear the session_privs in order for abandoning the payment to succeed.
-	fn remove_session_privs(
-		&self, payment_id: PaymentId, route: &Route, onion_session_privs: Vec<[u8; 32]>
+	fn remove_session_privs<'a, I: Iterator<Item = (&'a Path, &'a [u8; 32])>>(
+		&self, payment_id: PaymentId, path_session_priv: I
 	) {
 		if let Some(payment) = self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id) {
-			for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.into_iter()) {
-				let removed = payment.remove(&session_priv_bytes, Some(path));
+			for (path, session_priv_bytes) in path_session_priv {
+				let removed = payment.remove(session_priv_bytes, Some(path));
 				debug_assert!(removed, "This can't happen as the payment has an entry for this path added by callers");
 			}
 		} else {
@@ -1812,29 +1826,11 @@ impl OutboundPayments {
 		let mut results = Vec::new();
 		debug_assert_eq!(route.paths.len(), onion_session_privs.len());
 		for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
-			let mut path_res = send_payment_along_path(SendAlongPathArgs {
+			let path_res = send_payment_along_path(SendAlongPathArgs {
 				path: &path, payment_hash: &payment_hash, recipient_onion, total_value,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
 				session_priv_bytes: *session_priv_bytes
 			});
-			match path_res {
-				Ok(_) => {},
-				Err(APIError::MonitorUpdateInProgress) => {
-					// While a MonitorUpdateInProgress is an Err(_), the payment is still
-					// considered "in flight" and we shouldn't remove it from the
-					// PendingOutboundPayment set.
-				},
-				Err(_) => {
-					let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
-					if let Some(payment) = pending_outbounds.get_mut(&payment_id) {
-						let removed = payment.remove(&session_priv_bytes, Some(path));
-						debug_assert!(removed, "This can't happen as the payment has an entry for this path added by callers");
-					} else {
-						debug_assert!(false, "This can't happen as the payment was added by callers");
-						path_res = Err(APIError::APIMisuseError { err: "Internal error: payment disappeared during processing. Please report this bug!".to_owned() });
-					}
-				}
-			}
 			results.push(path_res);
 		}
 		let mut has_ok = false;
