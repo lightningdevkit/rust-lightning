@@ -327,6 +327,8 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	}
 	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: PublicKey, _msg: &msgs::ChannelUpdate) {}
+	fn handle_peer_storage(&self, _their_node_id: PublicKey, _msg: msgs::PeerStorage) {}
+	fn handle_peer_storage_retrieval(&self, _their_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) {}
 	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
 	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 	fn handle_error(&self, _their_node_id: PublicKey, _msg: &msgs::ErrorMessage) {}
@@ -1850,6 +1852,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::ChannelReady(msg) => {
 				self.message_handler.chan_handler.handle_channel_ready(their_node_id, &msg);
 			},
+			wire::Message::PeerStorage(msg) => {
+				self.message_handler.chan_handler.handle_peer_storage(their_node_id, msg);
+			},
+			wire::Message::PeerStorageRetrieval(msg) => {
+				self.message_handler.chan_handler.handle_peer_storage_retrieval(their_node_id, msg);
+			},
 
 			// Quiescence messages:
 			wire::Message::Stfu(msg) => {
@@ -2163,6 +2171,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// robustly gossip broadcast events even if a peer's message buffer is full.
 				let mut handle_event = |event, from_chan_handler| {
 					match event {
+						MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendPeerStorage event in peer_handler for {}", log_pubkey!(node_id));
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
+						},
+						MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } => {
+							log_debug!(self.logger, "Handling SendPeerStorageRetrieval event in peer_handler for {}", log_pubkey!(node_id));
+							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
+						},
 						MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id), None), "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),

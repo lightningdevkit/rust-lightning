@@ -8245,6 +8245,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	fn internal_peer_storage_retrieval(&self, _counterparty_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
+		Ok(())
+	}
+
+	fn internal_peer_storage(&self, _counterparty_node_id: PublicKey, _msg: msgs::PeerStorage) -> Result<(), MsgHandleErrInternal> {
+		Ok(())
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -11443,6 +11451,16 @@ where
 		let _ = handle_error!(self, self.internal_funding_signed(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	fn handle_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) {
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
+		let _ = handle_error!(self, self.internal_peer_storage(counterparty_node_id, msg), counterparty_node_id);
+	}
+
+	fn handle_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) {
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
+		let _ = handle_error!(self, self.internal_peer_storage_retrieval(counterparty_node_id, msg), counterparty_node_id);
+	}
+
 	fn handle_channel_ready(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReady) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// channel_ready message - while the channel's state will change, any channel_ready message
@@ -11684,6 +11702,10 @@ where
 						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+
+						// Peer Storage
+						&events::MessageSendEvent::SendPeerStorage { .. } => false,
+						&events::MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");

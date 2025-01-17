@@ -2636,6 +2636,23 @@ pub enum MessageSendEvent {
 		/// The gossip_timestamp_filter which should be sent.
 		msg: msgs::GossipTimestampFilter,
 	},
+	/// Sends a channel partner Peer Storage of our backup which they should store.
+	/// This should be sent on each new connection to the channel partner or whenever we want
+	/// them to update the backup that they store.
+	SendPeerStorage {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The peer_storage which should be sent.
+		msg: msgs::PeerStorage,
+	},
+	/// Sends a channel partner their own peer storage which we store and update when they send
+	/// a [`msgs::PeerStorage`].
+	SendPeerStorageRetrieval {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The peer_storage_retrieval which should be sent.
+		msg: msgs::PeerStorageRetrieval,
+	}
 }
 
 /// A trait indicating an object may generate message send events

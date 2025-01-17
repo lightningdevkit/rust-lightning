@@ -1118,6 +1118,16 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::TxAbort(msg.clone()));
 	}
 
+	fn handle_peer_storage(&self, _their_node_id: PublicKey, msg: msgs::PeerStorage) {
+		self.received_msg(wire::Message::PeerStorage(msg));
+	}
+
+	fn handle_peer_storage_retrieval(
+		&self, _their_node_id: PublicKey, msg: msgs::PeerStorageRetrieval,
+	) {
+		self.received_msg(wire::Message::PeerStorageRetrieval(msg));
+	}
+
 	fn message_received(&self) {}
 }
 

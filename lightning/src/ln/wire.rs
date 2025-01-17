@@ -53,6 +53,8 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Warning(msgs::WarningMessage),
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
+	PeerStorage(msgs::PeerStorage),
+	PeerStorageRetrieval(msgs::PeerStorageRetrieval),
 	OpenChannel(msgs::OpenChannel),
 	OpenChannelV2(msgs::OpenChannelV2),
 	AcceptChannel(msgs::AcceptChannel),
@@ -111,6 +113,8 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Warning(ref msg) => msg.write(writer),
 			&Message::Ping(ref msg) => msg.write(writer),
 			&Message::Pong(ref msg) => msg.write(writer),
+			&Message::PeerStorage(ref msg) => msg.write(writer),
+			&Message::PeerStorageRetrieval(ref msg) => msg.write(writer),
 			&Message::OpenChannel(ref msg) => msg.write(writer),
 			&Message::OpenChannelV2(ref msg) => msg.write(writer),
 			&Message::AcceptChannel(ref msg) => msg.write(writer),
@@ -169,6 +173,8 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Warning(ref msg) => msg.type_id(),
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
+			&Message::PeerStorage(ref msg) => msg.type_id(),
+			&Message::PeerStorageRetrieval(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
 			&Message::OpenChannelV2(ref msg) => msg.type_id(),
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
@@ -260,6 +266,12 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::Pong::TYPE => {
 			Ok(Message::Pong(Readable::read(buffer)?))
+		},
+		msgs::PeerStorage::TYPE => {
+			Ok(Message::PeerStorage(Readable::read(buffer)?))
+		},
+		msgs::PeerStorageRetrieval::TYPE => {
+			Ok(Message::PeerStorageRetrieval(Readable::read(buffer)?))
 		},
 		msgs::OpenChannel::TYPE => {
 			Ok(Message::OpenChannel(Readable::read(buffer)?))
@@ -446,6 +458,14 @@ impl<T: core::fmt::Debug + Writeable> Type for T where T: Encode {
 
 impl Encode for msgs::Stfu {
 	const TYPE: u16 = 2;
+}
+
+impl Encode for msgs::PeerStorage {
+	const TYPE: u16 = 7;
+}
+
+impl Encode for msgs::PeerStorageRetrieval {
+	const TYPE: u16 = 9;
 }
 
 impl Encode for msgs::Init {
