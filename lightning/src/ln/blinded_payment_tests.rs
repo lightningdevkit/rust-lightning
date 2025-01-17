@@ -1609,6 +1609,7 @@ fn route_blinding_spec_test_vector() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn get_peer_storage_key(&self) -> [u8; 32] { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
@@ -1918,6 +1919,7 @@ fn test_trampoline_inbound_payment_decoding() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn get_peer_storage_key(&self) -> [u8; 32] { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }

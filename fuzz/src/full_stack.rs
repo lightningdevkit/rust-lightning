@@ -420,6 +420,10 @@ impl NodeSigner for KeyProvider {
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
+
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		SecretKey::from_slice(&[42; 32]).unwrap().secret_bytes()
+	}
 }
 
 impl SignerProvider for KeyProvider {
@@ -608,6 +612,14 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	];
 
 	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()) });
+
+	let keys_manager = Arc::new(KeyProvider {
+		node_secret: our_network_key.clone(),
+		inbound_payment_key: ExpandedKey::new(inbound_payment_key),
+		counter: AtomicU64::new(0),
+		signer_state: RefCell::new(new_hash_map()),
+	});
+
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
 		None,
 		broadcast.clone(),
@@ -616,12 +628,6 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
 	));
 
-	let keys_manager = Arc::new(KeyProvider {
-		node_secret: our_network_key.clone(),
-		inbound_payment_key: ExpandedKey::new(inbound_payment_key),
-		counter: AtomicU64::new(0),
-		signer_state: RefCell::new(new_hash_map()),
-	});
 	let network = Network::Bitcoin;
 	let best_block_timestamp = genesis_block(network).header.time;
 	let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
