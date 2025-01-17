@@ -1341,7 +1341,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
+	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc, feerate_bump};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
@@ -1359,7 +1359,10 @@ mod tests {
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
+	use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, FEERATE_FLOOR_SATS_PER_KW, LowerBoundedFeeEstimator};
+	use crate::chain::onchaintx::FeerateStrategy;
 	use crate::types::features::ChannelTypeFeatures;
+	use crate::util::test_utils::TestLogger;
 
 	fn fake_txid(n: u64) -> Txid {
 		Transaction {
@@ -1667,6 +1670,86 @@ mod tests {
 				let package = PackageTemplate::build_package(fake_txid(1), 0, counterparty_outp, 1000);
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features));
 			}
+		}
+	}
+
+	struct TestFeeEstimator {
+		sat_per_kw: u32,
+	}
+
+	impl FeeEstimator for TestFeeEstimator {
+		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
+			self.sat_per_kw
+		}
+	}
+
+	#[test]
+	fn test_feerate_bump() {
+		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW;
+		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
+		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
+		let fee_rate_strategy = FeerateStrategy::ForceBump;
+		let confirmation_target = ConfirmationTarget::UrgentOnChainSweep;
+
+		{
+			// Check underflow doesn't occur
+			let predicted_weight_units = 1000;
+			let input_satoshis = 505;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, input amount 505 is too small").unwrap(), 1);
+		}
+
+		{
+			// Check post-25%-bump-underflow scenario satisfying the following constraints:
+			// input - fee = 546
+			// input - fee * 1.25 = -1
+
+			// We accomplish that scenario with the following values:
+			// input = 2734
+			// fee = 2188
+
+			let predicted_weight_units = 1000;
+			let input_satoshis = 2734;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 2188, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, output amount 0 would end up below dust threshold 546").unwrap(), 1);
+		}
+
+		{
+			// Check that an output amount of 0 is caught
+			let predicted_weight_units = 1000;
+			let input_satoshis = 506;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, output amount 0 would end up below dust threshold 546").unwrap(), 1);
+		}
+
+		{
+			// Check that dust_threshold - 1 is blocked
+			let predicted_weight_units = 1000;
+			let input_satoshis = 1051;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, output amount 545 would end up below dust threshold 546").unwrap(), 1);
+		}
+
+		{
+			let predicted_weight_units = 1000;
+			let input_satoshis = 1052;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger).unwrap();
+			assert_eq!(bumped_fee_rate, (506, 506));
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Naive fee bump of 63s does not meet min relay fee requirements of 253s").unwrap(), 1);
 		}
 	}
 }
