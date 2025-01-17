@@ -50,6 +50,11 @@ const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[7; 16];
 // HMAC input for `ReceiveTlvs`. The HMAC is used in `blinded_path::payment::PaymentContext`.
 const PAYMENT_TLVS_HMAC_INPUT: &[u8; 16] = &[8; 16];
 
+// HMAC input used in `AsyncPaymentsContext::InboundPayment` to authenticate inbound
+// held_htlc_available onion messages.
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_HELD_HTLC_HMAC_INPUT: &[u8; 16] = &[9; 16];
+
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
 #[derive(Clone)]
@@ -482,4 +487,17 @@ pub(crate) fn verify_payment_tlvs(
 	expanded_key: &ExpandedKey,
 ) -> Result<(), ()> {
 	if hmac_for_payment_tlvs(receive_tlvs, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_held_htlc_available_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Held HTLC OM";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_HELD_HTLC_HMAC_INPUT);
+
+	Hmac::from_engine(hmac)
 }

@@ -95,7 +95,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, secp_ctx: &Secp256k1<T>
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PAYMENT_PATHS: usize = 3;
@@ -120,9 +120,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 
 		let paths = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
-			.filter(|details| amount_msats <= details.inbound_capacity_msat)
-			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
-			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
+			.filter(|details| amount_msats.unwrap_or(0) <= details.inbound_capacity_msat)
+			.filter(|details| amount_msats.unwrap_or(u64::MAX) >= details.inbound_htlc_minimum_msat.unwrap_or(0))
+			.filter(|details| amount_msats.unwrap_or(0) <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
 			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter(|details| network_graph
 					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
@@ -218,7 +218,7 @@ pub trait Router {
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, secp_ctx: &Secp256k1<T>
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 }
 

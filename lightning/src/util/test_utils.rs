@@ -252,7 +252,7 @@ impl<'a> Router for TestRouter<'a> {
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, secp_ctx: &Secp256k1<T>,
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
 		if expected_paths.is_empty() {

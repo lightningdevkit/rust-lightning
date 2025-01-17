@@ -402,6 +402,24 @@ pub enum AsyncPaymentsContext {
 		/// containing the expected [`PaymentId`].
 		hmac: Hmac<Sha256>,
 	},
+	/// Context contained within the [`BlindedMessagePath`]s we put in static invoices, provided back
+	/// to us in corresponding [`HeldHtlcAvailable`] messages.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	InboundPayment {
+		/// A nonce used for authenticating that a [`HeldHtlcAvailable`] message is valid for a
+		/// preceding static invoice.
+		///
+		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+		nonce: Nonce,
+		/// Authentication code for the [`HeldHtlcAvailable`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us, sending a [`HeldHtlcAvailable`]
+		/// message and trivially getting notified whenever we come online.
+		///
+		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+		hmac: Hmac<Sha256>,
+	},
 }
 
 impl_writeable_tlv_based_enum!(MessageContext,
@@ -432,6 +450,10 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, payment_id, required),
 		(2, nonce, required),
 		(4, hmac, required),
+	},
+	(1, InboundPayment) => {
+		(0, nonce, required),
+		(2, hmac, required),
 	},
 );
 
