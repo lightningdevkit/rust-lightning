@@ -835,6 +835,35 @@ pub trait NodeSigner {
 	/// [phantom node payments]: PhantomKeysManager
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
 
+	/// Generates a 32-byte key used for peer storage encryption.
+	///
+	/// This function derives an encryption key for peer storage by using the HKDF
+	/// (HMAC-based Key Derivation Function) with a specific label and the node
+	/// secret key. The derived key is used for encrypting or decrypting peer storage
+	/// data.
+	///
+	/// The process involves the following steps:
+	/// 1. Retrieves the node secret key.
+	/// 2. Uses the node secret key and the label `"Peer Storage Encryption Key"`
+	///    to perform HKDF extraction and expansion.
+	/// 3. Returns the first part of the derived key, which is a 32-byte array.
+	///
+	/// # Returns
+	///
+	/// Returns a 32-byte array that serves as the encryption key for peer storage.
+	///
+	/// # Panics
+	///
+	/// This function does not panic under normal circumstances, but failures in
+	/// obtaining the node secret key or issues within the HKDF function may cause
+	/// unexpected behavior.
+	///
+	/// # Notes
+	///
+	/// Ensure that the node secret key is securely managed, as it is crucial for
+	/// the security of the derived encryption key.
+	fn get_peer_storage_key(&self) -> [u8; 32];
+
 	/// Get node id based on the provided [`Recipient`].
 	///
 	/// This method must return the same value each time it is called with a given [`Recipient`]
@@ -2174,6 +2203,14 @@ impl NodeSigner for KeysManager {
 		self.inbound_payment_key.clone()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		let (t1, _) = hkdf_extract_expand_twice(
+			b"Peer Storage Encryption Key",
+			&self.get_node_secret_key().secret_bytes(),
+		);
+		t1
+	}
+
 	fn sign_invoice(
 		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
@@ -2350,6 +2387,14 @@ impl NodeSigner for PhantomKeysManager {
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
 		self.inbound_payment_key.clone()
+	}
+
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		let (t1, _) = hkdf_extract_expand_twice(
+			b"Peer Storage Encryption Key",
+			&self.get_node_secret_key().secret_bytes(),
+		);
+		t1
 	}
 
 	fn sign_invoice(

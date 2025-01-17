@@ -1195,6 +1195,10 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		unreachable!()
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
@@ -1269,6 +1273,10 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_invoice(&self, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(invoice, recipient)
+	}
+
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		self.backing.get_peer_storage_key()
 	}
 
 	fn sign_bolt12_invoice_request(
