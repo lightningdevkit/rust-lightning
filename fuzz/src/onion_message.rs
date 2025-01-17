@@ -23,7 +23,7 @@ use lightning::onion_message::messenger::{
 };
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
-use lightning::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
+use lightning::sign::{EntropySource, NodeSigner, PeerStorageKey, Recipient, SignerProvider};
 use lightning::types::features::InitFeatures;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{LengthReadable, Writeable, Writer};
@@ -247,6 +247,10 @@ impl NodeSigner for KeyProvider {
 	fn sign_gossip_message(
 		&self, _msg: lightning::ln::msgs::UnsignedGossipMessage,
 	) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
+		unreachable!()
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		unreachable!()
 	}
 }
