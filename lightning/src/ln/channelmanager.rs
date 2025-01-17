@@ -8283,26 +8283,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
-				if let Some(mut signing_session) = signing_session_opt {
-					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_entry.get_mut().as_unfunded_v2_mut() {
-						Some(chan) => {
-							chan.funding_tx_constructed(&mut signing_session, &self.logger)
-						},
-						None => Err(ChannelError::Warn(
-							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-							.into())),
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					let (channel_id, channel) = chan_entry.remove_entry();
-					let channel = match channel.into_unfunded_v2() {
-						Some(chan) => chan.into_channel(signing_session),
-						None => {
-							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
-							Err(ChannelError::Warn(
-								"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-									.into()))
-						},
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					peer_state.channel_by_id.insert(channel_id, Channel::from(channel));
+				if let Some(signing_session) = signing_session_opt {
+					let (commitment_signed, funding_ready_for_sig_event_opt) = chan_entry
+						.get_mut()
+						.funding_tx_constructed(signing_session, &self.logger)
+						.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
 					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((funding_ready_for_sig_event, None));
