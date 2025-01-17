@@ -62,7 +62,9 @@ use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessa
 use lightning::routing::router::{
 	InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router,
 };
-use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
+use lightning::sign::{
+	EntropySource, InMemorySigner, NodeSigner, PeerStorageKey, Recipient, SignerProvider,
+};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::*;
@@ -336,6 +338,10 @@ impl NodeSigner for KeyProvider {
 		&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		PeerStorageKey { inner: [42; 32] }
 	}
 
 	fn sign_bolt12_invoice(
