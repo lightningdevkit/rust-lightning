@@ -34,7 +34,7 @@ use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::nonce::Nonce;
 use crate::prelude::*;
 use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters, TrampolineHop};
-use crate::sign::{NodeSigner, Recipient};
+use crate::sign::{NodeSigner, PeerStorageKey, Recipient};
 use crate::util::config::UserConfig;
 use crate::util::ser::{WithoutLength, Writeable};
 use crate::util::test_utils;
@@ -1629,6 +1629,7 @@ fn route_blinding_spec_test_vector() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn get_peer_storage_key(&self) -> PeerStorageKey { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
@@ -1938,6 +1939,7 @@ fn test_trampoline_inbound_payment_decoding() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn get_peer_storage_key(&self) -> PeerStorageKey { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
