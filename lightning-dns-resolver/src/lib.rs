@@ -107,9 +107,11 @@ impl<PH: Deref> DNSResolverMessageHandler for OMDomainResolver<PH>
 where
 	PH::Target: DNSResolverMessageHandler,
 {
-	fn handle_dnssec_proof(&self, proof: DNSSECProof, context: DNSResolverContext) {
+	fn handle_dnssec_proof(
+		&self, proof: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>,
+	) {
 		if let Some(proof_handler) = &self.proof_handler {
-			proof_handler.handle_dnssec_proof(proof, context);
+			proof_handler.handle_dnssec_proof(proof, context, custom_data);
 		}
 	}
 
@@ -159,7 +161,7 @@ mod test {
 	use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 	use bitcoin::Block;
 
-	use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
+	use lightning::blinded_path::message::{self, BlindedMessagePath, MessageContext};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::events::{Event, PaymentPurpose};
 	use lightning::ln::channelmanager::{PaymentId, Retry};
@@ -225,11 +227,13 @@ mod test {
 		}
 
 		fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-			&self, recipient: PublicKey, context: MessageContext, _peers: Vec<PublicKey>,
-			secp_ctx: &Secp256k1<T>,
+			&self, recipient: PublicKey, recipient_tlvs: message::ReceiveTlvs,
+			_peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 		) -> Result<Vec<BlindedMessagePath>, ()> {
 			let keys = KeysManager::new(&[0; 32], 42, 43);
-			Ok(vec![BlindedMessagePath::one_hop(recipient, context, &keys, secp_ctx).unwrap()])
+			Ok(vec![
+				BlindedMessagePath::one_hop(recipient, recipient_tlvs, &keys, secp_ctx).unwrap()
+			])
 		}
 	}
 	impl Deref for DirectlyConnectedRouter {
@@ -251,8 +255,11 @@ mod test {
 			panic!();
 		}
 
-		fn handle_dnssec_proof(&self, msg: DNSSECProof, context: DNSResolverContext) {
-			let mut proof = self.resolver.handle_dnssec_proof_for_uri(msg, context).unwrap();
+		fn handle_dnssec_proof(
+			&self, msg: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>,
+		) {
+			let mut proof =
+				self.resolver.handle_dnssec_proof_for_uri(msg, context, custom_data).unwrap();
 			assert_eq!(proof.0.len(), 1);
 			let payment = proof.0.pop().unwrap();
 			let mut result = Some((payment.0, payment.1, proof.1));
@@ -330,9 +337,12 @@ mod test {
 
 		let (msg, context) =
 			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
-		let query_context = MessageContext::DNSResolver(context);
+		let recipient_tlvs = message::ReceiveTlvs {
+			context: Some(MessageContext::DNSResolver(context)),
+			custom_data: None,
+		};
 		let reply_path =
-			BlindedMessagePath::one_hop(payer_id, query_context, &*payer_keys, &secp_ctx).unwrap();
+			BlindedMessagePath::one_hop(payer_id, recipient_tlvs, &*payer_keys, &secp_ctx).unwrap();
 		payer.pending_messages.lock().unwrap().push((
 			DNSResolverMessage::DNSSECQuery(msg),
 			MessageSendInstructions::WithSpecifiedReplyPath {

@@ -33,7 +33,10 @@ pub trait AsyncPaymentsMessageHandler {
 
 	/// Handle a [`ReleaseHeldHtlc`] message. If authentication of the message succeeds, an HTLC
 	/// should be released to the corresponding payee.
-	fn handle_release_held_htlc(&self, message: ReleaseHeldHtlc, context: AsyncPaymentsContext);
+	fn handle_release_held_htlc(
+		&self, message: ReleaseHeldHtlc, context: AsyncPaymentsContext,
+		custom_data: Option<Vec<u8>>,
+	);
 
 	/// Release any [`AsyncPaymentsMessage`]s that need to be sent.
 	///

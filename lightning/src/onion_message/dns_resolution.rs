@@ -67,7 +67,9 @@ pub trait DNSResolverMessageHandler {
 	/// Handle a [`DNSSECProof`] message (in response to a [`DNSSECQuery`] we presumably sent).
 	///
 	/// With this, we should be able to validate the DNS record we requested.
-	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext);
+	fn handle_dnssec_proof(
+		&self, message: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>,
+	);
 
 	/// Gets the node feature flags which this handler itself supports. Useful for setting the
 	/// `dns_resolver` flag if this handler supports returning [`DNSSECProof`] messages in response
@@ -362,9 +364,10 @@ impl OMNameResolver {
 	/// If an [`Offer`] is found, it, as well as the [`PaymentId`] and original `name` passed to
 	/// [`Self::resolve_name`] are returned.
 	pub fn handle_dnssec_proof_for_offer(
-		&self, msg: DNSSECProof, context: DNSResolverContext,
+		&self, msg: DNSSECProof, context: DNSResolverContext, custom_data: Option<Vec<u8>>,
 	) -> Option<(Vec<(HumanReadableName, PaymentId)>, Offer)> {
-		let (completed_requests, uri) = self.handle_dnssec_proof_for_uri(msg, context)?;
+		let (completed_requests, uri) =
+			self.handle_dnssec_proof_for_uri(msg, context, custom_data)?;
 		if let Some((_onchain, params)) = uri.split_once("?") {
 			for param in params.split("&") {
 				let (k, v) = if let Some(split) = param.split_once("=") {
@@ -395,8 +398,9 @@ impl OMNameResolver {
 	/// This method is useful for those who handle bitcoin: URIs already, handling more than just
 	/// BOLT12 [`Offer`]s.
 	pub fn handle_dnssec_proof_for_uri(
-		&self, msg: DNSSECProof, context: DNSResolverContext,
+		&self, msg: DNSSECProof, context: DNSResolverContext, _custom_data: Option<Vec<u8>>,
 	) -> Option<(Vec<(HumanReadableName, PaymentId)>, String)> {
+		// todo: Introduce ability to analyse `custom_data`
 		let DNSSECProof { name: answer_name, proof } = msg;
 		let mut pending_resolves = self.pending_resolves.lock().unwrap();
 		if let hash_map::Entry::Occupied(entry) = pending_resolves.entry(answer_name) {

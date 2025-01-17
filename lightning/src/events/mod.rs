@@ -703,15 +703,15 @@ pub enum Event {
 	/// [`ChannelManager::fail_htlc_backwards`] or [`ChannelManager::fail_htlc_backwards_with_reason`]
 	/// to free up resources for this HTLC and avoid network congestion.
 	///
-	/// If [`Event::PaymentClaimable::onion_fields`] is `Some`, and includes custom TLVs with even type
+	/// If [`Event::PaymentClaimable::onion_fields`] is `Some`, and includes sender custom TLVs with even type
 	/// numbers, you should use [`ChannelManager::fail_htlc_backwards_with_reason`] with
 	/// [`FailureCode::InvalidOnionPayload`] if you fail to understand and handle the contents, or
-	/// [`ChannelManager::claim_funds_with_known_custom_tlvs`] upon successful handling.
-	/// If you don't intend to check for custom TLVs, you can simply use
-	/// [`ChannelManager::claim_funds`], which will automatically fail back even custom TLVs.
+	/// [`ChannelManager::claim_funds_with_known_sender_custom_tlvs`] upon successful handling.
+	/// If you don't intend to check for sender custom TLVs, you can simply use
+	/// [`ChannelManager::claim_funds`], which will automatically fail back even sender custom TLVs.
 	///
 	/// If you fail to call [`ChannelManager::claim_funds`],
-	/// [`ChannelManager::claim_funds_with_known_custom_tlvs`],
+	/// [`ChannelManager::claim_funds_with_known_sender_custom_tlvs`],
 	/// [`ChannelManager::fail_htlc_backwards`], or
 	/// [`ChannelManager::fail_htlc_backwards_with_reason`] within the HTLC's timeout, the HTLC will
 	/// be automatically failed.
@@ -730,7 +730,7 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	///
 	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
-	/// [`ChannelManager::claim_funds_with_known_custom_tlvs`]: crate::ln::channelmanager::ChannelManager::claim_funds_with_known_custom_tlvs
+	/// [`ChannelManager::claim_funds_with_known_sender_custom_tlvs`]: crate::ln::channelmanager::ChannelManager::claim_funds_with_known_sender_custom_tlvs
 	/// [`FailureCode::InvalidOnionPayload`]: crate::ln::channelmanager::FailureCode::InvalidOnionPayload
 	/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
 	/// [`ChannelManager::fail_htlc_backwards_with_reason`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards_with_reason

@@ -670,7 +670,7 @@ const DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF: u8 = 2;
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 
 /// Estimated maximum number of hops that can be included in a payment path. May be inaccurate if
-/// payment metadata, custom TLVs, or blinded paths are included in the payment.
+/// payment metadata, sender custom TLVs, or blinded paths are included in the payment.
 // During routing, we only consider paths shorter than our maximum length estimate.
 // In the TLV onion format, there is no fixed maximum length, but the `hop_payloads`
 // field is always 1300 bytes. As the `tlv_payload` for each hop may vary in length, we have to
