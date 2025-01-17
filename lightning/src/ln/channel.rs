@@ -713,6 +713,7 @@ pub(super) enum ChannelError {
 	Ignore(String),
 	Warn(String),
 	Close((String, ClosureReason)),
+	SendError(String),
 }
 
 impl fmt::Debug for ChannelError {
@@ -721,6 +722,7 @@ impl fmt::Debug for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
 			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
 			&ChannelError::Close((ref e, _)) => write!(f, "Close : {}", e),
+			&ChannelError::SendError(ref e) => write!(f, "Not Found : {}", e),
 		}
 	}
 }
@@ -731,6 +733,7 @@ impl fmt::Display for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
 			&ChannelError::Close((ref e, _)) => write!(f, "{}", e),
+			&ChannelError::SendError(ref e) => write!(f, "{}", e),
 		}
 	}
 }

@@ -800,7 +800,7 @@ impl MsgHandleErrInternal {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
 				},
-				ChannelError::Close((msg, _reason)) => LightningError {
+				ChannelError::Close((msg, _)) | ChannelError::SendError(msg) => LightningError {
 					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
@@ -3029,6 +3029,9 @@ macro_rules! convert_channel_err {
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
 				(true, err)
+			},
+			ChannelError::SendError(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::SendError(msg), *$channel_id))
 			},
 		}
 	};
