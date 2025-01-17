@@ -8209,7 +8209,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
-		// Check that inputs are sufficient to cover our contribution
+		// Pre-check that inputs are sufficient to cover our contribution.
+		// Note: fees are not taken into account here.
 		let sum_input: i64 = our_funding_inputs.into_iter().map(
 			|(txin, tx)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0)
 		).sum();
@@ -8266,11 +8267,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, their_funding_contribution_satoshis, our_funding_contribution_satoshis);
-		let post_balance = PendingSplice::add_checked(self.context.value_to_self_msat, our_funding_contribution_satoshis);
-		// Early check for reserve requirement, assuming maximum balance of full channel value
-		// This will also be checked later at tx_complete
-		let _res = self.context.check_balance_meets_v2_reserve_requirements(post_balance, post_channel_value)?;
+		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
+		// it can go below reserve, therefore no pre-check is done here.
+		// TODO(splicing): Once splice acceptor can contribute, add reserve pre-check, similar to the one in `splice_ack`.
 
 		// TODO(splicing): Store msg.funding_pubkey
 		// TODO(splicing): Apply start of splice (splice_start)
@@ -8297,7 +8296,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let pre_channel_value = self.context.get_value_satoshis();
 		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
 		let post_balance = PendingSplice::add_checked(self.context.value_to_self_msat, our_funding_contribution);
-		// Early check for reserve requirement, assuming maximum balance of full channel value
+		// Pre-check for reserve requirement, assuming maximum balance of full channel value
 		// This will also be checked later at tx_complete
 		let _res = self.context.check_balance_meets_v2_reserve_requirements(post_balance, post_channel_value)?;
 		Ok(())
