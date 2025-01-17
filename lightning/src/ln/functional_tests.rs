@@ -9350,7 +9350,7 @@ fn test_duplicate_conflicting_funding_from_second_peer() {
 	check_added_monitors!(nodes[0], 1);
 	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 	let err_reason = ClosureReason::ProcessingError { err: "Channel funding outpoint was a duplicate".to_owned() };
-	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(funding_signed_msg.channel_id, true, err_reason)]);
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(temp_chan_id, true, err_reason)]);
 }
 
 #[test]

@@ -8088,7 +8088,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// `locked_close_channel`), we'll remove the existing channel from `outpoint_to_peer`.
 			// Thus, we must first unset the funding outpoint on the channel.
 			let err = ChannelError::close($err.to_owned());
-			chan.unset_funding_info(msg.temporary_channel_id);
+			chan.unset_funding_info();
 			return Err(convert_channel_err!(self, peer_state, err, chan.context, &funded_channel_id, UNFUNDED_CHANNEL).1);
 		} } }
 
@@ -8149,49 +8149,31 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(chan_entry) => {
-				if chan_entry.get().is_unfunded_outbound_v1() {
-					let chan = if let Ok(chan) = chan_entry.remove().into_unfunded_outbound_v1() { chan } else { unreachable!() };
-					let logger = WithContext::from(
-						&self.logger,
-						Some(chan.context.get_counterparty_node_id()),
-						Some(chan.context.channel_id()),
-						None
-					);
-					let res =
-						chan.funding_signed(&msg, best_block, &self.signer_provider, &&logger);
-					match res {
-						Ok((mut chan, monitor)) => {
-							if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
-								// We really should be able to insert here without doing a second
-								// lookup, but sadly rust stdlib doesn't currently allow keeping
-								// the original Entry around with the value removed.
-								let chan = peer_state.channel_by_id.entry(msg.channel_id).or_insert(Channel::from(chan));
-								if let Some(funded_chan) = chan.as_funded_mut() {
-									handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, funded_chan, INITIAL_MONITOR);
-								} else { unreachable!(); }
-								Ok(())
-							} else {
-								let e = ChannelError::close("Channel funding outpoint was a duplicate".to_owned());
-								// We weren't able to watch the channel to begin with, so no
-								// updates should be made on it. Previously, full_stack_target
-								// found an (unreachable) panic when the monitor update contained
-								// within `shutdown_finish` was applied.
-								chan.unset_funding_info(msg.channel_id);
-								return Err(convert_channel_err!(self, peer_state, e, chan, &msg.channel_id, FUNDED_CHANNEL).1);
-							}
-						},
-						Err((mut chan, e)) => {
-							debug_assert!(matches!(e, ChannelError::Close(_)),
-								"We don't have a channel anymore, so the error better have expected close");
-							// We've already removed this outbound channel from the map in
-							// `PeerState` above so at this point we just need to clean up any
-							// lingering entries concerning this channel as it is safe to do so.
-							return Err(convert_channel_err!(self, peer_state, e, chan.context, &msg.channel_id, UNFUNDED_CHANNEL).1);
-						}
-					}
-				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id));
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let chan = chan_entry.get_mut();
+				match chan
+					.funding_signed(&msg, best_block, &self.signer_provider, &self.logger)
+					.and_then(|(funded_chan, monitor)| {
+						self.chain_monitor
+							.watch_channel(funded_chan.context.get_funding_txo().unwrap(), monitor)
+							.map(|persist_status| (funded_chan, persist_status))
+							.map_err(|()| {
+								ChannelError::close("Channel funding outpoint was a duplicate".to_owned())
+							})
+					})
+				{
+					Ok((funded_chan, persist_status)) => {
+						handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, funded_chan, INITIAL_MONITOR);
+						Ok(())
+					},
+					Err(e) => {
+						// We weren't able to watch the channel to begin with, so no
+						// updates should be made on it. Previously, full_stack_target
+						// found an (unreachable) panic when the monitor update contained
+						// within `shutdown_finish` was applied.
+						chan.unset_funding_info();
+						try_channel_entry!(self, peer_state, Err(e), chan_entry)
+					},
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))

@@ -1211,10 +1211,6 @@ impl<SP: Deref> Channel<SP> where
 		matches!(self.phase, ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_))
 	}
 
-	pub fn is_unfunded_outbound_v1(&self) -> bool {
-		matches!(self.phase, ChannelPhase::UnfundedOutboundV1(_))
-	}
-
 	pub fn into_unfunded_outbound_v1(self) -> Result<OutboundV1Channel<SP>, Self> {
 		if let ChannelPhase::UnfundedOutboundV1(channel) = self.phase {
 			Ok(channel)
@@ -1377,6 +1373,57 @@ impl<SP: Deref> Channel<SP> where
 				Ok(None)
 			},
 		}
+	}
+
+	pub fn funding_signed<L: Deref>(
+		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
+	where
+		L::Target: Logger
+	{
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
+			let logger = WithChannelContext::from(logger, &chan.context, None);
+			match chan.funding_signed(msg, best_block, signer_provider, &&logger) {
+				Ok((chan, monitor)) => {
+					self.phase = ChannelPhase::Funded(chan);
+					Ok(monitor)
+				},
+				Err((chan, e)) => {
+					self.phase = ChannelPhase::UnfundedOutboundV1(chan);
+					Err(e)
+				},
+			}
+		} else {
+			self.phase = phase;
+			Err(ChannelError::SendError("Failed to find corresponding UnfundedOutboundV1 channel".to_owned()))
+		};
+
+		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
+		result.map(|monitor| (self.as_funded_mut().expect("Channel should be funded"), monitor))
+	}
+
+	pub fn unset_funding_info(&mut self) {
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		if let ChannelPhase::Funded(mut funded_chan) = phase {
+			funded_chan.unset_funding_info();
+
+			let context = funded_chan.context;
+			let unfunded_context = UnfundedChannelContext {
+				unfunded_channel_age_ticks: 0,
+				holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+			};
+			let unfunded_chan = OutboundV1Channel {
+				context,
+				unfunded_context,
+				signer_pending_open_channel: false,
+			};
+			self.phase = ChannelPhase::UnfundedOutboundV1(unfunded_chan);
+		} else {
+			self.phase = phase;
+		};
+
+		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
 	}
 }
 
@@ -4956,12 +5003,15 @@ impl<SP: Deref> FundedChannel<SP> where
 	///
 	/// Further, the channel must be immediately shut down after this with a call to
 	/// [`ChannelContext::force_shutdown`].
-	pub fn unset_funding_info(&mut self, temporary_channel_id: ChannelId) {
+	pub fn unset_funding_info(&mut self) {
 		debug_assert!(matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(_)
 		));
 		self.context.channel_transaction_parameters.funding_outpoint = None;
-		self.context.channel_id = temporary_channel_id;
+		self.context.channel_id = self.context.temporary_channel_id.expect(
+			"temporary_channel_id should be set since unset_funding_info is only called on funded \
+			 channels that were unfunded immediately beforehand"
+		);
 	}
 
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
