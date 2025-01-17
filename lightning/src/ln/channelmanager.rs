@@ -10471,6 +10471,16 @@ where
 		let _ = handle_error!(self, self.internal_funding_signed(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	fn handle_peer_storage(&self, counterparty_node_id: PublicKey, msg: &msgs::PeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
+		self.internal_peer_storage(&counterparty_node_id, msg);
+	}
+
+	fn handle_your_peer_storage(&self, counterparty_node_id: PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
+		self.internal_your_peer_storage(&counterparty_node_id, msg);
+	}
+
 	fn handle_channel_ready(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReady) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// channel_ready message - while the channel's state will change, any channel_ready message
@@ -10736,6 +10746,10 @@ where
 						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+
+						// Peer Storage
+						&events::MessageSendEvent::SendPeerStorageMessage { .. } => false,
+						&events::MessageSendEvent::SendYourPeerStorageMessage { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");

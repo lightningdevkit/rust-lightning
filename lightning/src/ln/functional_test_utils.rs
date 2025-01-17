@@ -854,6 +854,12 @@ macro_rules! get_htlc_update_msgs {
 /// such messages are intended to all peers.
 pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut Vec<MessageSendEvent>) -> MessageSendEvent {
 	let ev_index = msg_events.iter().position(|e| { match e {
+		MessageSendEvent::SendPeerStorageMessage { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendYourPeerStorageMessage { node_id, .. } => {
+			node_id == msg_node_id
+		},
 		MessageSendEvent::SendAcceptChannel { node_id, .. } => {
 			node_id == msg_node_id
 		},
