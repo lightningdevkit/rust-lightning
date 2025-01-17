@@ -337,6 +337,10 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		[0; 32]
+	}
+
 	fn sign_bolt12_invoice(
 		&self, _invoice: &UnsignedBolt12Invoice,
 	) -> Result<schnorr::Signature, ()> {

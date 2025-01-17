@@ -246,6 +246,10 @@ impl NodeSigner for KeyProvider {
 	) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
 		unreachable!()
 	}
+
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		unreachable!()
+	}
 }
 
 impl SignerProvider for KeyProvider {
