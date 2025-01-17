@@ -1168,9 +1168,24 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
 	/// [`ChannelMessageHandler::peer_disconnected`].
 	pub is_connected: bool,
+	/// Holds the peer storage data for the channel partner on a per-peer basis.
+	peer_storage: Vec<u8>,
 }
 
 impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
+	pub fn new(features: &InitFeatures) -> Self {
+		Self {
+			channel_by_id: new_hash_map(),
+			inbound_channel_request_by_id: new_hash_map(),
+			latest_features: features.clone(),
+			pending_msg_events: Vec::new(),
+			in_flight_monitor_updates: BTreeMap::new(),
+			monitor_update_blocked_actions: BTreeMap::new(),
+			actions_blocking_raa_monitor_updates: BTreeMap::new(),
+			is_connected: true,
+			peer_storage: Vec::new(),
+		}
+	}
 	/// Indicates that a peer meets the criteria where we're ok to remove it from our storage.
 	/// If true is passed for `require_disconnected`, the function will return false if we haven't
 	/// disconnected from the node already, ie. `PeerState::is_connected` is set to `true`.
@@ -7001,6 +7016,7 @@ where
 						monitor_update_blocked_actions: BTreeMap::new(),
 						actions_blocking_raa_monitor_updates: BTreeMap::new(),
 						is_connected: false,
+						peer_storage: Vec::new(),
 					}));
 				let mut peer_state = peer_state_mutex.lock().unwrap();
 
@@ -7859,6 +7875,42 @@ where
 				}
 			}
 		}
+	}
+
+	fn internal_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id) {
+			Some(peer_state_mutex) => peer_state_mutex,
+			None => return,
+		};
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
+
+		// Check if we have any channels with the peer (Currently we only provide the servie to peers we have a channel with).
+		if !peer_state.channel_by_id.values().any(|phase| matches!(phase, ChannelPhase::Funded(_))) {
+			log_debug!(logger, "We do not have any channel with {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+		#[cfg(not(test))]
+		if msg.data.len() > 1024 {
+			log_debug!(logger, "We do not allow more than 1 KiB of data for each peer in peer storage. Sending warning to peer {}", log_pubkey!(counterparty_node_id));
+			peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+				node_id: counterparty_node_id.clone(),
+				action: msgs::ErrorAction::SendWarningMessage {
+					msg: msgs::WarningMessage {
+						channel_id: ChannelId([0; 32]),
+						data: "Supports only data up to 1 KiB in peer storage.".to_owned()
+					},
+					log_level: Level::Trace,
+				}
+			});
+			return;
+		}
+
+		log_trace!(logger, "Received Peer Storage from {}", log_pubkey!(counterparty_node_id));
+		peer_state.peer_storage = msg.data.clone();
 	}
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
@@ -10801,6 +10853,7 @@ where
 							monitor_update_blocked_actions: BTreeMap::new(),
 							actions_blocking_raa_monitor_updates: BTreeMap::new(),
 							is_connected: true,
+							peer_storage: Vec::new(),
 						}));
 					},
 					hash_map::Entry::Occupied(e) => {
@@ -10829,6 +10882,16 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
+
+				if !peer_state.peer_storage.is_empty() {
+					pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage {
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::YourPeerStorageMessage {
+							data: peer_state.peer_storage.clone()
+						},
+					});
+				}
+
 
 				for (_, phase) in peer_state.channel_by_id.iter_mut() {
 					match phase {
@@ -11915,6 +11978,12 @@ where
 			if !peer_state.ok_to_remove(false) {
 				peer_pubkey.write(writer)?;
 				peer_state.latest_features.write(writer)?;
+
+				(peer_state.peer_storage.len() as u64).write(writer)?;
+				for p in peer_state.peer_storage.iter() {
+					p.write(writer)?;
+				}
+
 				if !peer_state.monitor_update_blocked_actions.is_empty() {
 					monitor_update_blocked_actions_per_peer
 						.get_or_insert_with(Vec::new)
@@ -12430,6 +12499,7 @@ where
 				monitor_update_blocked_actions: BTreeMap::new(),
 				actions_blocking_raa_monitor_updates: BTreeMap::new(),
 				is_connected: false,
+				peer_storage: Vec::new(),
 			}
 		};
 
@@ -12440,6 +12510,15 @@ where
 			let peer_chans = funded_peer_channels.remove(&peer_pubkey).unwrap_or(new_hash_map());
 			let mut peer_state = peer_state_from_chans(peer_chans);
 			peer_state.latest_features = Readable::read(reader)?;
+
+			let peer_storage_count:u64 = Readable::read(reader)?;
+			let mut peer_storage: Vec<u8> = Vec::with_capacity(cmp::min(peer_storage_count as usize, MAX_ALLOC_SIZE/mem::size_of::<u8>()));
+			for i in 0..peer_storage_count {
+				let x = Readable::read(reader)?;
+				peer_storage.insert(i as usize, x);
+			}
+			peer_state.peer_storage = peer_storage;
+
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
 		}
 
