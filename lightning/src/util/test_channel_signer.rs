@@ -191,12 +191,12 @@ impl ChannelSigner for TestChannelSigner {
 		self.inner.release_commitment_secret(idx)
 	}
 
-	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
 		assert!(idx == state.last_holder_commitment || idx == state.last_holder_commitment - 1, "expecting to validate the current or next holder commitment - trying {}, current {}", idx, state.last_holder_commitment);
 		state.last_holder_commitment = idx;
-		Ok(())
+		self.inner.validate_holder_commitment(holder_tx, outbound_htlc_preimages, secp_ctx)
 	}
 
 	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
@@ -330,6 +330,10 @@ impl ChannelSigner for TestChannelSigner {
 		&self, anchor_tx: &Transaction, input_idx: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Witness, ()> {
 		self.inner.spend_holder_anchor_output(anchor_tx, input_idx, secp_ctx)
+	}
+
+	fn get_channel_value_satoshis(&self) -> u64 {
+		self.inner.get_channel_value_satoshis()
 	}
 }
 

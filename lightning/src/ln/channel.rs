@@ -1830,7 +1830,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			context.counterparty_funding_pubkey()
 		);
 
-		if context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new()).is_err() {
+		if context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new(), &context.secp_ctx).is_err() {
 			return Err(ChannelError::close("Failed to validate our commitment".to_owned()));
 		}
 
@@ -5245,23 +5245,28 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
-		let funding_script = self.context.get_funding_redeemscript();
-
 		let keys = self.context.build_holder_transaction_keys(self.holder_commitment_point.current_point());
 
 		let commitment_stats = self.context.build_commitment_transaction(self.holder_commitment_point.transaction_number(), &keys, true, false, logger);
+
+		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
+			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
+		}
+
+		let holder_commitment_tx = HolderCommitmentTransaction::new(
+			commitment_stats.tx.clone(),
+			msg.signature,
+			msg.htlc_signatures.clone(),
+			&self.context.get_holder_pubkeys().funding_pubkey,
+			self.context.counterparty_funding_pubkey()
+		);
+
+		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages, &self.context.secp_ctx)
+			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
+
 		let commitment_txid = {
 			let trusted_tx = commitment_stats.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
-
-			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
-				log_bytes!(msg.signature.serialize_compact()[..]),
-				log_bytes!(self.context.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), &self.context.channel_id());
-			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.counterparty_funding_pubkey()) {
-				return Err(ChannelError::close("Invalid commitment tx signature from peer".to_owned()));
-			}
 			bitcoin_tx.txid
 		};
 		let mut htlcs_cloned: Vec<_> = commitment_stats.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
@@ -5294,10 +5299,6 @@ impl<SP: Deref> FundedChannel<SP> where
 						}
 				}
 			}
-		}
-
-		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
 		}
 
 		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
@@ -5345,17 +5346,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
 		}
-
-		let holder_commitment_tx = HolderCommitmentTransaction::new(
-			commitment_stats.tx,
-			msg.signature,
-			msg.htlc_signatures.clone(),
-			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.context.counterparty_funding_pubkey()
-		);
-
-		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
-			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;

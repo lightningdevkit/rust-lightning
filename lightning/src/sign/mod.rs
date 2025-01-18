@@ -697,8 +697,24 @@ pub trait ChannelSigner {
 	/// and pause future signing operations until this validation completes.
 	fn validate_holder_commitment(
 		&self, holder_tx: &HolderCommitmentTransaction,
-		outbound_htlc_preimages: Vec<PaymentPreimage>,
-	) -> Result<(), ()>;
+		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<(), ()> {
+		let channel_value_satoshis = self.get_channel_value_satoshis();
+		let params = self.get_channel_parameters().unwrap();
+		let holder_pubkey = params.holder_pubkeys.funding_pubkey;
+		let counterparty_pubkey =
+			params.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey;
+		let funding_redeemscript = make_funding_redeemscript(&holder_pubkey, &counterparty_pubkey);
+		let trusted_tx = holder_tx.trust();
+		let bitcoin_tx = trusted_tx.built_transaction();
+		let sighash = bitcoin_tx.get_sighash_all(&funding_redeemscript, channel_value_satoshis);
+		if let Err(_) =
+			secp_ctx.verify_ecdsa(&sighash, &holder_tx.counterparty_sig, &counterparty_pubkey)
+		{
+			return Err(());
+		}
+		Ok(())
+	}
 
 	/// Validate the counterparty's revocation.
 	///
@@ -735,6 +751,9 @@ pub trait ChannelSigner {
 
 	/// Returns the parameters of this signer
 	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters>;
+
+	/// Return the channel value
+	fn get_channel_value_satoshis(&self) -> u64;
 
 	/// Returns the script pubkey that should be placed in the `to_remote` output of commitment
 	/// transactions.
@@ -1602,13 +1621,6 @@ impl ChannelSigner for InMemorySigner {
 		Ok(chan_utils::build_commitment_secret(&self.commitment_seed, idx))
 	}
 
-	fn validate_holder_commitment(
-		&self, _holder_tx: &HolderCommitmentTransaction,
-		_outbound_htlc_preimages: Vec<PaymentPreimage>,
-	) -> Result<(), ()> {
-		Ok(())
-	}
-
 	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
 		Ok(())
 	}
@@ -1850,6 +1862,10 @@ impl ChannelSigner for InMemorySigner {
 		let sig =
 			sign_with_aux_rand(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key, &self);
 		Ok(chan_utils::build_anchor_input_witness(funding_pubkey, &sig))
+	}
+
+	fn get_channel_value_satoshis(&self) -> u64 {
+		self.channel_value_satoshis
 	}
 }
 
