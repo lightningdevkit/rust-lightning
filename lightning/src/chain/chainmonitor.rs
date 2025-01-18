@@ -32,16 +32,18 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
+use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::PeerStorageKey;
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::persist::MonitorName;
 use crate::util::wakers::{Future, Notifier};
 use crate::ln::channel_state::ChannelDetails;
-
 use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
+use crate::types::features::{InitFeatures, NodeFeatures};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
@@ -253,6 +255,7 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	/// A [`Notifier`] used to wake up the background processor in case we have any [`Event`]s for
 	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
 	event_notifier: Notifier,
+	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
@@ -386,7 +389,15 @@ where C::Target: chain::Filter,
 	/// pre-filter blocks or only fetch blocks matching a compact filter. Otherwise, clients may
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
+	///
+	/// # Note
+	/// `our_peerstorage_encryption_key` must be obtained from [`crate::sign::NodeSigner::get_peer_storage_key()`].
+	/// This key is used to encrypt peer storage backups.
+	///
+	/// **Important**: This key should not be set arbitrarily or changed after initialization. The same key
+	/// is obtained by the `ChannelManager` through `KeyMananger` to decrypt peer backups.
+	/// Using an inconsistent or incorrect key will result in the inability to decrypt previously encrypted backups.
+	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P, our_peerstorage_encryption_key: PeerStorageKey) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
 			chain_source,
@@ -397,6 +408,7 @@ where C::Target: chain::Filter,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Notifier::new(),
+			pending_send_only_events: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -665,6 +677,47 @@ where C::Target: chain::Filter,
 			});
 		}
 	}
+
+	/// Retrieves all node IDs associated with the monitors.
+	///
+	/// This function collects the counterparty node IDs from all monitors into a `HashSet`,
+	/// ensuring unique IDs are returned.
+	fn all_counterparty_node_ids(&self) -> HashSet<PublicKey> {
+		let mon = self.monitors.read().unwrap();
+		mon
+		.values()
+		.map(|monitor| monitor.monitor.get_counterparty_node_id())
+		.collect()
+	}
+
+	fn send_peer_storage(&self, their_node_id: PublicKey) {
+		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage` and update [`OurPeerStorage::block_height`] accordingly.
+	}
+}
+
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> BaseMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P>
+where C::Target: chain::Filter,
+		T::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+		P::Target: Persist<ChannelSigner>,
+{
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		let mut pending_events = self.pending_send_only_events.lock().unwrap();
+		core::mem::take(&mut *pending_events)
+	}
+
+	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		NodeFeatures::empty()
+	}
+
+	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
+
+	fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
