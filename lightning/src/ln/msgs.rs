@@ -1502,6 +1502,19 @@ pub struct CommitmentUpdate {
 	pub commitment_signed: CommitmentSigned,
 }
 
+/// A trait for sending messages to peers without handling any incoming messages.
+/// 
+/// This trait is designed to handle outbound-only communication, allowing implementations
+/// to send specific types of messages to connected peers identified by their public keys.
+///
+/// This trait extends [`MessageSendEventsProvider`], meaning it is capable of generating 
+/// message send events, which can be processed using
+/// [`MessageSendEventsProvider::get_and_clear_pending_msg_events`].
+pub trait SendingOnlyMessageHandler: MessageSendEventsProvider {
+	/// Send `peer_storage` message to the given peer.
+	fn send_peer_storage(&self, their_node_id: PublicKey);
+}
+
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different `their_node_ids`, however

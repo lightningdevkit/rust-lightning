@@ -38,7 +38,8 @@ use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
 use crate::ln::channel_state::ChannelDetails;
-
+use crate::ln::msgs::SendingOnlyMessageHandler;
+use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
 use core::ops::Deref;
@@ -244,6 +245,7 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	/// A [`Notifier`] used to wake up the background processor in case we have any [`Event`]s for
 	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
 	event_notifier: Notifier,
+	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
@@ -371,6 +373,32 @@ where C::Target: chain::Filter,
 		Ok(())
 	}
 
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> MessageSendEventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
+where C::Target: chain::Filter,
+		T::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+		P::Target: Persist<ChannelSigner>,
+{
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		let mut pending_events = self.pending_send_only_events.lock().unwrap();
+		let mut ret = Vec::new();
+		mem::swap(&mut ret, &mut *pending_events);
+		ret	}
+}
+
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> SendingOnlyMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P>
+where C::Target: chain::Filter,
+		T::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+		P::Target: Persist<ChannelSigner>,
+{
+	fn send_peer_storage(&self, their_node_id: PublicKey) {
+	}
+}
+
+
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
 	///
 	/// When an optional chain source implementing [`chain::Filter`] is provided, the chain monitor
@@ -389,6 +417,7 @@ where C::Target: chain::Filter,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Notifier::new(),
+			pending_send_only_events: Mutex::new(Vec::new()),
 		}
 	}
 

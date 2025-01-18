@@ -1219,6 +1219,7 @@ mod tests {
 				Arc<test_utils::TestLogger>,
 				IgnoringMessageHandler,
 				Arc<KeysManager>,
+				IgnoringMessageHandler,
 			>,
 		>,
 		chain_monitor: Arc<ChainMonitor>,
@@ -1632,6 +1633,7 @@ mod tests {
 				route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
 				onion_message_handler: messenger.clone(),
 				custom_message_handler: IgnoringMessageHandler {},
+				send_only_message_handler: IgnoringMessageHandler {},
 			};
 			let peer_manager = Arc::new(PeerManager::new(
 				msg_handler,
