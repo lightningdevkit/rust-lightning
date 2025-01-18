@@ -698,9 +698,8 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 }
 
 /// Builds an unsigned HTLC-Success or HTLC-Timeout transaction from the given channel and HTLC
-/// parameters. This is used by [`TrustedCommitmentTransaction::get_htlc_sigs`] to fetch the
-/// transaction which needs signing, and can be used to construct an HTLC transaction which is
-/// broadcastable given a counterparty HTLC signature.
+/// parameters. This is can be used to construct an HTLC transaction which is broadcastable given a
+/// counterparty HTLC signature.
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
@@ -1711,33 +1710,6 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	/// Should anchors be used.
 	pub fn channel_type_features(&self) -> &'a ChannelTypeFeatures {
 		&self.inner.channel_type_features
-	}
-
-	/// Get a signature for each HTLC which was included in the commitment transaction (ie for
-	/// which HTLCOutputInCommitment::transaction_output_index.is_some()).
-	///
-	/// The returned Vec has one entry for each HTLC, and in the same order.
-	///
-	/// This function is only valid in the holder commitment context, it always uses EcdsaSighashType::All.
-	pub fn get_htlc_sigs<T: secp256k1::Signing, ES: Deref>(
-		&self, htlc_base_key: &SecretKey, entropy_source: &ES, secp_ctx: &Secp256k1<T>, revokeable_spk: ScriptBuf,
-	) -> Result<Vec<Signature>, ()> where ES::Target: EntropySource {
-		let inner = self.inner;
-		let keys = &inner.keys;
-		let txid = inner.built.txid;
-		let mut ret = Vec::with_capacity(inner.htlcs.len());
-		let holder_htlc_key = derive_private_key(secp_ctx, &inner.keys.per_commitment_point, htlc_base_key);
-
-		for this_htlc in inner.htlcs.iter() {
-			assert!(this_htlc.transaction_output_index.is_some());
-			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, &this_htlc, &self.channel_type_features, revokeable_spk.clone());
-
-			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
-
-			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All).unwrap()[..]);
-			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
-		}
-		Ok(ret)
 	}
 
 	/// Builds the second-level holder HTLC transaction for the HTLC with index `htlc_index`.
