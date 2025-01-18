@@ -242,6 +242,7 @@ type PeerMan<'a> = PeerManager<
 	Arc<dyn Logger>,
 	IgnoringMessageHandler,
 	Arc<KeyProvider>,
+	IgnoringMessageHandler,
 >;
 
 struct MoneyLossDetector<'a> {
@@ -673,6 +674,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: IgnoringMessageHandler {},
+		send_only_message_handler: IgnoringMessageHandler {},
 	};
 	let random_data = [
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

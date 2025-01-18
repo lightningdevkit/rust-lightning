@@ -21,8 +21,8 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events;
 use crate::events::bump_transaction::{Utxo, WalletSource};
+use crate::events::{self, MessageSendEvent, MessageSendEventsProvider};
 #[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
@@ -918,6 +918,34 @@ impl ConnectionTracker {
 		let mut connected_peers = self.connected_peers.lock().unwrap();
 		assert!(connected_peers.contains(&their_node_id));
 		connected_peers.retain(|id| *id != their_node_id);
+	}
+}
+
+pub struct TestSendingOnlyMessageHandler {
+	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
+}
+
+impl TestSendingOnlyMessageHandler {
+	pub fn new() -> Self {
+		TestSendingOnlyMessageHandler { pending_events: Mutex::new(Vec::new()) }
+	}
+}
+
+impl MessageSendEventsProvider for TestSendingOnlyMessageHandler {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		let mut pending_events = self.pending_events.lock().unwrap();
+		let mut ret = Vec::new();
+		mem::swap(&mut ret, &mut *pending_events);
+		ret
+	}
+}
+
+impl msgs::SendingOnlyMessageHandler for TestSendingOnlyMessageHandler {
+	fn send_peer_storage(&self, their_node_id: PublicKey) {
+		self.pending_events.lock().unwrap().push(events::MessageSendEvent::SendPeerStorage {
+			node_id: their_node_id,
+			msg: msgs::PeerStorage { data: Vec::new() },
+		})
 	}
 }
 

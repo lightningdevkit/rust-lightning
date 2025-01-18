@@ -130,6 +130,7 @@ pub(crate) struct Node {
 				>,
 			>,
 			Arc<KeysManager>,
+			Arc<test_utils::TestSendingOnlyMessageHandler>,
 		>,
 	>,
 	pub(crate) liquidity_manager:
@@ -465,6 +466,7 @@ pub(crate) fn create_liquidity_node(
 		chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new(
 			ChainHash::using_genesis_block(Network::Testnet),
 		)),
+		send_only_message_handler: Arc::new(test_utils::TestSendingOnlyMessageHandler::new()),
 		route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: Arc::clone(&liquidity_manager),
