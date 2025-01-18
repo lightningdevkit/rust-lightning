@@ -76,7 +76,7 @@ where
 /// 	P: chainmonitor::Persist<SP::EcdsaSigner>,
 /// >(
 /// 	block_source: &B,
-/// 	chain_monitor: &ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P>,
+/// 	chain_monitor: &ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>,
 /// 	config: UserConfig,
 /// 	entropy_source: &ES,
 /// 	node_signer: &NS,
@@ -109,7 +109,7 @@ where
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
+/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P, &ES>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///

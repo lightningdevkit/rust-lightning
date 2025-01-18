@@ -51,10 +51,11 @@ use core::ops::Deref;
 use core::convert::Infallible;
 #[cfg(not(c_bindings))]
 use {
+	crate::chain::chainmonitor::ChainMonitor,
 	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger},
 	crate::routing::gossip::{NetworkGraph, P2PGossipSync},
-	crate::sign::KeysManager,
+	crate::sign::{KeysManager, InMemorySigner},
 	crate::sync::Arc,
 };
 
@@ -418,11 +419,12 @@ impl Deref for ErroringMessageHandler {
 }
 
 /// Provides references to trait impls which handle different types of messages.
-pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref> where
+pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref, SM: Deref> where
 	CM::Target: ChannelMessageHandler,
 	RM::Target: RoutingMessageHandler,
 	OM::Target: OnionMessageHandler,
 	CustomM::Target: CustomMessageHandler,
+	SM::Target: BaseMessageHandler,
 {
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
@@ -444,6 +446,12 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref> where
 	/// A message handler which handles custom messages. The only LDK-provided implementation is
 	/// [`IgnoringMessageHandler`].
 	pub custom_message_handler: CustomM,
+
+	/// A message handler which only allows sending messages. This should generally be a
+	/// [`ChainMonitor`].
+	/// 
+	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
+	pub send_only_message_handler: SM,
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -732,14 +740,15 @@ impl Peer {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
+pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, C, Arc<L>>>,
 	Arc<SimpleArcOnionMessenger<M, T, F, L>>,
 	Arc<L>,
 	IgnoringMessageHandler,
-	Arc<KeysManager>
+	Arc<KeysManager>,
+	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>, Arc<KeysManager>>>,
 >;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
@@ -760,7 +769,8 @@ pub type SimpleRefPeerManager<
 	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, M, T, F, L>,
 	&'logger L,
 	IgnoringMessageHandler,
-	&'c KeysManager
+	&'c KeysManager,
+	&'j ChainMonitor<&'a M, C, &'b T, &'c F, &'logger L, &'c KeysManager, &'c KeysManager>,
 >;
 
 
@@ -785,18 +795,21 @@ pub trait APeerManager {
 	type CMH: Deref<Target=Self::CMHT>;
 	type NST: NodeSigner + ?Sized;
 	type NS: Deref<Target=Self::NST>;
+	type SMT: BaseMessageHandler + ?Sized;
+	type SM: Deref<Target=Self::SMT>;
 	/// Gets a reference to the underlying [`PeerManager`].
-	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
+	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS, Self::SM>;
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref>
-APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
+impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref, SM: Deref>
+APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM> where
 	CM::Target: ChannelMessageHandler,
 	RM::Target: RoutingMessageHandler,
 	OM::Target: OnionMessageHandler,
 	L::Target: Logger,
 	CMH::Target: CustomMessageHandler,
 	NS::Target: NodeSigner,
+	SM::Target: BaseMessageHandler,
 {
 	type Descriptor = Descriptor;
 	type CMT = <CM as Deref>::Target;
@@ -811,7 +824,9 @@ APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 	type CMH = CMH;
 	type NST = <NS as Deref>::Target;
 	type NS = NS;
-	fn as_ref(&self) -> &PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> { self }
+	type SMT = <SM as Deref>::Target;
+	type SM = SM;
+	fn as_ref(&self) -> &PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM> { self }
 }
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
@@ -833,14 +848,16 @@ APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 /// you're using lightning-net-tokio.
 ///
 /// [`read_event`]: PeerManager::read_event
-pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref> where
+pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref, SM: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
 		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler,
-		NS::Target: NodeSigner {
-	message_handler: MessageHandler<CM, RM, OM, CMH>,
+		NS::Target: NodeSigner,
+		SM::Target: BaseMessageHandler,
+{
+	message_handler: MessageHandler<CM, RM, OM, CMH, SM>,
 	/// Connection state for each connected peer - we have an outer read-write lock which is taken
 	/// as read while we're doing processing for a peer and taken write when a peer is being added
 	/// or removed.
@@ -915,11 +932,13 @@ macro_rules! encode_msg {
 	}}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS> where
+impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref, SM: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS, SM> where
 		CM::Target: ChannelMessageHandler,
 		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
-		NS::Target: NodeSigner {
+		NS::Target: NodeSigner,
+		SM::Target: BaseMessageHandler,
+{
 	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
 	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
 	/// ignored.
@@ -933,17 +952,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> Pe
 	/// minute should suffice.
 	///
 	/// This is not exported to bindings users as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS, send_only_message_handler: SM) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
 			onion_message_handler,
 			custom_message_handler: IgnoringMessageHandler{},
+			send_only_message_handler,
 		}, current_time, ephemeral_random_data, logger, node_signer)
 	}
 }
 
-impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler, NS> where
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler, NS, IgnoringMessageHandler> where
 		RM::Target: RoutingMessageHandler,
 		L::Target: Logger,
 		NS::Target: NodeSigner {
@@ -967,6 +987,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<D
 			route_handler: routing_message_handler,
 			onion_message_handler: IgnoringMessageHandler{},
 			custom_message_handler: IgnoringMessageHandler{},
+			send_only_message_handler: IgnoringMessageHandler{},
 		}, current_time, ephemeral_random_data, logger, node_signer)
 	}
 }
@@ -1012,13 +1033,14 @@ fn filter_addresses(ip_address: Option<SocketAddress>) -> Option<SocketAddress> 
 	}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref> PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
+impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref, SM: Deref> PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
 		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler,
-		NS::Target: NodeSigner
+		NS::Target: NodeSigner,
+		SM::Target: BaseMessageHandler,
 {
 	/// Constructs a new `PeerManager` with the given message handlers.
 	///
@@ -1029,7 +1051,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// incremented irregularly internally. In general it is best to simply use the current UNIX
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
-	pub fn new(message_handler: MessageHandler<CM, RM, OM, CMH>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM, CMH, SM>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -2671,6 +2693,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					handle_event(event, false);
 				}
 
+				let send_only_events = self.message_handler.send_only_message_handler.get_and_clear_pending_msg_events();
+				for event in send_only_events {
+					handle_event(event, false);
+				}
+
 				let onion_msg_events = self.message_handler.onion_message_handler.get_and_clear_pending_msg_events();
 				for event in onion_msg_events {
 					handle_event(event, false);
@@ -3168,13 +3195,13 @@ mod tests {
 		cfgs
 	}
 
-	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>> {
+	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner, IgnoringMessageHandler>> {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
 			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler {
 				chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler,
-				onion_message_handler: IgnoringMessageHandler {}, custom_message_handler: &cfgs[i].custom_handler
+				onion_message_handler: IgnoringMessageHandler {}, custom_message_handler: &cfgs[i].custom_handler, send_only_message_handler: IgnoringMessageHandler {},
 			};
 			let peer = PeerManager::new(msg_handler, 0, &ephemeral_bytes, &cfgs[i].logger, &cfgs[i].node_signer);
 			peers.push(peer);
@@ -3183,7 +3210,7 @@ mod tests {
 		peers
 	}
 
-	fn try_establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor, Result<bool, PeerHandleError>, Result<bool, PeerHandleError>) {
+	fn try_establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner, IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor, Result<bool, PeerHandleError>, Result<bool, PeerHandleError>) {
 		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
 		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
 
@@ -3214,7 +3241,7 @@ mod tests {
 	}
 
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner, IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor) {
 		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
 		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
 
@@ -3616,12 +3643,14 @@ mod tests {
 			route_handler: IgnoringMessageHandler {},
 			onion_message_handler: IgnoringMessageHandler {},
 			custom_message_handler: IgnoringMessageHandler {},
+			send_only_message_handler: IgnoringMessageHandler {},
 		}, 0, &[0; 32], &logger, &node_signer_a);
 		let peer_b = PeerManager::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: IgnoringMessageHandler {},
 			onion_message_handler: IgnoringMessageHandler {},
 			custom_message_handler: IgnoringMessageHandler {},
+			send_only_message_handler: IgnoringMessageHandler {},
 		}, 0, &[1; 32], &logger, &node_signer_b);
 
 		let a_id = node_signer_a.get_node_id(Recipient::Node).unwrap();

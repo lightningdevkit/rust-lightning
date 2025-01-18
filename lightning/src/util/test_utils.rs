@@ -407,6 +407,7 @@ pub struct TestChainMonitor<'a> {
 		&'a TestFeeEstimator,
 		&'a TestLogger,
 		&'a dyn SyncPersist,
+		&'a TestKeysInterface,
 	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -435,6 +436,8 @@ impl<'a> TestChainMonitor<'a> {
 				logger,
 				fee_estimator,
 				persister,
+				keys_manager,
+				keys_manager.get_peer_storage_key(),
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
