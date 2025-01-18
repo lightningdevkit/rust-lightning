@@ -1770,26 +1770,6 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 	fn received_msg(&self) -> &'static str;
 
-	fn check_counterparty_commitment_signature<L: Deref>(
-		&self, sig: &Signature, holder_commitment_point: &mut HolderCommitmentPoint, logger: &L
-	) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
-		let funding_script = self.context().get_funding_redeemscript();
-
-		let keys = self.context().build_holder_transaction_keys(holder_commitment_point.current_point());
-		let initial_commitment_tx = self.context().build_commitment_transaction(holder_commitment_point.transaction_number(), &keys, true, false, logger).tx;
-		let trusted_tx = initial_commitment_tx.trust();
-		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
-		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context().channel_value_satoshis);
-		// They sign the holder commitment transaction...
-		log_trace!(logger, "Checking {} tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
-			self.received_msg(), log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context().counterparty_funding_pubkey().serialize()),
-			encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
-			encode::serialize_hex(&funding_script), &self.context().channel_id());
-		secp_check!(self.context().secp_ctx.verify_ecdsa(&sighash, sig, self.context().counterparty_funding_pubkey()), format!("Invalid {} signature from peer", self.received_msg()));
-
-		Ok(initial_commitment_tx)
-	}
-
 	fn initial_commitment_signed<L: Deref>(
 		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
 		counterparty_commitment_number: u64, best_block: BestBlock, signer_provider: &SP, logger: &L,
@@ -1797,30 +1777,9 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	where
 		L::Target: Logger
 	{
-		let initial_commitment_tx = match self.check_counterparty_commitment_signature(&counterparty_signature, holder_commitment_point, logger) {
-			Ok(res) => res,
-			Err(ChannelError::Close(e)) => {
-				// TODO(dual_funding): Update for V2 established channels.
-				if !self.context().is_outbound() {
-					self.context_mut().channel_transaction_parameters.funding_outpoint = None;
-				}
-				return Err(ChannelError::Close(e));
-			},
-			Err(e) => {
-				// The only error we know how to handle is ChannelError::Close, so we fall over here
-				// to make sure we don't continue with an inconsistent state.
-				panic!("unexpected error type from check_counterparty_commitment_signature {:?}", e);
-			}
-		};
-		let context = self.context_mut();
-		let counterparty_keys = context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = context.build_commitment_transaction(context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
-		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
-
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			&context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
-
+		let context = self.context();
+		let keys = context.build_holder_transaction_keys(holder_commitment_point.current_point());
+		let initial_commitment_tx = context.build_commitment_transaction(holder_commitment_point.transaction_number(), &keys, true, false, logger).tx;
 		let holder_commitment_tx = HolderCommitmentTransaction::new(
 			initial_commitment_tx,
 			counterparty_signature,
@@ -1830,10 +1789,23 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		);
 
 		if context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new(), &context.secp_ctx).is_err() {
+			// TODO(dual_funding): Update for V2 established channels.
+			if !self.context().is_outbound() {
+				self.context_mut().channel_transaction_parameters.funding_outpoint = None;
+			}
 			return Err(ChannelError::close("Failed to validate our commitment".to_owned()));
 		}
 
+		let counterparty_keys = context.build_remote_transaction_keys();
+		let counterparty_initial_commitment_tx = context.build_commitment_transaction(context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
+		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
+
+		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
+			&context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
+
 		// Now that we're past error-generating stuff, update our local state:
+		let context = self.context_mut();
 
 		context.channel_id = channel_id;
 
