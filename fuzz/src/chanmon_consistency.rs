@@ -204,6 +204,7 @@ impl TestChainMonitor {
 				logger.clone(),
 				feeest,
 				Arc::clone(&persister),
+				keys.get_peer_storage_key(),
 			)),
 			logger,
 			keys,
