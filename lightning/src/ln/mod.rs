@@ -30,6 +30,7 @@ pub mod chan_utils;
 pub mod features;
 pub mod script;
 pub mod types;
+pub mod our_peer_storage;
 
 // TODO: These modules were moved from lightning-invoice and need to be better integrated into this
 // crate now:
