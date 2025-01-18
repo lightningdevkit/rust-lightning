@@ -5598,17 +5598,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			*self.context.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 		}
 
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.validate_counterparty_revocation(
-					self.context.cur_counterparty_commitment_transaction_number + 1,
-					&secret
-				).map_err(|_| ChannelError::close("Failed to validate revocation from peer".to_owned()))?;
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
-		};
+		self.context.holder_signer.as_ref().validate_counterparty_revocation(self.context.cur_counterparty_commitment_transaction_number + 1, &secret)
+			.map_err(|_| ChannelError::close("Failed to validate revocation from peer".to_owned()))?;
 
 		self.context.commitment_secrets.provide_secret(self.context.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
 			.map_err(|_| ChannelError::close("Previous secrets did not match new one".to_owned()))?;
