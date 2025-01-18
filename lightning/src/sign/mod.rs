@@ -713,6 +713,62 @@ pub trait ChannelSigner {
 		{
 			return Err(());
 		}
+
+		if holder_tx.htlcs().len() != holder_tx.counterparty_htlc_sigs.len() {
+			return Err(());
+		}
+
+		let commitment_txid = bitcoin_tx.txid;
+		let revokeable_spk = self.get_revokeable_spk(
+			true,
+			holder_tx.commitment_number(),
+			&holder_tx.per_commitment_point(),
+			secp_ctx,
+		);
+		let params = self.get_channel_parameters().unwrap().as_holder_broadcastable();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			&holder_tx.per_commitment_point(),
+			params.broadcaster_pubkeys(),
+			params.countersignatory_pubkeys(),
+			secp_ctx,
+		);
+		for (idx, htlc) in holder_tx.htlcs().iter().enumerate() {
+			if let Some(_) = htlc.transaction_output_index {
+				let htlc_tx = chan_utils::build_htlc_transaction(
+					&commitment_txid,
+					holder_tx.feerate_per_kw(),
+					&htlc,
+					params.channel_type_features(),
+					revokeable_spk.clone(),
+				);
+				let htlc_redeemscript =
+					chan_utils::get_htlc_redeemscript(&htlc, params.channel_type_features(), &keys);
+				let htlc_sighashtype =
+					if params.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+						EcdsaSighashType::SinglePlusAnyoneCanPay
+					} else {
+						EcdsaSighashType::All
+					};
+				let htlc_sighash = hash_to_message!(
+					&sighash::SighashCache::new(&htlc_tx)
+						.p2wsh_signature_hash(
+							0,
+							&htlc_redeemscript,
+							htlc.to_bitcoin_amount(),
+							htlc_sighashtype
+						)
+						.unwrap()[..]
+				);
+				secp_ctx
+					.verify_ecdsa(
+						&htlc_sighash,
+						&holder_tx.counterparty_htlc_sigs[idx],
+						&keys.countersignatory_htlc_key.to_public_key(),
+					)
+					.map_err(|_| ())?;
+			}
+		}
+
 		Ok(())
 	}
 
