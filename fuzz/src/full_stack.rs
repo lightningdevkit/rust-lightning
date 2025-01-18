@@ -225,6 +225,7 @@ type ChannelMan<'a> = ChannelManager<
 			Arc<FuzzEstimator>,
 			Arc<dyn Logger>,
 			Arc<TestPersister>,
+			Arc<KeyProvider>,
 		>,
 	>,
 	Arc<TestBroadcaster>,
@@ -244,6 +245,7 @@ type PeerMan<'a> = PeerManager<
 	Arc<dyn Logger>,
 	IgnoringMessageHandler,
 	Arc<KeyProvider>,
+	IgnoringMessageHandler,
 >;
 
 struct MoneyLossDetector<'a> {
@@ -256,6 +258,7 @@ struct MoneyLossDetector<'a> {
 			Arc<FuzzEstimator>,
 			Arc<dyn Logger>,
 			Arc<TestPersister>,
+			Arc<KeyProvider>,
 		>,
 	>,
 	handler: PeerMan<'a>,
@@ -280,6 +283,7 @@ impl<'a> MoneyLossDetector<'a> {
 				Arc<FuzzEstimator>,
 				Arc<dyn Logger>,
 				Arc<TestPersister>,
+				Arc<KeyProvider>,
 			>,
 		>,
 		handler: PeerMan<'a>,
@@ -580,6 +584,8 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		Arc::clone(&logger),
 		fee_est.clone(),
 		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
+		Arc::clone(&keys_manager),
+		keys_manager.get_peer_storage_key(),
 	));
 
 	let network = Network::Bitcoin;
@@ -613,6 +619,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: IgnoringMessageHandler {},
+		send_only_message_handler: IgnoringMessageHandler {},
 	};
 	let random_data = [
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

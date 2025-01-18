@@ -29,6 +29,7 @@ use crate::ln::chan_utils::max_htlcs;
 use crate::ln::channelmanager::AChannelManager;
 use crate::prelude::new_hash_set;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::EntropySource;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
@@ -276,6 +277,7 @@ pub fn can_support_additional_anchor_channel<
 	EstimatorRef: Deref,
 	LoggerRef: Deref,
 	PersistRef: Deref,
+	EntropySourceRef: Deref,
 	ChainMonitorRef: Deref<
 		Target = ChainMonitor<
 			ChannelSigner,
@@ -284,6 +286,7 @@ pub fn can_support_additional_anchor_channel<
 			EstimatorRef,
 			LoggerRef,
 			PersistRef,
+			EntropySourceRef,
 		>,
 	>,
 >(
@@ -297,6 +300,7 @@ where
 	EstimatorRef::Target: FeeEstimator,
 	LoggerRef::Target: Logger,
 	PersistRef::Target: Persist<ChannelSigner>,
+	EntropySourceRef::Target: EntropySource,
 {
 	let mut anchor_channels = new_hash_set();
 	// Calculate the number of in-progress anchor channels by inspecting ChannelMonitors with balance.
