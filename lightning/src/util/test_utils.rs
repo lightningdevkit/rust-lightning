@@ -355,7 +355,7 @@ impl<'a> TestChainMonitor<'a> {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(new_hash_map()),
 			latest_monitor_update_id: Mutex::new(new_hash_map()),
-			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
+			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister, keys_manager.get_peer_storage_key()),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),

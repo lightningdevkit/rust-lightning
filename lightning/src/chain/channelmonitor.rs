@@ -36,8 +36,9 @@ use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
-use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
+use crate::ln::chan_utils::{self, CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys, ChannelPublicKeys};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
+use crate::ln::features::ChannelTypeFeatures;
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -1028,27 +1029,28 @@ impl<Signer: EcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> where Sign
 	}
 }
 
-impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		self.inner.lock().unwrap().write(writer)
-	}
-}
+/// Utility function for writing [`ChannelMonitor`] to prevent code duplication in [`ChainMonitor`] while sending Peer Storage.
+pub(crate) fn write_util<Signer: EcdsaChannelSigner, W: Writer>(channel_monitor: &ChannelMonitorImpl<Signer>, is_stub: bool, writer: &mut W) -> Result<(), Error> {
+		// Prepend min_seen_secret and ChannelID so that we can compare data in ChannelManager::your_peer_storage.
+		if is_stub {
+			let stub_info = StubChannelInfo {
+				min_seen_secret: channel_monitor.get_min_seen_secret(),
+				cid: channel_monitor.channel_id(),
+				counterparty_node_id: channel_monitor.counterparty_node_id.unwrap(),
+				channel_keys_id: channel_monitor.channel_keys_id,
+				funding_outpoint: channel_monitor.funding_info.0,
+				channel_value_satoshi: channel_monitor.channel_value_satoshis,
+			};
+			stub_info.write(writer)?;
+		}
 
-// These are also used for ChannelMonitorUpdate, above.
-const SERIALIZATION_VERSION: u8 = 1;
-const MIN_SERIALIZATION_VERSION: u8 = 1;
-
-impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
-		self.latest_update_id.write(writer)?;
-
+		channel_monitor.latest_update_id.write(writer)?;
 		// Set in initial Channel-object creation, so should always be set by now:
-		U48(self.commitment_transaction_number_obscure_factor).write(writer)?;
-
-		self.destination_script.write(writer)?;
-		if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
+		U48(channel_monitor.commitment_transaction_number_obscure_factor).write(writer)?;
+		channel_monitor.destination_script.write(writer)?;
+		if let Some(ref broadcasted_holder_revokable_script) = channel_monitor.broadcasted_holder_revokable_script {
 			writer.write_all(&[0; 1])?;
 			broadcasted_holder_revokable_script.0.write(writer)?;
 			broadcasted_holder_revokable_script.1.write(writer)?;
@@ -1057,25 +1059,25 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			writer.write_all(&[1; 1])?;
 		}
 
-		self.counterparty_payment_script.write(writer)?;
-		match &self.shutdown_script {
+		channel_monitor.counterparty_payment_script.write(writer)?;
+		match &channel_monitor.shutdown_script {
 			Some(script) => script.write(writer)?,
 			None => ScriptBuf::new().write(writer)?,
 		}
 
-		self.channel_keys_id.write(writer)?;
-		self.holder_revocation_basepoint.write(writer)?;
-		writer.write_all(&self.funding_info.0.txid[..])?;
-		writer.write_all(&self.funding_info.0.index.to_be_bytes())?;
-		self.funding_info.1.write(writer)?;
-		self.current_counterparty_commitment_txid.write(writer)?;
-		self.prev_counterparty_commitment_txid.write(writer)?;
+		channel_monitor.channel_keys_id.write(writer)?;
+		channel_monitor.holder_revocation_basepoint.write(writer)?;
+		writer.write_all(&channel_monitor.funding_info.0.txid[..])?;
+		writer.write_all(&channel_monitor.funding_info.0.index.to_be_bytes())?;
+		channel_monitor.funding_info.1.write(writer)?;
+		channel_monitor.current_counterparty_commitment_txid.write(writer)?;
+		channel_monitor.prev_counterparty_commitment_txid.write(writer)?;
 
-		self.counterparty_commitment_params.write(writer)?;
-		self.funding_redeemscript.write(writer)?;
-		self.channel_value_satoshis.write(writer)?;
+		channel_monitor.counterparty_commitment_params.write(writer)?;
+		channel_monitor.funding_redeemscript.write(writer)?;
+		channel_monitor.channel_value_satoshis.write(writer)?;
 
-		match self.their_cur_per_commitment_points {
+		match channel_monitor.their_cur_per_commitment_points {
 			Some((idx, pubkey, second_option)) => {
 				writer.write_all(&byte_utils::be48_to_array(idx))?;
 				writer.write_all(&pubkey.serialize())?;
@@ -1093,9 +1095,9 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			},
 		}
 
-		writer.write_all(&self.on_holder_tx_csv.to_be_bytes())?;
+		writer.write_all(&channel_monitor.on_holder_tx_csv.to_be_bytes())?;
 
-		self.commitment_secrets.write(writer)?;
+		channel_monitor.commitment_secrets.write(writer)?;
 
 		macro_rules! serialize_htlc_in_commitment {
 			($htlc_output: expr) => {
@@ -1107,55 +1109,55 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		writer.write_all(&(self.counterparty_claimable_outpoints.len() as u64).to_be_bytes())?;
-		for (ref txid, ref htlc_infos) in self.counterparty_claimable_outpoints.iter() {
+		writer.write_all(&(channel_monitor.counterparty_claimable_outpoints.len() as u64).to_be_bytes())?;
+		for (ref txid, ref htlc_infos) in channel_monitor.counterparty_claimable_outpoints.iter() {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&(htlc_infos.len() as u64).to_be_bytes())?;
 			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
-				debug_assert!(htlc_source.is_none() || Some(**txid) == self.current_counterparty_commitment_txid
-						|| Some(**txid) == self.prev_counterparty_commitment_txid,
+				debug_assert!(htlc_source.is_none() || Some(**txid) == channel_monitor.current_counterparty_commitment_txid
+						|| Some(**txid) == channel_monitor.prev_counterparty_commitment_txid,
 					"HTLC Sources for all revoked commitment transactions should be none!");
 				serialize_htlc_in_commitment!(htlc_output);
 				htlc_source.as_ref().map(|b| b.as_ref()).write(writer)?;
 			}
 		}
 
-		writer.write_all(&(self.counterparty_commitment_txn_on_chain.len() as u64).to_be_bytes())?;
-		for (ref txid, commitment_number) in self.counterparty_commitment_txn_on_chain.iter() {
+		writer.write_all(&(channel_monitor.counterparty_commitment_txn_on_chain.len() as u64).to_be_bytes())?;
+		for (ref txid, commitment_number) in channel_monitor.counterparty_commitment_txn_on_chain.iter() {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
-		writer.write_all(&(self.counterparty_hash_commitment_number.len() as u64).to_be_bytes())?;
-		for (ref payment_hash, commitment_number) in self.counterparty_hash_commitment_number.iter() {
+		writer.write_all(&(channel_monitor.counterparty_hash_commitment_number.len() as u64).to_be_bytes())?;
+		for (ref payment_hash, commitment_number) in channel_monitor.counterparty_hash_commitment_number.iter() {
 			writer.write_all(&payment_hash.0[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
-		if let Some(ref prev_holder_tx) = self.prev_holder_signed_commitment_tx {
+		if let Some(ref prev_holder_tx) = channel_monitor.prev_holder_signed_commitment_tx {
 			writer.write_all(&[1; 1])?;
 			prev_holder_tx.write(writer)?;
 		} else {
 			writer.write_all(&[0; 1])?;
 		}
 
-		self.current_holder_commitment_tx.write(writer)?;
+		channel_monitor.current_holder_commitment_tx.write(writer)?;
 
-		writer.write_all(&byte_utils::be48_to_array(self.current_counterparty_commitment_number))?;
-		writer.write_all(&byte_utils::be48_to_array(self.current_holder_commitment_number))?;
+		writer.write_all(&byte_utils::be48_to_array(channel_monitor.current_counterparty_commitment_number))?;
+		writer.write_all(&byte_utils::be48_to_array(channel_monitor.current_holder_commitment_number))?;
 
-		writer.write_all(&(self.payment_preimages.len() as u64).to_be_bytes())?;
-		for payment_preimage in self.payment_preimages.values() {
+		writer.write_all(&(channel_monitor.payment_preimages.len() as u64).to_be_bytes())?;
+		for payment_preimage in channel_monitor.payment_preimages.values() {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
-		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
+		writer.write_all(&(channel_monitor.pending_monitor_events.iter().filter(|ev| match ev {
 			MonitorEvent::HTLCEvent(_) => true,
 			MonitorEvent::HolderForceClosed(_) => true,
 			MonitorEvent::HolderForceClosedWithInfo { .. } => true,
 			_ => false,
 		}).count() as u64).to_be_bytes())?;
-		for event in self.pending_monitor_events.iter() {
+		for event in channel_monitor.pending_monitor_events.iter() {
 			match event {
 				MonitorEvent::HTLCEvent(upd) => {
 					0u8.write(writer)?;
@@ -1170,21 +1172,21 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		writer.write_all(&(self.pending_events.len() as u64).to_be_bytes())?;
-		for event in self.pending_events.iter() {
+		writer.write_all(&(channel_monitor.pending_events.len() as u64).to_be_bytes())?;
+		for event in channel_monitor.pending_events.iter() {
 			event.write(writer)?;
 		}
 
-		self.best_block.block_hash.write(writer)?;
-		writer.write_all(&self.best_block.height.to_be_bytes())?;
+		channel_monitor.best_block.block_hash.write(writer)?;
+		writer.write_all(&channel_monitor.best_block.height.to_be_bytes())?;
 
-		writer.write_all(&(self.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
-		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
+		writer.write_all(&(channel_monitor.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
+		for ref entry in channel_monitor.onchain_events_awaiting_threshold_conf.iter() {
 			entry.write(writer)?;
 		}
 
-		(self.outputs_to_watch.len() as u64).write(writer)?;
-		for (txid, idx_scripts) in self.outputs_to_watch.iter() {
+		(channel_monitor.outputs_to_watch.len() as u64).write(writer)?;
+		for (txid, idx_scripts) in channel_monitor.outputs_to_watch.iter() {
 			txid.write(writer)?;
 			(idx_scripts.len() as u64).write(writer)?;
 			for (idx, script) in idx_scripts.iter() {
@@ -1192,40 +1194,59 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 				script.write(writer)?;
 			}
 		}
-		self.onchain_tx_handler.write(writer)?;
 
-		self.lockdown_from_offchain.write(writer)?;
-		self.holder_tx_signed.write(writer)?;
+		if !is_stub {
+			channel_monitor.onchain_tx_handler.write(writer)?;
+		}
+
+		channel_monitor.lockdown_from_offchain.write(writer)?;
+		channel_monitor.holder_tx_signed.write(writer)?;
 
 		// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed` for backwards compatibility.
-		let pending_monitor_events = match self.pending_monitor_events.iter().find(|ev| match ev {
+		let pending_monitor_events = match channel_monitor.pending_monitor_events.iter().find(|ev| match ev {
 			MonitorEvent::HolderForceClosedWithInfo { .. } => true,
 			_ => false,
 		}) {
 			Some(MonitorEvent::HolderForceClosedWithInfo { outpoint, .. }) => {
-				let mut pending_monitor_events = self.pending_monitor_events.clone();
+				let mut pending_monitor_events = channel_monitor.pending_monitor_events.clone();
 				pending_monitor_events.push(MonitorEvent::HolderForceClosed(*outpoint));
 				pending_monitor_events
 			}
-			_ => self.pending_monitor_events.clone(),
+			_ => channel_monitor.pending_monitor_events.clone(),
 		};
 
 		write_tlv_fields!(writer, {
-			(1, self.funding_spend_confirmed, option),
-			(3, self.htlcs_resolved_on_chain, required_vec),
+			(1, channel_monitor.funding_spend_confirmed, option),
+			(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
 			(5, pending_monitor_events, required_vec),
-			(7, self.funding_spend_seen, required),
-			(9, self.counterparty_node_id, option),
-			(11, self.confirmed_commitment_tx_counterparty_output, option),
-			(13, self.spendable_txids_confirmed, required_vec),
-			(15, self.counterparty_fulfilled_htlcs, required),
-			(17, self.initial_counterparty_commitment_info, option),
-			(19, self.channel_id, required),
-			(21, self.balances_empty_height, option),
-			(23, self.holder_pays_commitment_tx_fee, option),
+			(7, channel_monitor.funding_spend_seen, required),
+			(9, channel_monitor.counterparty_node_id, option),
+			(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
+			(13, channel_monitor.spendable_txids_confirmed, required_vec),
+			(15, channel_monitor.counterparty_fulfilled_htlcs, required),
+			(17, channel_monitor.initial_counterparty_commitment_info, option),
+			(19, channel_monitor.channel_id, required),
+			(21, channel_monitor.balances_empty_height, option),
+			(23, channel_monitor.holder_pays_commitment_tx_fee, option),
 		});
 
 		Ok(())
+
+}
+
+impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		self.inner.lock().unwrap().write(writer)
+	}
+}
+
+// These are also used for ChannelMonitorUpdate, above.
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
+impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		write_util(self, false, writer)
 	}
 }
 

@@ -29,13 +29,15 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor, write_util};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
+use crate::ln::msgs;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
+use crate::util::ser::VecWriter;
 use crate::util::wakers::{Future, Notifier};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::msgs::SendingOnlyMessageHandler;
@@ -46,6 +48,8 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
+use core::mem;
+use crate::ln::our_peer_storage::OurPeerStorage;
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
@@ -166,8 +170,8 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
 }
 
-struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
-	monitor: ChannelMonitor<ChannelSigner>,
+pub(crate) struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
+	pub(crate) monitor: ChannelMonitor<ChannelSigner>,
 	/// The full set of pending monitor updates for this Channel.
 	///
 	/// Note that this lock must be held from [`ChannelMonitor::update_monitor`] through to
@@ -182,7 +186,7 @@ struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	/// could cause users to have a full [`ChannelMonitor`] on disk as well as a
 	/// [`ChannelMonitorUpdate`] which was already applied. While this isn't an issue for the
 	/// LDK-provided update-based [`Persist`], it is somewhat surprising for users so we avoid it.
-	pending_monitor_updates: Mutex<Vec<u64>>,
+	pub(crate) pending_monitor_updates: Mutex<Vec<u64>>,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
@@ -196,8 +200,8 @@ impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 /// Note that this holds a mutex in [`ChainMonitor`] and may block other events until it is
 /// released.
 pub struct LockedChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
-	lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
-	funding_txo: OutPoint,
+	pub(crate) lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+	pub(crate) funding_txo: OutPoint,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
@@ -246,6 +250,8 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
 	event_notifier: Notifier,
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
+	our_peer_storage: Mutex<OurPeerStorage>,
+	our_peerstorage_encryption_key: [u8;32],
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
@@ -395,6 +401,27 @@ where C::Target: chain::Filter,
 		P::Target: Persist<ChannelSigner>,
 {
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
+		let monitors: RwLockReadGuard<'_, hash_map::HashMap<OutPoint, MonitorHolder<ChannelSigner>, RandomState>> = self.monitors.read().unwrap();
+		let mut ser_channels: Vec<u8> = Vec::new();
+		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
+		ser_channels.extend_from_slice(&(monitors.len() as u64).to_be_bytes());
+		for (_, mon) in monitors.iter() {
+			let mut ser_chan = VecWriter(Vec::new());
+
+			match write_util(&mon.monitor.inner.lock().unwrap(), true, &mut ser_chan) {
+				Ok(_) => {
+					ser_channels.extend_from_slice(&(ser_chan.0.len() as u64).to_be_bytes());
+					ser_channels.extend(ser_chan.0.iter());
+				}
+				Err(_) => {
+					panic!("Can not write monitor for {}", mon.monitor.channel_id())
+				}
+			}
+		}
+		self.our_peer_storage.lock().unwrap().stub_channels(ser_channels);
+
+		self.pending_send_only_events.lock().unwrap().push(events::MessageSendEvent::SendPeerStorageMessage { node_id: their_node_id
+			, msg: msgs::PeerStorageMessage { data: self.our_peer_storage.lock().unwrap().encrypt_our_peer_storage(self.our_peerstorage_encryption_key) } })
 	}
 }
 
@@ -406,7 +433,7 @@ where C::Target: chain::Filter,
 	/// pre-filter blocks or only fetch blocks matching a compact filter. Otherwise, clients may
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
+	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P, our_peerstorage_encryption_key: [u8; 32]) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
 			chain_source,
@@ -418,6 +445,8 @@ where C::Target: chain::Filter,
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Notifier::new(),
 			pending_send_only_events: Mutex::new(Vec::new()),
+			our_peer_storage: Mutex::new(OurPeerStorage::new()),
+			our_peerstorage_encryption_key
 		}
 	}
 
@@ -685,6 +714,18 @@ where C::Target: chain::Filter,
 			});
 		}
 	}
+
+	/// Retrieves all node IDs associated with the monitors.
+	///
+	/// This function collects the counterparty node IDs from all monitors into a `HashSet`,
+	/// ensuring unique IDs are returned.
+	fn get_peer_node_ids(&self) -> HashSet<PublicKey> {
+		let mon = self.monitors.read().unwrap();
+		mon
+		.values()
+		.map(|monitor| monitor.monitor.get_counterparty_node_id().unwrap().clone())
+		.collect()
+	}
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
@@ -753,6 +794,12 @@ where
 				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger
 			)
 		});
+
+		// Send peer storage everytime a new block arrives.
+		for node_id in self.get_peer_node_ids() {
+			self.send_peer_storage(node_id);
+		}
+
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
 	}
