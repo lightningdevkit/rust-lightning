@@ -78,6 +78,7 @@ use crate::ln::onion_payment::{
 };
 use crate::ln::onion_utils::{self};
 use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
+use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{
@@ -8546,15 +8547,38 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[rustfmt::skip]
-	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
-		// TODO: Decrypt and check if have any stale or missing ChannelMonitor.
+	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
+		// TODO: Check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
+		let err = MsgHandleErrInternal::from_chan_no_close(
+			ChannelError::Ignore("Invalid PeerStorageRetrieval message received.".into()),
+			ChannelId([0; 32]),
+		);
+		let err_str = || {
+			format!("Invalid PeerStorage received from {}", counterparty_node_id)
+		};
 
-		log_debug!(logger, "Received unexpected peer_storage_retrieval from {}. This is unusual since we do not yet distribute peer storage. Sending a warning.", log_pubkey!(counterparty_node_id));
+		let encrypted_ops = match EncryptedOurPeerStorage::new(msg.data) {
+			Ok(encrypted_ops) => encrypted_ops,
+			Err(_) => {
+				log_debug!(logger, "{}", err_str());
+				return Err(err);
+			}
+		};
 
-		Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-			"Invalid peer_storage_retrieval message received.".into(),
-		), ChannelId([0; 32])))
+		let decrypted_data = match encrypted_ops.decrypt(&self.node_signer.get_peer_storage_key()) {
+			Ok(decrypted_ops) => decrypted_ops.into_vec(),
+			Err(_) => {
+				log_debug!(logger, "{}", err_str());
+				return Err(err);
+			}
+		};
+
+		if decrypted_data.is_empty() {
+			log_debug!(logger, "Received a peer storage from peer {} with 0 channels.", log_pubkey!(counterparty_node_id));
+		}
+
+		Ok(())
 	}
 
 	#[rustfmt::skip]
@@ -16755,7 +16779,7 @@ pub mod bench {
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
-	use crate::sign::{InMemorySigner, KeysManager};
+	use crate::sign::{InMemorySigner, KeysManager, NodeSigner};
 	use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 	use crate::util::test_utils;
 
