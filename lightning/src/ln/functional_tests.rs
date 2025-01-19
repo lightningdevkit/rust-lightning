@@ -14,17 +14,19 @@
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor;
+use crate::chain::chainmonitor::Persist;
+use crate::chain::{channelmonitor, BestBlock};
 use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
+use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, ChannelPhase};
-use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{self, ChainParameters, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
+use crate::ln::fundrecoverer::{FundRecoverer, RecoveryEvent};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
 use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route, RouteParameters};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
@@ -171,6 +173,166 @@ fn test_funding_exceeds_no_wumbo_limit() {
 			assert_eq!(format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, MAX_FUNDING_SATOSHIS_NO_WUMBO + 1), err);
 		},
 		_ => panic!()
+	}
+}
+
+#[test]
+fn test_peer_storage() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_monitor);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_0_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes_0_serialized = nodes[0].node.encode();
+
+	let (_a, _b, _cid, _funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let msg_events_a = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+	for msg in msg_events_a {
+		if let MessageSendEvent::SendPeerStorageMessage { node_id: _, ref msg } = msg {
+			nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg);
+		} else {
+			panic!("Unexpected event");
+		}
+	}
+
+	let msg_events_b = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+	for msg in msg_events_b {
+		if let MessageSendEvent::SendPeerStorageMessage { node_id: _, ref msg } = msg {
+			nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg);
+		} else {
+			panic!("Unexpected event");
+		}
+	}
+
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 1000);
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10000);
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 9999);
+
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+	// Reconnect peers
+	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 1);
+	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+	// Lets drop the monitor and clear the chain_monitor as well.
+	nodes[0].chain_source.clear_watched_txn_and_outputs();
+	reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[], persister, chain_monitor, nodes_0_deserialized);
+	let persister: &dyn Persist<TestChannelSigner> = &chanmon_cfgs[0].persister;
+
+	let fundrecoverer
+	= FundRecoverer::new(node_cfgs[0].keys_manager, node_cfgs[0].logger,test_default_channel_config(), ChainParameters {network: Network::Testnet,
+		best_block: BestBlock::from_network(Network::Testnet)}, node_cfgs[0].keys_manager, node_cfgs[0].keys_manager, Some(&chanmon_cfgs[0].chain_source), 
+		persister, node_cfgs[0].fee_estimator, node_cfgs[0].tx_broadcaster, Vec::new());
+
+	fundrecoverer.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+
+	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	// 0th - SendYourPeerStorageMessage
+	// 1st - SendChannelReestablish
+	assert_eq!(msg_events.len(), 2);
+	for msg in msg_events {
+		if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
+			fundrecoverer.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		} else if let MessageSendEvent::SendYourPeerStorageMessage { ref node_id, ref msg } = msg {
+			fundrecoverer.handle_your_peer_storage(nodes[1].node.get_our_node_id(), msg);
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		} else {
+			panic!("Unexpected event")
+		}
+	}
+
+	let recovery_event = fundrecoverer.get_and_clear_recovery_pending_events();
+	assert_eq!(recovery_event.len(), 1);
+	match recovery_event[0] {
+		RecoveryEvent::RescanBlock{..} => {},
+	};
+
+	let bogus_chan_reestablish = fundrecoverer.get_and_clear_pending_msg_events();
+	// We receive two `channel_reestablish`(bogus) messages: the first from `handle_your_peer_storage` and the second from `handle_channel_reestablish`.
+	assert_eq!(bogus_chan_reestablish.len(), 2);
+	match bogus_chan_reestablish[0] {
+		MessageSendEvent::SendChannelReestablish {ref node_id, ref msg} => {
+			assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+			nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), msg);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let commitment_tx = {
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		node_txn.remove(0)
+	};
+
+	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![commitment_tx.clone()]);
+	connect_block(&nodes[1], &block);
+	// Since we are using fundrecoverer as Chain::watch.
+	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+	let height = nodes[0].best_block_info().1 + 1;
+	fundrecoverer.best_block_updated(&block.header, height);
+	fundrecoverer.transactions_confirmed(&block.header, &txdata, height);
+
+	check_closed_broadcast!(nodes[1], true);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelClosed {..} => {}, // If we actually processed we'd receive the payment
+		_ => panic!("Unexpected event"),
+	}
+	let mut dummy_block = create_dummy_block(nodes[1].best_block_hash(), height, Vec::new());
+	for i in 1..CHAN_CONFIRM_DEPTH {
+		let prev_blockhash = dummy_block.header.block_hash();
+		let dummy_txdata: Vec<_> = dummy_block.txdata.iter().enumerate().collect();
+		fundrecoverer.best_block_updated(&dummy_block.header, height + i + 1);
+		fundrecoverer.transactions_confirmed(&dummy_block.header, &dummy_txdata, height + i + 1);
+		dummy_block = create_dummy_block(prev_blockhash, height + i + 1, Vec::new());
+	}
+
+	// Clearing chain source so that the `drop` doesn't panic.
+	nodes[0].chain_source.clear_watched_txn_and_outputs();
+
+	check_added_monitors!(nodes[1], 1);
+
+	for event in fundrecoverer.get_and_clear_pending_events() {
+		match event {
+			Event::SpendableOutputs { mut outputs, channel_id: _ } => {
+				for outp in outputs.drain(..) {
+					match outp {
+						SpendableOutputDescriptor::StaticPaymentOutput(static_payment) => {
+							assert_eq!(static_payment.output.value.to_sat(), commitment_tx.output[0].value.to_sat());
+						},
+						_ => panic!("Unexpected event"),
+					}
+				}
+			},
+			_ => panic!("Unexpected event"),
+		};
 	}
 }
 

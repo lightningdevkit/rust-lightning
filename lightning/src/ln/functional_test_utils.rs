@@ -3574,6 +3574,12 @@ macro_rules! get_chan_reestablish_msgs {
 				} else if let MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, .. } = msg {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					announcements.insert(msg.contents.short_channel_id);
+				} else if let MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_peer_storage($src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				} else if let MessageSendEvent::SendYourPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_your_peer_storage($src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				} else {
 					panic!("Unexpected event")
 				}
