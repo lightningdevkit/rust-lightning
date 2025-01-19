@@ -40,13 +40,14 @@ use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt1
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent, WithChannelMonitor, ANTI_REORG_DELAY, CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, STUB_CHANNEL_UPDATE_IDENTIFIER};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::inbound_payment;
+use crate::ln::our_peer_storage::OurPeerStorage;
 use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 use crate::ln::channel_state::ChannelDetails;
@@ -76,8 +77,8 @@ use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -7913,6 +7914,61 @@ where
 		peer_state.peer_storage = msg.data.clone();
 	}
 
+	fn internal_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+ 		let mut res = vec![0; msg.data.len() - 16];
+		let our_peerstorage_encryption_key = self.node_signer.get_peer_storage_key();
+		let mut cyphertext_with_key = Vec::with_capacity(msg.data.len() + our_peerstorage_encryption_key.len());
+		cyphertext_with_key.extend(msg.data.clone());
+		cyphertext_with_key.extend_from_slice(&our_peerstorage_encryption_key);
+
+		match OurPeerStorage::decrypt_our_peer_storage(&mut res, cyphertext_with_key.as_slice()) {
+			Ok(()) => {
+				// Decryption successful, the plaintext is now stored in `res`.
+				log_debug!(logger, "Received a peer storage from peer {}", log_pubkey!(counterparty_node_id));
+			}
+			Err(_) => {
+				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+				return;
+			}
+		}
+
+		let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::bitcoin::io::Cursor::new(res)).unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		
+		for ((node_id, channel_id), min_seen_secret) in our_peer_storage.get_cid_and_min_seen_secret().unwrap() {
+			let peer_state_mutex = match per_peer_state.get(&node_id) {
+				Some(mutex) => mutex,
+				None => {
+					log_debug!(logger, "Not able to find peer_state for the counterparty {}, channelId {}", log_pubkey!(node_id), channel_id);
+					continue;
+				}
+			};
+
+			let peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &*peer_state_lock;
+
+			match peer_state.channel_by_id.get(&channel_id) {
+				Some(ChannelPhase::Funded(chan)) => {
+					if chan.context.get_commitment_secret().get_min_seen_secret() > min_seen_secret {
+						panic!("Lost channel state for channel {}.
+								Received peer storage with a more recent state than what our node had.
+								Use the FundRecoverer to initiate a force close and sweep the funds.", channel_id);
+					}
+				},
+				Some(_) => {}
+				None => {
+					continue;
+				}
+			}
+		}
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -12339,6 +12395,10 @@ where
 			funding_txo_to_channel_id.insert(funding_txo, channel.context.channel_id());
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
+				if monitor.get_latest_update_id() == STUB_CHANNEL_UPDATE_IDENTIFIER {
+					panic!("ChannelMonitor for {} is stale and recovered from Peer Storage, it is not safe to run the node in normal mode.", monitor.channel_id());
+				}
+
 				if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||

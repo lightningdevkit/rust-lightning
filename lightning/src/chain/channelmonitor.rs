@@ -114,6 +114,11 @@ pub struct ChannelMonitorUpdate {
 /// No other [`ChannelMonitorUpdate`]s are allowed after force-close.
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
+/// This update ID is used inside [`ChannelMonitorImpl`] to recognise
+/// that we're dealing with a [`StubChannelMonitor`]. Since we require some
+/// exceptions while dealing with it.
+pub const STUB_CHANNEL_UPDATE_IDENTIFIER: u64 = core::u64::MAX - 1;
+
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(w, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
@@ -849,6 +854,40 @@ pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
 	#[cfg(not(test))]
 	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
+}
+
+/// Data prepended to the serialised [`ChannelMonitor`] inside
+/// PeerStorage so that we can identify stale or missing channel
+/// monitor inside in [`FundRecoverer::handle_your_peer_storage`] &
+/// [`ChannelManager::handle_your_peer_storage`].
+pub struct StubChannelInfo {
+	/// Minimum seen secret of the [`ChannelMonitor`] to identify stale channels.
+	pub min_seen_secret: u64,
+	/// Channel Id of the channel retrieved from Peer Storage.
+	pub cid: ChannelId,
+	/// Node Id of the counterparty.
+	pub counterparty_node_id: PublicKey,
+	/// Funding outpoint of the [`ChannelMonitor`].
+	pub funding_outpoint: OutPoint,
+	/// Channel Keys Id of the channel retrieved from the Peer Storage.
+	pub channel_keys_id: [u8; 32],
+	/// Channel value sats of the channel.
+	pub channel_value_satoshi: u64
+}
+
+impl_writeable_tlv_based!(StubChannelInfo, {
+	(0, min_seen_secret, required),
+	(2, cid, required),
+	(4, counterparty_node_id, required),
+	(6, funding_outpoint, required),
+	(8, channel_keys_id, required),
+	(10, channel_value_satoshi, required),
+});
+
+/// Read [`StubChannelInfo`] from `chan_reader` of the [`ChannelMonitor`].
+pub fn get_stub_channel_info_from_ser_channel<R: io::Read>(chan_reader: &mut R) -> Result<StubChannelInfo, DecodeError> {
+	let stub_info: StubChannelInfo = Readable::read(chan_reader)?;
+	Ok(stub_info)
 }
 
 impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
@@ -3514,6 +3553,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
+				} else if self.latest_update_id == STUB_CHANNEL_UPDATE_IDENTIFIER {
+					// Since we aren't storing per commitment option inside stub channels.
+					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
+						block_hash, [].iter().map(|reference| *reference), logger);
 				} else {
 					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
 					// spend our funding output with a transaction which doesn't match our past
@@ -4274,6 +4317,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if *idx == input.previous_output.vout {
 						#[cfg(test)]
 						{
+							if self.latest_update_id == STUB_CHANNEL_UPDATE_IDENTIFIER {
+								return true;
+							}
 							// If the expected script is a known type, check that the witness
 							// appears to be spending the correct type (ie that the match would
 							// actually succeed in BIP 158/159-style filters).

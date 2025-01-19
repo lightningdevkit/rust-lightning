@@ -2074,6 +2074,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.update_time_counter
 	}
 
+	pub fn get_commitment_secret(&self) -> CounterpartyCommitmentSecrets {
+		self.commitment_secrets.clone()
+	}
+
 	pub fn get_latest_monitor_update_id(&self) -> u64 {
 		self.latest_monitor_update_id
 	}
