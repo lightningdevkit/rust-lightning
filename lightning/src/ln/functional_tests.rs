@@ -4704,6 +4704,201 @@ macro_rules! check_spendable_outputs {
 }
 
 #[test]
+fn test_peer_storage_on_revoked_txn() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_monitor);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_0_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes_0_serialized = nodes[0].node.encode();
+
+	let (_a, _b, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 1, 0);
+
+	let msg_events_a = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+	for msg in msg_events_a {
+		if let MessageSendEvent::SendPeerStorageMessage { node_id: _, ref msg } = msg {
+			nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg);
+		} else {
+			panic!("Unexpected event");
+		}
+	}
+
+	let msg_events_b = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+	for msg in msg_events_b {
+		if let MessageSendEvent::SendPeerStorageMessage { node_id: _, ref msg } = msg {
+			nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg);
+		} else {
+			panic!("Unexpected event");
+		}
+	}
+
+	send_payment(&nodes[1], &vec!(&nodes[0])[..], 10000);
+	send_payment(&nodes[1], &vec!(&nodes[0])[..], 10000);
+
+	let revoked_local_txn = get_local_commitment_txn!(nodes[1], channel_id);
+	assert_eq!(revoked_local_txn[0].input.len(), 1);
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.compute_txid());
+
+	send_payment(&nodes[1], &vec!(&nodes[0])[..], 10000);
+
+	connect_blocks(&nodes[1], 2);
+	connect_blocks(&nodes[0], 2);
+
+	let msg_events_aa = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+	for msg in msg_events_aa {
+		if let MessageSendEvent::SendPeerStorageMessage { node_id: _, ref msg } = msg {
+			nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg);
+		} else {
+			panic!("Unexpected event");
+		}
+	}
+	let msg_events_bb = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+	for msg in msg_events_bb {
+		if let MessageSendEvent::SendPeerStorageMessage { node_id: _, ref msg } = msg {
+			nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg);
+		} else {
+			panic!("Unexpected event");
+		}
+	}
+
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+	// Reconnect peers
+	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 1);
+	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+	// Lets drop the monitor and clear the chain_monitor as well.
+	nodes[0].chain_source.clear_watched_txn_and_outputs();
+	reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[], persister, chain_monitor, nodes_0_deserialized);
+	let persister: &dyn Persist<TestChannelSigner> = &chanmon_cfgs[0].persister;
+
+	let fundrecoverer
+	= FundRecoverer::new(node_cfgs[0].keys_manager, node_cfgs[0].logger,test_default_channel_config(), ChainParameters {network: Network::Testnet,
+		best_block: BestBlock::from_network(Network::Testnet)}, node_cfgs[0].keys_manager, node_cfgs[0].keys_manager, Some(&chanmon_cfgs[0].chain_source), 
+		persister, node_cfgs[0].fee_estimator, node_cfgs[0].tx_broadcaster, Vec::new());
+
+	fundrecoverer.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+
+	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	// 0th - SendYourPeerStorageMessage
+	// 2nd - SendChannelReestablish
+	assert_eq!(msg_events.len(), 2);
+	for msg in msg_events {
+		if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
+			fundrecoverer.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		} else if let MessageSendEvent::SendYourPeerStorageMessage { ref node_id, ref msg } = msg {
+			fundrecoverer.handle_your_peer_storage(nodes[1].node.get_our_node_id(), msg);
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		} else {
+			panic!("Unexpected event")
+		}
+	}
+
+	let recovery_event = fundrecoverer.get_and_clear_recovery_pending_events();
+	assert_eq!(recovery_event.len(), 1);
+	match recovery_event[0] {
+		RecoveryEvent::RescanBlock{..} => {},
+	};
+
+	let bogus_chan_reestablish = fundrecoverer.get_and_clear_pending_msg_events();
+
+	// We receive two `channel_reestablish`(bogus) messages: the first from `handle_your_peer_storage` and the second from `handle_channel_reestablish`.
+	assert_eq!(bogus_chan_reestablish.len(), 2);
+
+	match bogus_chan_reestablish[0] {
+		MessageSendEvent::SendChannelReestablish {ref node_id, ref msg} => {
+			assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+			nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), msg);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let block = create_dummy_block(nodes[0].best_block_hash(), 42, vec![revoked_local_txn[0].clone()]);
+	connect_block(&nodes[1], &block);
+	// Since we are using fundrecoverer as Chain::watch.
+	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+	let height = nodes[0].best_block_info().1 + 1;
+
+	nodes[0].blocks.lock().unwrap().push((block.clone(), height));
+	fundrecoverer.best_block_updated(&block.header, height);
+	fundrecoverer.transactions_confirmed(&block.header, &txdata, height);
+
+	check_closed_broadcast!(nodes[1], true);
+
+	let events_2 = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_2.len(), 1);
+	match events_2[0] {
+		Event::ChannelClosed {..} => {}, // If we actually processed we'd receive the payment
+		_ => panic!("Unexpected event"),
+	}
+	check_added_monitors!(nodes[1], 1);
+
+	let panelty = node_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	assert_eq!(panelty.len(), 1);
+	assert_eq!(panelty[0].input.len(), 1);
+
+	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![panelty[0].clone()]);
+	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+	connect_block(&nodes[1], &block);
+
+	nodes[0].blocks.lock().unwrap().push((block.clone(), height + 1));
+	fundrecoverer.best_block_updated(&block.header, height + 1);
+	fundrecoverer.transactions_confirmed(&block.header, &txdata, height + 1);
+
+	let mut dummy_block = create_dummy_block(nodes[1].best_block_hash(), height, Vec::new());
+	for i in 1..CHAN_CONFIRM_DEPTH {
+		let prev_blockhash = dummy_block.header.block_hash();
+		let dummy_txdata: Vec<_> = dummy_block.txdata.iter().enumerate().collect();
+		fundrecoverer.best_block_updated(&dummy_block.header, height + i + 1);
+		fundrecoverer.transactions_confirmed(&dummy_block.header, &dummy_txdata, height + i + 1);
+		dummy_block = create_dummy_block(prev_blockhash, height + i + 1, Vec::new());
+	}
+
+	// Lets drop the monitor and clear the chain_monitor as well.
+	nodes[0].chain_source.clear_watched_txn_and_outputs();
+
+	for event in fundrecoverer.get_and_clear_pending_events() {
+		match event {
+			Event::SpendableOutputs { mut outputs, channel_id: _ } => {
+				for outp in outputs.drain(..) {
+					match outp {
+						SpendableOutputDescriptor::StaticOutput{output, ..} => {
+							assert_eq!(output.value.to_sat(), panelty[0].output[0].value.to_sat());
+						},
+						_ => panic!("Unexpected event"),
+					}
+				}
+			},
+			_ => panic!("Unexpected event"),
+		};
+	}
+}
+
+#[test]
 fn test_claim_sizeable_push_msat() {
 	// Incidentally test SpendableOutput event generation due to detection of to_local output on commitment tx
 	let chanmon_cfgs = create_chanmon_cfgs(2);
