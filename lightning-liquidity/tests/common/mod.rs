@@ -5,7 +5,7 @@
 #![allow(unused_macros)]
 
 use lightning::chain::Filter;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, NodeSigner};
 
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
@@ -431,6 +431,7 @@ pub(crate) fn create_liquidity_node(
 		logger.clone(),
 		fee_estimator.clone(),
 		kv_store.clone(),
+		keys_manager.get_peer_storage_key(),
 	));
 	let best_block = BestBlock::from_network(network);
 	let chain_params = ChainParameters { network, best_block };

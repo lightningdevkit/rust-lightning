@@ -50,6 +50,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 use crate::ln::channel::PendingV2Channel;
+use crate::ln::our_peer_storage::OurPeerStorage;
 use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -77,8 +78,8 @@ use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailab
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -8288,15 +8289,37 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
-		// TODO: Decrypt and check if have any stale or missing ChannelMonitor.
+	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
+		// TODO: Check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
 
-		log_debug!(logger, "Received unexpected peer_storage_retrieval from {}. This is unusual since we do not yet distribute peer storage. Sending a warning.", log_pubkey!(counterparty_node_id));
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
+				"Invalid peer_storage_retrieval message received.".into(),
+			), ChannelId([0; 32])));
+		}
 
-		Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-			"Invalid peer_storage_retrieval message received.".into(),
-		), ChannelId([0; 32])))
+ 		let mut res = vec![0; msg.data.len() - 16];
+		let our_peerstorage_encryption_key = self.node_signer.get_peer_storage_key();
+		let mut cyphertext_with_key = Vec::with_capacity(msg.data.len() + our_peerstorage_encryption_key.len());
+		cyphertext_with_key.extend(msg.data.clone());
+		cyphertext_with_key.extend_from_slice(&our_peerstorage_encryption_key);
+
+		match OurPeerStorage::decrypt_our_peer_storage(&mut res, cyphertext_with_key.as_slice()) {
+			Ok(()) => {
+				// Decryption successful, the plaintext is now stored in `res`.
+				log_debug!(logger, "Received a peer storage from peer {}", log_pubkey!(counterparty_node_id));
+			}
+			Err(_) => {
+				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+
+				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
+					"Invalid peer_storage_retrieval message received.".into(),
+				), ChannelId([0; 32])));
+			}
+		}
+		Ok(())
 	}
 
 	fn internal_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) -> Result<(), MsgHandleErrInternal> {
