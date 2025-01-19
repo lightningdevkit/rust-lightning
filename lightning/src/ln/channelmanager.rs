@@ -52,6 +52,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 use crate::ln::channel::PendingV2Channel;
+use crate::ln::our_peer_storage::OurPeerStorage;
 use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -8317,15 +8318,31 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
-		// TODO: Decrypt and check if have any stale or missing ChannelMonitor.
+	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
+		// TODO: Check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
 
-		log_debug!(logger, "Received unexpected peer_storage_retrieval from {}. This is unusual since we do not yet distribute peer storage. Sending a warning.", log_pubkey!(counterparty_node_id));
+		let encrypted_ops = OurPeerStorage::EncryptedPeerStorage { cipher: msg.data };
+		let decrypted_data = match encrypted_ops.decrypt_peer_storage(&self.node_signer.get_peer_storage_key()) {
+			Ok(decrypted_ops) => decrypted_ops.into_vec(),
+			Err(_) => {
+				log_debug!(
+					logger,
+					"Invalid PeerStorage received from {}",
+					log_pubkey!(counterparty_node_id)
+				);
+				return Err(MsgHandleErrInternal::from_chan_no_close(
+					ChannelError::Ignore("Invalid PeerStorageRetrieval message received.".into()),
+					ChannelId([0; 32]),
+				));
+			}
+		};
 
-		Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-			"Invalid peer_storage_retrieval message received.".into(),
-		), ChannelId([0; 32])))
+		if decrypted_data.is_empty() {
+			log_debug!(logger, "Received a peer storage from peer {} with 0 channels.", log_pubkey!(counterparty_node_id));
+		}
+
+		Ok(())
 	}
 
 	fn internal_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) -> Result<(), MsgHandleErrInternal> {
@@ -16337,7 +16354,7 @@ mod tests {
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
-	use crate::sign::{KeysManager, InMemorySigner};
+	use crate::sign::{KeysManager, InMemorySigner, NodeSigner};
 	use crate::events::Event;
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
