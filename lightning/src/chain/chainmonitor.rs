@@ -35,6 +35,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
+use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, PeerStorageKey};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
@@ -262,6 +263,8 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 
 	/// Messages to send to the peer. This is currently used to distribute PeerStorage to channel partners.
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
+
+	our_peerstorage_encryption_key: PeerStorageKey,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
@@ -421,6 +424,7 @@ where C::Target: chain::Filter,
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Notifier::new(),
 			pending_send_only_events: Mutex::new(Vec::new()),
+			our_peerstorage_encryption_key
 		}
 	}
 
@@ -701,7 +705,19 @@ where C::Target: chain::Filter,
 	}
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
-		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage` and update [`OurPeerStorage::block_height`] accordingly.
+		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
+
+		let random_bytes = self.entropy_source.get_secure_random_bytes();
+		let serialised_channels = Vec::new();
+		let our_peer_storage = DecryptedOurPeerStorage::new(serialised_channels);
+		let cipher = our_peer_storage.encrypt(&self.our_peerstorage_encryption_key, &random_bytes);
+
+		log_debug!(self.logger, "Sending Peer Storage to {}", log_pubkey!(their_node_id));
+		let send_peer_storage_event = MessageSendEvent::SendPeerStorage {
+			node_id: their_node_id, msg: msgs::PeerStorage { data: cipher.into_vec() }
+		};
+
+		self.pending_send_only_events.lock().unwrap().push(send_peer_storage_event)
 	}
 }
 
@@ -747,6 +763,12 @@ where
 			monitor.block_connected(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
+
+		// Send peer storage everytime a new block arrives.
+		for node_id in self.all_counterparty_node_ids() {
+			self.send_peer_storage(node_id);
+		}
+
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
 	}
@@ -799,6 +821,12 @@ where
 				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger
 			)
 		});
+
+		// Send peer storage everytime a new block arrives.
+		for node_id in self.all_counterparty_node_ids() {
+			self.send_peer_storage(node_id);
+		}
+
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
 	}
