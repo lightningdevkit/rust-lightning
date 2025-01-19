@@ -423,6 +423,7 @@ impl<'a> TestChainMonitor<'a> {
 				logger,
 				fee_estimator,
 				persister,
+				keys_manager.get_peer_storage_key(),
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),

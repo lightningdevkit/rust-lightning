@@ -1571,6 +1571,7 @@ mod tests {
 				logger.clone(),
 				fee_estimator.clone(),
 				kv_store.clone(),
+				keys_manager.get_peer_storage_key(),
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
