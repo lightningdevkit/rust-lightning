@@ -46,6 +46,7 @@ use crate::types::features::{InitFeatures, NodeFeatures};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
+use crate::ln::our_peer_storage::OurPeerStorage;
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
@@ -255,6 +256,8 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
 	event_notifier: Notifier,
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
+
+	our_peerstorage_encryption_key: [u8;32],
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
@@ -408,6 +411,7 @@ where C::Target: chain::Filter,
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Notifier::new(),
 			pending_send_only_events: Mutex::new(Vec::new()),
+			our_peerstorage_encryption_key
 		}
 	}
 
@@ -690,7 +694,12 @@ where C::Target: chain::Filter,
 	}
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
-		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage` and update [`OurPeerStorage::block_height`] accordingly.
+		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
+
+		let encrypted_data= OurPeerStorage::create_from_data(self.our_peerstorage_encryption_key, Vec::new());
+		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
+		self.pending_send_only_events.lock().unwrap().push(MessageSendEvent::SendPeerStorage { node_id: their_node_id
+			, msg: msgs::PeerStorage { data: encrypted_data } })
 	}
 }
 
@@ -705,7 +714,8 @@ where C::Target: chain::Filter,
 		let mut pending_events = self.pending_send_only_events.lock().unwrap();
 		let mut ret = Vec::new();
 		core::mem::swap(&mut ret, &mut *pending_events);
-		ret	}
+		ret
+	}
 
 	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
 
@@ -735,6 +745,12 @@ where
 			monitor.block_connected(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
+
+		// Send peer storage everytime a new block arrives.
+		for node_id in self.get_peer_node_ids() {
+			self.send_peer_storage(node_id);
+		}
+
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
 	}
@@ -786,6 +802,12 @@ where
 				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger
 			)
 		});
+
+		// Send peer storage everytime a new block arrives.
+		for node_id in self.get_peer_node_ids() {
+			self.send_peer_storage(node_id);
+		}
+
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
 	}
