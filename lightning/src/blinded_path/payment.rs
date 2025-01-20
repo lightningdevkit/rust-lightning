@@ -520,7 +520,10 @@ impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 impl Readable for BlindedPaymentTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_stream!(r, {
-			(1, _padding, option),
+			// Reasoning: Padding refers to filler data added to a packet to increase
+			// its size and obscure its actual length. Since padding contains no meaningful
+			// information, we can safely omit reading it here.
+			// (1, _padding, option),
 			(2, scid, option),
 			(8, next_blinding_override, option),
 			(10, payment_relay, option),
@@ -530,7 +533,6 @@ impl Readable for BlindedPaymentTlvs {
 			(65537, payment_context, option),
 			(65539, authentication, option),
 		});
-		let _padding: Option<utils::BlindedPathPadding> = _padding;
 
 		if let Some(short_channel_id) = scid {
 			if payment_secret.is_some() {

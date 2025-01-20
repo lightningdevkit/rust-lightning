@@ -18,12 +18,9 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use super::message::BlindedMessagePath;
 use super::{BlindedHop, BlindedPath};
 use crate::crypto::streams::ChaChaPolyWriteAdapter;
-use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
-use crate::util::ser::{Readable, Writeable};
-
-use crate::io;
+use crate::util::ser::Writeable;
 
 use core::borrow::Borrow;
 
@@ -201,15 +198,3 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Ve
 ///
 /// For more details, see the [BOLTs Specification - Encrypted Recipient Data](https://github.com/lightning/bolts/blob/8707471dbc23245fb4d84c5f5babac1197f1583e/04-onion-routing.md#inside-encrypted_recipient_data-encrypted_data_tlv).
 pub(crate) struct BlindedPathPadding {}
-impl Readable for BlindedPathPadding {
-	#[inline]
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		loop {
-			let mut buf = [0; 8192];
-			if reader.read(&mut buf[..])? == 0 {
-				break;
-			}
-		}
-		Ok(Self {})
-	}
-}

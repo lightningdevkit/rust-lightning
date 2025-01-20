@@ -18,7 +18,6 @@ use super::dns_resolution::DNSResolverMessage;
 use super::messenger::CustomOnionMessageHandler;
 use super::offers::OffersMessage;
 use crate::blinded_path::message::{BlindedMessagePath, ForwardTlvs, NextMessageHop, ReceiveTlvs};
-use crate::blinded_path::utils::BlindedPathPadding;
 use crate::crypto::streams::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -336,13 +335,15 @@ pub(crate) enum ControlTlvs {
 impl Readable for ControlTlvs {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_stream!(r, {
-			(1, _padding, option),
+			// Reasoning: Padding refers to filler data added to a packet to increase
+			// its size and obscure its actual length. Since padding contains no meaningful
+			// information, we can safely omit reading it here.
+			// (1, _padding, option),
 			(2, short_channel_id, option),
 			(4, next_node_id, option),
 			(8, next_blinding_override, option),
 			(65537, context, option),
 		});
-		let _padding: Option<BlindedPathPadding> = _padding;
 
 		let next_hop = match (short_channel_id, next_node_id) {
 			(Some(_), Some(_)) => return Err(DecodeError::InvalidValue),
