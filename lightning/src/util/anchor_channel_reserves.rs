@@ -145,8 +145,8 @@ pub struct AnchorChannelReserveContext {
 	///
 	/// [ChannelHandshakeConfig::our_max_accepted_htlcs]: crate::util::config::ChannelHandshakeConfig::our_max_accepted_htlcs
 	pub expected_accepted_htlcs: u16,
-	/// Whether the wallet providing the anchor channel reserve uses Taproot P2TR outputs for its
-	/// funds, or Segwit P2WPKH outputs otherwise.
+	/// Whether the wallet handling anchor channel reserves creates Taproot P2TR outputs for any new
+	/// outputs, or Segwit P2WPKH outputs otherwise.
 	pub taproot_wallet: bool,
 }
 
@@ -194,21 +194,31 @@ pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount 
 pub fn get_supportable_anchor_channels(
 	context: &AnchorChannelReserveContext, utxos: &[Utxo],
 ) -> u64 {
-	let reserve_per_channel = get_reserve_per_channel(context);
+	// Get the reserve needed per channel, replacing the fee for an initial spend with the actual value
+	// below.
+	let default_satisfaction_fee = context
+		.upper_bound_fee_rate
+		.fee_wu(Weight::from_wu(if context.taproot_wallet {
+			P2TR_INPUT_WEIGHT
+		} else {
+			P2WPKH_INPUT_WEIGHT
+		}))
+		.unwrap_or(Amount::MAX);
+	let reserve_per_channel = get_reserve_per_channel(context) - default_satisfaction_fee;
+
 	let mut total_fractional_amount = Amount::from_sat(0);
 	let mut num_whole_utxos = 0;
 	for utxo in utxos {
-		if utxo.output.value >= reserve_per_channel {
+		let satisfaction_fee = context
+			.upper_bound_fee_rate
+			.fee_wu(Weight::from_wu(utxo.satisfaction_weight))
+			.unwrap_or(Amount::MAX);
+		let amount = utxo.output.value.checked_sub(satisfaction_fee).unwrap_or(Amount::MIN);
+		if amount >= reserve_per_channel {
 			num_whole_utxos += 1;
 		} else {
 			total_fractional_amount =
-				total_fractional_amount.checked_add(utxo.output.value).unwrap_or(Amount::MAX);
-			let satisfaction_fee = context
-				.upper_bound_fee_rate
-				.fee_wu(Weight::from_wu(utxo.satisfaction_weight))
-				.unwrap_or(Amount::MAX);
-			total_fractional_amount =
-				total_fractional_amount.checked_sub(satisfaction_fee).unwrap_or(Amount::MIN);
+				total_fractional_amount.checked_add(amount).unwrap_or(Amount::MAX);
 		}
 	}
 	// We require disjoint sets of UTXOs for the reserve of each channel,
