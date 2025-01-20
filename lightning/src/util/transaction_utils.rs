@@ -219,10 +219,8 @@ mod tests {
 		// If we have a bogus input amount or outputs valued more than inputs, we should fail
 		let version = Version::TWO;
 		let lock_time = LockTime::ZERO;
-		let input = Vec::new();
 		let tx_out = TxOut { script_pubkey: ScriptBuf::new(), value: Amount::from_sat(1000) };
-		let output = vec![tx_out];
-		let mut tx = Transaction { version, lock_time, input, output };
+		let mut tx = Transaction { version, lock_time, input: Vec::new(), output: vec![tx_out] };
 		let amount = Amount::from_sat(21_000_000_0000_0001);
 		assert!(maybe_add_change_output(&mut tx, amount, 0, 253, ScriptBuf::new()).is_err());
 		let amount = Amount::from_sat(400);
@@ -294,36 +292,32 @@ mod tests {
 		let tx_in = TxIn { previous_output, script_sig, witness, sequence };
 		let version = Version::TWO;
 		let lock_time = LockTime::ZERO;
-		let input = vec![tx_in];
-		let output = vec![tx_out];
-		let mut tx = Transaction { version, lock_time, input, output };
+		let mut tx = Transaction { version, lock_time, input: vec![tx_in], output: vec![tx_out] };
 		let orig_wtxid = tx.compute_wtxid();
 		let orig_weight = tx.weight().to_wu();
 		assert_eq!(orig_weight / 4, 61);
 
 		assert_eq!(Builder::new().push_int(2).into_script().minimal_non_dust().to_sat(), 474);
 
+		let script = Builder::new().push_int(2).into_script();
+
 		// Input value of the output value + fee - 1 should fail:
 		let amount = Amount::from_sat(1000 + 61 + 100 - 1);
-		let script = Builder::new().push_int(2).into_script();
-		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script).is_err());
+		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script.clone()).is_err());
 		// Failure doesn't change the transaction
 		assert_eq!(tx.compute_wtxid(), orig_wtxid);
 		// but one more input sat should succeed, without changing the transaction
 		let amount = Amount::from_sat(1000 + 61 + 100);
-		let script = Builder::new().push_int(2).into_script();
-		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script).is_ok());
+		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script.clone()).is_ok());
 		// If we don't add an output, we don't change the transaction
 		assert_eq!(tx.compute_wtxid(), orig_wtxid);
 		// In order to get a change output, we need to add 474 plus the output's weight / 4 (10)...
 		let amount = Amount::from_sat(1000 + 61 + 100 + 474 + 9);
-		let script = Builder::new().push_int(2).into_script();
-		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script).is_ok());
+		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script.clone()).is_ok());
 		// If we don't add an output, we don't change the transaction
 		assert_eq!(tx.compute_wtxid(), orig_wtxid);
 
 		let amount = Amount::from_sat(1000 + 61 + 100 + 474 + 10);
-		let script = Builder::new().push_int(2).into_script();
 		assert!(maybe_add_change_output(&mut tx, amount, 400, 250, script).is_ok());
 		assert_eq!(tx.output.len(), 2);
 		assert_eq!(tx.output[1].value.to_sat(), 474);

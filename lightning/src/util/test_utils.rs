@@ -414,15 +414,10 @@ impl<'a> TestChainMonitor<'a> {
 		fee_estimator: &'a TestFeeEstimator, persister: &'a dyn Persist<TestChannelSigner>,
 		keys_manager: &'a TestKeysInterface,
 	) -> Self {
-		let added_monitors = Mutex::new(Vec::new());
-		let monitor_updates = Mutex::new(new_hash_map());
-		let latest_monitor_update_id = Mutex::new(new_hash_map());
-		let expect_channel_force_closed = Mutex::new(None);
-		let expect_monitor_round_trip_fail = Mutex::new(None);
 		Self {
-			added_monitors,
-			monitor_updates,
-			latest_monitor_update_id,
+			added_monitors: Mutex::new(Vec::new()),
+			monitor_updates: Mutex::new(new_hash_map()),
+			latest_monitor_update_id: Mutex::new(new_hash_map()),
 			chain_monitor: ChainMonitor::new(
 				chain_source,
 				broadcaster,
@@ -431,8 +426,8 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 			),
 			keys_manager,
-			expect_channel_force_closed,
-			expect_monitor_round_trip_fail,
+			expect_channel_force_closed: Mutex::new(None),
+			expect_monitor_round_trip_fail: Mutex::new(None),
 		}
 	}
 
@@ -909,13 +904,10 @@ impl TestChannelMessageHandler {
 
 impl TestChannelMessageHandler {
 	pub fn new(chain_hash: ChainHash) -> Self {
-		let pending_events = Mutex::new(Vec::new());
-		let expected_recv_msgs = Mutex::new(None);
-		let connected_peers = Mutex::new(new_hash_set());
 		TestChannelMessageHandler {
-			pending_events,
-			expected_recv_msgs,
-			connected_peers,
+			pending_events: Mutex::new(Vec::new()),
+			expected_recv_msgs: Mutex::new(None),
+			connected_peers: Mutex::new(new_hash_set()),
 			chain_hash,
 		}
 	}
@@ -1567,19 +1559,14 @@ impl SignerProvider for TestKeysInterface {
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let override_random_bytes = Mutex::new(None);
-		let enforcement_states = Mutex::new(new_hash_map());
-		let expectations = Mutex::new(None);
-		let unavailable_signers_ops = Mutex::new(new_hash_map());
-		let next_signer_disabled_ops = Mutex::new(new_hash_set());
 		Self {
 			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
-			override_random_bytes,
+			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
-			enforcement_states,
-			expectations,
-			unavailable_signers_ops,
-			next_signer_disabled_ops,
+			enforcement_states: Mutex::new(new_hash_map()),
+			expectations: Mutex::new(None),
+			unavailable_signers_ops: Mutex::new(new_hash_map()),
+			next_signer_disabled_ops: Mutex::new(new_hash_set()),
 		}
 	}
 
@@ -1653,14 +1640,12 @@ impl TestChainSource {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let utxo_ret =
 			Mutex::new(UtxoResult::Sync(Ok(TxOut { value: Amount::MAX, script_pubkey })));
-		let watched_txn = Mutex::new(new_hash_set());
-		let watched_outputs = Mutex::new(new_hash_set());
 		Self {
 			chain_hash: ChainHash::using_genesis_block(network),
 			utxo_ret,
 			get_utxo_call_count: AtomicUsize::new(0),
-			watched_txn,
-			watched_outputs,
+			watched_txn: Mutex::new(new_hash_set()),
+			watched_outputs: Mutex::new(new_hash_set()),
 		}
 	}
 	pub fn remove_watched_txn_and_outputs(&self, outpoint: OutPoint, script_pubkey: ScriptBuf) {
