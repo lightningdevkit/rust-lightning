@@ -267,7 +267,7 @@ where
 	LoggerRef::Target: Logger,
 	PersistRef::Target: Persist<ChannelSigner>,
 {
-	let mut anchor_channels_with_balance = new_hash_set();
+	let mut anchor_channels = new_hash_set();
 	// Calculate the number of in-progress anchor channels by inspecting ChannelMonitors with balance.
 	// This includes channels that are in the process of being resolved on-chain.
 	for channel_id in chain_monitor.list_monitors() {
@@ -279,18 +279,17 @@ where
 		if channel_monitor.channel_type_features().supports_anchors_zero_fee_htlc_tx()
 			&& !channel_monitor.get_claimable_balances().is_empty()
 		{
-			anchor_channels_with_balance.insert(channel_id);
+			anchor_channels.insert(channel_id);
 		}
 	}
-	// Count channels that are in the middle of negotiation as well.
-	let num_anchor_channels = anchor_channels_with_balance.len()
-		+ a_channel_manager
-			.get_cm()
-			.list_channels()
-			.into_iter()
-			.filter(|c| c.channel_type.is_none())
-			.count();
-	get_supportable_anchor_channels(context, utxos) > num_anchor_channels as u64
+	// Also include channels that are in the middle of negotiation or anchor channels that don't have
+	// a ChannelMonitor yet.
+	for channel in a_channel_manager.get_cm().list_channels() {
+		if channel.channel_type.map_or(true, |ct| ct.supports_anchors_zero_fee_htlc_tx()) {
+			anchor_channels.insert(channel.channel_id);
+		}
+	}
+	get_supportable_anchor_channels(context, utxos) > anchor_channels.len() as u64
 }
 
 #[cfg(test)]
