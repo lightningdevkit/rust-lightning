@@ -63,15 +63,3 @@ lightning/src/routing/router.rs
 lightning/src/routing/scoring.rs
 lightning/src/routing/test_utils.rs
 lightning/src/routing/utxo.rs
-lightning/src/util/invoice.rs
-lightning/src/util/message_signing.rs
-lightning/src/util/mod.rs
-lightning/src/util/scid_utils.rs
-lightning/src/util/ser.rs
-lightning/src/util/ser_macros.rs
-lightning/src/util/string.rs
-lightning/src/util/test_channel_signer.rs
-lightning/src/util/test_utils.rs
-lightning/src/util/time.rs
-lightning/src/util/transaction_utils.rs
-lightning/src/util/wakers.rs

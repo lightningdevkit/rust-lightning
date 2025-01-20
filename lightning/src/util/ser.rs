@@ -13,39 +13,41 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 //! [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 
-use crate::prelude::*;
 use crate::io::{self, BufRead, Read, Write};
 use crate::io_extras::{copy, sink};
-use core::hash::Hash;
+use crate::prelude::*;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
+use core::hash::Hash;
 use core::ops::Deref;
 
 use alloc::collections::BTreeMap;
 
-use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE};
+use bitcoin::amount::Amount;
+use bitcoin::consensus::Encodable;
+use bitcoin::constants::ChainHash;
+use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hashes::hmac::Hmac;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::script::{self, ScriptBuf};
+use bitcoin::secp256k1::constants::{
+	COMPACT_SIGNATURE_SIZE, PUBLIC_KEY_SIZE, SCHNORR_SIGNATURE_SIZE, SECRET_KEY_SIZE,
+};
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
-use bitcoin::amount::Amount;
-use bitcoin::constants::ChainHash;
-use bitcoin::script::{self, ScriptBuf};
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::{consensus, Witness};
-use bitcoin::consensus::Encodable;
-use bitcoin::hashes::hmac::Hmac;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hash_types::{Txid, BlockHash};
 
 use dnssec_prover::rr::Name;
 
-use core::time::Duration;
 use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
-use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use core::time::Duration;
 
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
 use crate::util::string::UntrustedString;
@@ -79,24 +81,22 @@ impl<W: Write> Writer for W {
 struct BufReader<'a, R: Read> {
 	inner: &'a mut R,
 	buf: [u8; 1],
-	is_consumed: bool
+	is_consumed: bool,
 }
 
 impl<'a, R: Read> BufReader<'a, R> {
 	/// Creates a [`BufReader`] which will read from the given `inner`.
 	pub fn new(inner: &'a mut R) -> Self {
-		BufReader {
-			inner,
-			buf: [0; 1],
-			is_consumed: true
-		}
+		BufReader { inner, buf: [0; 1], is_consumed: true }
 	}
 }
 
 impl<'a, R: Read> Read for BufReader<'a, R> {
 	#[inline]
 	fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-		if output.is_empty() { return Ok(0); }
+		if output.is_empty() {
+			return Ok(0);
+		}
 		let mut offset = 0;
 		if !self.is_consumed {
 			output[0] = self.buf[0];
@@ -306,14 +306,17 @@ pub trait Writeable {
 }
 
 impl<'a, T: Writeable> Writeable for &'a T {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { (*self).write(writer) }
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		(*self).write(writer)
+	}
 }
 
 /// A trait that various LDK types implement allowing them to be read in from a [`Read`].
 ///
 /// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait Readable
-	where Self: Sized
+where
+	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError>;
@@ -321,7 +324,10 @@ pub trait Readable
 
 /// A trait that various LDK types implement allowing them to be read in from a
 /// [`io::Cursor`].
-pub(crate) trait CursorReadable where Self: Sized {
+pub(crate) trait CursorReadable
+where
+	Self: Sized,
+{
 	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: AsRef<[u8]>>(reader: &mut io::Cursor<R>) -> Result<Self, DecodeError>;
 }
@@ -331,7 +337,8 @@ pub(crate) trait CursorReadable where Self: Sized {
 ///
 /// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait ReadableArgs<P>
-	where Self: Sized
+where
+	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
@@ -346,7 +353,9 @@ pub(crate) trait LengthRead: Read {
 /// A trait that various higher-level LDK types implement allowing them to be read in
 /// from a Read given some additional set of arguments which is required to deserialize, requiring
 /// the implementer to provide the total length of the read.
-pub(crate) trait LengthReadableArgs<P> where Self: Sized
+pub(crate) trait LengthReadableArgs<P>
+where
+	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`LengthRead`].
 	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
@@ -354,7 +363,9 @@ pub(crate) trait LengthReadableArgs<P> where Self: Sized
 
 /// A trait that various higher-level LDK types implement allowing them to be read in
 /// from a [`Read`], requiring the implementer to provide the total length of the read.
-pub(crate) trait LengthReadable where Self: Sized
+pub(crate) trait LengthReadable
+where
+	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`LengthRead`].
 	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
@@ -364,7 +375,8 @@ pub(crate) trait LengthReadable where Self: Sized
 ///
 /// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait MaybeReadable
-	where Self: Sized
+where
+	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError>;
@@ -397,7 +409,9 @@ impl<A, T: ReadableArgs<A>> ReadableArgs<A> for RequiredWrapper<T> {
 /// to a `RequiredWrapper<T>` in a way that works for `field: T = t;` as
 /// well. Thus, we assume `Into<T> for T` does nothing and use that.
 impl<T> From<T> for RequiredWrapper<T> {
-	fn from(t: T) -> RequiredWrapper<T> { RequiredWrapper(Some(t)) }
+	fn from(t: T) -> RequiredWrapper<T> {
+		RequiredWrapper(Some(t))
+	}
 }
 
 /// Wrapper to read a required (non-optional) TLV record that may have been upgraded without
@@ -409,7 +423,9 @@ impl<T: MaybeReadable> MaybeReadable for UpgradableRequired<T> {
 	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		let tlv = MaybeReadable::read(reader)?;
-		if let Some(tlv) = tlv { return Ok(Some(Self(Some(tlv)))) }
+		if let Some(tlv) = tlv {
+			return Ok(Some(Self(Some(tlv))));
+		}
 		Ok(None)
 	}
 }
@@ -443,9 +459,7 @@ impl Writeable for BigSize {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self.0 {
-			0..=0xFC => {
-				(self.0 as u8).write(writer)
-			},
+			0..=0xFC => (self.0 as u8).write(writer),
 			0xFD..=0xFFFF => {
 				0xFDu8.write(writer)?;
 				(self.0 as u16).write(writer)
@@ -473,7 +487,7 @@ impl Readable for BigSize {
 				} else {
 					Ok(BigSize(x))
 				}
-			}
+			},
 			0xFE => {
 				let x: u32 = Readable::read(reader)?;
 				if x < 0x10000 {
@@ -481,7 +495,7 @@ impl Readable for BigSize {
 				} else {
 					Ok(BigSize(x as u64))
 				}
-			}
+			},
 			0xFD => {
 				let x: u16 = Readable::read(reader)?;
 				if x < 0xFD {
@@ -489,8 +503,8 @@ impl Readable for BigSize {
 				} else {
 					Ok(BigSize(x as u64))
 				}
-			}
-			n => Ok(BigSize(n as u64))
+			},
+			n => Ok(BigSize(n as u64)),
 		}
 	}
 }
@@ -522,8 +536,8 @@ impl Readable for CollectionLength {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut val: u64 = <u16 as Readable>::read(r)? as u64;
 		if val == 0xffff {
-			val = <u64 as Readable>::read(r)?
-				.checked_add(0xffff).ok_or(DecodeError::InvalidValue)?;
+			val =
+				<u64 as Readable>::read(r)?.checked_add(0xffff).ok_or(DecodeError::InvalidValue)?;
 		}
 		Ok(CollectionLength(val))
 	}
@@ -547,7 +561,7 @@ macro_rules! impl_writeable_primitive {
 			#[inline]
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 				// Skip any full leading 0 bytes when writing (in BE):
-				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros()/8) as usize..$len])
+				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
 			}
 		}
 		impl Readable for $val_type {
@@ -560,12 +574,14 @@ macro_rules! impl_writeable_primitive {
 		}
 		impl Readable for HighZeroBytesDroppedBigSize<$val_type> {
 			#[inline]
-			fn read<R: Read>(reader: &mut R) -> Result<HighZeroBytesDroppedBigSize<$val_type>, DecodeError> {
+			fn read<R: Read>(
+				reader: &mut R,
+			) -> Result<HighZeroBytesDroppedBigSize<$val_type>, DecodeError> {
 				// We need to accept short reads (read_len == 0) as "EOF" and handle them as simply
 				// the high bytes being dropped. To do so, we start reading into the middle of buf
 				// and then convert the appropriate number of bytes with extra high bytes out of
 				// buf.
-				let mut buf = [0; $len*2];
+				let mut buf = [0; $len * 2];
 				let mut read_len = reader.read(&mut buf[$len..])?;
 				let mut total_read_len = read_len;
 				while read_len != 0 && total_read_len != $len {
@@ -585,9 +601,11 @@ macro_rules! impl_writeable_primitive {
 			}
 		}
 		impl From<$val_type> for HighZeroBytesDroppedBigSize<$val_type> {
-			fn from(val: $val_type) -> Self { Self(val) }
+			fn from(val: $val_type) -> Self {
+				Self(val)
+			}
 		}
-	}
+	};
 }
 
 impl_writeable_primitive!(u128, 16);
@@ -617,7 +635,7 @@ impl Readable for u8 {
 impl Writeable for bool {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		writer.write_all(&[if *self {1} else {0}])
+		writer.write_all(&[if *self { 1 } else { 0 }])
 	}
 }
 impl Readable for bool {
@@ -633,14 +651,15 @@ impl Readable for bool {
 }
 
 macro_rules! impl_array {
-	($size:expr, $ty: ty) => (
+	($size:expr, $ty: ty) => {
 		impl Writeable for [$ty; $size] {
 			#[inline]
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 				let mut out = [0; $size * core::mem::size_of::<$ty>()];
 				for (idx, v) in self.iter().enumerate() {
 					let startpos = idx * core::mem::size_of::<$ty>();
-					out[startpos..startpos + core::mem::size_of::<$ty>()].copy_from_slice(&v.to_be_bytes());
+					out[startpos..startpos + core::mem::size_of::<$ty>()]
+						.copy_from_slice(&v.to_be_bytes());
 				}
 				w.write_all(&out)
 			}
@@ -661,7 +680,7 @@ macro_rules! impl_array {
 				Ok(res)
 			}
 		}
-	);
+	};
 }
 
 impl_array!(3, u8); // for rgb, ISO 4217 code
@@ -697,7 +716,9 @@ impl Readable for WithoutLength<String> {
 	}
 }
 impl<'a> From<&'a String> for WithoutLength<&'a String> {
-	fn from(s: &'a String) -> Self { Self(s) }
+	fn from(s: &'a String) -> Self {
+		Self(s)
+	}
 }
 
 impl Writeable for UntrustedString {
@@ -716,7 +737,7 @@ impl Readable for UntrustedString {
 impl Writeable for WithoutLength<&UntrustedString> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		WithoutLength(&self.0.0).write(w)
+		WithoutLength(&self.0 .0).write(w)
 	}
 }
 impl Readable for WithoutLength<UntrustedString> {
@@ -734,11 +755,15 @@ trait AsWriteableSlice {
 
 impl<T: Writeable> AsWriteableSlice for &Vec<T> {
 	type Inner = T;
-	fn as_slice(&self) -> &[T] { &self }
+	fn as_slice(&self) -> &[T] {
+		&self
+	}
 }
 impl<T: Writeable> AsWriteableSlice for &[T] {
 	type Inner = T;
-	fn as_slice(&self) -> &[T] { &self }
+	fn as_slice(&self) -> &[T] {
+		&self
+	}
 }
 
 impl<S: AsWriteableSlice> Writeable for WithoutLength<S> {
@@ -758,8 +783,10 @@ impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
 		loop {
 			let mut track_read = ReadTrackingReader::new(reader);
 			match MaybeReadable::read(&mut track_read) {
-				Ok(Some(v)) => { values.push(v); },
-				Ok(None) => { },
+				Ok(Some(v)) => {
+					values.push(v);
+				},
+				Ok(None) => {},
 				// If we failed to read any bytes at all, we reached the end of our TLV
 				// stream and have simply exhausted all entries.
 				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
@@ -770,7 +797,9 @@ impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
 	}
 }
 impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
-	fn from(v: &'a Vec<T>) -> Self { Self(v) }
+	fn from(v: &'a Vec<T>) -> Self {
+		Self(v)
+	}
 }
 
 impl Writeable for WithoutLength<&ScriptBuf> {
@@ -824,7 +853,9 @@ impl<I: Iterator<Item = T> + Clone, T: Writeable> Writeable for IterableOwned<I,
 macro_rules! impl_for_map {
 	($ty: ident, $keybound: ident, $constr: expr) => {
 		impl<K, V> Writeable for $ty<K, V>
-			where K: Writeable + Eq + $keybound, V: Writeable
+		where
+			K: Writeable + Eq + $keybound,
+			V: Writeable,
 		{
 			#[inline]
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -838,7 +869,9 @@ macro_rules! impl_for_map {
 		}
 
 		impl<K, V> Readable for $ty<K, V>
-			where K: Readable + Eq + $keybound, V: MaybeReadable
+		where
+			K: Readable + Eq + $keybound,
+			V: MaybeReadable,
 		{
 			#[inline]
 			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
@@ -856,7 +889,7 @@ macro_rules! impl_for_map {
 				Ok(ret)
 			}
 		}
-	}
+	};
 }
 
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
@@ -864,7 +897,8 @@ impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
 
 // HashSet
 impl<T> Writeable for HashSet<T>
-where T: Writeable + Eq + Hash
+where
+	T: Writeable + Eq + Hash,
 {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -877,15 +911,19 @@ where T: Writeable + Eq + Hash
 }
 
 impl<T> Readable for HashSet<T>
-where T: Readable + Eq + Hash
+where
+	T: Readable + Eq + Hash,
 {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: CollectionLength = Readable::read(r)?;
-		let mut ret = hash_set_with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
+		let mut ret = hash_set_with_capacity(cmp::min(
+			len.0 as usize,
+			MAX_BUF_SIZE / core::mem::size_of::<T>(),
+		));
 		for _ in 0..len.0 {
 			if !ret.insert(T::read(r)?) {
-				return Err(DecodeError::InvalidValue)
+				return Err(DecodeError::InvalidValue);
 			}
 		}
 		Ok(ret)
@@ -1128,7 +1166,8 @@ impl Writeable for PartialSignatureWithNonce {
 impl Readable for PartialSignatureWithNonce {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let partial_signature_buf: [u8; SECRET_KEY_SIZE] = Readable::read(r)?;
-		let partial_signature = musig2::types::PartialSignature::from_slice(&partial_signature_buf).map_err(|_| DecodeError::InvalidValue)?;
+		let partial_signature = musig2::types::PartialSignature::from_slice(&partial_signature_buf)
+			.map_err(|_| DecodeError::InvalidValue)?;
 		let public_nonce: musig2::types::PublicNonce = Readable::read(r)?;
 		Ok(PartialSignatureWithNonce(partial_signature, public_nonce))
 	}
@@ -1254,14 +1293,13 @@ impl<T: Writeable> Writeable for Option<T> {
 			Some(ref data) => {
 				BigSize(data.serialized_length() as u64 + 1).write(w)?;
 				data.write(w)?;
-			}
+			},
 		}
 		Ok(())
 	}
 }
 
-impl<T: Readable> Readable for Option<T>
-{
+impl<T: Readable> Readable for Option<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: BigSize = Readable::read(r)?;
 		match len.0 {
@@ -1269,7 +1307,7 @@ impl<T: Readable> Readable for Option<T>
 			len => {
 				let mut reader = FixedLengthReader::new(r, len - 1);
 				Ok(Some(Readable::read(&mut reader)?))
-			}
+			},
 		}
 	}
 }
@@ -1279,7 +1317,6 @@ impl Writeable for Amount {
 		self.to_sat().write(w)
 	}
 }
-
 
 impl Readable for Amount {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
@@ -1343,10 +1380,7 @@ impl Readable for OutPoint {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let txid = Readable::read(r)?;
 		let vout = Readable::read(r)?;
-		Ok(OutPoint {
-			txid,
-			vout,
-		})
+		Ok(OutPoint { txid, vout })
 	}
 }
 
@@ -1366,13 +1400,17 @@ macro_rules! impl_consensus_ser {
 				let mut reader = BufReader::<_>::new(r);
 				match consensus::encode::Decodable::consensus_decode(&mut reader) {
 					Ok(t) => Ok(t),
-					Err(consensus::encode::Error::Io(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => Err(DecodeError::ShortRead),
+					Err(consensus::encode::Error::Io(ref e))
+						if e.kind() == io::ErrorKind::UnexpectedEof =>
+					{
+						Err(DecodeError::ShortRead)
+					},
 					Err(consensus::encode::Error::Io(e)) => Err(DecodeError::Io(e.kind().into())),
 					Err(_) => Err(DecodeError::InvalidValue),
 				}
 			}
 		}
-	}
+	};
 }
 impl_consensus_ser!(Transaction);
 impl_consensus_ser!(TxOut);
@@ -1479,11 +1517,8 @@ impl Hostname {
 
 	/// Check if the chars in `s` are allowed to be included in a [`Hostname`].
 	pub(crate) fn str_is_valid_hostname(s: &str) -> bool {
-		s.len() <= 255 &&
-		s.chars().all(|c|
-			c.is_ascii_alphanumeric() ||
-			c == '.' || c == '_' || c == '-'
-		)
+		s.len() <= 255
+			&& s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 	}
 }
 
@@ -1633,10 +1668,10 @@ impl Readable for ClaimId {
 
 #[cfg(test)]
 mod tests {
+	use crate::prelude::*;
+	use crate::util::ser::{Hostname, Readable, Writeable};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::ecdsa;
-	use crate::util::ser::{Readable, Hostname, Writeable};
-	use crate::prelude::*;
 
 	#[test]
 	fn hostname_conversion() {
@@ -1680,7 +1715,7 @@ mod tests {
 			"fe00010000",
 			"feffffffff",
 			"ff0000000100000000",
-			"ffffffffffffffffff"
+			"ffffffffffffffffff",
 		];
 		for i in 0..=7 {
 			let mut stream = crate::io::Cursor::new(<Vec<u8>>::from_hex(bytes[i]).unwrap());
@@ -1699,14 +1734,20 @@ mod tests {
 			"fd",
 			"fe",
 			"ff",
-			""
+			"",
 		];
 		for i in 0..=9 {
 			let mut stream = crate::io::Cursor::new(<Vec<u8>>::from_hex(err_bytes[i]).unwrap());
 			if i < 3 {
-				assert_eq!(super::BigSize::read(&mut stream).err(), Some(crate::ln::msgs::DecodeError::InvalidValue));
+				assert_eq!(
+					super::BigSize::read(&mut stream).err(),
+					Some(crate::ln::msgs::DecodeError::InvalidValue)
+				);
 			} else {
-				assert_eq!(super::BigSize::read(&mut stream).err(), Some(crate::ln::msgs::DecodeError::ShortRead));
+				assert_eq!(
+					super::BigSize::read(&mut stream).err(),
+					Some(crate::ln::msgs::DecodeError::ShortRead)
+				);
 			}
 		}
 	}
