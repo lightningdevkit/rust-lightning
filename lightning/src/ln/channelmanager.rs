@@ -394,6 +394,9 @@ pub(crate) struct HTLCPreviousHopData {
 	// channel with a preimage provided by the forward channel.
 	outpoint: OutPoint,
 	counterparty_node_id: Option<PublicKey>,
+	/// Used to preserve our backwards channel by failing back in case an HTLC claim in the forward
+	/// channel remains unconfirmed for too long.
+	cltv_expiry: Option<u32>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -694,6 +697,15 @@ impl HTLCSource {
 		} else {
 			// There's nothing we can check for forwarded HTLCs
 			true
+		}
+	}
+
+	/// Returns the CLTV expiry of the inbound HTLC (i.e. the source referred to by this object),
+	/// if the source was a forwarded HTLC and the HTLC was first forwarded on LDK 0.1.1 or later.
+	pub(crate) fn inbound_htlc_expiry(&self) -> Option<u32> {
+		match self {
+			Self::PreviousHopData(HTLCPreviousHopData { cltv_expiry, .. }) => *cltv_expiry,
+			_ => None,
 		}
 	}
 }
@@ -5592,7 +5604,7 @@ where
 				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
-		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
+		if let PendingHTLCRouting::Forward { short_channel_id, incoming_cltv_expiry, .. } = payment.forward_info.routing {
 			let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 				short_channel_id: payment.prev_short_channel_id,
 				user_channel_id: Some(payment.prev_user_channel_id),
@@ -5603,6 +5615,7 @@ where
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
 				blinded_failure: payment.forward_info.routing.blinded_failure(),
+				cltv_expiry: incoming_cltv_expiry,
 			});
 
 			let failure_reason = HTLCFailReason::from_failure_code(0x4000 | 10);
@@ -5777,6 +5790,7 @@ where
 											outgoing_cltv_value, ..
 										}
 									}) => {
+										let cltv_expiry = routing.incoming_cltv_expiry();
 										macro_rules! failure_handler {
 											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
 												let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_channel_id), Some(payment_hash));
@@ -5792,6 +5806,7 @@ where
 													incoming_packet_shared_secret: incoming_shared_secret,
 													phantom_shared_secret: $phantom_ss,
 													blinded_failure: routing.blinded_failure(),
+													cltv_expiry,
 												});
 
 												let reason = if $next_hop_unknown {
@@ -5901,7 +5916,7 @@ where
 								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 									incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 									routing: PendingHTLCRouting::Forward {
-										ref onion_packet, blinded, ..
+										ref onion_packet, blinded, incoming_cltv_expiry, ..
 									}, skimmed_fee_msat, ..
 								},
 							}) => {
@@ -5916,6 +5931,7 @@ where
 									// Phantom payments are only PendingHTLCRouting::Receive.
 									phantom_shared_secret: None,
 									blinded_failure: blinded.map(|b| b.failure),
+									cltv_expiry: incoming_cltv_expiry,
 								});
 								let next_blinding_point = blinded.and_then(|b| {
 									b.next_blinding_override.or_else(|| {
@@ -6090,6 +6106,7 @@ where
 										incoming_packet_shared_secret: incoming_shared_secret,
 										phantom_shared_secret,
 										blinded_failure,
+										cltv_expiry: Some(cltv_expiry),
 									},
 									// We differentiate the received value from the sender intended value
 									// if possible so that we don't prematurely mark MPP payments complete
@@ -6123,6 +6140,7 @@ where
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
 												phantom_shared_secret,
 												blinded_failure,
+												cltv_expiry: Some(cltv_expiry),
 											}), payment_hash,
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
@@ -8998,6 +9016,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 											phantom_shared_secret: None,
 											blinded_failure: forward_info.routing.blinded_failure(),
+											cltv_expiry: forward_info.routing.incoming_cltv_expiry(),
 										});
 
 										failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
@@ -11161,6 +11180,7 @@ where
 						outpoint: htlc.prev_funding_outpoint,
 						channel_id: htlc.prev_channel_id,
 						blinded_failure: htlc.forward_info.routing.blinded_failure(),
+						cltv_expiry: htlc.forward_info.routing.incoming_cltv_expiry(),
 					});
 
 					let requested_forward_scid /* intercept scid */ = match htlc.forward_info.routing {
@@ -12504,6 +12524,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(2, outpoint, required),
 	(3, blinded_failure, option),
 	(4, htlc_id, required),
+	(5, cltv_expiry, option),
 	(6, incoming_packet_shared_secret, required),
 	(7, user_channel_id, option),
 	// Note that by the time we get past the required read for type 2 above, outpoint will be
