@@ -196,11 +196,12 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Ve
 	write_adapter.encode()
 }
 
-/// Blinded path encrypted payloads may be padded to ensure they are equal length.
+/// A data structure used exclusively to pad blinded path payloads, ensuring they are of
+/// equal length. Padding is written at Type 1 for compatibility with the lightning specification.
 ///
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
-impl Readable for Padding {
+/// For more details, see the [BOLTs Specification - Encrypted Recipient Data](https://github.com/lightning/bolts/blob/8707471dbc23245fb4d84c5f5babac1197f1583e/04-onion-routing.md#inside-encrypted_recipient_data-encrypted_data_tlv).
+pub(crate) struct BlindedPathPadding {}
+impl Readable for BlindedPathPadding {
 	#[inline]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		loop {

@@ -530,7 +530,7 @@ impl Readable for BlindedPaymentTlvs {
 			(65537, payment_context, option),
 			(65539, authentication, option),
 		});
-		let _padding: Option<utils::Padding> = _padding;
+		let _padding: Option<utils::BlindedPathPadding> = _padding;
 
 		if let Some(short_channel_id) = scid {
 			if payment_secret.is_some() {
