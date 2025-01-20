@@ -246,7 +246,7 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 			(8, self.htlc, required),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
-			(12, self.weight, required),
+			(13, self.weight, required),
 		});
 		Ok(())
 	}
@@ -261,7 +261,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
-		let mut weight = None;
+		let mut weight = RequiredWrapper(None);
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
@@ -271,13 +271,12 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			(8, htlc, required),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
-			(12, weight, option),
+			(13, weight, (default_value, weight_offered_htlc(channel_type_features.as_ref().unwrap_or(&ChannelTypeFeatures::only_static_remote_key())))),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
 
 		let channel_type_features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
-		let weight = weight.unwrap_or(weight_offered_htlc(&channel_type_features));
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
@@ -286,7 +285,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			preimage: preimage.0.unwrap(),
 			htlc: htlc.0.unwrap(),
 			channel_type_features,
-			weight,
+			weight: weight.0.unwrap(),
 		})
 	}
 }
@@ -330,7 +329,7 @@ impl Writeable for CounterpartyReceivedHTLCOutput {
 			(6, self.htlc, required),
 			(8, legacy_deserialization_prevention_marker, option),
 			(9, self.channel_type_features, required),
-			(10, self.weight, required),
+			(11, self.weight, required),
 		});
 		Ok(())
 	}
@@ -344,7 +343,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
-		let mut weight = None;
+		let mut weight = RequiredWrapper(None);
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
@@ -353,13 +352,12 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			(6, htlc, required),
 			(8, _legacy_deserialization_prevention_marker, option),
 			(9, channel_type_features, option),
-			(10, weight, option),
+			(11, weight, (default_value, weight_received_htlc(channel_type_features.as_ref().unwrap_or(&ChannelTypeFeatures::only_static_remote_key())))),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
 
 		let channel_type_features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
-		let weight = weight.unwrap_or(weight_received_htlc(&channel_type_features));
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
@@ -367,7 +365,7 @@ impl Readable for CounterpartyReceivedHTLCOutput {
 			counterparty_htlc_base_key,
 			htlc: htlc.0.unwrap(),
 			channel_type_features,
-			weight,
+			weight: weight.0.unwrap(),
 		})
 	}
 }
