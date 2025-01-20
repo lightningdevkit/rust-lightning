@@ -174,15 +174,14 @@ impl Default for AnchorChannelReserveContext {
 pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount {
 	let weight = Weight::from_wu(
 		COMMITMENT_TRANSACTION_BASE_WEIGHT +
-		// Reserves are calculated assuming each accepted HTLC is forwarded as the upper bound.
-		// - Inbound payments would require less reserves, but confirmations are still required when
-		// making the preimage public through the mempool.
-		// - Outbound payments don't require reserves to avoid loss of funds.
+		// Reserves are calculated in terms of accepted HTLCs, as their timeout defines the urgency of
+		// on-chain resolution. Each accepted HTLC is assumed to be forwarded to calculate an upper
+		// bound for the reserve, resulting in `expected_accepted_htlcs` inbound HTLCs and
+		// `expected_accepted_htlcs` outbound HTLCs per channel in aggregate.
 		2 * (context.expected_accepted_htlcs as u64) * COMMITMENT_TRANSACTION_PER_HTLC_WEIGHT +
 		anchor_output_spend_transaction_weight(context) +
-		// To calculate an upper bound on required reserves, it is assumed that each HTLC is resolved in a
-		// separate transaction. However, they might be aggregated when possible depending on timelocks and
-		// expiries.
+		// As an upper bound, it is assumed that each HTLC is resolved in a separate transaction.
+		// However, they might be aggregated when possible depending on timelocks and expiries.
 		htlc_success_transaction_weight(context) * (context.expected_accepted_htlcs as u64) +
 		htlc_timeout_transaction_weight(context) * (context.expected_accepted_htlcs as u64),
 	);
@@ -222,14 +221,10 @@ pub fn get_supportable_anchor_channels(
 		}
 	}
 	// We require disjoint sets of UTXOs for the reserve of each channel,
-	// as claims are only aggregated per channel currently.
+	// as claims are currently only aggregated per channel.
 	//
-	// UTXOs larger than the required reserve are a singleton disjoint set.
-	// A disjoint set of fractional UTXOs could overcontribute by any amount less than the
-	// required reserve, approaching double the reserve.
-	//
-	// Note that for the fractional UTXOs, this is an approximation as we can't efficiently calculate
-	// a worst-case coin selection as an NP-complete problem.
+	// A worst-case coin selection is assumed for fractional UTXOs, selecting up to double the
+	// required amount.
 	num_whole_utxos + total_fractional_amount.to_sat() / reserve_per_channel.to_sat() / 2
 }
 
