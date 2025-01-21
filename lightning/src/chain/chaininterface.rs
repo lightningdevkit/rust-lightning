@@ -176,7 +176,7 @@ pub trait FeeEstimator {
 }
 
 /// Minimum relay fee as required by bitcoin network mempool policy.
-pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
+pub const INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 /// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
 /// See the following Core Lightning commit for an explanation:
 /// <https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0>

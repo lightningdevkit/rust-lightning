@@ -31,7 +31,7 @@ use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
-use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
@@ -1243,7 +1243,7 @@ impl Readable for PackageTemplate {
 /// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`], we
 /// return nothing.
 ///
-/// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::MIN_RELAY_FEE_SAT_PER_1000_WEIGHT
+/// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT
 fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 	input_amounts: u64, predicted_weight: u64, conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 ) -> Option<(u64, u64)>
@@ -1317,7 +1317,7 @@ where
 	}
 
 	let previous_fee = previous_feerate * predicted_weight / 1000;
-	let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * predicted_weight / 1000;
+	let min_relay_fee = INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT * predicted_weight / 1000;
 	// BIP 125 Opt-in Full Replace-by-Fee Signaling
 	// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
 	//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
