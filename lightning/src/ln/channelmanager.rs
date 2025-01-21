@@ -6047,7 +6047,6 @@ where
 								// fail-backs are best-effort, we probably already have one
 								// pending, and if not that's OK, if not, the channel is on
 								// the chain and sending the HTLC-Timeout is their problem.
-								continue;
 							}
 						}
 					}
