@@ -15,9 +15,10 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(test)]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::chainmonitor;
-use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::MonitorEvent;
+use crate::chain::chainmonitor::{ChainMonitor, Persist};
+use crate::chain::channelmonitor::{
+	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
+};
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
 use crate::events;
@@ -386,16 +387,16 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>)>>,
-	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, ChannelMonitor<TestChannelSigner>)>>,
+	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, u64)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<
+	pub chain_monitor: ChainMonitor<
 		TestChannelSigner,
 		&'a TestChainSource,
 		&'a dyn chaininterface::BroadcasterInterface,
 		&'a TestFeeEstimator,
 		&'a TestLogger,
-		&'a dyn chainmonitor::Persist<TestChannelSigner>,
+		&'a dyn Persist<TestChannelSigner>,
 	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -410,20 +411,14 @@ impl<'a> TestChainMonitor<'a> {
 	pub fn new(
 		chain_source: Option<&'a TestChainSource>,
 		broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger,
-		fee_estimator: &'a TestFeeEstimator,
-		persister: &'a dyn chainmonitor::Persist<TestChannelSigner>,
+		fee_estimator: &'a TestFeeEstimator, persister: &'a dyn Persist<TestChannelSigner>,
 		keys_manager: &'a TestKeysInterface,
 	) -> Self {
-		let added_monitors = Mutex::new(Vec::new());
-		let monitor_updates = Mutex::new(new_hash_map());
-		let latest_monitor_update_id = Mutex::new(new_hash_map());
-		let expect_channel_force_closed = Mutex::new(None);
-		let expect_monitor_round_trip_fail = Mutex::new(None);
 		Self {
-			added_monitors,
-			monitor_updates,
-			latest_monitor_update_id,
-			chain_monitor: chainmonitor::ChainMonitor::new(
+			added_monitors: Mutex::new(Vec::new()),
+			monitor_updates: Mutex::new(new_hash_map()),
+			latest_monitor_update_id: Mutex::new(new_hash_map()),
+			chain_monitor: ChainMonitor::new(
 				chain_source,
 				broadcaster,
 				logger,
@@ -431,8 +426,8 @@ impl<'a> TestChainMonitor<'a> {
 				persister,
 			),
 			keys_manager,
-			expect_channel_force_closed,
-			expect_monitor_round_trip_fail,
+			expect_channel_force_closed: Mutex::new(None),
+			expect_monitor_round_trip_fail: Mutex::new(None),
 		}
 	}
 
@@ -444,13 +439,13 @@ impl<'a> TestChainMonitor<'a> {
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(
-		&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>,
+		&self, funding_txo: OutPoint, monitor: ChannelMonitor<TestChannelSigner>,
 	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)
@@ -466,15 +461,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 
 	fn update_channel(
-		&self, funding_txo: OutPoint, update: &channelmonitor::ChannelMonitorUpdate,
+		&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate,
 	) -> chain::ChannelMonitorUpdateStatus {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
-		assert!(
-			channelmonitor::ChannelMonitorUpdate::read(&mut io::Cursor::new(&w.0)).unwrap()
-				== *update
-		);
+		assert_eq!(ChannelMonitorUpdate::read(&mut &w.0[..]).unwrap(), *update);
 		let channel_id =
 			update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
 
@@ -488,11 +480,9 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
 			assert_eq!(channel_id, exp.0);
 			assert_eq!(update.updates.len(), 1);
-			if let channelmonitor::ChannelMonitorUpdateStep::ChannelForceClosed {
-				should_broadcast,
-			} = update.updates[0]
-			{
-				assert_eq!(should_broadcast, exp.1);
+			let update = &update.updates[0];
+			if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update {
+				assert_eq!(*should_broadcast, exp.1);
 			} else {
 				panic!();
 			}
@@ -508,7 +498,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let monitor = self.chain_monitor.get_monitor(funding_txo).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0),
 			(self.keys_manager, self.keys_manager),
 		)
@@ -598,11 +588,9 @@ impl WatchtowerPersister {
 }
 
 #[cfg(test)]
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer>
-	for WatchtowerPersister
-{
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
-		&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>,
+		&self, funding_txo: OutPoint, data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.persist_new_channel(funding_txo, data);
 
@@ -635,8 +623,8 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer>
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>,
-		data: &channelmonitor::ChannelMonitor<Signer>,
+		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.update_persisted_channel(funding_txo, update, data);
 
@@ -679,7 +667,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer>
 	}
 
 	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
-		<TestPersister as chainmonitor::Persist<TestChannelSigner>>::archive_persisted_channel(
+		<TestPersister as Persist<TestChannelSigner>>::archive_persisted_channel(
 			&self.persister,
 			funding_txo,
 		);
@@ -692,8 +680,6 @@ pub struct TestPersister {
 	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
 	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
 	/// [`ChannelMonitor::get_latest_update_id`] here.
-	///
-	/// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<u64>>>,
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// monitor's funding outpoint here.
@@ -712,9 +698,9 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
 	fn persist_new_channel(
-		&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>,
+		&self, _funding_txo: OutPoint, _data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret;
@@ -723,8 +709,8 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>,
-		_data: &channelmonitor::ChannelMonitor<Signer>,
+		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		_data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
@@ -918,13 +904,10 @@ impl TestChannelMessageHandler {
 
 impl TestChannelMessageHandler {
 	pub fn new(chain_hash: ChainHash) -> Self {
-		let pending_events = Mutex::new(Vec::new());
-		let expected_recv_msgs = Mutex::new(None);
-		let connected_peers = Mutex::new(new_hash_set());
 		TestChannelMessageHandler {
-			pending_events,
-			expected_recv_msgs,
-			connected_peers,
+			pending_events: Mutex::new(Vec::new()),
+			expected_recv_msgs: Mutex::new(None),
+			connected_peers: Mutex::new(new_hash_set()),
 			chain_hash,
 		}
 	}
@@ -1576,19 +1559,14 @@ impl SignerProvider for TestKeysInterface {
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
-		let override_random_bytes = Mutex::new(None);
-		let enforcement_states = Mutex::new(new_hash_map());
-		let expectations = Mutex::new(None);
-		let unavailable_signers_ops = Mutex::new(new_hash_map());
-		let next_signer_disabled_ops = Mutex::new(new_hash_set());
 		Self {
 			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
-			override_random_bytes,
+			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
-			enforcement_states,
-			expectations,
-			unavailable_signers_ops,
-			next_signer_disabled_ops,
+			enforcement_states: Mutex::new(new_hash_map()),
+			expectations: Mutex::new(None),
+			unavailable_signers_ops: Mutex::new(new_hash_map()),
+			next_signer_disabled_ops: Mutex::new(new_hash_set()),
 		}
 	}
 
@@ -1662,14 +1640,12 @@ impl TestChainSource {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let utxo_ret =
 			Mutex::new(UtxoResult::Sync(Ok(TxOut { value: Amount::MAX, script_pubkey })));
-		let watched_txn = Mutex::new(new_hash_set());
-		let watched_outputs = Mutex::new(new_hash_set());
 		Self {
 			chain_hash: ChainHash::using_genesis_block(network),
 			utxo_ret,
 			get_utxo_call_count: AtomicUsize::new(0),
-			watched_txn,
-			watched_outputs,
+			watched_txn: Mutex::new(new_hash_set()),
+			watched_outputs: Mutex::new(new_hash_set()),
 		}
 	}
 	pub fn remove_watched_txn_and_outputs(&self, outpoint: OutPoint, script_pubkey: ScriptBuf) {
