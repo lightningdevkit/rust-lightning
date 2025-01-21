@@ -3282,7 +3282,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain) && is_pre_close_update {
+		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed) && is_pre_close_update {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
