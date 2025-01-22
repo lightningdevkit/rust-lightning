@@ -140,7 +140,7 @@ pub(crate) enum PendingOutboundPayment {
 }
 
 #[derive(Clone)]
-pub(crate) struct RetryableInvoiceRequest {
+pub struct RetryableInvoiceRequest {
 	pub(crate) invoice_request: InvoiceRequest,
 	pub(crate) nonce: Nonce,
 	pub(super) needs_retry: bool,

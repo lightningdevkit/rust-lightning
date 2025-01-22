@@ -41,7 +41,7 @@ pub mod channel;
 pub(crate) mod channel;
 
 pub(crate) mod onion_utils;
-mod outbound_payment;
+pub(crate) mod outbound_payment;
 pub mod wire;
 
 #[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
