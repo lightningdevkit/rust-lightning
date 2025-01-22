@@ -34,7 +34,6 @@ backtrace = { version = "0.3", optional = true }
 lightning = { version = "0.2.0", path = "../lightning", default-features = false, features = ["_test_utils"] }
 lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default-features = false, features = ["serde", "std"] }
 lightning-persister = { version = "0.2.0", path = "../lightning-persister", default-features = false }
-lightning-background-processor = { version = "0.2.0", path = "../lightning-background-processor", default-features = false, features = ["std"] }
 
 proptest = "1.0.0"
 tokio = { version = "1.35", default-features = false, features = [ "rt-multi-thread", "time", "sync", "macros" ] }
