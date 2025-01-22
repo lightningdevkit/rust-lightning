@@ -1850,4 +1850,32 @@ mod tests {
 		assert_eq!(TuplesOnly::read(&mut none_data_read).unwrap(), None);
 		assert_eq!(none_data_read.position(), unknown_data_variant.len() as u64);
 	}
+
+	#[derive(Debug, PartialEq, Eq)]
+	struct ExpandedField {
+		// Old versions of LDK are presumed to have had something like:
+		// old_field: u8,
+		new_field: (u8, u8),
+	}
+	impl_writeable_tlv_based!(ExpandedField, {
+		(0, old_field, (legacy, u8, |us: &ExpandedField| Some(us.new_field.0))),
+		(1, new_field, (default_value, (old_field.ok_or(DecodeError::InvalidValue)?, 0))),
+	});
+
+	#[test]
+	fn test_legacy_conversion() {
+		let mut encoded = ExpandedField { new_field: (43, 42) }.encode();
+		assert_eq!(encoded, <Vec<u8>>::from_hex("0700012b01022b2a").unwrap());
+
+		// On read, we'll read a `new_field` which means we won't bother looking at `old_field`.
+		encoded[3] = 10;
+		let read = <ExpandedField as Readable>::read(&mut &encoded[..]).unwrap();
+		assert_eq!(read, ExpandedField { new_field: (43, 42) });
+
+		// On read, if we read an old `ExpandedField` that just has a type-0 `old_field` entry,
+		// we'll copy that into the first position of `new_field`.
+		let encoded = <Vec<u8>>::from_hex("0300012a").unwrap();
+		let read = <ExpandedField as Readable>::read(&mut &encoded[..]).unwrap();
+		assert_eq!(read, ExpandedField { new_field: (42, 0) });
+	}
 }
