@@ -31,7 +31,7 @@ use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
-use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
@@ -1117,10 +1117,10 @@ impl PackageTemplate {
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(
-				predicted_weight, input_amounts, self.feerate_previous, feerate_strategy,
-				conf_target, fee_estimator, logger,
+				predicted_weight, input_amounts, dust_limit_sats, self.feerate_previous,
+				feerate_strategy, conf_target, fee_estimator, logger,
 			) {
-				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
+				return Some((input_amounts.saturating_sub(new_fee), feerate));
 			}
 		} else {
 			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger) {
@@ -1243,7 +1243,7 @@ impl Readable for PackageTemplate {
 /// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`], we
 /// return nothing.
 ///
-/// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::MIN_RELAY_FEE_SAT_PER_1000_WEIGHT
+/// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT
 fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 	input_amounts: u64, predicted_weight: u64, conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 ) -> Option<(u64, u64)>
@@ -1270,16 +1270,20 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 /// respect BIP125 rules 3) and 4) and if required adjust the new fee to meet the RBF policy
 /// requirement.
 fn feerate_bump<F: Deref, L: Logger>(
-	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, feerate_strategy: &FeerateStrategy,
-	conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	predicted_weight: u64, input_amounts: u64, dust_limit_sats: u64, previous_feerate: u64,
+	feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
+	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 ) -> Option<(u64, u64)>
 where
 	F::Target: FeeEstimator,
 {
+	let previous_fee = previous_feerate * predicted_weight / 1000;
+
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) =
 		compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger)
 	{
+		log_debug!(logger, "Initiating fee rate bump from {} s/kWU ({} s) to {} s/kWU ({} s) using {:?} strategy", previous_feerate, previous_fee, new_feerate, new_fee, feerate_strategy);
 		match feerate_strategy {
 			FeerateStrategy::RetryPrevious => {
 				let previous_fee = previous_feerate * predicted_weight / 1000;
@@ -1297,15 +1301,12 @@ where
 				// ...else just increase the previous feerate by 25% (because that's a nice number)
 				let bumped_feerate = previous_feerate + (previous_feerate / 4);
 				let bumped_fee = bumped_feerate * predicted_weight / 1000;
-				if input_amounts <= bumped_fee {
-					log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
-					return None;
-				}
+
 				(bumped_fee, bumped_feerate)
 			},
 		}
 	} else {
-		log_warn!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", input_amounts);
+		log_warn!(logger, "Can't bump new claiming tx, input amount {} is too small", input_amounts);
 		return None;
 	};
 
@@ -1316,22 +1317,31 @@ where
 		return Some((new_fee, new_feerate));
 	}
 
-	let previous_fee = previous_feerate * predicted_weight / 1000;
-	let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * predicted_weight / 1000;
+	let min_relay_fee = INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT * predicted_weight / 1000;
 	// BIP 125 Opt-in Full Replace-by-Fee Signaling
 	// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
 	//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
-	let new_fee = if new_fee < previous_fee + min_relay_fee {
-		new_fee + previous_fee + min_relay_fee - new_fee
-	} else {
-		new_fee
-	};
-	Some((new_fee, new_fee * 1000 / predicted_weight))
+	let naive_new_fee = new_fee;
+	let new_fee = cmp::max(new_fee, previous_fee + min_relay_fee);
+
+	if new_fee > naive_new_fee {
+		log_debug!(logger, "Naive fee bump of {}s does not meet min relay fee requirements of {}s", naive_new_fee - previous_fee, min_relay_fee);
+	}
+
+	let remaining_output_amount = input_amounts.saturating_sub(new_fee);
+	if remaining_output_amount < dust_limit_sats {
+		log_warn!(logger, "Can't bump new claiming tx, output amount {} would end up below dust threshold {}", remaining_output_amount, dust_limit_sats);
+		return None;
+	}
+
+	let new_feerate = new_fee * 1000 / predicted_weight;
+	log_debug!(logger, "Fee rate bumped by {}s from {} s/KWU ({} s) to {} s/KWU ({} s)", new_fee - previous_fee, previous_feerate, previous_fee, new_feerate, new_fee);
+	Some((new_fee, new_feerate))
 }
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
+	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc, feerate_bump};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
@@ -1349,7 +1359,10 @@ mod tests {
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
+	use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, FEERATE_FLOOR_SATS_PER_KW, LowerBoundedFeeEstimator};
+	use crate::chain::onchaintx::FeerateStrategy;
 	use crate::types::features::ChannelTypeFeatures;
+	use crate::util::test_utils::TestLogger;
 
 	fn fake_txid(n: u64) -> Txid {
 		Transaction {
@@ -1657,6 +1670,86 @@ mod tests {
 				let package = PackageTemplate::build_package(fake_txid(1), 0, counterparty_outp, 1000);
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features));
 			}
+		}
+	}
+
+	struct TestFeeEstimator {
+		sat_per_kw: u32,
+	}
+
+	impl FeeEstimator for TestFeeEstimator {
+		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
+			self.sat_per_kw
+		}
+	}
+
+	#[test]
+	fn test_feerate_bump() {
+		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW;
+		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
+		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
+		let fee_rate_strategy = FeerateStrategy::ForceBump;
+		let confirmation_target = ConfirmationTarget::UrgentOnChainSweep;
+
+		{
+			// Check underflow doesn't occur
+			let predicted_weight_units = 1000;
+			let input_satoshis = 505;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, input amount 505 is too small").unwrap(), 1);
+		}
+
+		{
+			// Check post-25%-bump-underflow scenario satisfying the following constraints:
+			// input - fee = 546
+			// input - fee * 1.25 = -1
+
+			// We accomplish that scenario with the following values:
+			// input = 2734
+			// fee = 2188
+
+			let predicted_weight_units = 1000;
+			let input_satoshis = 2734;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 2188, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, output amount 0 would end up below dust threshold 546").unwrap(), 1);
+		}
+
+		{
+			// Check that an output amount of 0 is caught
+			let predicted_weight_units = 1000;
+			let input_satoshis = 506;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, output amount 0 would end up below dust threshold 546").unwrap(), 1);
+		}
+
+		{
+			// Check that dust_threshold - 1 is blocked
+			let predicted_weight_units = 1000;
+			let input_satoshis = 1051;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger);
+			assert!(bumped_fee_rate.is_none());
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't bump new claiming tx, output amount 545 would end up below dust threshold 546").unwrap(), 1);
+		}
+
+		{
+			let predicted_weight_units = 1000;
+			let input_satoshis = 1052;
+
+			let logger = TestLogger::new();
+			let bumped_fee_rate = feerate_bump(predicted_weight_units, input_satoshis, 546, 253, &fee_rate_strategy, confirmation_target, &fee_estimator, &logger).unwrap();
+			assert_eq!(bumped_fee_rate, (506, 506));
+			logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Naive fee bump of 63s does not meet min relay fee requirements of 253s").unwrap(), 1);
 		}
 	}
 }
