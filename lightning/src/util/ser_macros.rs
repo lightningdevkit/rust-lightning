@@ -33,48 +33,48 @@
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _encode_tlv {
-	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
+	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr) $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, required)
 	};
-	($stream: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
+	($stream: expr, $type: expr, $field: expr, (static_value, $value: expr) $(, $self: ident)?) => {
 		let _ = &$field; // Ensure we "use" the $field
 	};
-	($stream: expr, $type: expr, $field: expr, required) => {
+	($stream: expr, $type: expr, $field: expr, required $(, $self: ident)?) => {
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
 		$field.write($stream)?;
 	};
-	($stream: expr, $type: expr, $field: expr, required_vec) => {
+	($stream: expr, $type: expr, $field: expr, required_vec $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
-	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
+	($stream: expr, $optional_type: expr, $optional_field: expr, option $(, $self: ident)?) => {
 		if let Some(ref field) = $optional_field {
 			BigSize($optional_type).write($stream)?;
 			BigSize(field.serialized_length() as u64).write($stream)?;
 			field.write($stream)?;
 		}
 	};
-	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr)) => {
-		$crate::_encode_tlv!($stream, $optional_type, $write, option);
+	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => {
+		$crate::_encode_tlv!($stream, $optional_type, $write($($self)?), option);
 	};
-	($stream: expr, $type: expr, $field: expr, optional_vec) => {
+	($stream: expr, $type: expr, $field: expr, optional_vec $(, $self: ident)?) => {
 		if !$field.is_empty() {
 			$crate::_encode_tlv!($stream, $type, $field, required_vec);
 		}
 	};
-	($stream: expr, $type: expr, $field: expr, upgradable_required) => {
+	($stream: expr, $type: expr, $field: expr, upgradable_required $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, required);
 	};
-	($stream: expr, $type: expr, $field: expr, upgradable_option) => {
+	($stream: expr, $type: expr, $field: expr, upgradable_option $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
-	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
+	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident) $(, $self: ident)?)) => {
 		$crate::_encode_tlv!($stream, $type, $field.map(|f| $encoding(f)), option);
 	};
-	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty)) => {
+	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty) $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
-	($stream: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
+	($stream: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?) $(, $self: ident)?) => {
 		// Just a read-mapped type
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
@@ -146,10 +146,10 @@ macro_rules! encode_tlv_stream {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _encode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => { {
-		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty)),* }, &[])
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt $(, $self: ident)?)),* $(,)*}) => { {
+		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty $(, $self)?)),* }, &[])
 	} };
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}, $extra_tlvs: expr) => { {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt $(, $self: ident)?)),* $(,)*}, $extra_tlvs: expr) => { {
 		#[allow(unused_imports)]
 		use $crate::{
 			ln::msgs::DecodeError,
@@ -159,7 +159,7 @@ macro_rules! _encode_tlv_stream {
 		};
 
 		$(
-			$crate::_encode_tlv!($stream, $type, $field, $fieldty);
+			$crate::_encode_tlv!($stream, $type, $field, $fieldty $(, $self)?);
 		)*
 		for tlv in $extra_tlvs {
 			let (typ, value): &(u64, Vec<u8>) = tlv;
@@ -188,11 +188,11 @@ macro_rules! _encode_tlv_stream {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _get_varint_length_prefixed_tlv_length {
-	($len: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
+	($len: expr, $type: expr, $field: expr, (default_value, $default: expr) $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
 	};
-	($len: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {};
-	($len: expr, $type: expr, $field: expr, required) => {
+	($len: expr, $type: expr, $field: expr, (static_value, $value: expr) $(, $self: ident)?) => {};
+	($len: expr, $type: expr, $field: expr, required $(, $self: ident)?) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
 		let field_len = $field.serialized_length();
 		BigSize(field_len as u64)
@@ -200,11 +200,11 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			.expect("No in-memory data may fail to serialize");
 		$len.0 += field_len;
 	};
-	($len: expr, $type: expr, $field: expr, required_vec) => {
+	($len: expr, $type: expr, $field: expr, required_vec $(, $self: ident)?) => {
 		let field = $crate::util::ser::WithoutLength(&$field);
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, required);
 	};
-	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
+	($len: expr, $optional_type: expr, $optional_field: expr, option $(, $self: ident)?) => {
 		if let Some(ref field) = $optional_field {
 			BigSize($optional_type)
 				.write(&mut $len)
@@ -216,25 +216,25 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
-	($len: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr)) => {
-		$crate::_get_varint_length_prefixed_tlv_length!($len, $optional_type, $write, option);
+	($len: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $optional_type, $write($($self)?), option);
 	};
-	($len: expr, $type: expr, $field: expr, optional_vec) => {
+	($len: expr, $type: expr, $field: expr, optional_vec $(, $self: ident)?) => {
 		if !$field.is_empty() {
 			$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required_vec);
 		}
 	};
-	($len: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
+	($len: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?) $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
-	($len: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
+	($len: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident)) $(, $self: ident)?) => {
 		let field = $field.map(|f| $encoding(f));
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, option);
 	};
-	($len: expr, $type: expr, $field: expr, upgradable_required) => {
+	($len: expr, $type: expr, $field: expr, upgradable_required $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};
-	($len: expr, $type: expr, $field: expr, upgradable_option) => {
+	($len: expr, $type: expr, $field: expr, upgradable_option $(, $self: ident)?) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
 }
@@ -244,10 +244,10 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _encode_varint_length_prefixed_tlv {
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),*}) => { {
-		$crate::_encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*}, &[])
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt $(, $self: ident)?)),*}) => { {
+		$crate::_encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty $(, $self)?)),*}, &[])
 	} };
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),*}, $extra_tlvs: expr) => { {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt $(, $self: ident)?)),*}, $extra_tlvs: expr) => { {
 		extern crate alloc;
 		use $crate::util::ser::BigSize;
 		use alloc::vec::Vec;
@@ -255,7 +255,7 @@ macro_rules! _encode_varint_length_prefixed_tlv {
 			#[allow(unused_mut)]
 			let mut len = $crate::util::ser::LengthCalculatingWriter(0);
 			$(
-				$crate::_get_varint_length_prefixed_tlv_length!(len, $type, $field, $fieldty);
+				$crate::_get_varint_length_prefixed_tlv_length!(len, $type, $field, $fieldty $(, $self)?);
 			)*
 			for tlv in $extra_tlvs {
 				let (typ, value): &(u64, Vec<u8>) = tlv;
@@ -264,7 +264,7 @@ macro_rules! _encode_varint_length_prefixed_tlv {
 			len.0
 		};
 		BigSize(len as u64).write($stream)?;
-		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty)),* }, $extra_tlvs);
+		$crate::_encode_tlv_stream!($stream, { $(($type, $field, $fieldty $(, $self)?)),* }, $extra_tlvs);
 	} };
 }
 
@@ -950,10 +950,10 @@ macro_rules! _decode_and_build {
 /// If `$fieldty` is `option`, then `$field` is optional field.
 /// If `$fieldty` is `optional_vec`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
 ///    Note that for `optional_vec` no bytes are written if the vec is empty
-/// If `$fieldty` is `(legacy, $ty, $write)` then, when writing, the expression $write will
-///    be called which returns an `Option` and is written as a TLV if `Some`. When reading, an
-///    optional field of type `$ty` is read (which can be used in later `default_value` or
-///    `static_value` fields).
+/// If `$fieldty` is `(legacy, $ty, $write)` then, when writing, the function $write will be
+///    called with the object being serialized and a returned `Option` and is written as a TLV if
+///    `Some`. When reading, an optional field of type `$ty` is read (which can be used in later
+///    `default_value` or `static_value` fields).
 ///
 /// For example,
 /// ```
@@ -981,8 +981,8 @@ macro_rules! impl_writeable_tlv_based {
 	($st: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
-				$crate::write_tlv_fields!(writer, {
-					$(($type, self.$field, $fieldty)),*
+				$crate::_encode_varint_length_prefixed_tlv!(writer, {
+					$(($type, self.$field, $fieldty, self)),*
 				});
 				Ok(())
 			}
@@ -994,7 +994,7 @@ macro_rules! impl_writeable_tlv_based {
 					#[allow(unused_mut)]
 					let mut len = $crate::util::ser::LengthCalculatingWriter(0);
 					$(
-						$crate::_get_varint_length_prefixed_tlv_length!(len, $type, self.$field, $fieldty);
+						$crate::_get_varint_length_prefixed_tlv_length!(len, $type, self.$field, $fieldty, self);
 					)*
 					len.0
 				};
@@ -1110,8 +1110,8 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 					$($st::$variant_name { $(ref $field: $fieldty, )* .. } => {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
-						$crate::write_tlv_fields!(writer, {
-							$(($type, *$field, $fieldty)),*
+						$crate::_encode_varint_length_prefixed_tlv!(writer, {
+							$(($type, *$field, $fieldty, self)),*
 						});
 					}),*
 					$($st::$tuple_variant_name (ref field) => {
