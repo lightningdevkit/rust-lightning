@@ -8474,6 +8474,13 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not Ready")));
 		}
 
+		// - If it has received shutdown:
+		//   MUST send a warning and close the connection or send an error
+		//   and fail the channel.
+		if self.context.channel_state.is_remote_shutdown_sent() {
+			return Err(ChannelError::close("Got splice_init when channel was not in an operational state".to_owned()));
+		}
+
 		let pre_channel_value = self.funding.get_value_satoshis();
 		// Sanity check: capacity cannot decrease below 0
 		if (pre_channel_value as i64)
