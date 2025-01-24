@@ -54,7 +54,9 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient, P2WPKH_WITNESS_WEIGHT};
+use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
+#[cfg(splicing)]
+use crate::sign::P2WPKH_WITNESS_WEIGHT;
 use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
@@ -8391,10 +8393,12 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	/// Initiate splicing
+	/// Initiate splicing.
+	/// - witness_weight: The witness weight for contributed inputs.
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_per_kw: u32, locktime: u32,
+		our_funding_inputs: Vec<(TxIn, Transaction)>, witness_weight: Weight,
+		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, ChannelError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
@@ -8437,10 +8441,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		// The +1 is to include the input of the old funding
 		let funding_input_count = our_funding_inputs.len() + 1;
-		// Add weight for inputs (estimated as P2WPKH) *and* spending old funding
+		// Input witness weight, extended with weight for spending old funding
 		let total_witness_weight = Weight::from_wu(
-			our_funding_inputs.len() as u64 * P2WPKH_WITNESS_WEIGHT +
-			2 * P2WPKH_WITNESS_WEIGHT
+			witness_weight.to_wu()
+				.saturating_add(2 * P2WPKH_WITNESS_WEIGHT)
 		);
 		let estimated_fee = estimate_v2_funding_transaction_fee(true, funding_input_count, total_witness_weight, funding_feerate_per_kw);
 		let available_input = sum_input.saturating_sub(estimated_fee);
