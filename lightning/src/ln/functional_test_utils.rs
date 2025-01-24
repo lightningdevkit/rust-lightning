@@ -38,7 +38,7 @@ use crate::util::test_utils;
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
 
-use bitcoin::WPubkeyHash;
+use bitcoin::{Weight, WPubkeyHash};
 use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header, Version as BlockVersion};
 use bitcoin::locktime::absolute::{LockTime, LOCK_TIME_THRESHOLD};
@@ -60,6 +60,7 @@ use core::mem;
 use core::ops::Deref;
 use crate::io;
 use crate::prelude::*;
+use crate::sign::P2WPKH_WITNESS_WEIGHT;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
@@ -1230,9 +1231,11 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 	}
 }
 
+/// Create test inputs for a funding transaction.
+/// Return the inputs (with prev tx), and the total witness weight for these inputs
 pub fn create_dual_funding_utxos_with_prev_txs(
 	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
-) -> Vec<(TxIn, Transaction)> {
+) -> (Vec<(TxIn, Transaction)>, Weight) {
 	// Ensure we have unique transactions per node by using the locktime.
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1245,9 +1248,9 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 		}).collect()
 	};
 
-	let mut result = vec![];
+	let mut inputs = vec![];
 	for i in 0..utxo_values_in_satoshis.len() {
-		result.push(
+		inputs.push(
 			(TxIn {
 				previous_output: OutPoint {
 					txid: tx.compute_txid(),
@@ -1258,7 +1261,9 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 				witness: Witness::new(),
 			}, tx.clone()));
 	}
-	result
+	let total_weight = Weight::from_wu(utxo_values_in_satoshis.len() as u64 * P2WPKH_WITNESS_WEIGHT);
+
+	(inputs, total_weight)
 }
 
 pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: ChannelId) -> Transaction {
