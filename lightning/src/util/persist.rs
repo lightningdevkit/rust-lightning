@@ -261,11 +261,11 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 	fn persist_new_channel(
 		&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
+		let monitor_name = MonitorName::from(funding_txo);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&key,
+			monitor_name.as_str(),
 			&monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -277,11 +277,11 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
+		let monitor_name = MonitorName::from(funding_txo);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&key,
+			monitor_name.as_str(),
 			&monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
