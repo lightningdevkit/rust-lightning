@@ -14863,6 +14863,7 @@ mod tests {
 			},
 			_ => panic!("unexpected error")
 		}
+		assert!(nodes[0].node.list_recent_payments().is_empty());
 	}
 
 	#[test]
