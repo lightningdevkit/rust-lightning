@@ -458,11 +458,14 @@ impl_writeable_tlv_based_enum_legacy!(StaleExpiration,
 /// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RetryableSendFailure {
-	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired.
+	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired or
+	/// the BOLT 12 invoice paid to via [`ChannelManager::send_payment_for_bolt12_invoice`] was
+	/// expired.
 	#[cfg_attr(feature = "std", doc = "")]
 	#[cfg_attr(feature = "std", doc = "Note that this error is *not* caused by [`Retry::Timeout`].")]
 	///
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
+	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	PaymentExpired,
 	/// We were unable to find a route to the destination.
 	RouteNotFound,
