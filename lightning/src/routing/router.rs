@@ -2367,7 +2367,7 @@ where L::Target: Logger {
 						.map_or(0, |used_liquidity_msat| {
 							available_value_contribution_msat = available_value_contribution_msat
 								.saturating_sub(*used_liquidity_msat);
-							*used_liquidity_msat
+							(*used_liquidity_msat)
 						});
 
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
@@ -2809,6 +2809,7 @@ where L::Target: Logger {
 			introduction_node_id_cache.len(),
 			"introduction_node_id_cache was built by iterating the blinded_route_hints, so they should be the same len"
 		);
+		let mut value_contributions = Vec::with_capacity(payment_params.payee.blinded_route_hints().len());
 		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
 			// Only add the hops in this route to our candidate set if either
 			// we have a direct channel to the first hop or the first hop is
@@ -2823,29 +2824,39 @@ where L::Target: Logger {
 			} else {
 				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_counter, source_node_id, hint, hint_idx })
 			};
-			let mut path_contribution_msat = path_value_msat;
 			if let Some(hop_used_msat) = add_entry!(&candidate,
-				0, path_contribution_msat, 0, 0_u64, 0, 0)
+				0, path_value_msat, 0, 0_u64, 0, 0)
 			{
-				path_contribution_msat = hop_used_msat;
+				value_contributions.push((hint_idx, hop_used_msat));
 			} else { continue }
-			if let Some((first_channels, peer_node_counter)) = first_hop_targets.get_mut(source_node_id) {
-				sort_first_hop_channels(
-					first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
-				);
-				for details in first_channels {
-					let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-						details, payer_node_id: &our_node_id, payer_node_counter,
-						target_node_counter: *peer_node_counter,
-					});
-					let blinded_path_fee = match compute_fees(path_contribution_msat, candidate.fees()) {
-						Some(fee) => fee,
-						None => continue
-					};
-					let path_min = candidate.htlc_minimum_msat().saturating_add(
-						compute_fees_saturating(candidate.htlc_minimum_msat(), candidate.fees()));
-					add_entry!(&first_hop_candidate, blinded_path_fee, path_contribution_msat, path_min,
-						0_u64, candidate.cltv_expiry_delta(), 0);
+		}
+		for (hint_idx, path_contribution_msat) in value_contributions {
+			// Only add the hops in this route to our candidate set if either
+			// we have a direct channel to the first hop or the first hop is
+			// in the regular network graph.
+			let source_node_opt = introduction_node_id_cache[hint_idx];
+			let (source_node_id, source_node_counter) = if let Some(v) = source_node_opt { v } else { continue };
+			if our_node_id == *source_node_id { continue }
+			if let Some(hop_candidate) = dist[source_node_counter as usize].as_ref() {
+				let candidate = hop_candidate.candidate.clone();
+				if let Some((first_channels, peer_node_counter)) = first_hop_targets.get_mut(source_node_id) {
+					sort_first_hop_channels(
+						first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+						);
+					for details in first_channels {
+						let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
+							details, payer_node_id: &our_node_id, payer_node_counter,
+							target_node_counter: *peer_node_counter,
+						});
+						let blinded_path_fee = match compute_fees(path_contribution_msat, candidate.fees()) {
+							Some(fee) => fee,
+							None => continue
+						};
+						let path_min = candidate.htlc_minimum_msat().saturating_add(
+							compute_fees_saturating(candidate.htlc_minimum_msat(), candidate.fees()));
+						add_entry!(&first_hop_candidate, blinded_path_fee, path_contribution_msat, path_min,
+								   0_u64, candidate.cltv_expiry_delta(), 0);
+					}
 				}
 			}
 		}
@@ -3114,17 +3125,20 @@ where L::Target: Logger {
 				let mut prevented_redundant_path_selection = false;
 				for (hop, _) in payment_path.hops.iter() {
 					let spent_on_hop_msat = value_contribution_msat + hop.next_hops_fee_msat;
+					println!("SPENT: {} = VALUE {} + NEXT_FEE {}", spent_on_hop_msat, value_contribution_msat, hop.next_hops_fee_msat);
 					let used_liquidity_msat = used_liquidities
 						.entry(hop.candidate.id())
 						.and_modify(|used_liquidity_msat| *used_liquidity_msat += spent_on_hop_msat)
 						.or_insert(spent_on_hop_msat);
 					let hop_capacity = hop.candidate.effective_capacity();
+					println!("CAP: {}, USED: {}", spent_on_hop_msat, used_liquidity_msat);
 					let hop_max_msat = max_htlc_from_capacity(hop_capacity, channel_saturation_pow_half);
 					if *used_liquidity_msat == hop_max_msat {
 						// If this path used all of this channel's available liquidity, we know
 						// this path will not be selected again in the next loop iteration.
 						prevented_redundant_path_selection = true;
 					}
+					println!("USED: {}, hop_max_msat: {}", used_liquidity_msat, hop_max_msat);
 					debug_assert!(*used_liquidity_msat <= hop_max_msat);
 				}
 				if !prevented_redundant_path_selection {
