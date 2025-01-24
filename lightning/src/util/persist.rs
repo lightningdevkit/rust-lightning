@@ -10,6 +10,7 @@
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
 use core::cmp;
 use core::ops::Deref;
@@ -24,6 +25,7 @@ use crate::chain::chainmonitor::Persist;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
 use crate::ln::channelmanager::AChannelManager;
+use crate::ln::types::ChannelId;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::scoring::WriteableScore;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
@@ -265,7 +267,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			&monitor_name.to_string(),
 			&monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -281,7 +283,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			&monitor_name.to_string(),
 			&monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -291,10 +293,11 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 
 	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
 		let monitor_name = MonitorName::from(funding_txo);
+		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key.as_str(),
 		) {
 			Ok(monitor) => monitor,
 			Err(_) => return,
@@ -302,7 +305,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		match self.write(
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key.as_str(),
 			&monitor,
 		) {
 			Ok(()) => {},
@@ -311,7 +314,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		let _ = self.remove(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key.as_str(),
 			true,
 		);
 	}
@@ -537,7 +540,7 @@ where
 		)?;
 		let mut res = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
-			res.push(self.read_channel_monitor_with_updates(monitor_key)?)
+			res.push(self.read_channel_monitor_with_updates(monitor_key.as_str())?)
 		}
 		Ok(res)
 	}
@@ -560,11 +563,11 @@ where
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
 	pub fn read_channel_monitor_with_updates(
-		&self, monitor_key: String,
+		&self, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
-		let monitor_name = MonitorName::new(monitor_key)?;
-		let (block_hash, monitor) = self.read_monitor(&monitor_name)?;
+		let monitor_name = MonitorName::from_str(monitor_key)?;
+		let (block_hash, monitor) = self.read_monitor(&monitor_name, monitor_key)?;
 		let mut current_update_id = monitor.get_latest_update_id();
 		loop {
 			current_update_id = match current_update_id.checked_add(1) {
@@ -572,7 +575,7 @@ where
 				None => break,
 			};
 			let update_name = UpdateName::from(current_update_id);
-			let update = match self.read_monitor_update(&monitor_name, &update_name) {
+			let update = match self.read_monitor_update(monitor_key, &update_name) {
 				Ok(update) => update,
 				Err(err) if err.kind() == io::ErrorKind::NotFound => {
 					// We can't find any more updates, so we are done.
@@ -587,7 +590,7 @@ where
 				log_error!(
 					self.logger,
 					"Monitor update failed. monitor: {} update: {} reason: {:?}",
-					monitor_name.as_str(),
+					monitor_key,
 					update_name.as_str(),
 					e
 				);
@@ -599,14 +602,22 @@ where
 
 	/// Read a channel monitor.
 	fn read_monitor(
-		&self, monitor_name: &MonitorName,
+		&self, monitor_name: &MonitorName, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
-		let outpoint: OutPoint = monitor_name.try_into()?;
+		let outpoint = match monitor_name {
+			MonitorName::V1Channel(outpoint) => outpoint,
+			MonitorName::V2Channel(_) => {
+				return Err(io::Error::new(
+					io::ErrorKind::InvalidData,
+					"Invalid outpoint in stored key",
+				))
+			},
+		};
 		let mut monitor_cursor = io::Cursor::new(self.kv_store.read(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key,
 		)?);
 		// Discard the sentinel bytes if found.
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
@@ -623,7 +634,7 @@ where
 					log_error!(
 						self.logger,
 						"ChannelMonitor {} was stored under the wrong key!",
-						monitor_name.as_str()
+						monitor_key,
 					);
 					Err(io::Error::new(
 						io::ErrorKind::InvalidData,
@@ -637,7 +648,7 @@ where
 				log_error!(
 					self.logger,
 					"Failed to read ChannelMonitor {}, reason: {}",
-					monitor_name.as_str(),
+					monitor_key,
 					e,
 				);
 				Err(io::Error::new(io::ErrorKind::InvalidData, "Failed to read ChannelMonitor"))
@@ -647,11 +658,11 @@ where
 
 	/// Read a channel monitor update.
 	fn read_monitor_update(
-		&self, monitor_name: &MonitorName, update_name: &UpdateName,
+		&self, monitor_key: &str, update_name: &UpdateName,
 	) -> Result<ChannelMonitorUpdate, io::Error> {
 		let update_bytes = self.kv_store.read(
 			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key,
 			update_name.as_str(),
 		)?;
 		ChannelMonitorUpdate::read(&mut io::Cursor::new(update_bytes)).map_err(|e| {
@@ -659,7 +670,7 @@ where
 				self.logger,
 				"Failed to read ChannelMonitorUpdate {}/{}/{}, reason: {}",
 				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				monitor_name.as_str(),
+				monitor_key,
 				update_name.as_str(),
 				e,
 			);
@@ -679,19 +690,18 @@ where
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 		)?;
 		for monitor_key in monitor_keys {
-			let monitor_name = MonitorName::new(monitor_key)?;
-			let (_, current_monitor) = self.read_monitor(&monitor_name)?;
-			let updates = self.kv_store.list(
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				monitor_name.as_str(),
-			)?;
+			let monitor_name = MonitorName::from_str(&monitor_key)?;
+			let (_, current_monitor) = self.read_monitor(&monitor_name, &monitor_key)?;
+			let updates = self
+				.kv_store
+				.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key.as_str())?;
 			for update in updates {
 				let update_name = UpdateName::new(update)?;
 				// if the update_id is lower than the stored monitor, delete
 				if update_name.0 <= current_monitor.get_latest_update_id() {
 					self.kv_store.remove(
 						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-						monitor_name.as_str(),
+						monitor_key.as_str(),
 						update_name.as_str(),
 						lazy,
 					)?;
@@ -726,6 +736,7 @@ where
 	) -> chain::ChannelMonitorUpdateStatus {
 		// Determine the proper key for this monitor
 		let monitor_name = MonitorName::from(funding_txo);
+		let monitor_key = monitor_name.to_string();
 		// Serialize and write the new monitor
 		let mut monitor_bytes = Vec::with_capacity(
 			MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
@@ -735,7 +746,7 @@ where
 		match self.kv_store.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key.as_str(),
 			&monitor_bytes,
 		) {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -745,7 +756,7 @@ where
 					"Failed to write ChannelMonitor {}/{}/{} reason: {}",
 					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-					monitor_name.as_str(),
+					monitor_key.as_str(),
 					e
 				);
 				chain::ChannelMonitorUpdateStatus::UnrecoverableError
@@ -772,10 +783,11 @@ where
 				&& update.update_id % self.maximum_pending_updates != 0;
 			if persist_update {
 				let monitor_name = MonitorName::from(funding_txo);
+				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
 				match self.kv_store.write(
 					CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-					monitor_name.as_str(),
+					monitor_key.as_str(),
 					update_name.as_str(),
 					&update.encode(),
 				) {
@@ -785,7 +797,7 @@ where
 							self.logger,
 							"Failed to write ChannelMonitorUpdate {}/{}/{} reason: {}",
 							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-							monitor_name.as_str(),
+							monitor_key.as_str(),
 							update_name.as_str(),
 							e
 						);
@@ -794,10 +806,13 @@ where
 				}
 			} else {
 				let monitor_name = MonitorName::from(funding_txo);
+				let monitor_key = monitor_name.to_string();
 				// In case of channel-close monitor update, we need to read old monitor before persisting
 				// the new one in order to determine the cleanup range.
 				let maybe_old_monitor = match monitor.get_latest_update_id() {
-					LEGACY_CLOSED_CHANNEL_UPDATE_ID => self.read_monitor(&monitor_name).ok(),
+					LEGACY_CLOSED_CHANNEL_UPDATE_ID => {
+						self.read_monitor(&monitor_name, &monitor_key).ok()
+					},
 					_ => None,
 				};
 
@@ -839,15 +854,15 @@ where
 
 	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
 		let monitor_name = MonitorName::from(funding_txo);
-		let monitor_key = monitor_name.as_str().to_string();
-		let monitor = match self.read_channel_monitor_with_updates(monitor_key) {
+		let monitor_key = monitor_name.to_string();
+		let monitor = match self.read_channel_monitor_with_updates(&monitor_key) {
 			Ok((_block_hash, monitor)) => monitor,
 			Err(_) => return,
 		};
 		match self.kv_store.write(
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key.as_str(),
 			&monitor.encode(),
 		) {
 			Ok(()) => {},
@@ -856,7 +871,7 @@ where
 		let _ = self.kv_store.remove(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.as_str(),
+			monitor_key.as_str(),
 			true,
 		);
 	}
@@ -874,18 +889,19 @@ where
 {
 	// Cleans up monitor updates for given monitor in range `start..=end`.
 	fn cleanup_in_range(&self, monitor_name: MonitorName, start: u64, end: u64) {
+		let monitor_key = monitor_name.to_string();
 		for update_id in start..=end {
 			let update_name = UpdateName::from(update_id);
 			if let Err(e) = self.kv_store.remove(
 				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				monitor_name.as_str(),
+				monitor_key.as_str(),
 				update_name.as_str(),
 				true,
 			) {
 				log_error!(
 					self.logger,
 					"Failed to clean up channel monitor updates for monitor {}, reason: {}",
-					monitor_name.as_str(),
+					monitor_key.as_str(),
 					e
 				);
 			};
@@ -896,9 +912,12 @@ where
 /// A struct representing a name for a channel monitor.
 ///
 /// `MonitorName` is primarily used within the [`MonitorUpdatingPersister`]
-/// in functions that store or retrieve channel monitor snapshots.
+/// in functions that store or retrieve [`ChannelMonitor`] snapshots.
 /// It provides a consistent way to generate a unique key for channel
-/// monitors based on their funding outpoints.
+/// monitors based on the channel's funding [`OutPoint`] for v1 channels or
+/// [`ChannelId`] for v2 channels. The former uses the channel's funding
+/// outpoint for historical reasons. The latter uses the channel's id because
+/// the funding outpoint may change during splicing.
 ///
 /// While users of the Lightning Dev Kit library generally won't need
 /// to interact with [`MonitorName`] directly, it can be useful for:
@@ -912,76 +931,62 @@ where
 /// use std::str::FromStr;
 ///
 /// use bitcoin::Txid;
+/// use bitcoin::hashes::hex::FromHex;
 ///
 /// use lightning::util::persist::MonitorName;
 /// use lightning::chain::transaction::OutPoint;
+/// use lightning::ln::types::ChannelId;
 ///
+/// // v1 channel
 /// let outpoint = OutPoint {
 ///	 txid: Txid::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
 ///	 index: 1,
 /// };
 /// let monitor_name = MonitorName::from(outpoint);
-/// assert_eq!(monitor_name.as_str(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1");
+/// assert_eq!(&monitor_name.to_string(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1");
+///
+/// // v2 channel
+/// let channel_id = ChannelId(<[u8; 32]>::from_hex("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap());
+/// let monitor_name = MonitorName::from(channel_id);
+/// assert_eq!(&monitor_name.to_string(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 ///
 /// // Using MonitorName to generate a storage key
-/// let storage_key = format!("channel_monitors/{}", monitor_name.as_str());
+/// let storage_key = format!("channel_monitors/{}", monitor_name);
 /// ```
 #[derive(Debug)]
-pub struct MonitorName(String);
+pub enum MonitorName {
+	/// The outpoint of the channel's funding transaction.
+	V1Channel(OutPoint),
 
-impl MonitorName {
-	/// Constructs a [`MonitorName`], after verifying that an [`OutPoint`] can
-	/// be formed from the given `name`.
-	/// This method is useful if you have a String and you want to verify that
-	/// it's a valid storage key for a channel monitor.
-	pub fn new(name: String) -> Result<Self, io::Error> {
-		MonitorName::do_try_into_outpoint(&name)?;
-		Ok(Self(name))
-	}
-
-	/// Convert this monitor name to a str.
-	/// This method is particularly useful when you need to use the monitor name
-	/// as a key in a key-value store or when logging.
-	pub fn as_str(&self) -> &str {
-		&self.0
-	}
-
-	/// Attempt to form a valid [`OutPoint`] from a given name string.
-	fn do_try_into_outpoint(name: &str) -> Result<OutPoint, io::Error> {
-		let mut parts = name.splitn(2, '_');
-		let txid = if let Some(part) = parts.next() {
-			Txid::from_str(part).map_err(|_| {
-				io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
-			})?
-		} else {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				"Stored monitor key is not a splittable string",
-			));
-		};
-		let index = if let Some(part) = parts.next() {
-			part.parse().map_err(|_| {
-				io::Error::new(io::ErrorKind::InvalidData, "Invalid tx index in stored key")
-			})?
-		} else {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				"No tx index value found after underscore in stored key",
-			));
-		};
-		Ok(OutPoint { txid, index })
-	}
+	/// The id of the channel produced by [`ChannelId::v2_from_revocation_basepoints`].
+	V2Channel(ChannelId),
 }
 
-impl TryFrom<&MonitorName> for OutPoint {
-	type Error = io::Error;
-
-	/// Attempts to convert a `MonitorName` back into an `OutPoint`.
+impl MonitorName {
+	/// Attempts to construct a `MonitorName` from a storage key returned by [`KVStore::list`].
 	///
-	/// This is useful when you have a `MonitorName` (perhaps retrieved from storage)
-	/// and need to reconstruct the original `OutPoint` it represents.
-	fn try_from(value: &MonitorName) -> Result<Self, io::Error> {
-		MonitorName::do_try_into_outpoint(&value.0)
+	/// This is useful when you need to reconstruct the original data the key represents.
+	fn from_str(monitor_key: &str) -> Result<Self, io::Error> {
+		let mut parts = monitor_key.splitn(2, '_');
+		let id = parts
+			.next()
+			.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty stored key"))?;
+
+		if let Some(part) = parts.next() {
+			let txid = Txid::from_str(id).map_err(|_| {
+				io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
+			})?;
+			let index: u16 = part.parse().map_err(|_| {
+				io::Error::new(io::ErrorKind::InvalidData, "Invalid tx index in stored key")
+			})?;
+			let outpoint = OutPoint { txid, index };
+			Ok(MonitorName::V1Channel(outpoint))
+		} else {
+			let bytes = <[u8; 32]>::from_hex(id).map_err(|_| {
+				io::Error::new(io::ErrorKind::InvalidData, "Invalid channel ID in stored key")
+			})?;
+			Ok(MonitorName::V2Channel(ChannelId(bytes)))
+		}
 	}
 }
 
@@ -989,9 +994,32 @@ impl From<OutPoint> for MonitorName {
 	/// Creates a `MonitorName` from an `OutPoint`.
 	///
 	/// This is typically used when you need to generate a storage key or identifier
-	/// for a new or existing channel monitor.
-	fn from(value: OutPoint) -> Self {
-		MonitorName(format!("{}_{}", value.txid.to_string(), value.index))
+	/// for a new or existing channel monitor for a v1 channel.
+	fn from(outpoint: OutPoint) -> Self {
+		MonitorName::V1Channel(outpoint)
+	}
+}
+
+impl From<ChannelId> for MonitorName {
+	/// Creates a `MonitorName` from a `ChannelId`.
+	///
+	/// This is typically used when you need to generate a storage key or identifier
+	/// for a new or existing channel monitor for a v2 channel.
+	fn from(channel_id: ChannelId) -> Self {
+		MonitorName::V2Channel(channel_id)
+	}
+}
+
+impl core::fmt::Display for MonitorName {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		match self {
+			MonitorName::V1Channel(outpoint) => {
+				write!(f, "{}_{}", outpoint.txid, outpoint.index)
+			},
+			MonitorName::V2Channel(channel_id) => {
+				write!(f, "{}", channel_id)
+			},
+		}
 	}
 }
 
@@ -1092,6 +1120,7 @@ mod tests {
 	use crate::util::test_channel_signer::TestChannelSigner;
 	use crate::util::test_utils::{self, TestLogger, TestStore};
 	use crate::{check_added_monitors, check_closed_broadcast};
+	use bitcoin::hashes::hex::FromHex;
 
 	const EXPECTED_UPDATES_PER_PAYMENT: u64 = 5;
 
@@ -1109,8 +1138,8 @@ mod tests {
 	}
 
 	#[test]
-	fn monitor_from_outpoint_works() {
-		let monitor_name1 = MonitorName::from(OutPoint {
+	fn creates_monitor_from_outpoint() {
+		let monitor_name = MonitorName::from(OutPoint {
 			txid: Txid::from_str(
 				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 			)
@@ -1118,11 +1147,12 @@ mod tests {
 			index: 1,
 		});
 		assert_eq!(
-			monitor_name1.as_str(),
+			&monitor_name.to_string(),
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1"
 		);
+		assert!(matches!(monitor_name, MonitorName::V1Channel(_)));
 
-		let monitor_name2 = MonitorName::from(OutPoint {
+		let monitor_name = MonitorName::from(OutPoint {
 			txid: Txid::from_str(
 				"f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef",
 			)
@@ -1130,23 +1160,39 @@ mod tests {
 			index: u16::MAX,
 		});
 		assert_eq!(
-			monitor_name2.as_str(),
+			&monitor_name.to_string(),
 			"f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef_65535"
 		);
+		assert!(matches!(monitor_name, MonitorName::V1Channel(_)));
 	}
 
 	#[test]
-	fn bad_monitor_string_fails() {
-		assert!(MonitorName::new(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()
+	fn creates_monitor_from_channel_id() {
+		let monitor_name = MonitorName::from(ChannelId(
+			<[u8; 32]>::from_hex(
+				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+			)
+			.unwrap(),
+		));
+		assert_eq!(
+			&monitor_name.to_string(),
+			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+		);
+		assert!(matches!(monitor_name, MonitorName::V2Channel(_)));
+	}
+
+	#[test]
+	fn fails_parsing_monitor_name() {
+		assert!(MonitorName::from_str(
+			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_"
 		)
 		.is_err());
-		assert!(MonitorName::new(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536".to_string()
+		assert!(MonitorName::from_str(
+			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_65536"
 		)
 		.is_err());
-		assert!(MonitorName::new(
-			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_21".to_string()
+		assert!(MonitorName::from_str(
+			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_21"
 		)
 		.is_err());
 	}
@@ -1225,7 +1271,7 @@ mod tests {
 							.kv_store
 							.list(
 								CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-								monitor_name.as_str()
+								&monitor_name.to_string()
 							)
 							.unwrap()
 							.len() as u64,
@@ -1244,7 +1290,7 @@ mod tests {
 							.kv_store
 							.list(
 								CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-								monitor_name.as_str()
+								&monitor_name.to_string()
 							)
 							.unwrap()
 							.len() as u64,
@@ -1438,7 +1484,7 @@ mod tests {
 			.kv_store
 			.write(
 				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				monitor_name.as_str(),
+				&monitor_name.to_string(),
 				UpdateName::from(1).as_str(),
 				&[0u8; 1],
 			)
@@ -1452,7 +1498,7 @@ mod tests {
 			.kv_store
 			.read(
 				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				monitor_name.as_str(),
+				&monitor_name.to_string(),
 				UpdateName::from(1).as_str()
 			)
 			.is_err());
