@@ -30,7 +30,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{secp256k1, Sequence, TxIn};
+use bitcoin::{secp256k1, Sequence, TxIn, Weight};
 
 use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
@@ -4286,10 +4286,12 @@ where
 	/// Note: Currently only splice-in is supported (increase in channel capacity), splice-out is not.
 	/// - our_funding_contribution_satoshis: the amount contributed by us to the channel. This will increase our channel balance.
 	/// - our_funding_inputs: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
+	/// - witness_weight: The witness weight for contributed inputs.
 	#[cfg(splicing)]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_per_kw: u32, locktime: u32,
+		our_funding_inputs: Vec<(TxIn, Transaction)>, witness_weight: Weight,
+		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -4303,7 +4305,7 @@ where
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)
+					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, witness_weight, funding_feerate_per_kw, locktime)
 						.map_err(|err| APIError::APIMisuseError {
 							err: format!(
 								"Cannot initiate Splicing, {}, channel ID {}", err, channel_id
