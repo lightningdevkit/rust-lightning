@@ -4347,34 +4347,6 @@ where
 		})
 	}
 
-	fn decode_update_add_htlc_onion(
-		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
-	) -> Result<
-		(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg
-	> {
-		let (next_hop, shared_secret, next_packet_details_opt) = decode_incoming_update_add_htlc_onion(
-			msg, &*self.node_signer, &*self.logger, &self.secp_ctx
-		)?;
-
-		let next_packet_details = match next_packet_details_opt {
-			Some(next_packet_details) => next_packet_details,
-			// it is a receive, so no need for outbound checks
-			None => return Ok((next_hop, shared_secret, None)),
-		};
-
-		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
-		// can't hold the outbound peer state lock at the same time as the inbound peer state lock.
-		self.can_forward_htlc(&msg, &next_packet_details).map_err(|e| {
-			let (err_msg, err_code) = e;
-			self.htlc_failure_from_update_add_err(
-				msg, counterparty_node_id, err_msg, err_code,
-				next_hop.is_intro_node_blinded_forward(), &shared_secret
-			)
-		})?;
-
-		Ok((next_hop, shared_secret, Some(next_packet_details.next_packet_pubkey)))
-	}
-
 	fn construct_pending_htlc_status<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, shared_secret: [u8; 32],
 		decoded_hop: onion_utils::Hop, allow_underpay: bool,
@@ -5584,7 +5556,7 @@ where
 		Ok(())
 	}
 
-	fn process_pending_update_add_htlcs(&self) {
+	pub(crate) fn process_pending_update_add_htlcs(&self) {
 		let mut decode_update_add_htlcs = new_hash_map();
 		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());
 
@@ -8667,7 +8639,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
 
-		let decoded_hop_res = self.decode_update_add_htlc_onion(msg, counterparty_node_id);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -8679,53 +8650,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let mut pending_forward_info = match decoded_hop_res {
-						Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
-							self.construct_pending_htlc_status(
-								msg, counterparty_node_id, shared_secret, next_hop,
-								chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt,
-							),
-						Err(e) => PendingHTLCStatus::Fail(e)
-					};
-					let logger = WithChannelContext::from(&self.logger, &chan.context, Some(msg.payment_hash));
-					// If the update_add is completely bogus, the call will Err and we will close,
-					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
-					// want to reject the new HTLC and fail it backwards instead of forwarding.
-					if let Err((_, error_code)) = chan.can_accept_incoming_htlc(&msg, &self.fee_estimator, &logger) {
-						if msg.blinding_point.is_some() {
-							pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
-								msgs::UpdateFailMalformedHTLC {
-									channel_id: msg.channel_id,
-									htlc_id: msg.htlc_id,
-									sha256_of_onion: [0; 32],
-									failure_code: INVALID_ONION_BLINDING,
-								}
-							))
-						} else {
-							match pending_forward_info {
-								PendingHTLCStatus::Forward(PendingHTLCInfo {
-									ref incoming_shared_secret, ref routing, ..
-								}) => {
-									let reason = if routing.blinded_failure().is_some() {
-										HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
-									} else if (error_code & 0x1000) != 0 {
-										let error_data = self.get_htlc_inbound_temp_fail_data(error_code);
-										HTLCFailReason::reason(error_code, error_data)
-									} else {
-										HTLCFailReason::from_failure_code(error_code)
-									}.get_encrypted_failure_packet(incoming_shared_secret, &None);
-									let msg = msgs::UpdateFailHTLC {
-										channel_id: msg.channel_id,
-										htlc_id: msg.htlc_id,
-										reason
-									};
-									pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg));
-								},
-								_ => {},
-							}
-						}
-					}
-					try_chan_phase_entry!(self, peer_state, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
+					try_chan_phase_entry!(self, peer_state, chan.update_add_htlc(&msg, &self.fee_estimator), chan_phase_entry);
 				} else {
 					return try_chan_phase_entry!(self, peer_state, Err(ChannelError::close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
@@ -14828,6 +14753,11 @@ mod tests {
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash: mismatch_payment_hash }]);
+		check_added_monitors(&nodes[1], 1);
+		let _ = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Payment preimage didn't match payment hash", 1);
 	}

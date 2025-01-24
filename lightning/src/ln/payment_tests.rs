@@ -494,6 +494,8 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let update_add_1 = update_1.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
 	commitment_signed_dance!(nodes[3], nodes[1], update_1.commitment_signed, false, true);
+	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
@@ -514,7 +516,7 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 			}
 		}
 	}
-	expect_pending_htlcs_forwardable!(nodes[3]);
+	nodes[3].node.process_pending_htlc_forwards();
 
 	// Pay along nodes[2]
 	route.paths[0].hops[0].pubkey = nodes[2].node.get_our_node_id();
@@ -540,6 +542,8 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	let update_add_3 = update_3.update_add_htlcs[0].clone();
 	nodes[3].node.handle_update_add_htlc(nodes[2].node.get_our_node_id(), &update_add_3);
 	commitment_signed_dance!(nodes[3], nodes[2], update_3.commitment_signed, false, true);
+	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	nodes[3].node.process_pending_update_add_htlcs();
 
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 	for (_, pending_forwards) in nodes[3].node.forward_htlcs.lock().unwrap().iter_mut() {
@@ -560,7 +564,8 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 			}
 		}
 	}
-	expect_pending_htlcs_forwardable!(nodes[3]);
+	nodes[3].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[3], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	check_added_monitors!(nodes[3], 1);
 
 	// Fail back along nodes[2]
@@ -575,7 +580,6 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	commitment_signed_dance!(nodes[0], nodes[2], update_fail_1.commitment_signed, false);
 
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[3], vec![HTLCDestination::FailedPayment { payment_hash }]);
 }
 
 
@@ -656,6 +660,12 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2}]
+	);
+	check_added_monitors(&nodes[1], 1);
 	// nodes[1] now immediately fails the HTLC as the next-hop channel is disconnected
 	let _ = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
@@ -1282,7 +1292,7 @@ fn successful_probe_yields_event() {
 
 	let res = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 
-	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let expected_route: &[(&[&Node], PaymentHash)] = &[(&[&nodes[1], &nodes[2]], res.0)];
 
 	send_probe_along_route(&nodes[0], expected_route);
 
@@ -1423,7 +1433,7 @@ fn preflight_probes_yield_event_skip_private_hop() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
-	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[2], &nodes[3]]];
+	let expected_route: &[(&[&Node], PaymentHash)] = &[(&[&nodes[1], &nodes[2], &nodes[3]], res[0].0)];
 
 	assert_eq!(res.len(), expected_route.len());
 
@@ -1469,7 +1479,7 @@ fn preflight_probes_yield_event() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
-	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
+	let expected_route: &[(&[&Node], PaymentHash)] = &[(&[&nodes[1], &nodes[3]], res[0].0), (&[&nodes[2], &nodes[3]], res[1].0)];
 
 	assert_eq!(res.len(), expected_route.len());
 
@@ -1516,7 +1526,7 @@ fn preflight_probes_yield_event_and_skip() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, recv_value);
 	let res = nodes[0].node.send_preflight_probes(route_params, None).unwrap();
 
-	let expected_route : &[&[&Node]] = &[&[&nodes[1], &nodes[2], &nodes[4]]];
+	let expected_route: &[(&[&Node], PaymentHash)] = &[(&[&nodes[1], &nodes[2], &nodes[4]], res[0].0)];
 
 	// We check that only one probe was sent, the other one was skipped due to limited liquidity.
 	assert_eq!(res.len(), 1);
@@ -1903,6 +1913,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	};
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
 
 	// Check that we generate the PaymentIntercepted event when an intercept forward is detected.
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -2087,6 +2098,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	for (idx, ev) in events.into_iter().enumerate() {
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &ev.msgs[0]);
 		do_commitment_signed_dance(&nodes[1], &nodes[0], &ev.commitment_msg, false, true);
+		expect_pending_htlcs_forwardable!(nodes[1]);
 
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -2895,8 +2907,10 @@ fn no_extra_retries_on_back_to_back_fail() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0).0.contents.short_channel_id;
-	let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0).0.contents.short_channel_id;
+	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
+	let chan_1_scid = chan_1.0.contents.short_channel_id;
+	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0);
+	let chan_2_scid = chan_2.0.contents.short_channel_id;
 
 	let amt_msat = 200_000_000;
 	let (_, payment_hash, _, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[1], amt_msat);
@@ -2965,66 +2979,58 @@ fn no_extra_retries_on_back_to_back_fail() {
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
+	// We can't use the commitment_signed_dance macro helper because in this test we'll be sending
+	// two HTLCs back-to-back on the same channel, and the macro only expects to handle one at a
+	// time.
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
-	let htlc_updates = SendEvent::from_node(&nodes[0]);
+
+	let first_htlc_updates = SendEvent::from_node(&nodes[0]);
 	check_added_monitors!(nodes[0], 1);
-	assert_eq!(htlc_updates.msgs.len(), 1);
+	assert_eq!(first_htlc_updates.msgs.len(), 1);
 
-	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &htlc_updates.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &htlc_updates.commitment_msg);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &first_htlc_updates.msgs[0]);
+	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &first_htlc_updates.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
-	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
+	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
 	check_added_monitors!(nodes[0], 1);
+
 	let second_htlc_updates = SendEvent::from_node(&nodes[0]);
+	assert_eq!(second_htlc_updates.msgs.len(), 1);
 
 	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_first_cs);
 	check_added_monitors!(nodes[0], 1);
+
 	let as_first_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
+	check_added_monitors!(nodes[1], 1);
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &second_htlc_updates.msgs[0]);
 	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &second_htlc_updates.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
-	let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
-	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
-	check_added_monitors!(nodes[1], 1);
-	let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-
+	let (bs_second_raa, bs_second_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
-
-	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_fail_update.commitment_signed);
+	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_cs);
 	check_added_monitors!(nodes[0], 1);
-	let (as_second_raa, as_third_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
+	let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
 	check_added_monitors!(nodes[1], 1);
-	let bs_second_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_third_cs);
-	check_added_monitors!(nodes[1], 1);
-	let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	let next_hop_failure = HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 };
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[next_hop_failure.clone(), next_hop_failure.clone()]);
+	check_added_monitors(&nodes[1], 1);
 
-	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_second_fail_update.update_fail_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_fail_update.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
-
-	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
-	check_added_monitors!(nodes[0], 1);
-	let (as_third_raa, as_fourth_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-
-	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_third_raa);
-	check_added_monitors!(nodes[1], 1);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_fourth_cs);
-	check_added_monitors!(nodes[1], 1);
-	let bs_fourth_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-
-	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_fourth_raa);
-	check_added_monitors!(nodes[0], 1);
+	let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(bs_fail_update.update_fail_htlcs.len(), 2);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[1]);
+	commitment_signed_dance!(nodes[0], nodes[1], bs_fail_update.commitment_signed, false);
 
 	// At this point A has sent two HTLCs which both failed due to lack of fee. It now has two
 	// pending `PaymentPathFailed` events, one with `all_paths_failed` unset, and the second
@@ -3065,6 +3071,10 @@ fn no_extra_retries_on_back_to_back_fail() {
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &retry_htlc_updates.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &retry_htlc_updates.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[next_hop_failure.clone()]);
+	check_added_monitors(&nodes[1], 1);
+
 	let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], &bs_fail_update.commitment_signed, false, true);
@@ -3100,8 +3110,10 @@ fn test_simple_partial_retry() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0).0.contents.short_channel_id;
-	let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0).0.contents.short_channel_id;
+	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0);
+	let chan_1_scid = chan_1.0.contents.short_channel_id;
+	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0);
+	let chan_2_scid = chan_2.0.contents.short_channel_id;
 
 	let amt_msat = 200_000_000;
 	let (_, payment_hash, _, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[2], amt_msat);
@@ -3170,52 +3182,64 @@ fn test_simple_partial_retry() {
 	route.route_params = Some(retry_params.clone());
 	nodes[0].router.expect_find_route(retry_params, Ok(route.clone()));
 
+	// We can't use the commitment_signed_dance macro helper because in this test we'll be sending
+	// two HTLCs back-to-back on the same channel, and the macro only expects to handle one at a
+	// time.
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
-	let htlc_updates = SendEvent::from_node(&nodes[0]);
+	let first_htlc_updates = SendEvent::from_node(&nodes[0]);
 	check_added_monitors!(nodes[0], 1);
-	assert_eq!(htlc_updates.msgs.len(), 1);
+	assert_eq!(first_htlc_updates.msgs.len(), 1);
 
-	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &htlc_updates.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &htlc_updates.commitment_msg);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &first_htlc_updates.msgs[0]);
+	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &first_htlc_updates.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
-	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
+	let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
 	check_added_monitors!(nodes[0], 1);
+
 	let second_htlc_updates = SendEvent::from_node(&nodes[0]);
+	assert_eq!(second_htlc_updates.msgs.len(), 1);
 
 	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_first_cs);
 	check_added_monitors!(nodes[0], 1);
+
 	let as_first_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-
-	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &second_htlc_updates.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &second_htlc_updates.commitment_msg);
-	check_added_monitors!(nodes[1], 1);
-	let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 	check_added_monitors!(nodes[1], 1);
-	let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
-	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_second_raa);
-	check_added_monitors!(nodes[0], 1);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &second_htlc_updates.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], second_htlc_updates.commitment_msg, false);
 
-	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_fail_update.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
-	let (as_second_raa, as_third_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	let next_hop_failure = HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 };
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[next_hop_failure.clone()]);
+	check_added_monitors(&nodes[1], 2);
 
-	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
-	check_added_monitors!(nodes[1], 1);
-
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_third_cs);
-	check_added_monitors!(nodes[1], 1);
-
-	let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-
-	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
-	check_added_monitors!(nodes[0], 1);
+	{
+		let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2);
+		let mut handle_update_htlcs = |event: MessageSendEvent| {
+			if let MessageSendEvent::UpdateHTLCs { node_id, updates } = event {
+				if node_id == nodes[0].node.get_our_node_id() {
+					assert_eq!(updates.update_fail_htlcs.len(), 1);
+					nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+					commitment_signed_dance!(nodes[0], nodes[1], &updates.commitment_signed, false);
+				} else if node_id == nodes[2].node.get_our_node_id() {
+					assert_eq!(updates.update_add_htlcs.len(), 1);
+					nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+					commitment_signed_dance!(nodes[2], nodes[1], &updates.commitment_signed, false);
+				} else {
+					panic!("Unexpected node_id for UpdateHTLCs send");
+				}
+			} else {
+				panic!("Unexpected event");
+			}
+		};
+		handle_update_htlcs(msg_events.remove(0));
+		handle_update_htlcs(msg_events.remove(0));
+	}
 
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
@@ -3241,10 +3265,9 @@ fn test_simple_partial_retry() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
 
-	let bs_forward_update = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
-	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &bs_forward_update.update_add_htlcs[0]);
-	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &bs_forward_update.update_add_htlcs[1]);
-	commitment_signed_dance!(nodes[2], nodes[1], &bs_forward_update.commitment_signed, false);
+	let bs_second_forward_update = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &bs_second_forward_update.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[2], nodes[1], &bs_second_forward_update.commitment_signed, false);
 
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, amt_msat);
@@ -3379,6 +3402,13 @@ fn test_threaded_payment_retries() {
 
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 		commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false, true);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		nodes[1].node.process_pending_htlc_forwards();
+		expect_htlc_handling_failed_destinations!(
+			nodes[1].node.get_and_clear_pending_events(),
+			&[HTLCDestination::UnknownNextHop { requested_forward_scid: route.paths[0].hops[1].short_channel_id }]
+		);
+		check_added_monitors(&nodes[1], 1);
 
 		// Note that we only push one route into `expect_find_route` at a time, because that's all
 		// the retries (should) need. If the bug is reintroduced "real" routes may be selected, but
@@ -4056,6 +4086,12 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	nodes[2].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &c_recv_ev.msgs[0]);
 	commitment_signed_dance!(nodes[2], nodes[0], c_recv_ev.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_htlc_handling_failed_destinations!(
+		nodes[2].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_id_cd }]
+	);
+	check_added_monitors(&nodes[2], 1);
 
 	let cs_fail = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[2].node.get_our_node_id(), &cs_fail.update_fail_htlcs[0]);

@@ -1546,6 +1546,8 @@ fn test_fee_spike_violation_fails_htlc() {
 		next_local_nonce: None,
 	};
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &raa_msg);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1560,7 +1562,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	nodes[1].logger.assert_log("lightning::ln::channel",
 		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
 
-	check_added_monitors!(nodes[1], 2);
+	check_added_monitors!(nodes[1], 3);
 }
 
 #[test]
@@ -7059,6 +7061,9 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	check_added_monitors!(nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::InvalidOnion]);
+	check_added_monitors(&nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 
@@ -7123,6 +7128,9 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors!(nodes[2], 0);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCDestination::InvalidOnion]);
+	check_added_monitors(&nodes[2], 1);
 
 	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_3.len(), 1);
@@ -7194,6 +7202,9 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors!(nodes[2], 0);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCDestination::InvalidOnion]);
+	check_added_monitors(&nodes[2], 1);
 
 	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_3.len(), 1);
@@ -10257,9 +10268,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust balance: 4372 sats
 			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 2132 sats
 			for _ in 0..dust_outbound_htlc_on_holder_tx {
-				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_outbound_htlc_on_holder_tx_msat);
-				nodes[0].node.send_payment_with_route(route, payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+				route_payment(&nodes[0], &[&nodes[1]], dust_outbound_htlc_on_holder_tx_msat);
 			}
 		} else {
 			// Inbound dust threshold: 2324 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
@@ -10274,9 +10283,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust threshold: 2132 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Outbound dust balance: 5000 sats
 			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
-				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
-				nodes[0].node.send_payment_with_route(route, payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+				route_payment(&nodes[0], &[&nodes[1]], dust_htlc_on_counterparty_tx_msat);
 			}
 		} else {
 			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
@@ -10309,6 +10316,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		assert_eq!(events.len(), 1);
 		let payment_event = SendEvent::from_event(events.remove(0));
 		nodes[0].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[0]);
+		expect_htlc_handling_failed_destinations!(nodes[0].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]);
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
 			// Outbound dust balance: 6399 sats

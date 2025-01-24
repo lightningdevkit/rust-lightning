@@ -744,10 +744,6 @@ fn test_forwardable_regen() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
-	// There is already a PendingHTLCsForwardable event "pending" so another one will not be
-	// generated
-	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-
 	// Now restart nodes[1] and make sure it regenerates a single PendingHTLCsForwardable
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
@@ -1017,9 +1013,12 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	// present when we serialized.
 	let node_encoded = nodes[1].node.encode();
 
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+
 	let mut intercept_id = None;
 	let mut expected_outbound_amount_msat = None;
 	if use_intercept {
+		nodes[1].node.process_pending_update_add_htlcs();
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
@@ -1033,7 +1032,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 			nodes[2].node.get_our_node_id(), expected_outbound_amount_msat.unwrap()).unwrap();
 	}
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 
 	let payment_event = SendEvent::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);

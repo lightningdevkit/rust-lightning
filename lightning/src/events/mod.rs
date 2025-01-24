@@ -1431,16 +1431,6 @@ pub enum Event {
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
 	///
-	/// Some scenarios where this event may be sent include:
-	/// * Insufficient capacity in the outbound channel
-	/// * While waiting to forward the HTLC, the channel it is meant to be forwarded through closes
-	/// * When an unknown SCID is requested for forwarding a payment.
-	/// * Expected MPP amount has already been reached
-	/// * The HTLC has timed out
-	///
-	/// This event, however, does not get generated if an HTLC fails to meet the forwarding
-	/// requirements (i.e. insufficient fees paid, or a CLTV that is too soon).
-	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
