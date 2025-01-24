@@ -9,7 +9,7 @@
 //! sweeping them.
 
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use crate::chain::channelmonitor::ANTI_REORG_DELAY;
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS};
 use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
 use crate::io;
 use crate::ln::msgs::DecodeError;
@@ -31,6 +31,9 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{BlockHash, Transaction, Txid};
 
 use core::ops::Deref;
+
+/// The number of blocks we wait before we prune the tracked spendable outputs.
+pub const PRUNE_DELAY_BLOCKS: u32 = ARCHIVAL_DELAY_BLOCKS + ANTI_REORG_DELAY;
 
 /// The state of a spendable output currently tracked by an [`OutputSweeper`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,7 +104,11 @@ pub enum OutputSpendStatus {
 		latest_spending_tx: Transaction,
 	},
 	/// A transaction spending the output has been confirmed on-chain but will be tracked until it
-	/// reaches [`ANTI_REORG_DELAY`] confirmations.
+	/// reaches at least [`PRUNE_DELAY_BLOCKS`] confirmations to ensure [`Event::SpendableOutputs`]
+	/// stemming from lingering [`ChannelMonitor`]s can safely be replayed.
+	///
+	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	PendingThresholdConfirmations {
 		/// The hash of the chain tip when we first broadcast a transaction spending this output.
 		first_broadcast_hash: BlockHash,
@@ -524,7 +531,9 @@ where
 		// Prune all outputs that have sufficient depth by now.
 		sweeper_state.outputs.retain(|o| {
 			if let Some(confirmation_height) = o.status.confirmation_height() {
-				if cur_height >= confirmation_height + ANTI_REORG_DELAY - 1 {
+				// We wait at least `PRUNE_DELAY_BLOCKS` as before that
+				// `Event::SpendableOutputs` from lingering monitors might get replayed.
+				if cur_height >= confirmation_height + PRUNE_DELAY_BLOCKS - 1 {
 					log_debug!(self.logger,
 						"Pruning swept output as sufficiently confirmed via spend in transaction {:?}. Pruned descriptor: {:?}",
 						o.status.latest_spending_tx().map(|t| t.compute_txid()), o.descriptor
