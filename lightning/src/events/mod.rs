@@ -561,8 +561,8 @@ pub enum PaymentFailureReason {
 	#[cfg_attr(feature = "std", doc = "")]
 	#[cfg_attr(feature = "std", doc = "[`Retry::Timeout`]: crate::ln::channelmanager::Retry::Timeout")]
 	RetriesExhausted,
-	/// The payment expired while retrying, based on the provided
-	/// [`PaymentParameters::expiry_time`].
+	/// Either the BOLT 12 invoice was expired by the time we received it or the payment expired while
+	/// retrying based on the provided [`PaymentParameters::expiry_time`].
 	///
 	/// Also used for [`InvoiceRequestExpired`] when downgrading to version prior to 0.0.124.
 	///
