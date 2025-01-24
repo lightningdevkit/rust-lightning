@@ -54,7 +54,7 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
+use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient, P2WPKH_WITNESS_WEIGHT};
 use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
@@ -4708,6 +4708,33 @@ fn estimate_v2_funding_transaction_fee(
 	fee_for_weight(funding_feerate_sat_per_1000_weight, weight)
 }
 
+#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
+pub(super) fn calculate_our_funding_satoshis(
+	is_initiator: bool, funding_inputs: &[(TxIn, TransactionU16LenLimited)],
+	total_witness_weight: Weight, funding_feerate_sat_per_1000_weight: u32,
+	holder_dust_limit_satoshis: u64,
+) -> Result<u64, APIError> {
+	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs.len(), total_witness_weight, funding_feerate_sat_per_1000_weight);
+
+	let mut total_input_satoshis = 0u64;
+	for (idx, input) in funding_inputs.iter().enumerate() {
+		if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
+			total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+					input.1.as_transaction().compute_txid(), input.0.previous_output.vout, idx) });
+		}
+	}
+
+	let funding_satoshis = total_input_satoshis.saturating_sub(estimated_fee);
+	if funding_satoshis < holder_dust_limit_satoshis {
+		Ok(0)
+	} else {
+		Ok(funding_satoshis)
+	}
+}
+
 /// Context for dual-funded channels.
 pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
@@ -8404,10 +8431,21 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		// Pre-check that inputs are sufficient to cover our contribution.
 		// Note: fees are not taken into account here.
-		let sum_input: i64 = our_funding_inputs.into_iter().map(
-			|(txin, tx)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0)
+		let sum_input: u64 = our_funding_inputs.iter().map(
+			|(txin, tx)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat()).unwrap_or(0)
 		).sum();
-		if sum_input < our_funding_contribution_satoshis {
+
+		// The +1 is to include the input of the old funding
+		let funding_input_count = our_funding_inputs.len() + 1;
+		// Add weight for inputs (estimated as P2WPKH) *and* spending old funding
+		let total_witness_weight = Weight::from_wu(
+			our_funding_inputs.len() as u64 * P2WPKH_WITNESS_WEIGHT +
+			2 * P2WPKH_WITNESS_WEIGHT
+		);
+		let estimated_fee = estimate_v2_funding_transaction_fee(true, funding_input_count, total_witness_weight, funding_feerate_per_kw);
+		let available_input = sum_input.saturating_sub(estimated_fee);
+
+		if (available_input as i64) < our_funding_contribution_satoshis {
 			return Err(ChannelError::Warn(format!(
 				"Provided inputs are insufficient for our contribution, {} {}",
 				sum_input, our_funding_contribution_satoshis,
