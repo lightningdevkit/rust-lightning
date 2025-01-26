@@ -10604,6 +10604,29 @@ where
 		self.pending_outbound_payments.clear_pending_payments()
 	}
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) fn get_and_clear_pending_raa_blockers(
+		&self,
+	) -> Vec<(ChannelId, Vec<RAAMonitorUpdateBlockingAction>)> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut pending_blockers = Vec::new();
+
+		for (_peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
+			let mut peer_state = peer_state_mutex.lock().unwrap();
+
+			for (chan_id, actions) in peer_state.actions_blocking_raa_monitor_updates.iter() {
+				// Only collect the non-empty actions into `pending_blockers`.
+				if !actions.is_empty() {
+					pending_blockers.push((chan_id.clone(), actions.clone()));
+				}
+			}
+
+			peer_state.actions_blocking_raa_monitor_updates.clear();
+		}
+
+		pending_blockers
+	}
+
 	/// When something which was blocking a channel from updating its [`ChannelMonitor`] (e.g. an
 	/// [`Event`] being handled) completes, this should be called to restore the channel to normal
 	/// operation. It will double-check that nothing *else* is also blocking the same channel from

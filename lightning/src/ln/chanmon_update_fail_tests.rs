@@ -19,7 +19,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, PaymentSendFailure, RAACommitmentOrder, RecipientOnionFields};
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -3312,22 +3312,25 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 
 		reconnect_nodes(reconnect_args);
 
-		// Once the blocked `ChannelMonitorUpdate` *finally* completes, the pending
-		// `PaymentForwarded` event will finally be released.
-		let (outpoint, ab_update_id, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_ab).unwrap().clone();
-		nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, ab_update_id);
+	}
 
-		// If the A<->B channel was closed before we reload, we'll replay the claim against it on
-		// reload, causing the `PaymentForwarded` event to get replayed.
-		let evs = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 });
-		for ev in evs {
-			if let Event::PaymentForwarded { .. } = ev { }
-			else {
-				panic!();
-			}
+	// Once the blocked `ChannelMonitorUpdate` *finally* completes, the pending
+	// `PaymentForwarded` event will finally be released.
+	let (outpoint, ab_update_id, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_ab).unwrap().clone();
+	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, ab_update_id);
+
+	// If the A<->B channel was closed before we reload, we'll replay the claim against it on
+	// reload, causing the `PaymentForwarded` event to get replayed.
+	let evs = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(evs.len(), if close_chans_before_reload { 2 } else { 1 });
+	for ev in evs {
+		if let Event::PaymentForwarded { .. } = ev { }
+		else {
+			panic!();
 		}
+	}
 
+	if !close_chans_before_reload || close_only_a {
 		// Once we call `process_pending_events` the final `ChannelMonitor` for the B<->C channel
 		// will fly, removing the payment preimage from it.
 		check_added_monitors(&nodes[1], 1);
@@ -3548,8 +3551,11 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1);
-	create_announced_chan_between_nodes(&nodes, 1, 2);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	let chan_id_ab = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let _chan_id_bc = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 
 	// Route a payment from A, through B, to C, then claim it on C. Replay the
 	// `update_fulfill_htlc` twice on B to check that B doesn't hang.
@@ -3561,7 +3567,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 
 	let cs_updates = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
 	if hold_chan_a {
-		// The first update will be on the A <-> B channel, which we allow to complete.
+		// The first update will be on the A <-> B channel, which we optionally allow to complete.
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	}
 	nodes[1].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
@@ -3588,14 +3594,51 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-		let (route, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(&nodes[1], nodes[2], 1_000_000);
+		let (route, payment_hash_2, payment_preimage_2, payment_secret_2) =
+			get_route_and_payment_hash!(&nodes[1], nodes[2], 1_000_000);
 
+		// With the A<->B preimage persistence not yet complete, the B<->C channel is stuck
+		// waiting.
 		nodes[1].node.send_payment_with_route(route, payment_hash_2,
 			RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 		check_added_monitors(&nodes[1], 0);
 
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		// ...but once we complete the A<->B channel preimage persistence, the B<->C channel
+		// unlocks and we send both peers commitment updates.
+		let (outpoint, ab_update_id, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_ab).unwrap().clone();
+		assert!(nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(outpoint, ab_update_id).is_ok());
+
+		let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2);
+		check_added_monitors(&nodes[1], 2);
+
+		let mut c_update = msg_events.iter()
+			.filter(|ev| matches!(ev, MessageSendEvent::UpdateHTLCs { node_id, .. } if *node_id == node_c_id))
+			.cloned().collect::<Vec<_>>();
+		let a_filtermap = |ev| if let MessageSendEvent::UpdateHTLCs { node_id, updates } = ev {
+			if node_id == node_a_id {
+				Some(updates)
+			} else {
+				None
+			}
+		} else {
+			None
+		};
+		let a_update = msg_events.drain(..).filter_map(|ev| a_filtermap(ev)).collect::<Vec<_>>();
+
+		assert_eq!(a_update.len(), 1);
+		assert_eq!(c_update.len(), 1);
+
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &a_update[0].update_fulfill_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], a_update[0].commitment_signed, false);
+		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
+
+		pass_along_path(&nodes[1], &[&nodes[2]], 1_000_000, payment_hash_2, Some(payment_secret_2), c_update.pop().unwrap(), true, None);
+		claim_payment(&nodes[1], &[&nodes[2]], payment_preimage_2);
 	}
 }
 
