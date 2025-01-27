@@ -713,6 +713,7 @@ pub(super) enum ChannelError {
 	Ignore(String),
 	Warn(String),
 	Close((String, ClosureReason)),
+	SendError(String),
 }
 
 impl fmt::Debug for ChannelError {
@@ -721,6 +722,7 @@ impl fmt::Debug for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
 			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
 			&ChannelError::Close((ref e, _)) => write!(f, "Close : {}", e),
+			&ChannelError::SendError(ref e) => write!(f, "Not Found : {}", e),
 		}
 	}
 }
@@ -731,6 +733,7 @@ impl fmt::Display for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
 			&ChannelError::Close((ref e, _)) => write!(f, "{}", e),
+			&ChannelError::SendError(ref e) => write!(f, "{}", e),
 		}
 	}
 }
@@ -1124,9 +1127,16 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
-/// The `Channel` enum describes the current phase in life of a lightning channel with each of
+/// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
+/// funding phases.
+pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
+	phase: ChannelPhase<SP>,
+}
+
+/// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
 /// its variants containing an appropriate channel struct.
-pub(super) enum Channel<SP: Deref> where SP::Target: SignerProvider {
+enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
+	Undefined,
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
 	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
@@ -1139,38 +1149,41 @@ impl<SP: Deref> Channel<SP> where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	pub fn context(&self) -> &ChannelContext<SP> {
-		match self {
-			Channel::Funded(chan) => &chan.context,
-			Channel::UnfundedOutboundV1(chan) => &chan.context,
-			Channel::UnfundedInboundV1(chan) => &chan.context,
-			Channel::UnfundedV2(chan) => &chan.context,
+		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => &chan.context,
+			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
+			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
+			ChannelPhase::UnfundedV2(chan) => &chan.context,
 		}
 	}
 
 	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		match self {
-			Channel::Funded(ref mut chan) => &mut chan.context,
-			Channel::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
-			Channel::UnfundedInboundV1(ref mut chan) => &mut chan.context,
-			Channel::UnfundedV2(ref mut chan) => &mut chan.context,
+		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => &mut chan.context,
+			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
+			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
+			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
 		}
 	}
 
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
-		match self {
-			Channel::Funded(_) => { debug_assert!(false); None },
-			Channel::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
-			Channel::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
-			Channel::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
+		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(_) => { debug_assert!(false); None },
+			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
+			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
 		}
 	}
 
 	pub fn is_funded(&self) -> bool {
-		matches!(self, Channel::Funded(_))
+		matches!(self.phase, ChannelPhase::Funded(_))
 	}
 
 	pub fn as_funded(&self) -> Option<&FundedChannel<SP>> {
-		if let Channel::Funded(channel) = self {
+		if let ChannelPhase::Funded(channel) = &self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1178,7 +1191,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_funded_mut(&mut self) -> Option<&mut FundedChannel<SP>> {
-		if let Channel::Funded(channel) = self {
+		if let ChannelPhase::Funded(channel) = &mut self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1186,19 +1199,20 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_unfunded_outbound_v1_mut(&mut self) -> Option<&mut OutboundV1Channel<SP>> {
-		if let Channel::UnfundedOutboundV1(channel) = self {
+		if let ChannelPhase::UnfundedOutboundV1(channel) = &mut self.phase {
 			Some(channel)
 		} else {
 			None
 		}
 	}
 
-	pub fn is_unfunded_outbound_v1(&self) -> bool {
-		matches!(self, Channel::UnfundedOutboundV1(_))
+	#[cfg(test)]
+	pub fn is_unfunded_v1(&self) -> bool {
+		matches!(self.phase, ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_))
 	}
 
 	pub fn into_unfunded_outbound_v1(self) -> Result<OutboundV1Channel<SP>, Self> {
-		if let Channel::UnfundedOutboundV1(channel) = self {
+		if let ChannelPhase::UnfundedOutboundV1(channel) = self.phase {
 			Ok(channel)
 		} else {
 			Err(self)
@@ -1206,7 +1220,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn into_unfunded_inbound_v1(self) -> Result<InboundV1Channel<SP>, Self> {
-		if let Channel::UnfundedInboundV1(channel) = self {
+		if let ChannelPhase::UnfundedInboundV1(channel) = self.phase {
 			Ok(channel)
 		} else {
 			Err(self)
@@ -1214,7 +1228,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_unfunded_v2(&self) -> Option<&PendingV2Channel<SP>> {
-		if let Channel::UnfundedV2(channel) = self {
+		if let ChannelPhase::UnfundedV2(channel) = &self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1222,15 +1236,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn as_unfunded_v2_mut(&mut self) -> Option<&mut PendingV2Channel<SP>> {
-		if let Channel::UnfundedV2(channel) = self {
-			Some(channel)
-		} else {
-			None
-		}
-	}
-
-	pub fn into_unfunded_v2(self) -> Option<PendingV2Channel<SP>> {
-		if let Channel::UnfundedV2(channel) = self {
+		if let ChannelPhase::UnfundedV2(channel) = &mut self.phase {
 			Some(channel)
 		} else {
 			None
@@ -1240,9 +1246,10 @@ impl<SP: Deref> Channel<SP> where
 	pub fn signer_maybe_unblocked<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<SignerResumeUpdates> where L::Target: Logger {
-		match self {
-			Channel::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
-			Channel::UnfundedOutboundV1(chan) => {
+		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => Some(chan.signer_maybe_unblocked(logger)),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let (open_channel, funding_created) = chan.signer_maybe_unblocked(chain_hash, logger);
 				Some(SignerResumeUpdates {
 					commitment_update: None,
@@ -1258,7 +1265,7 @@ impl<SP: Deref> Channel<SP> where
 					shutdown_result: None,
 				})
 			},
-			Channel::UnfundedInboundV1(chan) => {
+			ChannelPhase::UnfundedInboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
 				let accept_channel = chan.signer_maybe_unblocked(&&logger);
 				Some(SignerResumeUpdates {
@@ -1275,30 +1282,32 @@ impl<SP: Deref> Channel<SP> where
 					shutdown_result: None,
 				})
 			},
-			Channel::UnfundedV2(_) => None,
+			ChannelPhase::UnfundedV2(_) => None,
 		}
 	}
 
 	pub fn is_resumable(&self) -> bool {
-		match self {
-			Channel::Funded(_) => false,
-			Channel::UnfundedOutboundV1(chan) => chan.is_resumable(),
-			Channel::UnfundedInboundV1(_) => false,
-			Channel::UnfundedV2(_) => false,
+		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(_) => false,
+			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
+			ChannelPhase::UnfundedInboundV1(_) => false,
+			ChannelPhase::UnfundedV2(_) => false,
 		}
 	}
 
 	pub fn maybe_get_open_channel<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
 	) -> Option<OpenChannelMessage> where L::Target: Logger {
-		match self {
-			Channel::Funded(_) => None,
-			Channel::UnfundedOutboundV1(chan) => {
+		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(_) => None,
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
 				chan.get_open_channel(chain_hash, &&logger)
 					.map(|msg| OpenChannelMessage::V1(msg))
 			},
-			Channel::UnfundedInboundV1(_) => {
+			ChannelPhase::UnfundedInboundV1(_) => {
 				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 				// they are not persisted and won't be recovered after a crash.
 				// Therefore, they shouldn't exist at this point.
@@ -1306,7 +1315,7 @@ impl<SP: Deref> Channel<SP> where
 				None
 			},
 			#[cfg(dual_funding)]
-			Channel::UnfundedV2(chan) => {
+			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
 					Some(OpenChannelMessage::V2(chan.get_open_channel_v2(chain_hash)))
 				} else {
@@ -1318,7 +1327,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 			},
 			#[cfg(not(dual_funding))]
-			Channel::UnfundedV2(_) => {
+			ChannelPhase::UnfundedV2(_) => {
 				debug_assert!(false);
 				None
 			},
@@ -1332,16 +1341,17 @@ impl<SP: Deref> Channel<SP> where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		match self {
-			Channel::Funded(_) => Ok(None),
-			Channel::UnfundedOutboundV1(chan) => {
+		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(_) => Ok(None),
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
 				chan.maybe_handle_error_without_close(chain_hash, fee_estimator, &&logger)
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
-			Channel::UnfundedInboundV1(_) => Ok(None),
+			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
 			#[cfg(dual_funding)]
-			Channel::UnfundedV2(chan) => {
+			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
 					chan.maybe_handle_error_without_close(chain_hash, fee_estimator)
 						.map(|msg| Some(OpenChannelMessage::V2(msg)))
@@ -1350,11 +1360,90 @@ impl<SP: Deref> Channel<SP> where
 				}
 			},
 			#[cfg(not(dual_funding))]
-			Channel::UnfundedV2(_) => {
+			ChannelPhase::UnfundedV2(_) => {
 				debug_assert!(false);
 				Ok(None)
 			},
 		}
+	}
+
+	pub fn funding_signed<L: Deref>(
+		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(&mut FundedChannel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
+	where
+		L::Target: Logger
+	{
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
+			let logger = WithChannelContext::from(logger, &chan.context, None);
+			match chan.funding_signed(msg, best_block, signer_provider, &&logger) {
+				Ok((chan, monitor)) => {
+					self.phase = ChannelPhase::Funded(chan);
+					Ok(monitor)
+				},
+				Err((chan, e)) => {
+					self.phase = ChannelPhase::UnfundedOutboundV1(chan);
+					Err(e)
+				},
+			}
+		} else {
+			self.phase = phase;
+			Err(ChannelError::SendError("Failed to find corresponding UnfundedOutboundV1 channel".to_owned()))
+		};
+
+		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
+		result.map(|monitor| (self.as_funded_mut().expect("Channel should be funded"), monitor))
+	}
+
+	pub fn unset_funding_info(&mut self) {
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		if let ChannelPhase::Funded(mut funded_chan) = phase {
+			funded_chan.unset_funding_info();
+
+			let context = funded_chan.context;
+			let unfunded_context = UnfundedChannelContext {
+				unfunded_channel_age_ticks: 0,
+				holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+			};
+			let unfunded_chan = OutboundV1Channel {
+				context,
+				unfunded_context,
+				signer_pending_open_channel: false,
+			};
+			self.phase = ChannelPhase::UnfundedOutboundV1(unfunded_chan);
+		} else {
+			self.phase = phase;
+		};
+
+		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
+	}
+
+	pub fn funding_tx_constructed<L: Deref>(
+		&mut self, signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+	where
+		L::Target: Logger
+	{
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		let result = if let ChannelPhase::UnfundedV2(chan) = phase {
+			let logger = WithChannelContext::from(logger, &chan.context, None);
+			match chan.funding_tx_constructed(signing_session, &&logger) {
+				Ok((chan, commitment_signed, event)) => {
+					self.phase = ChannelPhase::Funded(chan);
+					Ok((commitment_signed, event))
+				},
+				Err((chan, e)) => {
+					self.phase = ChannelPhase::UnfundedV2(chan);
+					Err(e)
+				},
+			}
+		} else {
+			self.phase = phase;
+			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
+		};
+
+		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
+		result
 	}
 }
 
@@ -1364,7 +1453,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: OutboundV1Channel<SP>) -> Self {
-		Channel::UnfundedOutboundV1(channel)
+		Channel {
+			phase: ChannelPhase::UnfundedOutboundV1(channel),
+		}
 	}
 }
 
@@ -1374,7 +1465,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: InboundV1Channel<SP>) -> Self {
-		Channel::UnfundedInboundV1(channel)
+		Channel {
+			phase: ChannelPhase::UnfundedInboundV1(channel),
+		}
 	}
 }
 
@@ -1384,7 +1477,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: PendingV2Channel<SP>) -> Self {
-		Channel::UnfundedV2(channel)
+		Channel {
+			phase: ChannelPhase::UnfundedV2(channel),
+		}
 	}
 }
 
@@ -1394,7 +1489,9 @@ where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	fn from(channel: FundedChannel<SP>) -> Self {
-		Channel::Funded(channel)
+		Channel {
+			phase: ChannelPhase::Funded(channel),
+		}
 	}
 }
 
@@ -1996,8 +2093,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, signing_session: &mut InteractiveTxSigningSession, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+		mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(FundedChannel<SP>, msgs::CommitmentSigned, Option<Event>), (PendingV2Channel<SP>, ChannelError)>
 	where
 		L::Target: Logger
 	{
@@ -2013,7 +2110,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 						(
 							"Multiple outputs matched the expected script and value".to_owned(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)));
+						))).map_err(|e| (self, e));
 				}
 				output_index = Some(idx as u16);
 			}
@@ -2025,7 +2122,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				(
 					"No output matched the funding script_pubkey".to_owned(),
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				)));
+				))).map_err(|e| (self, e));
 		};
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
@@ -2040,6 +2137,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			Err(err) => {
 				self.context.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
+					.map_err(|e| (self, e));
 			},
 		};
 
@@ -2074,7 +2172,24 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		// Clear the interactive transaction constructor
 		self.interactive_tx_constructor.take();
 
-		Ok((commitment_signed, funding_ready_for_sig_event))
+		match self.unfunded_context.holder_commitment_point {
+			Some(holder_commitment_point) => {
+				let funded_chan = FundedChannel {
+					context: self.context,
+					interactive_tx_signing_session: Some(signing_session),
+					holder_commitment_point,
+				};
+				Ok((funded_chan, commitment_signed, funding_ready_for_sig_event))
+			},
+			None => {
+				Err(ChannelError::close(
+					format!(
+						"Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+						self.context.channel_id(),
+					)))
+					.map_err(|e| (self, e))
+			},
+		}
 	}
 }
 
@@ -4926,12 +5041,15 @@ impl<SP: Deref> FundedChannel<SP> where
 	///
 	/// Further, the channel must be immediately shut down after this with a call to
 	/// [`ChannelContext::force_shutdown`].
-	pub fn unset_funding_info(&mut self, temporary_channel_id: ChannelId) {
+	pub fn unset_funding_info(&mut self) {
 		debug_assert!(matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(_)
 		));
 		self.context.channel_transaction_parameters.funding_outpoint = None;
-		self.context.channel_id = temporary_channel_id;
+		self.context.channel_id = self.context.temporary_channel_id.expect(
+			"temporary_channel_id should be set since unset_funding_info is only called on funded \
+			 channels that were unfunded immediately beforehand"
+		);
 	}
 
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
@@ -9337,19 +9455,6 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
-	}
-
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<FundedChannel<SP>, ChannelError>{
-		let holder_commitment_point = self.unfunded_context.holder_commitment_point.ok_or(ChannelError::close(
-			format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
-			self.context.channel_id())))?;
-		let channel = FundedChannel {
-			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-			holder_commitment_point,
-		};
-
-		Ok(channel)
 	}
 }
 

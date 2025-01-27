@@ -544,14 +544,14 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 		let mut chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
 
 		let mut channel_keys_id = None;
-		if let Some(chan) = chan_lock.channel_by_id.get_mut(chan_id).map(|phase| phase.context_mut()) {
-			let signer = chan.get_mut_signer().as_mut_ecdsa().unwrap();
+		if let Some(context) = chan_lock.channel_by_id.get_mut(chan_id).map(|chan| chan.context_mut()) {
+			let signer = context.get_mut_signer().as_mut_ecdsa().unwrap();
 			if available {
 				signer.enable_op(signer_op);
 			} else {
 				signer.disable_op(signer_op);
 			}
-			channel_keys_id = Some(chan.channel_keys_id);
+			channel_keys_id = Some(context.channel_keys_id);
 		}
 
 		let monitor = self.chain_monitor.chain_monitor.list_monitors().into_iter()
@@ -1015,8 +1015,8 @@ macro_rules! get_feerate {
 		{
 			let mut per_peer_state_lock;
 			let mut peer_state_lock;
-			let phase = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
-			phase.context().get_feerate_sat_per_1000_weight()
+			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
+			chan.context().get_feerate_sat_per_1000_weight()
 		}
 	}
 }
