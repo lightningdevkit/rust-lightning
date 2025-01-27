@@ -1451,10 +1451,8 @@ impl CommitmentTransaction {
 
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs_with_aux.iter_mut().map(|(htlc, _)| htlc).collect();
-		let (outputs, sorted_htlcs) = signer.build_outputs(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, commitment_number).unwrap();
+		let (transaction, sorted_htlcs) = signer.build_transaction(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, commitment_number);
 
-		let (obscured_commitment_transaction_number, txins) = signer.build_inputs(commitment_number, is_holder_tx);
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
 			commitment_number,
@@ -1481,28 +1479,16 @@ impl CommitmentTransaction {
 	}
 
 	fn internal_rebuild_transaction<Signer: ChannelSigner>(&self, per_commitment_point: &PublicKey, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool) -> Result<BuiltCommitmentTransaction, ()> {
-		let (obscured_commitment_transaction_number, txins) = signer.build_inputs(self.commitment_number, is_holder_tx);
-
 		let mut htlcs: Vec<_> = self.htlcs.iter().map(|h| h.clone()).collect();
 		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs.iter_mut().collect();
-		let (outputs, _) = signer.build_outputs(per_commitment_point, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, self.commitment_number)?;
+		let (transaction, _) = signer.build_transaction(per_commitment_point, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, self.commitment_number);
 
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
 		let built_transaction = BuiltCommitmentTransaction {
 			transaction,
 			txid
 		};
 		Ok(built_transaction)
-	}
-
-	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
-		Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::from_consensus(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
-			input: txins,
-			output: outputs,
-		}
 	}
 
 	/// The backwards-counting commitment number

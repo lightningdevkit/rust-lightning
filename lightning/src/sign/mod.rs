@@ -1258,6 +1258,39 @@ pub trait ChannelSigner {
 		};
 		(obscured_commitment_transaction_number, txins)
 	}
+
+	/// Builds a commitment transaction
+	fn build_transaction(
+		&self, per_commitment_point: &PublicKey, to_broadcaster_value_sat: Amount,
+		to_countersignatory_value_sat: Amount, htlcs: Vec<&mut HTLCOutputInCommitment>,
+		secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool, commitment_number: u64,
+	) -> (Transaction, Vec<HTLCOutputInCommitment>) {
+		let (obscured_commitment_transaction_number, txins) =
+			self.build_inputs(commitment_number, is_holder_tx);
+		let (txouts, sorted_htlcs) = self
+			.build_outputs(
+				per_commitment_point,
+				to_broadcaster_value_sat,
+				to_countersignatory_value_sat,
+				htlcs,
+				secp_ctx,
+				is_holder_tx,
+				commitment_number,
+			)
+			.unwrap();
+		(
+			Transaction {
+				version: Version::TWO,
+				lock_time: LockTime::from_consensus(
+					((0x20 as u32) << 8 * 3)
+						| ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
+				),
+				input: txins,
+				output: txouts,
+			},
+			sorted_htlcs,
+		)
+	}
 }
 
 /// Specifies the recipient of an invoice.
