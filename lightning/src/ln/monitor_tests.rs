@@ -2556,7 +2556,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	// Note that if we use the wrong target, we will immediately broadcast the commitment
 	// transaction as no bump is required.
 	if have_htlcs {
-		nodes[0].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::UrgentOnChainSweep, 500);
+		nodes[0].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::UrgentOnChainSweep(Some(81)), 500);
 	} else {
 		nodes[0].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::OutputSpendingFee, 500);
 	}

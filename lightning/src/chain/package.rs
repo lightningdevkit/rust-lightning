@@ -1689,7 +1689,7 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 		let fee_rate_strategy = FeerateStrategy::ForceBump;
-		let confirmation_target = ConfirmationTarget::UrgentOnChainSweep;
+		let confirmation_target = ConfirmationTarget::UrgentOnChainSweep(None);
 
 		{
 			// Check underflow doesn't occur

@@ -2744,19 +2744,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Treat the sweep as urgent as long as there is at least one HTLC which is pending on a
 		// valid commitment transaction.
 		if !self.current_holder_commitment_tx.htlc_outputs.is_empty() {
-			return ConfirmationTarget::UrgentOnChainSweep;
+			let minimum_expiry = self.current_holder_commitment_tx.htlc_outputs
+				.iter()
+				.map(|o| o.0.cltv_expiry)
+				.min();
+			return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
 		}
 		if self.prev_holder_signed_commitment_tx.as_ref().map(|t| !t.htlc_outputs.is_empty()).unwrap_or(false) {
-			return ConfirmationTarget::UrgentOnChainSweep;
+			let minimum_expiry = self.prev_holder_signed_commitment_tx.as_ref().map(|t| t.htlc_outputs
+				.iter()
+				.map(|o| o.0.cltv_expiry)
+				.min()
+			).flatten();
+			return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
-			if !self.counterparty_claimable_outpoints.get(&txid).unwrap().is_empty() {
-				return ConfirmationTarget::UrgentOnChainSweep;
+			let claimable_outpoints = self.counterparty_claimable_outpoints.get(&txid).unwrap();
+			if !claimable_outpoints.is_empty() {
+				let minimum_expiry = claimable_outpoints.iter().map(|o|o.0.cltv_expiry).min();
+				return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
 			}
 		}
 		if let Some(txid) = self.prev_counterparty_commitment_txid {
-			if !self.counterparty_claimable_outpoints.get(&txid).unwrap().is_empty() {
-				return ConfirmationTarget::UrgentOnChainSweep;
+			let claimable_outpoints = self.counterparty_claimable_outpoints.get(&txid).unwrap();
+			if !claimable_outpoints.is_empty() {
+				let minimum_expiry = claimable_outpoints.iter().map(|o|o.0.cltv_expiry).min();
+				return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
 			}
 		}
 		ConfirmationTarget::OutputSpendingFee
