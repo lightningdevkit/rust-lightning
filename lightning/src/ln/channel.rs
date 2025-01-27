@@ -1285,10 +1285,18 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn is_resumable(&self) -> bool {
-		match &self.phase {
+	/// Should be called when the peer is disconnected. Returns true if the channel can be resumed
+	/// when the peer reconnects. If not, the channel must be immediately closed.
+	pub fn peer_disconnected_is_resumable<L: Deref>(&mut self, logger: &L) -> bool where L::Target: Logger {
+		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(_) => false,
+			ChannelPhase::Funded(chan) => chan.remove_uncommitted_htlcs_and_mark_paused(logger).is_ok(),
+			// If we get disconnected and haven't yet committed to a funding
+			// transaction, we can replay the `open_channel` on reconnection, so don't
+			// bother dropping the channel here. However, if we already committed to
+			// the funding transaction we don't yet support replaying the funding
+			// handshake (and bailing if the peer rejects it), so we force-close in
+			// that case.
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
@@ -6165,7 +6173,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// No further message handling calls may be made until a channel_reestablish dance has
 	/// completed.
 	/// May return `Err(())`, which implies [`ChannelContext::force_shutdown`] should be called immediately.
-	pub fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
+	fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
 		if self.context.channel_state.is_pre_funded_state() {
 			return Err(())
