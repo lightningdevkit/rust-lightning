@@ -57,13 +57,14 @@ use crate::routing::router::{Path, CandidateRouteHop, PublicHopCandidate};
 use crate::routing::log_approx;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
-
 use crate::prelude::*;
+use crate::prelude::hash_map::Entry;
 use core::{cmp, fmt};
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use crate::io::{self, Read};
 use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, DirectedHistoricalLiquidityTracker, HistoricalLiquidityTracker};
 #[cfg(not(c_bindings))]
 use {
 	core::cell::{RefCell, RefMut, Ref},
@@ -474,7 +475,86 @@ where L::Target: Logger {
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
-	channel_liquidities: HashMap<u64, ChannelLiquidity>,
+	channel_liquidities: ChannelLiquidities,
+}
+/// Container for live and historical liquidity bounds for each channel.
+pub struct ChannelLiquidities(HashMap<u64, ChannelLiquidity>);
+
+impl ChannelLiquidities {
+	fn new() -> Self {
+		Self(new_hash_map())
+	}
+
+	fn time_passed(&mut self, duration_since_epoch: Duration, decay_params: ProbabilisticScoringDecayParameters) {
+		self.0.retain(|_scid, liquidity| {
+			liquidity.min_liquidity_offset_msat =
+				liquidity.decayed_offset(liquidity.min_liquidity_offset_msat, duration_since_epoch, decay_params);
+			liquidity.max_liquidity_offset_msat =
+				liquidity.decayed_offset(liquidity.max_liquidity_offset_msat, duration_since_epoch, decay_params);
+			liquidity.last_updated = duration_since_epoch;
+
+			// Only decay the historical buckets if there hasn't been new data for a while. This ties back to our
+			// earlier conclusion that fixed half-lives for scoring data are inherently flawed—they tend to be either
+			// too fast or too slow. Ideally, historical buckets should only decay as new data is added, which naturally
+			// happens when fresh data arrives. However, scoring a channel based on month-old data while treating it the
+			// same as one with minute-old data is problematic. To address this, we introduced a decay mechanism, but it
+			// runs very slowly and only activates when no new data has been received for a while, as our preference is
+			// to decay based on incoming data.
+			let elapsed_time =
+				duration_since_epoch.saturating_sub(liquidity.offset_history_last_updated);
+			if elapsed_time > decay_params.historical_no_updates_half_life {
+				let half_life = decay_params.historical_no_updates_half_life.as_secs_f64();
+				if half_life != 0.0 {
+					liquidity.liquidity_history.decay_buckets(elapsed_time.as_secs_f64() / half_life);
+					liquidity.offset_history_last_updated = duration_since_epoch;
+				}
+			}
+			liquidity.min_liquidity_offset_msat != 0 || liquidity.max_liquidity_offset_msat != 0 ||
+				liquidity.liquidity_history.has_datapoints()
+		});
+	}
+
+	fn get(&self, short_channel_id: &u64) -> Option<&ChannelLiquidity> {
+		self.0.get(short_channel_id)
+	}
+
+	fn insert(&mut self, short_channel_id: u64, liquidity: ChannelLiquidity) -> Option<ChannelLiquidity> {
+		self.0.insert(short_channel_id, liquidity)
+	}
+
+	fn iter(&self) -> impl Iterator<Item = (&u64, &ChannelLiquidity)> {
+		self.0.iter()
+	}
+
+	fn entry(&mut self, short_channel_id: u64) -> Entry<u64, ChannelLiquidity, RandomState> {
+		self.0.entry(short_channel_id)
+	}
+
+	#[cfg(test)]
+	fn get_mut(&mut self, short_channel_id: &u64) -> Option<&mut ChannelLiquidity> {
+		self.0.get_mut(short_channel_id)
+	}
+}
+
+impl Readable for ChannelLiquidities {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut channel_liquidities = new_hash_map();
+		read_tlv_fields!(r, {
+			(0, channel_liquidities, required),
+		});
+		Ok(ChannelLiquidities(channel_liquidities))
+	}
+}
+
+impl Writeable for ChannelLiquidities {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(w, {
+			(0, self.0, required),
+		});
+		Ok(())
+	}
 }
 
 /// Parameters for configuring [`ProbabilisticScorer`].
@@ -849,7 +929,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 			decay_params,
 			network_graph,
 			logger,
-			channel_liquidities: new_hash_map(),
+			channel_liquidities: ChannelLiquidities::new(),
 		}
 	}
 
@@ -1603,26 +1683,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for Probabilistic
 	}
 
 	fn time_passed(&mut self, duration_since_epoch: Duration) {
-		let decay_params = self.decay_params;
-		self.channel_liquidities.retain(|_scid, liquidity| {
-			liquidity.min_liquidity_offset_msat =
-				liquidity.decayed_offset(liquidity.min_liquidity_offset_msat, duration_since_epoch, decay_params);
-			liquidity.max_liquidity_offset_msat =
-				liquidity.decayed_offset(liquidity.max_liquidity_offset_msat, duration_since_epoch, decay_params);
-			liquidity.last_updated = duration_since_epoch;
-
-			let elapsed_time =
-				duration_since_epoch.saturating_sub(liquidity.offset_history_last_updated);
-			if elapsed_time > decay_params.historical_no_updates_half_life {
-				let half_life = decay_params.historical_no_updates_half_life.as_secs_f64();
-				if half_life != 0.0 {
-					liquidity.liquidity_history.decay_buckets(elapsed_time.as_secs_f64() / half_life);
-					liquidity.offset_history_last_updated = duration_since_epoch;
-				}
-			}
-			liquidity.min_liquidity_offset_msat != 0 || liquidity.max_liquidity_offset_msat != 0 ||
-				liquidity.liquidity_history.has_datapoints()
-		});
+		self.channel_liquidities.time_passed(duration_since_epoch, self.decay_params);
 	}
 }
 
@@ -2060,15 +2121,11 @@ mod bucketed_history {
 		}
 	}
 }
-use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, DirectedHistoricalLiquidityTracker, HistoricalLiquidityTracker};
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(w, {
-			(0, self.channel_liquidities, required),
-		});
-		Ok(())
+		self.channel_liquidities.write(w)
 	}
 }
 
@@ -2079,10 +2136,7 @@ ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScore
 		r: &mut R, args: (ProbabilisticScoringDecayParameters, G, L)
 	) -> Result<Self, DecodeError> {
 		let (decay_params, network_graph, logger) = args;
-		let mut channel_liquidities = new_hash_map();
-		read_tlv_fields!(r, {
-			(0, channel_liquidities, required),
-		});
+		let channel_liquidities = ChannelLiquidities::read(r)?;
 		Ok(Self {
 			decay_params,
 			network_graph,
