@@ -28,7 +28,7 @@ use crate::chain::chaininterface::{ConfirmationTarget, compute_feerate_sat_per_1
 use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider};
 use crate::ln::msgs::DecodeError;
 use crate::types::payment::PaymentPreimage;
-use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
+use crate::ln::chan_utils::{ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
 use crate::chain::ClaimId;
 use crate::chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::ANTI_REORG_DELAY;
@@ -665,8 +665,8 @@ impl<Signer: ChannelSigner> OnchainTxHandler<Signer> {
 					}
 
 					// We'll locate an anchor output we can spend within the commitment transaction.
-					let funding_pubkey = &self.channel_transaction_parameters.holder_pubkeys.funding_pubkey;
-					match chan_utils::get_anchor_output(&tx.0, funding_pubkey) {
+					let anchor_spk = self.signer.get_anchor_txout(true, true).expect("signer does not support anchors").script_pubkey;
+					match tx.0.output.iter().enumerate().find(|(_, txout)| anchor_spk == txout.script_pubkey).map(|(idx, txout)| (idx as u32, txout)) {
 						// An anchor output was found, so we should yield a funding event externally.
 						Some((idx, _)) => {
 							// TODO: Use a lower confirmation target when both our and the
