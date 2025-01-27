@@ -1027,6 +1027,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 
 	/// The first block height at which we had no remaining claimable balances.
 	balances_empty_height: Option<u32>,
+
+	/// In-memory only HTLC ids used to track upstream HTLCs that have been failed backwards due to
+	/// a downstream channel force-close remaining unconfirmed by the time the upstream timeout
+	/// expires. This is used to tell us we already generated an event to fail this HTLC back
+	/// during a previous block scan.
+	failed_back_htlc_ids: HashSet<SentHTLCId>,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1449,6 +1455,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			counterparty_node_id: Some(counterparty_node_id),
 			initial_counterparty_commitment_info: None,
 			balances_empty_height: None,
+
+			failed_back_htlc_ids: new_hash_set(),
 		})
 	}
 
@@ -3278,7 +3286,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain) && is_pre_close_update {
+		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed) && is_pre_close_update {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
@@ -4225,6 +4233,71 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		if self.lockdown_from_offchain || self.funding_spend_seen || self.holder_tx_signed {
+			// Fail back HTLCs on backwards channels if they expire within
+			// `LATENCY_GRACE_PERIOD_BLOCKS` blocks and the channel is closed (i.e. we're at a
+			// point where no further off-chain updates will be accepted). If we haven't seen the
+			// preimage for an HTLC by the time the previous hop's timeout expires, we've lost that
+			// HTLC, so we might as well fail it back instead of having our counterparty force-close
+			// the inbound channel.
+			let current_holder_htlcs = self.current_holder_commitment_tx.htlc_outputs.iter()
+				.map(|&(ref a, _, ref b)| (a, b.as_ref()));
+
+			let current_counterparty_htlcs = if let Some(txid) = self.current_counterparty_commitment_txid {
+				if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+					Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+				} else { None }
+			} else { None }.into_iter().flatten();
+
+			let prev_counterparty_htlcs = if let Some(txid) = self.prev_counterparty_commitment_txid {
+				if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+					Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+				} else { None }
+			} else { None }.into_iter().flatten();
+
+			let htlcs = current_holder_htlcs
+				.chain(current_counterparty_htlcs)
+				.chain(prev_counterparty_htlcs);
+
+			let height = self.best_block.height;
+			for (htlc, source_opt) in htlcs {
+				// Only check forwarded HTLCs' previous hops
+				let source = match source_opt {
+					Some(source) => source,
+					None => continue,
+				};
+				let inbound_htlc_expiry = match source.inbound_htlc_expiry() {
+					Some(cltv_expiry) => cltv_expiry,
+					None => continue,
+				};
+				let max_expiry_height = height.saturating_add(LATENCY_GRACE_PERIOD_BLOCKS);
+				if inbound_htlc_expiry > max_expiry_height {
+					continue;
+				}
+				let duplicate_event = self.pending_monitor_events.iter().any(
+					|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+						upd.source == *source
+					} else { false });
+				if duplicate_event {
+					continue;
+				}
+				if !self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source)) {
+					continue;
+				}
+				if !duplicate_event {
+					log_error!(logger, "Failing back HTLC {} upstream to preserve the \
+						channel as the forward HTLC hasn't resolved and our backward HTLC \
+						expires soon at {}", log_bytes!(htlc.payment_hash.0), inbound_htlc_expiry);
+					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						source: source.clone(),
+						payment_preimage: None,
+						payment_hash: htlc.payment_hash,
+						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+					}));
+				}
+			}
+		}
+
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
 		self.onchain_tx_handler.update_claims_view_from_matched_txn(&txn_matched, conf_height, conf_hash, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
@@ -5070,6 +5143,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			counterparty_node_id,
 			initial_counterparty_commitment_info,
 			balances_empty_height,
+			failed_back_htlc_ids: new_hash_set(),
 		})))
 	}
 }

@@ -1790,15 +1790,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// [`msgs::RevokeAndACK`] message from the counterparty.
 	sent_message_awaiting_response: Option<usize>,
 
-	#[cfg(any(test, fuzzing))]
-	// When we receive an HTLC fulfill on an outbound path, we may immediately fulfill the
-	// corresponding HTLC on the inbound path. If, then, the outbound path channel is
-	// disconnected and reconnected (before we've exchange commitment_signed and revoke_and_ack
-	// messages), they may re-broadcast their update_fulfill_htlc, causing a duplicate claim. This
-	// is fine, but as a sanity check in our failure to generate the second claim, we check here
-	// that the original was a claim, and that we aren't now trying to fulfill a failed HTLC.
-	historical_inbound_htlc_fulfills: HashSet<u64>,
-
 	/// This channel's type, as negotiated during channel open
 	channel_type: ChannelTypeFeatures,
 
@@ -2518,9 +2509,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_tx_broadcast_safe_event_emitted: false,
 			channel_ready_event_emitted: false,
 
-			#[cfg(any(test, fuzzing))]
-			historical_inbound_htlc_fulfills: new_hash_set(),
-
 			channel_type,
 			channel_keys_id,
 
@@ -2750,9 +2738,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
 			channel_ready_event_emitted: false,
-
-			#[cfg(any(test, fuzzing))]
-			historical_inbound_htlc_fulfills: new_hash_set(),
 
 			channel_type,
 			channel_keys_id,
@@ -4784,10 +4769,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			#[cfg(any(test, fuzzing))]
-			// If we failed to find an HTLC to fulfill, make sure it was previously fulfilled and
-			// this is simply a duplicate claim, not previously failed and we lost funds.
-			debug_assert!(self.context.historical_inbound_htlc_fulfills.contains(&htlc_id_arg));
 			return UpdateFulfillFetch::DuplicateClaim {};
 		}
 
@@ -4817,8 +4798,6 @@ impl<SP: Deref> FundedChannel<SP> where
 						if htlc_id_arg == htlc_id {
 							// Make sure we don't leave latest_monitor_update_id incremented here:
 							self.context.latest_monitor_update_id -= 1;
-							#[cfg(any(test, fuzzing))]
-							debug_assert!(self.context.historical_inbound_htlc_fulfills.contains(&htlc_id_arg));
 							return UpdateFulfillFetch::DuplicateClaim {};
 						}
 					},
@@ -4840,12 +4819,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg, htlc_id: htlc_id_arg,
 			});
-			#[cfg(any(test, fuzzing))]
-			self.context.historical_inbound_htlc_fulfills.insert(htlc_id_arg);
 			return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: None };
 		}
-		#[cfg(any(test, fuzzing))]
-		self.context.historical_inbound_htlc_fulfills.insert(htlc_id_arg);
 
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
@@ -4910,14 +4885,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	/// We can only have one resolution per HTLC. In some cases around reconnect, we may fulfill
-	/// an HTLC more than once or fulfill once and then attempt to fail after reconnect. We cannot,
-	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
-	/// before we fail backwards.
-	///
-	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
-	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
-	/// [`ChannelError::Ignore`].
+	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
+	/// if it was already resolved). Otherwise returns `Ok`.
 	pub fn queue_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L)
 	-> Result<(), ChannelError> where L::Target: Logger {
 		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
@@ -4935,14 +4904,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
-	/// We can only have one resolution per HTLC. In some cases around reconnect, we may fulfill
-	/// an HTLC more than once or fulfill once and then attempt to fail after reconnect. We cannot,
-	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
-	/// before we fail backwards.
-	///
-	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
-	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
-	/// [`ChannelError::Ignore`].
+	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
+	/// if it was already resolved). Otherwise returns `Ok`.
 	fn fail_htlc<L: Deref, E: FailHTLCContents + Clone>(
 		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
 		logger: &L
@@ -4960,12 +4923,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
 					InboundHTLCState::Committed => {},
-					InboundHTLCState::LocalRemoved(ref reason) => {
-						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
-						} else {
-							debug_assert!(false, "Tried to fail an HTLC that was already failed");
-						}
-						return Ok(None);
+					InboundHTLCState::LocalRemoved(_) => {
+						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
 					},
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
@@ -4976,11 +4935,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			#[cfg(any(test, fuzzing))]
-			// If we failed to find an HTLC to fail, make sure it was previously fulfilled and this
-			// is simply a duplicate fail, not previously failed and we failed-back too early.
-			debug_assert!(self.context.historical_inbound_htlc_fulfills.contains(&htlc_id_arg));
-			return Ok(None);
+			return Err(ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc_id_arg)));
 		}
 
 		if !self.context.channel_state.can_generate_new_commitment() {
@@ -4994,17 +4949,14 @@ impl<SP: Deref> FundedChannel<SP> where
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							#[cfg(any(test, fuzzing))]
-							debug_assert!(self.context.historical_inbound_htlc_fulfills.contains(&htlc_id_arg));
-							return Ok(None);
+							return Err(ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
 						&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } =>
 					{
 						if htlc_id_arg == htlc_id {
-							debug_assert!(false, "Tried to fail an HTLC that was already failed");
-							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID".to_owned()));
+							return Err(ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)));
 						}
 					},
 					_ => {}
@@ -9795,13 +9747,6 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 
 		self.context.channel_update_status.write(writer)?;
 
-		#[cfg(any(test, fuzzing))]
-		(self.context.historical_inbound_htlc_fulfills.len() as u64).write(writer)?;
-		#[cfg(any(test, fuzzing))]
-		for htlc in self.context.historical_inbound_htlc_fulfills.iter() {
-			htlc.write(writer)?;
-		}
-
 		// If the channel type is something other than only-static-remote-key, then we need to have
 		// older clients fail to deserialize this channel at all. If the type is
 		// only-static-remote-key, we simply consider it "default" and don't write the channel type
@@ -10134,16 +10079,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let commitment_secrets = Readable::read(reader)?;
 
 		let channel_update_status = Readable::read(reader)?;
-
-		#[cfg(any(test, fuzzing))]
-		let mut historical_inbound_htlc_fulfills = new_hash_set();
-		#[cfg(any(test, fuzzing))]
-		{
-			let htlc_fulfills_len: u64 = Readable::read(reader)?;
-			for _ in 0..htlc_fulfills_len {
-				assert!(historical_inbound_htlc_fulfills.insert(Readable::read(reader)?));
-			}
-		}
 
 		let pending_update_fee = if let Some(feerate) = pending_update_fee_value {
 			Some((feerate, if channel_parameters.is_outbound_from_holder {
@@ -10484,9 +10419,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(false),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
 				channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
-
-				#[cfg(any(test, fuzzing))]
-				historical_inbound_htlc_fulfills,
 
 				channel_type: channel_type.unwrap(),
 				channel_keys_id,

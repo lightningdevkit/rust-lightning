@@ -110,6 +110,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 		routing: PendingHTLCRouting::Forward {
 			onion_packet: outgoing_packet,
 			short_channel_id,
+			incoming_cltv_expiry: Some(msg.cltv_expiry),
 			blinded: intro_node_blinding_point.or(msg.blinding_point)
 				.map(|bp| BlindedForward {
 					inbound_blinding_point: bp,
