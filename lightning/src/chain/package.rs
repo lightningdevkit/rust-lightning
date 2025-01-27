@@ -699,8 +699,13 @@ impl PackageSolvingData {
 		match self {
 			PackageSolvingData::RevokedOutput(RevokedOutput { .. }) =>
 				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
-			PackageSolvingData::RevokedHTLCOutput(..) =>
-				PackageMalleability::Malleable(AggregationCluster::Pinnable),
+			PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput { htlc, .. }) => {
+				if htlc.offered {
+					PackageMalleability::Malleable(AggregationCluster::Unpinnable)
+				} else {
+					PackageMalleability::Malleable(AggregationCluster::Pinnable)
+				}
+			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) =>
 				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) =>
