@@ -1452,7 +1452,8 @@ impl CommitmentTransaction {
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
 
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
-		let (outputs, htlcs) = Self::internal_build_outputs(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, signer, secp_ctx, is_holder_tx, commitment_number).unwrap();
+		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs_with_aux.iter_mut().map(|(htlc, _)| htlc).collect();
+		let (outputs, sorted_htlcs) = Self::internal_build_outputs(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs, signer, secp_ctx, is_holder_tx, commitment_number).unwrap();
 
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
@@ -1463,7 +1464,7 @@ impl CommitmentTransaction {
 			to_countersignatory_value_sat,
 			to_broadcaster_delay: Some(channel_parameters.contest_delay()),
 			feerate_per_kw,
-			htlcs,
+			htlcs: sorted_htlcs,
 			channel_type_features: channel_parameters.channel_type_features().clone(),
 			keys,
 			built: BuiltCommitmentTransaction {
@@ -1484,8 +1485,9 @@ impl CommitmentTransaction {
 	fn internal_rebuild_transaction<Signer: ChannelSigner>(&self, per_commitment_point: &PublicKey, channel_parameters: &DirectedChannelTransactionParameters, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool) -> Result<BuiltCommitmentTransaction, ()> {
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
 
-		let mut htlcs_with_aux = self.htlcs.iter().map(|h| (h.clone(), ())).collect();
-		let (outputs, _) = Self::internal_build_outputs(per_commitment_point, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, signer, secp_ctx, is_holder_tx, self.commitment_number)?;
+		let mut htlcs: Vec<_> = self.htlcs.iter().map(|h| h.clone()).collect();
+		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs.iter_mut().collect();
+		let (outputs, _) = Self::internal_build_outputs(per_commitment_point, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, htlcs, signer, secp_ctx, is_holder_tx, self.commitment_number)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
@@ -1506,10 +1508,9 @@ impl CommitmentTransaction {
 	}
 
 	// This is used in two cases:
-	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
-	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
-	// - building of a bitcoin transaction during a verify() call, in which case T is just ()
-	fn internal_build_outputs<T, Signer: ChannelSigner>(per_commitment_point: &PublicKey, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool, commitment_number: u64) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
+	// - initial sorting of outputs / HTLCs in the constructor
+	// - building of a bitcoin transaction during a verify() call
+	fn internal_build_outputs<Signer: ChannelSigner>(per_commitment_point: &PublicKey, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, htlcs: Vec<&mut HTLCOutputInCommitment>, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool, commitment_number: u64) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
 		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
 
 		if to_countersignatory_value_sat > Amount::ZERO {
@@ -1532,20 +1533,20 @@ impl CommitmentTransaction {
 			));
 		}
 
-		if to_broadcaster_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
+		if to_broadcaster_value_sat > Amount::ZERO || !htlcs.is_empty() {
 			if let Some(txout) = signer.get_anchor_txout(is_holder_tx, true) {
 				txouts.push((txout, None));
 			}
 		}
 
-		if to_countersignatory_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
+		if to_countersignatory_value_sat > Amount::ZERO || !htlcs.is_empty() {
 			if let Some(txout) = signer.get_anchor_txout(is_holder_tx, false) {
 				txouts.push((txout, None));
 			}
 		}
 
-		let mut htlcs = Vec::with_capacity(htlcs_with_aux.len());
-		for (htlc, _) in htlcs_with_aux {
+		let mut sorted_htlcs = Vec::with_capacity(htlcs.len());
+		for htlc in htlcs {
 			let txout = TxOut {
 				script_pubkey: signer.get_htlc_spk(htlc, is_holder_tx, per_commitment_point, secp_ctx),
 				value: htlc.to_bitcoin_amount(),
@@ -1573,11 +1574,11 @@ impl CommitmentTransaction {
 		for (idx, out) in txouts.drain(..).enumerate() {
 			if let Some(htlc) = out.1 {
 				htlc.transaction_output_index = Some(idx as u32);
-				htlcs.push(htlc.clone());
+				sorted_htlcs.push(htlc.clone());
 			}
 			outputs.push(out.0);
 		}
-		Ok((outputs, htlcs))
+		Ok((outputs, sorted_htlcs))
 	}
 
 	fn internal_build_inputs(commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters) -> (u64, Vec<TxIn>) {
