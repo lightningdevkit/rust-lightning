@@ -256,6 +256,10 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 // solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
 // keep bumping another claim tx to solve the outpoint.
 pub const ANTI_REORG_DELAY: u32 = 6;
+/// Number of blocks we wait before assuming a [`ChannelMonitor`] to be fully resolved and
+/// considering it be safely archived.
+// 4032 blocks are roughly four weeks
+pub const ARCHIVAL_DELAY_BLOCKS: u32 = 4032;
 /// Number of blocks before confirmation at which we fail back an un-relayed HTLC or at which we
 /// refuse to accept a new HTLC.
 ///
@@ -2015,10 +2019,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// This function returns a tuple of two booleans, the first indicating whether the monitor is
 	/// fully resolved, and the second whether the monitor needs persistence to ensure it is
-	/// reliably marked as resolved within 4032 blocks.
+	/// reliably marked as resolved within [`ARCHIVAL_DELAY_BLOCKS`] blocks.
 	///
-	/// The first boolean is true only if [`Self::get_claimable_balances`] has been empty for at least
-	/// 4032 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
+	/// The first boolean is true only if [`Self::get_claimable_balances`] has been empty for at
+	/// least [`ARCHIVAL_DELAY_BLOCKS`] blocks as an additional protection against any bugs
+	/// resulting in spuriously empty balance sets.
 	pub fn check_and_update_full_resolution_status<L: Logger>(&self, logger: &L) -> (bool, bool) {
 		let mut is_all_funds_claimed = self.get_claimable_balances().is_empty();
 		let current_height = self.current_best_block().height;
@@ -2034,11 +2039,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		// once processed, implies the preimage exists in the corresponding inbound channel.
 		let preimages_not_needed_elsewhere = inner.pending_monitor_events.is_empty();
 
-		const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 		match (inner.balances_empty_height, is_all_funds_claimed, preimages_not_needed_elsewhere) {
 			(Some(balances_empty_height), true, true) => {
 				// Claimed all funds, check if reached the blocks threshold.
-				(current_height >= balances_empty_height + BLOCKS_THRESHOLD, false)
+				(current_height >= balances_empty_height + ARCHIVAL_DELAY_BLOCKS, false)
 			},
 			(Some(_), false, _)|(Some(_), _, false) => {
 				// previously assumed we claimed all funds, but we have new funds to claim or
@@ -2058,7 +2062,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				// None. It is set to the current block height.
 				log_debug!(logger,
 					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
-					inner.get_funding_txo().0, BLOCKS_THRESHOLD);
+					inner.get_funding_txo().0, ARCHIVAL_DELAY_BLOCKS);
 				inner.balances_empty_height = Some(current_height);
 				(false, true)
 			},

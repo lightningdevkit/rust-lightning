@@ -1099,7 +1099,7 @@ mod tests {
 		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
-	use lightning::util::sweep::{OutputSpendStatus, OutputSweeper};
+	use lightning::util::sweep::{OutputSpendStatus, OutputSweeper, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_persister::fs_store::FilesystemStore;
@@ -2282,8 +2282,8 @@ mod tests {
 		}
 
 		// Check we stop tracking the spendable outputs when one of the txs reaches
-		// ANTI_REORG_DELAY confirmations.
-		confirm_transaction_depth(&mut nodes[0], &sweep_tx_0, ANTI_REORG_DELAY);
+		// PRUNE_DELAY_BLOCKS confirmations.
+		confirm_transaction_depth(&mut nodes[0], &sweep_tx_0, PRUNE_DELAY_BLOCKS);
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 0);
 
 		if !std::thread::panicking() {
