@@ -1069,30 +1069,27 @@ macro_rules! get_local_commitment_txn {
 /// Check the error from attempting a payment.
 #[macro_export]
 macro_rules! unwrap_send_err {
-	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
-		match &$res {
-			&Err(PaymentSendFailure::AllFailedResendSafe(ref fails)) if $all_failed => {
-				assert_eq!(fails.len(), 1);
-				match fails[0] {
-					$type => { $check },
-					_ => panic!(),
+	($node: expr, $res: expr, $all_failed: expr, $type: pat, $check: expr) => {
+		assert!($res.is_ok());
+		let events = $node.node.get_and_clear_pending_events();
+		assert!(events.len() == 2);
+		match &events[0] {
+			crate::events::Event::PaymentPathFailed { failure, .. } => {
+				match failure {
+					crate::events::PathFailure::InitialSend { err } => {
+						match err {
+							$type => { $check },
+							_ => panic!()
+						}
+					},
+					_ => panic!()
 				}
 			},
-			&Err(PaymentSendFailure::PartialFailure { ref results, .. }) if !$all_failed => {
-				assert_eq!(results.len(), 1);
-				match results[0] {
-					Err($type) => { $check },
-					_ => panic!(),
-				}
-			},
-			&Err(PaymentSendFailure::PathParameterError(ref result)) if !$all_failed => {
-				assert_eq!(result.len(), 1);
-				match result[0] {
-					Err($type) => { $check },
-					_ => panic!(),
-				}
-			},
-			_ => {panic!()},
+			_ => panic!()
+		}
+		match &events[1] {
+			crate::events::Event::PaymentFailed { .. } => {},
+			_ => panic!()
 		}
 	}
 }

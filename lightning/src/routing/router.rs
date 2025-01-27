@@ -25,6 +25,7 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
+use crate::sync::Mutex;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
 use crate::util::logger::{Level, Logger};
 use crate::crypto::chacha20::ChaCha20;
@@ -182,6 +183,45 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 				}
 			},
 		}
+	}
+}
+
+/// A `Router` that returns a fixed route one time, erroring otherwise. Useful for
+/// `ChannelManager::send_payment_with_route` to support sending to specific routes without
+/// requiring a custom `Router` implementation.
+pub(crate) struct FixedRouter {
+	// Use an `Option` to avoid needing to clone the route when `find_route` is called.
+	route: Mutex<Option<Route>>,
+}
+
+impl FixedRouter {
+	pub(crate) fn new(route: Route) -> Self {
+		Self { route: Mutex::new(Some(route)) }
+	}
+}
+
+impl Router for FixedRouter {
+	fn find_route(
+		&self, _payer: &PublicKey, _route_params: &RouteParameters,
+		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError> {
+		self.route.lock().unwrap().take().ok_or_else(|| {
+			LightningError {
+				err: "Can't use this router to return multiple routes".to_owned(),
+				action: ErrorAction::IgnoreError,
+			}
+		})
+	}
+
+	fn create_blinded_payment_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	> (
+		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
+		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		// Should be unreachable as this router is only intended to provide a one-time payment route.
+		debug_assert!(false);
+		Err(())
 	}
 }
 

@@ -19,13 +19,12 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use crate::ln::channelmanager::{PaymentId, PaymentSendFailure, RAACommitmentOrder, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::errors::APIError;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_utils::TestBroadcaster;
 
@@ -133,9 +132,9 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 	{
-		unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash_1,
-				RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)
-			), false, APIError::MonitorUpdateInProgress, {});
+		nodes[0].node.send_payment_with_route(route, payment_hash_1,
+			RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -190,9 +189,9 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let (route, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(&nodes[0], nodes[1], 1000000);
 	{
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-		unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash_2,
-				RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)
-			), false, APIError::MonitorUpdateInProgress, {});
+		nodes[0].node.send_payment_with_route(route, payment_hash_2,
+			RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -257,9 +256,9 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	{
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-		unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash_2,
-				RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)
-			), false, APIError::MonitorUpdateInProgress, {});
+		nodes[0].node.send_payment_with_route(route, payment_hash_2,
+			RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -2004,16 +2003,10 @@ fn test_path_paused_mpp() {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
-	// Now check that we get the right return value, indicating that the first path succeeded but
-	// the second got a MonitorUpdateInProgress err. This implies
-	// PaymentSendFailure::PartialFailure as some paths succeeded, preventing retry.
-	if let Err(PaymentSendFailure::PartialFailure { results, ..}) = nodes[0].node.send_payment_with_route(
+	// The first path should have succeeded with the second getting a MonitorUpdateInProgress err.
+	nodes[0].node.send_payment_with_route(
 		route, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
-	) {
-		assert_eq!(results.len(), 2);
-		if let Ok(()) = results[0] {} else { panic!(); }
-		if let Err(APIError::MonitorUpdateInProgress) = results[1] {} else { panic!(); }
-	} else { panic!(); }
+	).unwrap();
 	check_added_monitors!(nodes[0], 2);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
