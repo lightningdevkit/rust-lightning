@@ -1266,8 +1266,7 @@ impl<SP: Deref> Channel<SP> where
 				})
 			},
 			ChannelPhase::UnfundedInboundV1(chan) => {
-				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let accept_channel = chan.signer_maybe_unblocked(&&logger);
+				let accept_channel = chan.signer_maybe_unblocked(logger);
 				Some(SignerResumeUpdates {
 					commitment_update: None,
 					revoke_and_ack: None,
