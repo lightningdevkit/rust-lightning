@@ -40,7 +40,6 @@ use bitcoin::{secp256k1, Sequence, Witness};
 
 use crate::io;
 use core::cmp;
-use crate::util::transaction_utils::sort_outputs;
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use core::ops::Deref;
 use crate::chain;
@@ -1453,7 +1452,7 @@ impl CommitmentTransaction {
 
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs_with_aux.iter_mut().map(|(htlc, _)| htlc).collect();
-		let (outputs, sorted_htlcs) = Self::internal_build_outputs(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs, signer, secp_ctx, is_holder_tx, commitment_number).unwrap();
+		let (outputs, sorted_htlcs) = signer.build_outputs(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, commitment_number).unwrap();
 
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
@@ -1487,7 +1486,7 @@ impl CommitmentTransaction {
 
 		let mut htlcs: Vec<_> = self.htlcs.iter().map(|h| h.clone()).collect();
 		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs.iter_mut().collect();
-		let (outputs, _) = Self::internal_build_outputs(per_commitment_point, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, htlcs, signer, secp_ctx, is_holder_tx, self.commitment_number)?;
+		let (outputs, _) = signer.build_outputs(per_commitment_point, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, self.commitment_number)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
@@ -1505,80 +1504,6 @@ impl CommitmentTransaction {
 			input: txins,
 			output: outputs,
 		}
-	}
-
-	// This is used in two cases:
-	// - initial sorting of outputs / HTLCs in the constructor
-	// - building of a bitcoin transaction during a verify() call
-	fn internal_build_outputs<Signer: ChannelSigner>(per_commitment_point: &PublicKey, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, htlcs: Vec<&mut HTLCOutputInCommitment>, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool, commitment_number: u64) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
-		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
-
-		if to_countersignatory_value_sat > Amount::ZERO {
-			txouts.push((
-				TxOut {
-					script_pubkey: signer.get_counterparty_payment_script(is_holder_tx),
-					value: to_countersignatory_value_sat,
-				},
-				None,
-			))
-		}
-
-		if to_broadcaster_value_sat > Amount::ZERO {
-			txouts.push((
-				TxOut {
-					script_pubkey: signer.get_revokeable_spk(is_holder_tx, commitment_number, per_commitment_point, secp_ctx),
-					value: to_broadcaster_value_sat,
-				},
-				None,
-			));
-		}
-
-		if to_broadcaster_value_sat > Amount::ZERO || !htlcs.is_empty() {
-			if let Some(txout) = signer.get_anchor_txout(is_holder_tx, true) {
-				txouts.push((txout, None));
-			}
-		}
-
-		if to_countersignatory_value_sat > Amount::ZERO || !htlcs.is_empty() {
-			if let Some(txout) = signer.get_anchor_txout(is_holder_tx, false) {
-				txouts.push((txout, None));
-			}
-		}
-
-		let mut sorted_htlcs = Vec::with_capacity(htlcs.len());
-		for htlc in htlcs {
-			let txout = TxOut {
-				script_pubkey: signer.get_htlc_spk(htlc, is_holder_tx, per_commitment_point, secp_ctx),
-				value: htlc.to_bitcoin_amount(),
-			};
-			txouts.push((txout, Some(htlc)));
-		}
-
-		// Sort output in BIP-69 order (amount, scriptPubkey).  Tie-breaks based on HTLC
-		// CLTV expiration height.
-		sort_outputs(&mut txouts, |a, b| {
-			if let &Some(ref a_htlcout) = a {
-				if let &Some(ref b_htlcout) = b {
-					a_htlcout.cltv_expiry.cmp(&b_htlcout.cltv_expiry)
-						// Note that due to hash collisions, we have to have a fallback comparison
-						// here for fuzzing mode (otherwise at least chanmon_fail_consistency
-						// may fail)!
-						.then(a_htlcout.payment_hash.0.cmp(&b_htlcout.payment_hash.0))
-				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
-				// close the channel due to mismatches - they're doing something dumb:
-				} else { cmp::Ordering::Equal }
-			} else { cmp::Ordering::Equal }
-		});
-
-		let mut outputs = Vec::with_capacity(txouts.len());
-		for (idx, out) in txouts.drain(..).enumerate() {
-			if let Some(htlc) = out.1 {
-				htlc.transaction_output_index = Some(idx as u32);
-				sorted_htlcs.push(htlc.clone());
-			}
-			outputs.push(out.0);
-		}
-		Ok((outputs, sorted_htlcs))
 	}
 
 	fn internal_build_inputs(commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters) -> (u64, Vec<TxIn>) {

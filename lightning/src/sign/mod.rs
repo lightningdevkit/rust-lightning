@@ -62,6 +62,7 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::sign::transaction_utils::sort_outputs;
 use crate::types::payment::PaymentPreimage;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::transaction_utils;
@@ -76,6 +77,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::atomic_counter::AtomicCounter;
+use core::cmp;
 use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -1124,6 +1126,102 @@ pub trait ChannelSigner {
 		// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
 		// redeemscript push length.
 		1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1
+	}
+
+	/// Builds the outputs of a commitment transaction
+	///
+	/// This is used in two cases:
+	/// - initial sorting of outputs / HTLCs in the constructor
+	/// - building of a bitcoin transaction during a `CommitmentTransaction::verify` call
+	fn build_outputs(
+		&self, per_commitment_point: &PublicKey, to_broadcaster_value_sat: Amount,
+		to_countersignatory_value_sat: Amount, htlcs: Vec<&mut HTLCOutputInCommitment>,
+		secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool, commitment_number: u64,
+	) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
+		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
+
+		if to_countersignatory_value_sat > Amount::ZERO {
+			txouts.push((
+				TxOut {
+					script_pubkey: self.get_counterparty_payment_script(is_holder_tx),
+					value: to_countersignatory_value_sat,
+				},
+				None,
+			))
+		}
+
+		if to_broadcaster_value_sat > Amount::ZERO {
+			txouts.push((
+				TxOut {
+					script_pubkey: self.get_revokeable_spk(
+						is_holder_tx,
+						commitment_number,
+						per_commitment_point,
+						secp_ctx,
+					),
+					value: to_broadcaster_value_sat,
+				},
+				None,
+			));
+		}
+
+		if to_broadcaster_value_sat > Amount::ZERO || !htlcs.is_empty() {
+			if let Some(txout) = self.get_anchor_txout(is_holder_tx, true) {
+				txouts.push((txout, None));
+			}
+		}
+
+		if to_countersignatory_value_sat > Amount::ZERO || !htlcs.is_empty() {
+			if let Some(txout) = self.get_anchor_txout(is_holder_tx, false) {
+				txouts.push((txout, None));
+			}
+		}
+
+		let mut sorted_htlcs = Vec::with_capacity(htlcs.len());
+		for htlc in htlcs {
+			let txout = TxOut {
+				script_pubkey: self.get_htlc_spk(
+					htlc,
+					is_holder_tx,
+					per_commitment_point,
+					secp_ctx,
+				),
+				value: htlc.to_bitcoin_amount(),
+			};
+			txouts.push((txout, Some(htlc)));
+		}
+
+		// Sort output in BIP-69 order (amount, scriptPubkey).  Tie-breaks based on HTLC
+		// CLTV expiration height.
+		sort_outputs(&mut txouts, |a, b| {
+			if let &Some(ref a_htlcout) = a {
+				if let &Some(ref b_htlcout) = b {
+					a_htlcout
+						.cltv_expiry
+						.cmp(&b_htlcout.cltv_expiry)
+						// Note that due to hash collisions, we have to have a fallback comparison
+						// here for fuzzing mode (otherwise at least chanmon_fail_consistency
+						// may fail)!
+						.then(a_htlcout.payment_hash.0.cmp(&b_htlcout.payment_hash.0))
+				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
+				// close the channel due to mismatches - they're doing something dumb:
+				} else {
+					cmp::Ordering::Equal
+				}
+			} else {
+				cmp::Ordering::Equal
+			}
+		});
+
+		let mut outputs = Vec::with_capacity(txouts.len());
+		for (idx, out) in txouts.into_iter().enumerate() {
+			if let Some(htlc) = out.1 {
+				htlc.transaction_output_index = Some(idx as u32);
+				sorted_htlcs.push(htlc.clone());
+			}
+			outputs.push(out.0);
+		}
+		Ok((outputs, sorted_htlcs))
 	}
 }
 
