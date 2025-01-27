@@ -834,17 +834,17 @@ impl PackageTemplate {
 				// Now check that we only merge packages if they are both unpinnable or both
 				// pinnable.
 				let self_pinnable = self_cluster == AggregationCluster::Pinnable ||
-					self.counterparty_spendable_height() <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					self.counterparty_spendable_height <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				let other_pinnable = other_cluster == AggregationCluster::Pinnable ||
-					other.counterparty_spendable_height() <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					other.counterparty_spendable_height <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				if self_pinnable && other_pinnable {
 					return true;
 				}
 
 				let self_unpinnable = self_cluster == AggregationCluster::Unpinnable &&
-					self.counterparty_spendable_height() > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					self.counterparty_spendable_height > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				let other_unpinnable = other_cluster == AggregationCluster::Unpinnable &&
-					other.counterparty_spendable_height() > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					other.counterparty_spendable_height > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				if self_unpinnable && other_unpinnable {
 					return true;
 				}
@@ -854,13 +854,6 @@ impl PackageTemplate {
 	}
 	pub(crate) fn is_malleable(&self) -> bool {
 		matches!(self.malleability, PackageMalleability::Malleable(..))
-	}
-	/// The height at which our counterparty may be able to spend this output.
-	///
-	/// This is an important limit for aggregation as after this height our counterparty may be
-	/// able to pin transactions spending this output in the mempool.
-	pub(crate) fn counterparty_spendable_height(&self) -> u32 {
-		self.counterparty_spendable_height
 	}
 	pub(crate) fn previous_feerate(&self) -> u64 {
 		self.feerate_previous
