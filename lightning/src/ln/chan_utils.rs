@@ -40,7 +40,6 @@ use bitcoin::{secp256k1, Sequence, Witness};
 
 use crate::io;
 use core::cmp;
-use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use core::ops::Deref;
 use crate::chain;
 use crate::types::features::ChannelTypeFeatures;
@@ -1454,7 +1453,7 @@ impl CommitmentTransaction {
 		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs_with_aux.iter_mut().map(|(htlc, _)| htlc).collect();
 		let (outputs, sorted_htlcs) = signer.build_outputs(&keys.per_commitment_point, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs, secp_ctx, is_holder_tx, commitment_number).unwrap();
 
-		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
+		let (obscured_commitment_transaction_number, txins) = signer.build_inputs(commitment_number, is_holder_tx);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
@@ -1481,8 +1480,8 @@ impl CommitmentTransaction {
 		self
 	}
 
-	fn internal_rebuild_transaction<Signer: ChannelSigner>(&self, per_commitment_point: &PublicKey, channel_parameters: &DirectedChannelTransactionParameters, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool) -> Result<BuiltCommitmentTransaction, ()> {
-		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
+	fn internal_rebuild_transaction<Signer: ChannelSigner>(&self, per_commitment_point: &PublicKey, signer: &Signer, secp_ctx: &Secp256k1<secp256k1::All>, is_holder_tx: bool) -> Result<BuiltCommitmentTransaction, ()> {
+		let (obscured_commitment_transaction_number, txins) = signer.build_inputs(self.commitment_number, is_holder_tx);
 
 		let mut htlcs: Vec<_> = self.htlcs.iter().map(|h| h.clone()).collect();
 		let htlcs: Vec<&mut HTLCOutputInCommitment> = htlcs.iter_mut().collect();
@@ -1504,31 +1503,6 @@ impl CommitmentTransaction {
 			input: txins,
 			output: outputs,
 		}
-	}
-
-	fn internal_build_inputs(commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters) -> (u64, Vec<TxIn>) {
-		let broadcaster_pubkeys = channel_parameters.broadcaster_pubkeys();
-		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
-		let commitment_transaction_number_obscure_factor = get_commitment_transaction_number_obscure_factor(
-			&broadcaster_pubkeys.payment_point,
-			&countersignatory_pubkeys.payment_point,
-			channel_parameters.is_outbound(),
-		);
-
-		let obscured_commitment_transaction_number =
-			commitment_transaction_number_obscure_factor ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
-
-		let txins = {
-			let ins: Vec<TxIn> = vec![TxIn {
-				previous_output: channel_parameters.funding_outpoint(),
-				script_sig: ScriptBuf::new(),
-				sequence: Sequence(((0x80 as u32) << 8 * 3)
-					| ((obscured_commitment_transaction_number >> 3 * 8) as u32)),
-				witness: Witness::new(),
-			}];
-			ins
-		};
-		(obscured_commitment_transaction_number, txins)
 	}
 
 	/// The backwards-counting commitment number
@@ -1582,10 +1556,10 @@ impl CommitmentTransaction {
 	///
 	/// An external validating signer must call this method before signing
 	/// or using the built transaction.
-	pub fn verify<Signer: ChannelSigner>(&self, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>, signer: &Signer, is_holder_tx: bool) -> Result<TrustedCommitmentTransaction, ()> {
+	pub fn verify<Signer: ChannelSigner>(&self, secp_ctx: &Secp256k1<secp256k1::All>, signer: &Signer, is_holder_tx: bool) -> Result<TrustedCommitmentTransaction, ()> {
 		// This is the only field of the key cache that we trust
 		let per_commitment_point = self.keys.per_commitment_point;
-		let tx = self.internal_rebuild_transaction(&per_commitment_point, channel_parameters, signer, secp_ctx, is_holder_tx)?;
+		let tx = self.internal_rebuild_transaction(&per_commitment_point, signer, secp_ctx, is_holder_tx)?;
 		if self.built.transaction != tx.transaction || self.built.txid != tx.txid {
 			return Err(());
 		}

@@ -69,9 +69,10 @@ use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
 use crate::io::{self, Error};
+use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::msgs::DecodeError;
 use crate::prelude::*;
-use crate::sign::chan_utils::TxCreationKeys;
+use crate::sign::chan_utils::{get_commitment_transaction_number_obscure_factor, TxCreationKeys};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
@@ -1222,6 +1223,40 @@ pub trait ChannelSigner {
 			outputs.push(out.0);
 		}
 		Ok((outputs, sorted_htlcs))
+	}
+
+	/// Builds the input of a commitment transaction
+	fn build_inputs(&self, commitment_number: u64, is_holder_tx: bool) -> (u64, Vec<TxIn>) {
+		let params = if is_holder_tx {
+			self.get_channel_parameters().unwrap().as_holder_broadcastable()
+		} else {
+			self.get_channel_parameters().unwrap().as_counterparty_broadcastable()
+		};
+		let broadcaster_pubkeys = params.broadcaster_pubkeys();
+		let countersignatory_pubkeys = params.countersignatory_pubkeys();
+		let commitment_transaction_number_obscure_factor =
+			get_commitment_transaction_number_obscure_factor(
+				&broadcaster_pubkeys.payment_point,
+				&countersignatory_pubkeys.payment_point,
+				params.is_outbound(),
+			);
+
+		let obscured_commitment_transaction_number = commitment_transaction_number_obscure_factor
+			^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
+
+		let txins = {
+			let ins: Vec<TxIn> = vec![TxIn {
+				previous_output: params.funding_outpoint(),
+				script_sig: ScriptBuf::new(),
+				sequence: Sequence(
+					((0x80 as u32) << 8 * 3)
+						| ((obscured_commitment_transaction_number >> 3 * 8) as u32),
+				),
+				witness: Witness::new(),
+			}];
+			ins
+		};
+		(obscured_commitment_transaction_number, txins)
 	}
 }
 

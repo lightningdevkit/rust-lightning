@@ -435,7 +435,6 @@ impl Writeable for TestChannelSigner {
 impl TestChannelSigner {
 	fn verify_counterparty_commitment_tx<'a>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(
-			&self.inner.get_channel_parameters().unwrap().as_counterparty_broadcastable(),
 			secp_ctx,
 			self,
 			false,
@@ -444,7 +443,6 @@ impl TestChannelSigner {
 
 	fn verify_holder_commitment_tx<'a>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(
-			&self.inner.get_channel_parameters().unwrap().as_holder_broadcastable(),
 			secp_ctx,
 			self,
 			true,
