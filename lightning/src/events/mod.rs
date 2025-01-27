@@ -1190,12 +1190,12 @@ pub enum Event {
 		/// events generated or serialized by versions prior to 0.0.122.
 		next_user_channel_id: Option<u128>,
 		/// The node id of the previous node.
-		/// 
+		///
 		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
 		/// versions prior to 0.1
 		prev_node_id: Option<PublicKey>,
 		/// The node id of the next node.
-		/// 
+		///
 		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
 		/// versions prior to 0.1
 		next_node_id: Option<PublicKey>,
