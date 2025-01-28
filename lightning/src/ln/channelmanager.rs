@@ -48,7 +48,7 @@ use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFun
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel_state::ChannelDetails;
@@ -11646,30 +11646,25 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				for (_, chan) in peer_state.channel_by_id.iter_mut() {
-					match chan.as_funded_mut() {
-						Some(funded_chan) => {
-							let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
+					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
+						ReconnectionMsg::Reestablish(msg) =>
 							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-								node_id: funded_chan.context.get_counterparty_node_id(),
-								msg: funded_chan.get_channel_reestablish(&&logger),
-							});
-						},
-						None => match chan.maybe_get_open_channel(self.chain_hash, &self.logger) {
-							Some(OpenChannelMessage::V1(msg)) => {
-								pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-									node_id: chan.context().get_counterparty_node_id(),
-									msg,
-								});
-							},
-							#[cfg(dual_funding)]
-							Some(OpenChannelMessage::V2(msg)) => {
-								pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-									node_id: chan.context().get_counterparty_node_id(),
-									msg,
-								});
-							},
-							None => {},
-						},
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) =>
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						#[cfg(dual_funding)]
+						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) =>
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::None => {},
 					}
 				}
 			}
