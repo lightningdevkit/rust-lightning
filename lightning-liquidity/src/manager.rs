@@ -68,6 +68,45 @@ pub struct LiquidityClientConfig {
 	pub lsps2_client_config: Option<LSPS2ClientConfig>,
 }
 
+/// A trivial trait which describes any [`LiquidityManager`].
+///
+/// This is not exported to bindings users as general cover traits aren't useful in other
+/// languages.
+pub trait ALiquidityManager {
+	/// A type implementing [`EntropySource`]
+	type EntropySource: EntropySource + ?Sized;
+	/// A type that may be dereferenced to [`Self::EntropySource`].
+	type ES: Deref<Target = Self::EntropySource> + Clone;
+	/// A type implementing [`AChannelManager`]
+	type AChannelManager: AChannelManager + ?Sized;
+	/// A type that may be dereferenced to [`Self::AChannelManager`].
+	type CM: Deref<Target = Self::AChannelManager> + Clone;
+	/// A type implementing [`Filter`].
+	type Filter: Filter + ?Sized;
+	/// A type that may be dereferenced to [`Self::Filter`].
+	type C: Deref<Target = Self::Filter> + Clone;
+	/// Returns a reference to the actual [`LiquidityManager`] object.
+	fn get_lm(&self) -> &LiquidityManager<Self::ES, Self::CM, Self::C>;
+}
+
+impl<ES: Deref + Clone, CM: Deref + Clone, C: Deref + Clone> ALiquidityManager
+	for LiquidityManager<ES, CM, C>
+where
+	ES::Target: EntropySource,
+	CM::Target: AChannelManager,
+	C::Target: Filter,
+{
+	type EntropySource = ES::Target;
+	type ES = ES;
+	type AChannelManager = CM::Target;
+	type CM = CM;
+	type Filter = C::Target;
+	type C = C;
+	fn get_lm(&self) -> &LiquidityManager<ES, CM, C> {
+		self
+	}
+}
+
 /// The main interface into LSP functionality.
 ///
 /// Should be used as a [`CustomMessageHandler`] for your [`PeerManager`]'s [`MessageHandler`].
