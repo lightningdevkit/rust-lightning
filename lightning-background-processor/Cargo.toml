@@ -15,7 +15,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 futures = [ ]
-std = ["lightning/std", "bitcoin-io/std", "bitcoin_hashes/std"]
+std = ["lightning/std", "lightning-liquidity/std", "bitcoin-io/std", "bitcoin_hashes/std"]
 
 default = ["std"]
 
@@ -25,6 +25,7 @@ bitcoin_hashes = { version = "0.14.0", default-features = false }
 bitcoin-io = { version = "0.1.2", default-features = false }
 lightning = { version = "0.2.0", path = "../lightning", default-features = false }
 lightning-rapid-gossip-sync = { version = "0.2.0", path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning-liquidity = { version = "0.2.0", path = "../lightning-liquidity", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }
