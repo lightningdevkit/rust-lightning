@@ -10,7 +10,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource, ChannelMonitorUpdateStep};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
@@ -246,19 +246,19 @@ fn archive_fully_resolved_monitors() {
 
 	// At this point, both nodes have no more `Balance`s, but nodes[0]'s `ChannelMonitor` still
 	// hasn't had the `MonitorEvent` that contains the preimage claimed by the `ChannelManager`.
-	// Thus, calling `archive_fully_resolved_channel_monitors` and waiting 4032 blocks will not
-	// result in the `ChannelMonitor` being archived.
+	// Thus, calling `archive_fully_resolved_channel_monitors` and waiting `ARCHIVAL_DELAY_BLOCKS`
+	// blocks will not result in the `ChannelMonitor` being archived.
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
-	connect_blocks(&nodes[0], 4032);
+	connect_blocks(&nodes[0], ARCHIVAL_DELAY_BLOCKS);
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 
-	// ...however, nodes[1]'s `ChannelMonitor` is ready to be archived, and will be in exactly 4032
-	// blocks.
+	// ...however, nodes[1]'s `ChannelMonitor` is ready to be archived, and will be in exactly
+	// `ARCHIVAL_DELAY_BLOCKS` blocks.
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
-	connect_blocks(&nodes[1], 4031);
+	connect_blocks(&nodes[1], ARCHIVAL_DELAY_BLOCKS - 1);
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	connect_blocks(&nodes[1], 1);
@@ -266,11 +266,11 @@ fn archive_fully_resolved_monitors() {
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 0);
 
 	// Finally, we process the pending `MonitorEvent` from nodes[0], allowing the `ChannelMonitor`
-	// to be archived 4032 blocks later.
+	// to be archived `ARCHIVAL_DELAY_BLOCKS` blocks later.
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
-	connect_blocks(&nodes[0], 4031);
+	connect_blocks(&nodes[0], ARCHIVAL_DELAY_BLOCKS - 1);
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	connect_blocks(&nodes[0], 1);

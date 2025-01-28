@@ -256,6 +256,10 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 // solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
 // keep bumping another claim tx to solve the outpoint.
 pub const ANTI_REORG_DELAY: u32 = 6;
+/// Number of blocks we wait before assuming a [`ChannelMonitor`] to be fully resolved and
+/// considering it be safely archived.
+// 4032 blocks are roughly four weeks
+pub const ARCHIVAL_DELAY_BLOCKS: u32 = 4032;
 /// Number of blocks before confirmation at which we fail back an un-relayed HTLC or at which we
 /// refuse to accept a new HTLC.
 ///
@@ -1023,6 +1027,12 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 
 	/// The first block height at which we had no remaining claimable balances.
 	balances_empty_height: Option<u32>,
+
+	/// In-memory only HTLC ids used to track upstream HTLCs that have been failed backwards due to
+	/// a downstream channel force-close remaining unconfirmed by the time the upstream timeout
+	/// expires. This is used to tell us we already generated an event to fail this HTLC back
+	/// during a previous block scan.
+	failed_back_htlc_ids: HashSet<SentHTLCId>,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1445,6 +1455,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			counterparty_node_id: Some(counterparty_node_id),
 			initial_counterparty_commitment_info: None,
 			balances_empty_height: None,
+
+			failed_back_htlc_ids: new_hash_set(),
 		})
 	}
 
@@ -2015,10 +2027,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// This function returns a tuple of two booleans, the first indicating whether the monitor is
 	/// fully resolved, and the second whether the monitor needs persistence to ensure it is
-	/// reliably marked as resolved within 4032 blocks.
+	/// reliably marked as resolved within [`ARCHIVAL_DELAY_BLOCKS`] blocks.
 	///
-	/// The first boolean is true only if [`Self::get_claimable_balances`] has been empty for at least
-	/// 4032 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
+	/// The first boolean is true only if [`Self::get_claimable_balances`] has been empty for at
+	/// least [`ARCHIVAL_DELAY_BLOCKS`] blocks as an additional protection against any bugs
+	/// resulting in spuriously empty balance sets.
 	pub fn check_and_update_full_resolution_status<L: Logger>(&self, logger: &L) -> (bool, bool) {
 		let mut is_all_funds_claimed = self.get_claimable_balances().is_empty();
 		let current_height = self.current_best_block().height;
@@ -2034,11 +2047,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		// once processed, implies the preimage exists in the corresponding inbound channel.
 		let preimages_not_needed_elsewhere = inner.pending_monitor_events.is_empty();
 
-		const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 		match (inner.balances_empty_height, is_all_funds_claimed, preimages_not_needed_elsewhere) {
 			(Some(balances_empty_height), true, true) => {
 				// Claimed all funds, check if reached the blocks threshold.
-				(current_height >= balances_empty_height + BLOCKS_THRESHOLD, false)
+				(current_height >= balances_empty_height + ARCHIVAL_DELAY_BLOCKS, false)
 			},
 			(Some(_), false, _)|(Some(_), _, false) => {
 				// previously assumed we claimed all funds, but we have new funds to claim or
@@ -2058,7 +2070,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				// None. It is set to the current block height.
 				log_debug!(logger,
 					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
-					inner.get_funding_txo().0, BLOCKS_THRESHOLD);
+					inner.get_funding_txo().0, ARCHIVAL_DELAY_BLOCKS);
 				inner.balances_empty_height = Some(current_height);
 				(false, true)
 			},
@@ -3274,7 +3286,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain) && is_pre_close_update {
+		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed) && is_pre_close_update {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
@@ -4221,6 +4233,71 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		if self.lockdown_from_offchain || self.funding_spend_seen || self.holder_tx_signed {
+			// Fail back HTLCs on backwards channels if they expire within
+			// `LATENCY_GRACE_PERIOD_BLOCKS` blocks and the channel is closed (i.e. we're at a
+			// point where no further off-chain updates will be accepted). If we haven't seen the
+			// preimage for an HTLC by the time the previous hop's timeout expires, we've lost that
+			// HTLC, so we might as well fail it back instead of having our counterparty force-close
+			// the inbound channel.
+			let current_holder_htlcs = self.current_holder_commitment_tx.htlc_outputs.iter()
+				.map(|&(ref a, _, ref b)| (a, b.as_ref()));
+
+			let current_counterparty_htlcs = if let Some(txid) = self.current_counterparty_commitment_txid {
+				if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+					Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+				} else { None }
+			} else { None }.into_iter().flatten();
+
+			let prev_counterparty_htlcs = if let Some(txid) = self.prev_counterparty_commitment_txid {
+				if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&txid) {
+					Some(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))))
+				} else { None }
+			} else { None }.into_iter().flatten();
+
+			let htlcs = current_holder_htlcs
+				.chain(current_counterparty_htlcs)
+				.chain(prev_counterparty_htlcs);
+
+			let height = self.best_block.height;
+			for (htlc, source_opt) in htlcs {
+				// Only check forwarded HTLCs' previous hops
+				let source = match source_opt {
+					Some(source) => source,
+					None => continue,
+				};
+				let inbound_htlc_expiry = match source.inbound_htlc_expiry() {
+					Some(cltv_expiry) => cltv_expiry,
+					None => continue,
+				};
+				let max_expiry_height = height.saturating_add(LATENCY_GRACE_PERIOD_BLOCKS);
+				if inbound_htlc_expiry > max_expiry_height {
+					continue;
+				}
+				let duplicate_event = self.pending_monitor_events.iter().any(
+					|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+						upd.source == *source
+					} else { false });
+				if duplicate_event {
+					continue;
+				}
+				if !self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source)) {
+					continue;
+				}
+				if !duplicate_event {
+					log_error!(logger, "Failing back HTLC {} upstream to preserve the \
+						channel as the forward HTLC hasn't resolved and our backward HTLC \
+						expires soon at {}", log_bytes!(htlc.payment_hash.0), inbound_htlc_expiry);
+					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						source: source.clone(),
+						payment_preimage: None,
+						payment_hash: htlc.payment_hash,
+						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+					}));
+				}
+			}
+		}
+
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
 		self.onchain_tx_handler.update_claims_view_from_matched_txn(&txn_matched, conf_height, conf_hash, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
@@ -5066,6 +5143,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			counterparty_node_id,
 			initial_counterparty_commitment_info,
 			balances_empty_height,
+			failed_back_htlc_ids: new_hash_set(),
 		})))
 	}
 }
@@ -5092,7 +5170,7 @@ mod tests {
 	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 
 	use super::ChannelMonitorUpdateStep;
-	use crate::{check_added_monitors, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
+	use crate::{check_added_monitors, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash};
 	use crate::chain::{BestBlock, Confirm};
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
@@ -5102,10 +5180,9 @@ mod tests {
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint, RevocationKey};
 	use crate::ln::chan_utils::{self,HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};
+	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
-	use crate::util::errors::APIError;
 	use crate::util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::logger::Logger;
@@ -5166,9 +5243,9 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
-		unwrap_send_err!(nodes[1].node.send_payment_with_route(route, payment_hash,
-				RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
-			), false, APIError::MonitorUpdateInProgress, {});
+		nodes[1].node.send_payment_with_route(route, payment_hash,
+			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
+		).unwrap();
 		check_added_monitors!(nodes[1], 1);
 
 		// Build a new ChannelMonitorUpdate which contains both the failing commitment tx update

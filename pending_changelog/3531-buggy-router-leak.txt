@@ -1,0 +1,4 @@
+## Bug Fixes
+
+* Fixed a rare case where a custom router returning a buggy route could result in holding onto a
+	pending payment forever and in some cases failing to generate a PaymentFailed event (#3531).

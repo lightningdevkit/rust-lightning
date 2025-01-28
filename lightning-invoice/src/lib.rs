@@ -48,6 +48,7 @@ use core::iter::FilterMap;
 use core::num::ParseIntError;
 use core::ops::Deref;
 use core::slice::Iter;
+use core::str::FromStr;
 use core::time::Duration;
 
 #[cfg(feature = "serde")]
@@ -78,8 +79,12 @@ use crate::prelude::*;
 /// Re-export serialization traits
 #[cfg(fuzzing)]
 pub use crate::de::FromBase32;
+#[cfg(not(fuzzing))]
+use crate::de::FromBase32;
 #[cfg(fuzzing)]
 pub use crate::ser::Base32Iterable;
+#[cfg(not(fuzzing))]
+use crate::ser::Base32Iterable;
 
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
@@ -1086,9 +1091,6 @@ impl RawBolt11Invoice {
 
 	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
-		#[cfg(not(fuzzing))]
-		use crate::ser::Base32Iterable;
-
 		Self::hash_from_parts(self.hrp.to_string().as_bytes(), self.data.fe_iter())
 	}
 
@@ -1188,6 +1190,21 @@ impl RawBolt11Invoice {
 
 	pub fn currency(&self) -> Currency {
 		self.hrp.currency.clone()
+	}
+
+	/// Convert to HRP prefix and Fe32 encoded data part.
+	/// Can be used to transmit unsigned invoices for remote signing.
+	pub fn to_raw(&self) -> (String, Vec<Fe32>) {
+		(self.hrp.to_string(), self.data.fe_iter().collect())
+	}
+
+	/// Convert from HRP prefix and Fe32 encoded data part.
+	/// Can be used to receive unsigned invoices for remote signing.
+	pub fn from_raw(hrp: &str, data: &[Fe32]) -> Result<Self, Bolt11ParseError> {
+		let raw_hrp: RawHrp = RawHrp::from_str(hrp)?;
+		let data_part = RawDataPart::from_base32(data)?;
+
+		Ok(Self { hrp: raw_hrp, data: data_part })
 	}
 }
 
