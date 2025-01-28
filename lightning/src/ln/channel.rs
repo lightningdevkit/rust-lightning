@@ -933,6 +933,13 @@ pub(super) struct ReestablishResponses {
 	pub shutdown_msg: Option<msgs::Shutdown>,
 }
 
+/// The first message we send to our peer after connection
+pub(super) enum ReconnectionMsg {
+	Reestablish(msgs::ChannelReestablish),
+	Open(OpenChannelMessage),
+	None,
+}
+
 /// The result of a shutdown that should be handled.
 #[must_use]
 pub(crate) struct ShutdownResult {
@@ -1266,8 +1273,7 @@ impl<SP: Deref> Channel<SP> where
 				})
 			},
 			ChannelPhase::UnfundedInboundV1(chan) => {
-				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let accept_channel = chan.signer_maybe_unblocked(&&logger);
+				let accept_channel = chan.signer_maybe_unblocked(logger);
 				Some(SignerResumeUpdates {
 					commitment_update: None,
 					revoke_and_ack: None,
@@ -1286,51 +1292,62 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn is_resumable(&self) -> bool {
-		match &self.phase {
+	/// Should be called when the peer is disconnected. Returns true if the channel can be resumed
+	/// when the peer reconnects (via [`Self::peer_connected_get_handshake`]). If not, the channel
+	/// must be immediately closed.
+	pub fn peer_disconnected_is_resumable<L: Deref>(&mut self, logger: &L) -> bool where L::Target: Logger {
+		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(_) => false,
+			ChannelPhase::Funded(chan) => chan.remove_uncommitted_htlcs_and_mark_paused(logger).is_ok(),
+			// If we get disconnected and haven't yet committed to a funding
+			// transaction, we can replay the `open_channel` on reconnection, so don't
+			// bother dropping the channel here. However, if we already committed to
+			// the funding transaction we don't yet support replaying the funding
+			// handshake (and bailing if the peer rejects it), so we force-close in
+			// that case.
 			ChannelPhase::UnfundedOutboundV1(chan) => chan.is_resumable(),
 			ChannelPhase::UnfundedInboundV1(_) => false,
 			ChannelPhase::UnfundedV2(_) => false,
 		}
 	}
 
-	pub fn maybe_get_open_channel<L: Deref>(
+	/// Should be called when the peer re-connects, returning an initial message which we should
+	/// send our peer to begin the channel reconnection process.
+	pub fn peer_connected_get_handshake<L: Deref>(
 		&mut self, chain_hash: ChainHash, logger: &L,
-	) -> Option<OpenChannelMessage> where L::Target: Logger {
+	) -> ReconnectionMsg where L::Target: Logger {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(_) => None,
+			ChannelPhase::Funded(chan) =>
+				ReconnectionMsg::Reestablish(chan.get_channel_reestablish(logger)),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
-				let logger = WithChannelContext::from(logger, &chan.context, None);
-				chan.get_open_channel(chain_hash, &&logger)
-					.map(|msg| OpenChannelMessage::V1(msg))
+				chan.get_open_channel(chain_hash, logger)
+					.map(|msg| ReconnectionMsg::Open(OpenChannelMessage::V1(msg)))
+					.unwrap_or(ReconnectionMsg::None)
 			},
 			ChannelPhase::UnfundedInboundV1(_) => {
 				// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 				// they are not persisted and won't be recovered after a crash.
 				// Therefore, they shouldn't exist at this point.
 				debug_assert!(false);
-				None
+				ReconnectionMsg::None
 			},
 			#[cfg(dual_funding)]
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.context.is_outbound() {
-					Some(OpenChannelMessage::V2(chan.get_open_channel_v2(chain_hash)))
+					ReconnectionMsg::Open(OpenChannelMessage::V2(
+						chan.get_open_channel_v2(chain_hash)
+					))
 				} else {
 					// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 					// they are not persisted and won't be recovered after a crash.
 					// Therefore, they shouldn't exist at this point.
 					debug_assert!(false);
-					None
+					ReconnectionMsg::None
 				}
 			},
 			#[cfg(not(dual_funding))]
-			ChannelPhase::UnfundedV2(_) => {
-				debug_assert!(false);
-				None
-			},
+			ChannelPhase::UnfundedV2(_) => ReconnectionMsg::None,
 		}
 	}
 
@@ -6118,7 +6135,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// No further message handling calls may be made until a channel_reestablish dance has
 	/// completed.
 	/// May return `Err(())`, which implies [`ChannelContext::force_shutdown`] should be called immediately.
-	pub fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
+	fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Result<(), ()> where L::Target: Logger {
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
 		if self.context.channel_state.is_pre_funded_state() {
 			return Err(())
@@ -8045,7 +8062,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
-	pub fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
+	fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
 		assert!(self.context.channel_state.is_peer_disconnected());
 		assert_ne!(self.context.cur_counterparty_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		// This is generally the first function which gets called on any given channel once we're

@@ -48,7 +48,7 @@ use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFun
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::channel::PendingV2Channel;
 use crate::ln::channel_state::ChannelDetails;
@@ -6540,12 +6540,11 @@ where
 								chan.context_mut().maybe_expire_prev_config();
 								let unfunded_context = chan.unfunded_context_mut().expect("channel should be unfunded");
 								if unfunded_context.should_expire_unfunded_channel() {
-									let context = chan.context();
+									let context = chan.context_mut();
 									let logger = WithChannelContext::from(&self.logger, context, None);
 									log_error!(logger,
 										"Force-closing pending channel with ID {} for not establishing in a timely manner",
 										context.channel_id());
-									let context = chan.context_mut();
 									let mut close_res = context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
 									locked_close_channel!(self, peer_state, context, close_res);
 									shutdown_channels.push(close_res);
@@ -9401,49 +9400,65 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Returns whether we should remove this channel as it's just been closed.
 		let unblock_chan = |chan: &mut Channel<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
+			let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 			let node_id = chan.context().get_counterparty_node_id();
-			match (chan.signer_maybe_unblocked(self.chain_hash, &self.logger), chan.as_funded()) {
-				(Some(msgs), Some(funded_chan)) => {
-					let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
-						node_id,
-						updates,
-					});
-					let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+			if let Some(msgs) = chan.signer_maybe_unblocked(self.chain_hash, &&logger) {
+				if let Some(msg) = msgs.open_channel {
+					pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 						node_id,
 						msg,
 					});
-					match (cu_msg, raa_msg) {
-						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
-							pending_msg_events.push(cu);
-							pending_msg_events.push(raa);
-						},
-						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
-							pending_msg_events.push(raa);
-							pending_msg_events.push(cu);
-						},
-						(Some(cu), _) => pending_msg_events.push(cu),
-						(_, Some(raa)) => pending_msg_events.push(raa),
-						(_, _) => {},
-					}
-					if let Some(msg) = msgs.funding_signed {
-						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-							node_id,
-							msg,
-						});
-					}
+				}
+				if let Some(msg) = msgs.funding_created {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.accept_channel {
+					pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+						node_id,
+						msg,
+					});
+				}
+				let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
+					node_id,
+					updates,
+				});
+				let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+					node_id,
+					msg,
+				});
+				match (cu_msg, raa_msg) {
+					(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+						pending_msg_events.push(cu);
+						pending_msg_events.push(raa);
+					},
+					(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+						pending_msg_events.push(raa);
+						pending_msg_events.push(cu);
+					},
+					(Some(cu), _) => pending_msg_events.push(cu),
+					(_, Some(raa)) => pending_msg_events.push(raa),
+					(_, _) => {},
+				}
+				if let Some(msg) = msgs.funding_signed {
+					pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(msg) = msgs.closing_signed {
+					pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+						node_id,
+						msg,
+					});
+				}
+				if let Some(funded_chan) = chan.as_funded() {
 					if let Some(msg) = msgs.channel_ready {
 						send_channel_ready!(self, pending_msg_events, funded_chan, msg);
 					}
-					if let Some(msg) = msgs.closing_signed {
-						pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-							node_id,
-							msg,
-						});
-					}
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
-						let channel_id = funded_chan.context.channel_id();
-						let counterparty_node_id = funded_chan.context.get_counterparty_node_id();
-						let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
 						self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
 
@@ -9453,30 +9468,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 						}
 					}
-					msgs.shutdown_result
-				},
-				(Some(msgs), None) => {
-					if let Some(msg) = msgs.open_channel {
-						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-							node_id,
-							msg,
-						});
-					}
-					if let Some(msg) = msgs.funding_created {
-						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-							node_id,
-							msg,
-						});
-					}
-					if let Some(msg) = msgs.accept_channel {
-						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-							node_id,
-							msg,
-						});
-					}
-					None
+				} else {
+					// We don't know how to handle a channel_ready or signed_closing_tx for a
+					// non-funded channel.
+					debug_assert!(msgs.channel_ready.is_none());
+					debug_assert!(msgs.signed_closing_tx.is_none());
 				}
-				(None, _) => None,
+				msgs.shutdown_result
+			} else {
+				None
 			}
 		};
 
@@ -11528,26 +11528,10 @@ where
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				peer_state.channel_by_id.retain(|_, chan| {
-					match chan.as_funded_mut() {
-						Some(funded_chan) => {
-							let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
-							if funded_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger).is_ok() {
-								// We only retain funded channels that are not shutdown.
-								return true;
-							}
-						},
-						// If we get disconnected and haven't yet committed to a funding
-						// transaction, we can replay the `open_channel` on reconnection, so don't
-						// bother dropping the channel here. However, if we already committed to
-						// the funding transaction we don't yet support replaying the funding
-						// handshake (and bailing if the peer rejects it), so we force-close in
-						// that case.
-						None => {
-							if chan.is_resumable() {
-								return true;
-							}
-						},
-					};
+					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+					if chan.peer_disconnected_is_resumable(&&logger) {
+						return true;
+					}
 					// Clean up for removal.
 					let context = chan.context_mut();
 					let mut close_res = context.force_shutdown(false, ClosureReason::DisconnectedPeer);
@@ -11691,30 +11675,25 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				for (_, chan) in peer_state.channel_by_id.iter_mut() {
-					match chan.as_funded_mut() {
-						Some(funded_chan) => {
-							let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
+					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
+						ReconnectionMsg::Reestablish(msg) =>
 							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-								node_id: funded_chan.context.get_counterparty_node_id(),
-								msg: funded_chan.get_channel_reestablish(&&logger),
-							});
-						},
-						None => match chan.maybe_get_open_channel(self.chain_hash, &self.logger) {
-							Some(OpenChannelMessage::V1(msg)) => {
-								pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-									node_id: chan.context().get_counterparty_node_id(),
-									msg,
-								});
-							},
-							#[cfg(dual_funding)]
-							Some(OpenChannelMessage::V2(msg)) => {
-								pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-									node_id: chan.context().get_counterparty_node_id(),
-									msg,
-								});
-							},
-							None => {},
-						},
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) =>
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						#[cfg(dual_funding)]
+						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) =>
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::None => {},
 					}
 				}
 			}
