@@ -533,10 +533,10 @@ pub(crate) struct WatchtowerPersister {
 	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the justice tx
 	/// amount, and commitment number so we can build the justice tx after our counterparty
 	/// revokes it.
-	unsigned_justice_tx_data: Mutex<HashMap<OutPoint, VecDeque<JusticeTxData>>>,
+	unsigned_justice_tx_data: Mutex<HashMap<ChannelId, VecDeque<JusticeTxData>>>,
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
-	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
+	watchtower_state: Mutex<HashMap<ChannelId, HashMap<Txid, Transaction>>>,
 	destination_script: ScriptBuf,
 }
 
@@ -556,12 +556,12 @@ impl WatchtowerPersister {
 
 	#[cfg(test)]
 	pub(crate) fn justice_tx(
-		&self, funding_txo: OutPoint, commitment_txid: &Txid,
+		&self, channel_id: ChannelId, commitment_txid: &Txid,
 	) -> Option<Transaction> {
 		self.watchtower_state
 			.lock()
 			.unwrap()
-			.get(&funding_txo)
+			.get(&channel_id)
 			.unwrap()
 			.get(commitment_txid)
 			.cloned()
@@ -596,13 +596,13 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 			.unsigned_justice_tx_data
 			.lock()
 			.unwrap()
-			.insert(funding_txo, VecDeque::new())
+			.insert(data.channel_id(), VecDeque::new())
 			.is_none());
 		assert!(self
 			.watchtower_state
 			.lock()
 			.unwrap()
-			.insert(funding_txo, new_hash_map())
+			.insert(data.channel_id(), new_hash_map())
 			.is_none());
 
 		let initial_counterparty_commitment_tx =
@@ -613,7 +613,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 			self.unsigned_justice_tx_data
 				.lock()
 				.unwrap()
-				.get_mut(&funding_txo)
+				.get_mut(&data.channel_id())
 				.unwrap()
 				.push_back(justice_data);
 		}
@@ -632,7 +632,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 				.into_iter()
 				.filter_map(|commitment_tx| self.form_justice_data_from_commitment(&commitment_tx));
 			let mut channels_justice_txs = self.unsigned_justice_tx_data.lock().unwrap();
-			let channel_state = channels_justice_txs.get_mut(&funding_txo).unwrap();
+			let channel_state = channels_justice_txs.get_mut(&data.channel_id()).unwrap();
 			channel_state.extend(justice_datas);
 
 			while let Some(JusticeTxData { justice_tx, value, commitment_number }) =
@@ -651,7 +651,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 							.watchtower_state
 							.lock()
 							.unwrap()
-							.get_mut(&funding_txo)
+							.get_mut(&data.channel_id())
 							.unwrap()
 							.insert(commitment_txid, signed_justice_tx);
 						assert!(dup.is_none());
