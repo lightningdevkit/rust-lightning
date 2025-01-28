@@ -1,6 +1,6 @@
 [package]
 name = "lightning-dns-resolver"
-version = "0.1.0"
+version = "0.3.0+git"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
@@ -8,12 +8,12 @@ description = "A crate which implements DNSSEC resolution for lightning clients 
 edition = "2021"
 
 [dependencies]
-lightning = { version = "0.0.124", path = "../lightning", default-features = false }
-lightning-types = { version = "0.1", path = "../lightning-types", default-features = false }
+lightning = { version = "0.2.0", path = "../lightning", default-features = false }
+lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
 dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }
 tokio = { version = "1.0", default-features = false, features = ["rt"] }
 
 [dev-dependencies]
 bitcoin = { version = "0.32" }
 tokio = { version = "1.0", default-features = false, features = ["macros", "time"] }
-lightning = { version = "0.0.124", path = "../lightning", features = ["dnssec", "_test_utils"] }
+lightning = { version = "0.2.0", path = "../lightning", features = ["dnssec", "_test_utils"] }
