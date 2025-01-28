@@ -25,7 +25,6 @@ use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_me
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
-	SIGNATURE_TLV_RECORD_SIZE,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
@@ -288,16 +287,8 @@ impl UnsignedStaticInvoice {
 	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
 		let (_, invoice_tlv_stream, _, experimental_invoice_tlv_stream) = contents.as_tlv_stream();
 
-		// Allocate enough space for the invoice, which will include:
-		// - all TLV records from `offer_bytes`,
-		// - all invoice-specific TLV records, and
-		// - a signature TLV record once the invoice is signed.
-		let mut bytes = Vec::with_capacity(
-			offer_bytes.len()
-				+ invoice_tlv_stream.serialized_length()
-				+ SIGNATURE_TLV_RECORD_SIZE
-				+ experimental_invoice_tlv_stream.serialized_length(),
-		);
+		const INVOICE_ALLOCATION_SIZE: usize = 1024;
+		let mut bytes = Vec::with_capacity(INVOICE_ALLOCATION_SIZE);
 
 		// Use the offer bytes instead of the offer TLV stream as the latter may have contained
 		// unknown TLV records, which are not stored in `InvoiceContents`.
@@ -309,22 +300,16 @@ impl UnsignedStaticInvoice {
 
 		invoice_tlv_stream.write(&mut bytes).unwrap();
 
-		let mut experimental_tlv_stream =
-			TlvStream::new(remaining_bytes).range(EXPERIMENTAL_OFFER_TYPES).peekable();
-		let mut experimental_bytes = Vec::with_capacity(
-			remaining_bytes.len()
-				- experimental_tlv_stream
-					.peek()
-					.map_or(remaining_bytes.len(), |first_record| first_record.start)
-				+ experimental_invoice_tlv_stream.serialized_length(),
-		);
+		const EXPERIMENTAL_TLV_ALLOCATION_SIZE: usize = 0;
+		let mut experimental_bytes = Vec::with_capacity(EXPERIMENTAL_TLV_ALLOCATION_SIZE);
 
+		let experimental_tlv_stream =
+			TlvStream::new(remaining_bytes).range(EXPERIMENTAL_OFFER_TYPES);
 		for record in experimental_tlv_stream {
 			record.write(&mut experimental_bytes).unwrap();
 		}
 
 		experimental_invoice_tlv_stream.write(&mut experimental_bytes).unwrap();
-		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
 
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
@@ -344,12 +329,6 @@ impl UnsignedStaticInvoice {
 		signature_tlv_stream.write(&mut self.bytes).unwrap();
 
 		// Append the experimental bytes after the signature.
-		debug_assert_eq!(
-			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
-			// records with types >= 253.
-			self.bytes.len() + self.experimental_bytes.len() + 2,
-			self.bytes.capacity(),
-		);
 		self.bytes.extend_from_slice(&self.experimental_bytes);
 
 		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
