@@ -42,6 +42,8 @@ use lightning::util::persist::Persister;
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
+use lightning_liquidity::ALiquidityManager;
+
 use core::ops::Deref;
 use core::time::Duration;
 
@@ -494,27 +496,31 @@ pub(crate) mod futures_util {
 		A: Future<Output = ()> + Unpin,
 		B: Future<Output = ()> + Unpin,
 		C: Future<Output = ()> + Unpin,
-		D: Future<Output = bool> + Unpin,
+		D: Future<Output = ()> + Unpin,
+		E: Future<Output = bool> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
 		pub c: C,
 		pub d: D,
+		pub e: E,
 	}
 
 	pub(crate) enum SelectorOutput {
 		A,
 		B,
 		C,
-		D(bool),
+		D,
+		E(bool),
 	}
 
 	impl<
 			A: Future<Output = ()> + Unpin,
 			B: Future<Output = ()> + Unpin,
 			C: Future<Output = ()> + Unpin,
-			D: Future<Output = bool> + Unpin,
-		> Future for Selector<A, B, C, D>
+			D: Future<Output = ()> + Unpin,
+			E: Future<Output = bool> + Unpin,
+		> Future for Selector<A, B, C, D, E>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -539,8 +545,14 @@ pub(crate) mod futures_util {
 				Poll::Pending => {},
 			}
 			match Pin::new(&mut self.d).poll(ctx) {
+				Poll::Ready(()) => {
+					return Poll::Ready(SelectorOutput::D);
+				},
+				Poll::Pending => {},
+			}
+			match Pin::new(&mut self.e).poll(ctx) {
 				Poll::Ready(res) => {
-					return Poll::Ready(SelectorOutput::D(res));
+					return Poll::Ready(SelectorOutput::E(res));
 				},
 				Poll::Pending => {},
 			}
@@ -645,6 +657,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
+/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<F>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger>;
 /// #
@@ -658,6 +671,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// #     event_handler: Arc<EventHandler>,
 /// #     channel_manager: Arc<ChannelManager<B, F, FE>>,
 /// #     onion_messenger: Arc<OnionMessenger<B, F, FE>>,
+/// #     liquidity_manager: Arc<LiquidityManager<B, F, FE>>,
 /// #     chain_monitor: Arc<ChainMonitor<B, F, FE>>,
 /// #     gossip_sync: Arc<P2PGossipSync<UL>>,
 /// #     persister: Arc<Store>,
@@ -678,25 +692,34 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///	let background_gossip_sync = GossipSync::p2p(Arc::clone(&node.gossip_sync));
 ///	let background_peer_man = Arc::clone(&node.peer_manager);
 ///	let background_onion_messenger = Arc::clone(&node.onion_messenger);
+///	let background_liquidity_manager = Arc::clone(&node.liquidity_manager);
 ///	let background_logger = Arc::clone(&node.logger);
 ///	let background_scorer = Arc::clone(&node.scorer);
 ///
 ///	// Setup the sleeper.
-///	let (stop_sender, stop_receiver) = tokio::sync::watch::channel(());
-///
+#[cfg_attr(
+	feature = "std",
+	doc = "	let (stop_sender, stop_receiver) = tokio::sync::watch::channel(());"
+)]
+#[cfg_attr(feature = "std", doc = "")]
 ///	let sleeper = move |d| {
-///		let mut receiver = stop_receiver.clone();
+#[cfg_attr(feature = "std", doc = "		let mut receiver = stop_receiver.clone();")]
 ///		Box::pin(async move {
 ///			tokio::select!{
 ///				_ = tokio::time::sleep(d) => false,
-///				_ = receiver.changed() => true,
+#[cfg_attr(feature = "std", doc = "				_ = receiver.changed() => true,")]
 ///			}
 ///		})
 ///	};
 ///
 ///	let mobile_interruptable_platform = false;
 ///
-///	let handle = tokio::spawn(async move {
+#[cfg_attr(feature = "std", doc = "	let handle = tokio::spawn(async move {")]
+#[cfg_attr(
+	not(feature = "std"),
+	doc = "	let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();"
+)]
+#[cfg_attr(not(feature = "std"), doc = "	rt.block_on(async move {")]
 ///		process_events_async(
 ///			background_persister,
 ///			|e| background_event_handler.handle_event(e),
@@ -705,6 +728,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///			Some(background_onion_messenger),
 ///			background_gossip_sync,
 ///			background_peer_man,
+///			Some(background_liquidity_manager),
 ///			background_logger,
 ///			Some(background_scorer),
 ///			sleeper,
@@ -716,8 +740,8 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///	});
 ///
 ///	// Stop the background processing.
-///	stop_sender.send(()).unwrap();
-///	handle.await.unwrap();
+#[cfg_attr(feature = "std", doc = "	stop_sender.send(()).unwrap();")]
+#[cfg_attr(feature = "std", doc = "	handle.await.unwrap()")]
 ///	# }
 ///```
 #[cfg(feature = "futures")]
@@ -742,6 +766,7 @@ pub async fn process_events_async<
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	PM: 'static + Deref + Send + Sync,
+	LM: 'static + Deref,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
@@ -750,8 +775,8 @@ pub async fn process_events_async<
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-	logger: L, scorer: Option<S>, sleeper: Sleeper, mobile_interruptable_platform: bool,
-	fetch_time: FetchTime,
+	liquidity_manager: Option<LM>, logger: L, scorer: Option<S>, sleeper: Sleeper,
+	mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
@@ -764,6 +789,7 @@ where
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
+	LM::Target: ALiquidityManager,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -817,19 +843,26 @@ where
 			} else {
 				OptionalSelector { optional_future: None }
 			};
+			let lm_fut = if let Some(lm) = liquidity_manager.as_ref() {
+				let fut = lm.get_lm().get_pending_msgs_future();
+				OptionalSelector { optional_future: Some(fut) }
+			} else {
+				OptionalSelector { optional_future: None }
+			};
 			let fut = Selector {
 				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
 				b: chain_monitor.get_update_future(),
 				c: om_fut,
-				d: sleeper(if mobile_interruptable_platform {
+				d: lm_fut,
+				e: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
 				} else {
 					Duration::from_secs(FASTEST_TIMER)
 				}),
 			};
 			match fut.await {
-				SelectorOutput::A | SelectorOutput::B | SelectorOutput::C => {},
-				SelectorOutput::D(exit) => {
+				SelectorOutput::A | SelectorOutput::B | SelectorOutput::C | SelectorOutput::D => {},
+				SelectorOutput::E(exit) => {
 					should_break = exit;
 				},
 			}
@@ -917,12 +950,13 @@ impl BackgroundProcessor {
 		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		PM: 'static + Deref + Send + Sync,
+		LM: 'static + Deref + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-		logger: L, scorer: Option<S>,
+		liquidity_manager: Option<LM>, logger: L, scorer: Option<S>,
 	) -> Self
 	where
 		UL::Target: 'static + UtxoLookup,
@@ -935,6 +969,7 @@ impl BackgroundProcessor {
 		CM::Target: AChannelManager + Send + Sync,
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
+		LM::Target: ALiquidityManager + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -974,17 +1009,27 @@ impl BackgroundProcessor {
 				scorer,
 				stop_thread.load(Ordering::Acquire),
 				{
-					let sleeper = if let Some(om) = onion_messenger.as_ref() {
-						Sleeper::from_three_futures(
+					let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
+						(Some(om), Some(lm)) => Sleeper::from_four_futures(
 							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 							&chain_monitor.get_update_future(),
 							&om.get_om().get_update_future(),
-						)
-					} else {
-						Sleeper::from_two_futures(
+							&lm.get_lm().get_pending_msgs_future(),
+						),
+						(Some(om), None) => Sleeper::from_three_futures(
 							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 							&chain_monitor.get_update_future(),
-						)
+							&om.get_om().get_update_future(),
+						),
+						(None, Some(lm)) => Sleeper::from_three_futures(
+							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+							&chain_monitor.get_update_future(),
+							&lm.get_lm().get_pending_msgs_future(),
+						),
+						(None, None) => Sleeper::from_two_futures(
+							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+							&chain_monitor.get_update_future(),
+						),
 					};
 					sleeper.wait_timeout(Duration::from_millis(100));
 				},
@@ -1097,6 +1142,7 @@ mod tests {
 	use lightning::util::sweep::{OutputSpendStatus, OutputSweeper, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
+	use lightning_liquidity::LiquidityManager;
 	use lightning_persister::fs_store::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use std::collections::VecDeque;
@@ -1191,6 +1237,9 @@ mod tests {
 		IgnoringMessageHandler,
 	>;
 
+	type LM =
+		LiquidityManager<Arc<KeysManager>, Arc<ChannelManager>, Arc<dyn Filter + Sync + Send>>;
+
 	struct Node {
 		node: Arc<ChannelManager>,
 		messenger: Arc<OM>,
@@ -1207,6 +1256,7 @@ mod tests {
 				Arc<KeysManager>,
 			>,
 		>,
+		liquidity_manager: Arc<LM>,
 		chain_monitor: Arc<ChainMonitor>,
 		kv_store: Arc<FilesystemStore>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
@@ -1626,11 +1676,20 @@ mod tests {
 				logger.clone(),
 				keys_manager.clone(),
 			));
+			let liquidity_manager = Arc::new(LiquidityManager::new(
+				Arc::clone(&keys_manager),
+				Arc::clone(&manager),
+				None,
+				None,
+				None,
+				None,
+			));
 			let node = Node {
 				node: manager,
 				p2p_gossip_sync,
 				rapid_gossip_sync,
 				peer_manager,
+				liquidity_manager,
 				chain_monitor,
 				kv_store,
 				tx_broadcaster,
@@ -1828,6 +1887,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1921,6 +1981,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1963,6 +2024,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1995,6 +2057,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2031,6 +2094,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2060,6 +2124,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2106,6 +2171,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2168,6 +2234,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2319,6 +2386,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2348,6 +2416,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2443,6 +2512,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2475,6 +2545,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2637,6 +2708,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2687,6 +2759,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
