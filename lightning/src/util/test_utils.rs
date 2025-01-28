@@ -51,7 +51,7 @@ use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::config::UserConfig;
 use crate::util::logger::{Logger, Record};
-use crate::util::persist::KVStore;
+use crate::util::persist::{KVStore, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
@@ -588,9 +588,9 @@ impl WatchtowerPersister {
 #[cfg(test)]
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
-		&self, funding_txo: OutPoint, data: &ChannelMonitor<Signer>,
+		&self, monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = self.persister.persist_new_channel(funding_txo, data);
+		let res = self.persister.persist_new_channel(monitor_name, data);
 
 		assert!(self
 			.unsigned_justice_tx_data
@@ -621,10 +621,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = self.persister.update_persisted_channel(funding_txo, update, data);
+		let res = self.persister.update_persisted_channel(monitor_name, update, data);
 
 		if let Some(update) = update {
 			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
@@ -664,10 +664,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 		res
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		<TestPersister as Persist<TestChannelSigner>>::archive_persisted_channel(
 			&self.persister,
-			funding_txo,
+			monitor_name,
 		);
 	}
 }
@@ -678,10 +678,10 @@ pub struct TestPersister {
 	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
 	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
 	/// [`ChannelMonitor::get_latest_update_id`] here.
-	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<u64>>>,
+	pub offchain_monitor_updates: Mutex<HashMap<MonitorName, HashSet<u64>>>,
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// monitor's funding outpoint here.
-	pub chain_sync_monitor_persistences: Mutex<VecDeque<OutPoint>>,
+	pub chain_sync_monitor_persistences: Mutex<VecDeque<MonitorName>>,
 }
 impl TestPersister {
 	pub fn new() -> Self {
@@ -698,7 +698,7 @@ impl TestPersister {
 }
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
 	fn persist_new_channel(
-		&self, _funding_txo: OutPoint, _data: &ChannelMonitor<Signer>,
+		&self, _monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret;
@@ -707,7 +707,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		_data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
@@ -719,19 +719,19 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 			self.offchain_monitor_updates
 				.lock()
 				.unwrap()
-				.entry(funding_txo)
+				.entry(monitor_name)
 				.or_insert(new_hash_set())
 				.insert(update.update_id);
 		} else {
-			self.chain_sync_monitor_persistences.lock().unwrap().push_back(funding_txo);
+			self.chain_sync_monitor_persistences.lock().unwrap().push_back(monitor_name);
 		}
 		ret
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		// remove the channel from the offchain_monitor_updates and chain_sync_monitor_persistences.
-		self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo);
-		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &funding_txo);
+		self.offchain_monitor_updates.lock().unwrap().remove(&monitor_name);
+		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &monitor_name);
 	}
 }
 

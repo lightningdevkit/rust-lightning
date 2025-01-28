@@ -261,9 +261,8 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 	// just shut down the node since we're not retrying persistence!
 
 	fn persist_new_channel(
-		&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>,
+		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let monitor_name = MonitorName::from(funding_txo);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -276,10 +275,9 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>,
+		&self, monitor_name: MonitorName, _update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let monitor_name = MonitorName::from(funding_txo);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -291,8 +289,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		}
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
-		let monitor_name = MonitorName::from(funding_txo);
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -335,21 +332,6 @@ where
 		CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	)? {
-		if stored_key.len() < 66 {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				"Stored key has invalid length",
-			));
-		}
-
-		let txid = Txid::from_str(stored_key.split_at(64).0).map_err(|_| {
-			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx ID in stored key")
-		})?;
-
-		let index: u16 = stored_key.split_at(65).1.parse().map_err(|_| {
-			io::Error::new(io::ErrorKind::InvalidData, "Invalid tx index in stored key")
-		})?;
-
 		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>::read(
 			&mut io::Cursor::new(kv_store.read(
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -359,14 +341,14 @@ where
 			(&*entropy_source, &*signer_provider),
 		) {
 			Ok((block_hash, channel_monitor)) => {
-				if channel_monitor.get_funding_txo().txid != txid
-					|| channel_monitor.get_funding_txo().index != index
-				{
+				let monitor_name = MonitorName::from_str(&stored_key)?;
+				if channel_monitor.persistence_key() != monitor_name {
 					return Err(io::Error::new(
 						io::ErrorKind::InvalidData,
 						"ChannelMonitor was stored under the wrong key",
 					));
 				}
+
 				res.push((block_hash, channel_monitor));
 			},
 			Err(_) => {
@@ -407,12 +389,13 @@ where
 ///   - [`Persist::update_persisted_channel`], which persists only a [`ChannelMonitorUpdate`]
 ///
 /// Whole [`ChannelMonitor`]s are stored in the [`CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE`],
-/// using the familiar encoding of an [`OutPoint`] (for example, `[SOME-64-CHAR-HEX-STRING]_1`).
+/// using the familiar encoding of an [`OutPoint`] (e.g., `[SOME-64-CHAR-HEX-STRING]_1`) for v1
+/// channels or a [`ChannelId`] (e.g., `[SOME-64-CHAR-HEX-STRING]`) for v2 channels.
 ///
 /// Each [`ChannelMonitorUpdate`] is stored in a dynamic secondary namespace, as follows:
 ///
 ///   - primary namespace: [`CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE`]
-///   - secondary namespace: [the monitor's encoded outpoint name]
+///   - secondary namespace: [the monitor's encoded outpoint or channel id name]
 ///
 /// Under that secondary namespace, each update is stored with a number string, like `21`, which
 /// represents its `update_id` value.
@@ -551,14 +534,16 @@ where
 	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
 	/// documentation for [`MonitorUpdatingPersister`].
 	///
-	/// For `monitor_key`, channel storage keys be the channel's transaction ID and index, or
-	/// [`OutPoint`], with an underscore `_` between them. For example, given:
+	/// For `monitor_key`, channel storage keys can be the channel's funding [`OutPoint`], with an
+	/// underscore `_` between txid and index for v1 channels. For example, given:
 	///
 	///   - Transaction ID: `deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef`
 	///   - Index: `1`
 	///
 	/// The correct `monitor_key` would be:
 	/// `deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1`
+	///
+	/// For v2 channels, the hex-encoded [`ChannelId`] is used directly for `monitor_key` instead.
 	///
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
@@ -605,15 +590,6 @@ where
 		&self, monitor_name: &MonitorName, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
-		let outpoint = match monitor_name {
-			MonitorName::V1Channel(outpoint) => outpoint,
-			MonitorName::V2Channel(_) => {
-				return Err(io::Error::new(
-					io::ErrorKind::InvalidData,
-					"Invalid outpoint in stored key",
-				))
-			},
-		};
 		let mut monitor_cursor = io::Cursor::new(self.kv_store.read(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -628,9 +604,7 @@ where
 			(&*self.entropy_source, &*self.signer_provider),
 		) {
 			Ok((blockhash, channel_monitor)) => {
-				if channel_monitor.get_funding_txo().txid != outpoint.txid
-					|| channel_monitor.get_funding_txo().index != outpoint.index
-				{
+				if channel_monitor.persistence_key() != *monitor_name {
 					log_error!(
 						self.logger,
 						"ChannelMonitor {} was stored under the wrong key!",
@@ -732,10 +706,9 @@ where
 	/// Persists a new channel. This means writing the entire monitor to the
 	/// parametrized [`KVStore`].
 	fn persist_new_channel(
-		&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>,
+		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		// Determine the proper key for this monitor
-		let monitor_name = MonitorName::from(funding_txo);
 		let monitor_key = monitor_name.to_string();
 		// Serialize and write the new monitor
 		let mut monitor_bytes = Vec::with_capacity(
@@ -774,7 +747,7 @@ where
 	///	    `update` is `None`.
 	///   - The update is at [`u64::MAX`], indicating an update generated by pre-0.1 LDK.
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
@@ -782,7 +755,6 @@ where
 			let persist_update = update.update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID
 				&& update.update_id % self.maximum_pending_updates != 0;
 			if persist_update {
-				let monitor_name = MonitorName::from(funding_txo);
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
 				match self.kv_store.write(
@@ -805,19 +777,18 @@ where
 					},
 				}
 			} else {
-				let monitor_name = MonitorName::from(funding_txo);
-				let monitor_key = monitor_name.to_string();
 				// In case of channel-close monitor update, we need to read old monitor before persisting
 				// the new one in order to determine the cleanup range.
 				let maybe_old_monitor = match monitor.get_latest_update_id() {
 					LEGACY_CLOSED_CHANNEL_UPDATE_ID => {
+						let monitor_key = monitor_name.to_string();
 						self.read_monitor(&monitor_name, &monitor_key).ok()
 					},
 					_ => None,
 				};
 
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
-				let monitor_update_status = self.persist_new_channel(funding_txo, monitor);
+				let monitor_update_status = self.persist_new_channel(monitor_name, monitor);
 
 				if let chain::ChannelMonitorUpdateStatus::Completed = monitor_update_status {
 					let channel_closed_legacy =
@@ -848,12 +819,11 @@ where
 			}
 		} else {
 			// There is no update given, so we must persist a new monitor.
-			self.persist_new_channel(funding_txo, monitor)
+			self.persist_new_channel(monitor_name, monitor)
 		}
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
-		let monitor_name = MonitorName::from(funding_txo);
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read_channel_monitor_with_updates(&monitor_key) {
 			Ok((_block_hash, monitor)) => monitor,
@@ -915,16 +885,15 @@ where
 /// in functions that store or retrieve [`ChannelMonitor`] snapshots.
 /// It provides a consistent way to generate a unique key for channel
 /// monitors based on the channel's funding [`OutPoint`] for v1 channels or
-/// [`ChannelId`] for v2 channels. The former uses the channel's funding
-/// outpoint for historical reasons. The latter uses the channel's id because
-/// the funding outpoint may change during splicing.
+/// [`ChannelId`] for v2 channels. Use [`ChannelMonitor::persistence_key`] to
+/// obtain the correct `MonitorName`.
 ///
 /// While users of the Lightning Dev Kit library generally won't need
 /// to interact with [`MonitorName`] directly, it can be useful for:
 /// - Custom persistence implementations
 /// - Debugging or logging channel monitor operations
 /// - Extending the functionality of the `MonitorUpdatingPersister`
-//
+///
 /// # Examples
 ///
 /// ```
@@ -953,7 +922,7 @@ where
 /// // Using MonitorName to generate a storage key
 /// let storage_key = format!("channel_monitors/{}", monitor_name);
 /// ```
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MonitorName {
 	/// The outpoint of the channel's funding transaction.
 	V1Channel(OutPoint),
@@ -1378,10 +1347,6 @@ mod tests {
 			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
 			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
-			let txid =
-				Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be")
-					.unwrap();
-			let test_txo = OutPoint { txid, index: 0 };
 
 			let ro_persister = MonitorUpdatingPersister {
 				kv_store: &TestStore::new(true),
@@ -1392,7 +1357,8 @@ mod tests {
 				broadcaster: node_cfgs[0].tx_broadcaster,
 				fee_estimator: node_cfgs[0].fee_estimator,
 			};
-			match ro_persister.persist_new_channel(test_txo, &added_monitors[0].1) {
+			let monitor_name = added_monitors[0].1.persistence_key();
+			match ro_persister.persist_new_channel(monitor_name, &added_monitors[0].1) {
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					// correct result
 				},
@@ -1403,7 +1369,11 @@ mod tests {
 					panic!("Returned InProgress when shouldn't have")
 				},
 			}
-			match ro_persister.update_persisted_channel(test_txo, Some(cmu), &added_monitors[0].1) {
+			match ro_persister.update_persisted_channel(
+				monitor_name,
+				Some(cmu),
+				&added_monitors[0].1,
+			) {
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					// correct result
 				},

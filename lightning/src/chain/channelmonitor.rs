@@ -48,6 +48,7 @@ use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
+use crate::util::persist::MonitorName;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
@@ -1463,6 +1464,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			failed_back_htlc_ids: new_hash_set(),
 		})
+	}
+
+	/// Returns a unique id for persisting the [`ChannelMonitor`], which is used as a key in a
+	/// key-value store.
+	///
+	/// Note: Previously, the funding outpoint was used in the [`Persist`] trait. However, since the
+	/// outpoint may change during splicing, this method is used to obtain a unique key instead. For
+	/// v1 channels, the funding outpoint is still used for backwards compatibility, whereas v2
+	/// channels use the channel id since it is fixed.
+	///
+	/// [`Persist`]: crate::chain::chainmonitor::Persist
+	pub fn persistence_key(&self) -> MonitorName {
+		let inner = self.inner.lock().unwrap();
+		let funding_outpoint = inner.first_confirmed_funding_txo;
+		let channel_id = inner.channel_id;
+		if ChannelId::v1_from_funding_outpoint(funding_outpoint) == channel_id {
+			MonitorName::from(funding_outpoint)
+		} else {
+			MonitorName::from(channel_id)
+		}
 	}
 
 	#[cfg(test)]
