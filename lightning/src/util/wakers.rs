@@ -266,6 +266,21 @@ impl Sleeper {
 			vec![Arc::clone(&fut_a.state), Arc::clone(&fut_b.state), Arc::clone(&fut_c.state)];
 		Self { notifiers }
 	}
+	/// Constructs a new sleeper from four futures, allowing blocking on all four at once.
+	///
+	// Note that this is another common case - a ChannelManager, a ChainMonitor, an
+	// OnionMessenger, and a LiquidityManager.
+	pub fn from_four_futures(
+		fut_a: &Future, fut_b: &Future, fut_c: &Future, fut_d: &Future,
+	) -> Self {
+		let notifiers = vec![
+			Arc::clone(&fut_a.state),
+			Arc::clone(&fut_b.state),
+			Arc::clone(&fut_c.state),
+			Arc::clone(&fut_d.state),
+		];
+		Self { notifiers }
+	}
 	/// Constructs a new sleeper on many futures, allowing blocking on all at once.
 	pub fn new(futures: Vec<Future>) -> Self {
 		Self { notifiers: futures.into_iter().map(|f| Arc::clone(&f.state)).collect() }
