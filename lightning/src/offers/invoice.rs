@@ -122,7 +122,7 @@ use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_me
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_request::{EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef, INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -520,19 +520,8 @@ impl UnsignedBolt12Invoice {
 		let (_, _, _, invoice_tlv_stream, _, _, experimental_invoice_tlv_stream) =
 			contents.as_tlv_stream();
 
-		// Allocate enough space for the invoice, which will include:
-		// - all TLV records from `invreq_bytes` except signatures,
-		// - all invoice-specific TLV records, and
-		// - a signature TLV record once the invoice is signed.
-		//
-		// This assumes both the invoice request and the invoice will each only have one signature
-		// using SIGNATURE_TYPES.start as the TLV record. Thus, it is accounted for by invreq_bytes.
-		let mut bytes = Vec::with_capacity(
-			invreq_bytes.len()
-				+ invoice_tlv_stream.serialized_length()
-				+ if contents.is_for_offer() { 0 } else { SIGNATURE_TLV_RECORD_SIZE }
-				+ experimental_invoice_tlv_stream.serialized_length(),
-		);
+		const INVOICE_ALLOCATION_SIZE: usize = 1024;
+		let mut bytes = Vec::with_capacity(INVOICE_ALLOCATION_SIZE);
 
 		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
 		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
@@ -545,23 +534,16 @@ impl UnsignedBolt12Invoice {
 
 		invoice_tlv_stream.write(&mut bytes).unwrap();
 
-		let mut experimental_tlv_stream = TlvStream::new(remaining_bytes)
-			.range(EXPERIMENTAL_TYPES)
-			.peekable();
-		let mut experimental_bytes = Vec::with_capacity(
-			remaining_bytes.len()
-				- experimental_tlv_stream
-					.peek()
-					.map_or(remaining_bytes.len(), |first_record| first_record.start)
-				+ experimental_invoice_tlv_stream.serialized_length(),
-		);
+		const EXPERIMENTAL_TLV_ALLOCATION_SIZE: usize = 0;
+		let mut experimental_bytes = Vec::with_capacity(EXPERIMENTAL_TLV_ALLOCATION_SIZE);
 
+		let experimental_tlv_stream = TlvStream::new(remaining_bytes)
+			.range(EXPERIMENTAL_TYPES);
 		for record in experimental_tlv_stream {
 			record.write(&mut experimental_bytes).unwrap();
 		}
 
 		experimental_invoice_tlv_stream.write(&mut experimental_bytes).unwrap();
-		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
 
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
@@ -592,14 +574,6 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
 
 		// Append the experimental bytes after the signature.
-		debug_assert_eq!(
-			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
-			// records with types >= 253.
-			$self.bytes.len()
-				+ $self.experimental_bytes.len()
-				+ if $self.contents.is_for_offer() { 0 } else { 2 },
-			$self.bytes.capacity(),
-		);
 		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
 		Ok(Bolt12Invoice {
@@ -965,13 +939,6 @@ impl Hash for Bolt12Invoice {
 }
 
 impl InvoiceContents {
-	fn is_for_offer(&self) -> bool {
-		match self {
-			InvoiceContents::ForOffer { .. } => true,
-			InvoiceContents::ForRefund { .. } => false,
-		}
-	}
-
 	/// Whether the original offer or refund has expired.
 	#[cfg(feature = "std")]
 	fn is_offer_or_refund_expired(&self) -> bool {
@@ -1362,7 +1329,11 @@ pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_0
 
 #[cfg(not(test))]
 tlv_stream!(
-	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES, {}
+	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES, {
+		// When adding experimental TLVs, update EXPERIMENTAL_TLV_ALLOCATION_SIZE accordingly in
+		// both UnsignedBolt12Invoice:new and UnsignedStaticInvoice::new to avoid unnecessary
+		// allocations.
+	}
 );
 
 #[cfg(test)]
