@@ -30,17 +30,18 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 /// Used to signal to one of many waiters that the condition they're waiting on has happened.
-pub(crate) struct Notifier {
+pub struct Notifier {
 	notify_pending: Mutex<(bool, Option<Arc<Mutex<FutureState>>>)>,
 }
 
 impl Notifier {
-	pub(crate) fn new() -> Self {
+	/// Constructs a new notifier.
+	pub fn new() -> Self {
 		Self { notify_pending: Mutex::new((false, None)) }
 	}
 
 	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
-	pub(crate) fn notify(&self) {
+	pub fn notify(&self) {
 		let mut lock = self.notify_pending.lock().unwrap();
 		if let Some(future_state) = &lock.1 {
 			if complete_future(future_state) {
@@ -52,7 +53,7 @@ impl Notifier {
 	}
 
 	/// Gets a [`Future`] that will get woken up with any waiters
-	pub(crate) fn get_future(&self) -> Future {
+	pub fn get_future(&self) -> Future {
 		let mut lock = self.notify_pending.lock().unwrap();
 		let mut self_idx = 0;
 		if let Some(existing_state) = &lock.1 {
