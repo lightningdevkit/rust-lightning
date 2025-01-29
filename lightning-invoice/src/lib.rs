@@ -1220,12 +1220,16 @@ impl RawBolt11Invoice {
 
 	/// Convert to HRP prefix and Fe32 encoded data part.
 	/// Can be used to transmit unsigned invoices for remote signing.
+	///
+	/// This is not exported to bindings users as we don't currently support Fe32s
 	pub fn to_raw(&self) -> (String, Vec<Fe32>) {
 		(self.hrp.to_string(), self.data.fe_iter().collect())
 	}
 
 	/// Convert from HRP prefix and Fe32 encoded data part.
 	/// Can be used to receive unsigned invoices for remote signing.
+	///
+	/// This is not exported to bindings users as we don't currently support Fe32s
 	pub fn from_raw(hrp: &str, data: &[Fe32]) -> Result<Self, Bolt11ParseError> {
 		let raw_hrp: RawHrp = RawHrp::from_str(hrp)?;
 		let data_part = RawDataPart::from_base32(data)?;
