@@ -41,7 +41,7 @@ pub enum LSPS0Request {
 
 impl LSPS0Request {
 	/// Returns the method name associated with the given request variant.
-	pub fn method(&self) -> &str {
+	pub fn method(&self) -> &'static str {
 		match self {
 			LSPS0Request::ListProtocols(_) => LSPS0_LISTPROTOCOLS_METHOD_NAME,
 		}
