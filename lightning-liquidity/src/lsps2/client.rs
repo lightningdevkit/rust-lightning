@@ -8,7 +8,7 @@
 
 //! Contains the main LSPS2 client object, [`LSPS2ClientHandler`].
 
-use crate::events::{Event, EventQueue};
+use crate::events::{LSPSEvent, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
@@ -198,7 +198,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS2Client(
+				self.pending_events.enqueue(LSPSEvent::LSPS2Client(
 					LSPS2ClientEvent::OpeningParametersReady {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
@@ -264,7 +264,7 @@ where
 					})?;
 
 				if let Ok(intercept_scid) = result.jit_channel_scid.to_scid() {
-					self.pending_events.enqueue(Event::LSPS2Client(
+					self.pending_events.enqueue(LSPSEvent::LSPS2Client(
 						LSPS2ClientEvent::InvoiceParametersReady {
 							request_id,
 							counterparty_node_id: *counterparty_node_id,

@@ -28,7 +28,7 @@ use core::task::{Poll, Waker};
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
 
 pub(crate) struct EventQueue {
-	queue: Arc<Mutex<VecDeque<Event>>>,
+	queue: Arc<Mutex<VecDeque<LSPSEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
 	condvar: crate::sync::Condvar,
@@ -47,7 +47,7 @@ impl EventQueue {
 		Self { queue, waker }
 	}
 
-	pub fn enqueue(&self, event: Event) {
+	pub fn enqueue(&self, event: LSPSEvent) {
 		{
 			let mut queue = self.queue.lock().unwrap();
 			if queue.len() < MAX_EVENT_QUEUE_SIZE {
@@ -64,19 +64,19 @@ impl EventQueue {
 		self.condvar.notify_one();
 	}
 
-	pub fn next_event(&self) -> Option<Event> {
+	pub fn next_event(&self) -> Option<LSPSEvent> {
 		self.queue.lock().unwrap().pop_front()
 	}
 
-	pub async fn next_event_async(&self) -> Event {
+	pub async fn next_event_async(&self) -> LSPSEvent {
 		EventFuture { event_queue: Arc::clone(&self.queue), waker: Arc::clone(&self.waker) }.await
 	}
 
 	#[cfg(feature = "std")]
-	pub fn wait_next_event(&self) -> Event {
+	pub fn wait_next_event(&self) -> LSPSEvent {
 		let mut queue = self
 			.condvar
-			.wait_while(self.queue.lock().unwrap(), |queue: &mut VecDeque<Event>| queue.is_empty())
+			.wait_while(self.queue.lock().unwrap(), |queue: &mut VecDeque<LSPSEvent>| queue.is_empty())
 			.unwrap();
 
 		let event = queue.pop_front().expect("non-empty queue");
@@ -95,14 +95,14 @@ impl EventQueue {
 		event
 	}
 
-	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
+	pub fn get_and_clear_pending_events(&self) -> Vec<LSPSEvent> {
 		self.queue.lock().unwrap().split_off(0).into()
 	}
 }
 
 /// An event which you should probably take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
+pub enum LSPSEvent {
 	/// An LSPS0 client event.
 	LSPS0Client(lsps0::event::LSPS0ClientEvent),
 	/// An LSPS1 (Channel Request) client event.
@@ -117,12 +117,12 @@ pub enum Event {
 }
 
 struct EventFuture {
-	event_queue: Arc<Mutex<VecDeque<Event>>>,
+	event_queue: Arc<Mutex<VecDeque<LSPSEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl Future for EventFuture {
-	type Output = Event;
+	type Output = LSPSEvent;
 
 	fn poll(
 		self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>,
@@ -154,7 +154,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let counterparty_node_id =
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let expected_event = Event::LSPS0Client(LSPS0ClientEvent::ListProtocolsResponse {
+		let expected_event = LSPSEvent::LSPS0Client(LSPS0ClientEvent::ListProtocolsResponse {
 			counterparty_node_id,
 			protocols: Vec::new(),
 		});

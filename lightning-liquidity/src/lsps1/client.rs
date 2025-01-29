@@ -16,7 +16,7 @@ use super::msgs::{
 };
 use crate::message_queue::MessageQueue;
 
-use crate::events::{Event, EventQueue};
+use crate::events::{LSPSEvent, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
 use crate::prelude::{new_hash_map, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
@@ -119,7 +119,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS1Client(
+				self.pending_events.enqueue(LSPSEvent::LSPS1Client(
 					LSPS1ClientEvent::SupportedOptionsReady {
 						counterparty_node_id: *counterparty_node_id,
 						supported_options: result.options,
@@ -156,7 +156,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS1Client(
+				self.pending_events.enqueue(LSPSEvent::LSPS1Client(
 					LSPS1ClientEvent::SupportedOptionsRequestFailed {
 						request_id: request_id.clone(),
 						counterparty_node_id: *counterparty_node_id,
@@ -233,7 +233,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS1Client(LSPS1ClientEvent::OrderCreated {
+				self.pending_events.enqueue(LSPSEvent::LSPS1Client(LSPS1ClientEvent::OrderCreated {
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					order_id: response.order_id,
@@ -274,7 +274,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS1Client(
+				self.pending_events.enqueue(LSPSEvent::LSPS1Client(
 					LSPS1ClientEvent::OrderRequestFailed {
 						request_id: request_id.clone(),
 						counterparty_node_id: *counterparty_node_id,
@@ -352,7 +352,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS1Client(LSPS1ClientEvent::OrderStatus {
+				self.pending_events.enqueue(LSPSEvent::LSPS1Client(LSPS1ClientEvent::OrderStatus {
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					order_id: response.order_id,
@@ -393,7 +393,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS1Client(
+				self.pending_events.enqueue(LSPSEvent::LSPS1Client(
 					LSPS1ClientEvent::OrderRequestFailed {
 						request_id: request_id.clone(),
 						counterparty_node_id: *counterparty_node_id,
