@@ -714,7 +714,12 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///
 ///	let mobile_interruptable_platform = false;
 ///
-///	let handle = tokio::spawn(async move {
+#[cfg_attr(feature = "std", doc = "	let handle = tokio::spawn(async move {")]
+#[cfg_attr(
+	not(feature = "std"),
+	doc = "	let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();"
+)]
+#[cfg_attr(not(feature = "std"), doc = "	rt.block_on(async move {")]
 ///		process_events_async(
 ///			background_persister,
 ///			|e| background_event_handler.handle_event(e),
@@ -736,7 +741,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///
 ///	// Stop the background processing.
 ///	stop_sender.send(()).unwrap();
-///	handle.await.unwrap();
+#[cfg_attr(feature = "std", doc = "	handle.await.unwrap()")]
 ///	# }
 ///```
 #[cfg(feature = "futures")]
@@ -761,7 +766,7 @@ pub async fn process_events_async<
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	PM: 'static + Deref + Send + Sync,
-	LM: 'static + Deref + Send + Sync,
+	LM: 'static + Deref,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
@@ -784,7 +789,7 @@ where
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
-	LM::Target: ALiquidityManager + Send + Sync,
+	LM::Target: ALiquidityManager,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
