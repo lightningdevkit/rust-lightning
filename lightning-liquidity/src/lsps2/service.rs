@@ -40,7 +40,7 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::lsps2::msgs::{
-	BuyRequest, BuyResponse, GetInfoRequest, GetInfoResponse, LSPS2Message, LSPS2Request,
+	BuyRequest, BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message, LSPS2Request,
 	LSPS2Response, OpeningFeeParams, RawOpeningFeeParams,
 	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
 	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
@@ -658,7 +658,7 @@ where
 
 					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
 						Some(LSPS2Request::GetInfo(_)) => {
-							let response = LSPS2Response::GetInfo(GetInfoResponse {
+							let response = LSPS2Response::GetInfo(LSPS2GetInfoResponse {
 								opening_fee_params_menu: opening_fee_params_menu
 									.into_iter()
 									.map(|param| {
@@ -1076,7 +1076,7 @@ where
 	}
 
 	fn handle_get_info_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetInfoRequest,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: LSPS2GetInfoRequest,
 	) -> Result<(), LightningError> {
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();

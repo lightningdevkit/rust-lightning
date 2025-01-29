@@ -27,7 +27,7 @@ pub(crate) const LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE: i32 = 203;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 /// A request made to an LSP to learn their current channel fees and parameters.
-pub struct GetInfoRequest {
+pub struct LSPS2GetInfoRequest {
 	/// An optional token to provide to the LSP.
 	pub token: Option<String>,
 }
@@ -106,9 +106,9 @@ pub struct OpeningFeeParams {
 	pub promise: String,
 }
 
-/// A response to a [`GetInfoRequest`]
+/// A response to a [`LSPS2GetInfoRequest`]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct GetInfoResponse {
+pub struct LSPS2GetInfoResponse {
 	/// A set of opening fee parameters.
 	pub opening_fee_params_menu: Vec<OpeningFeeParams>,
 }
@@ -164,7 +164,7 @@ pub struct BuyResponse {
 /// An enum that captures all the valid JSON-RPC requests in the LSPS2 protocol.
 pub enum LSPS2Request {
 	/// A request to learn an LSP's channel fees and parameters.
-	GetInfo(GetInfoRequest),
+	GetInfo(LSPS2GetInfoRequest),
 	/// A request to buy a JIT channel from an LSP.
 	Buy(BuyRequest),
 }
@@ -173,7 +173,7 @@ pub enum LSPS2Request {
 /// An enum that captures all the valid JSON-RPC responses in the LSPS2 protocol.
 pub enum LSPS2Response {
 	/// A successful response to a [`LSPS2Request::GetInfo`] request.
-	GetInfo(GetInfoResponse),
+	GetInfo(LSPS2GetInfoResponse),
 	/// An error response to a [`LSPS2Request::GetInfo`] request.
 	GetInfoError(ResponseError),
 	/// A successful response to a [`LSPS2Request::Buy`] request.

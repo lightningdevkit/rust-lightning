@@ -26,7 +26,7 @@ use core::default::Default;
 use core::ops::Deref;
 
 use crate::lsps2::msgs::{
-	BuyRequest, BuyResponse, GetInfoRequest, GetInfoResponse, LSPS2Message, LSPS2Request,
+	BuyRequest, BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message, LSPS2Request,
 	LSPS2Response, OpeningFeeParams,
 };
 
@@ -122,7 +122,7 @@ where
 			peer_state_lock.pending_get_info_requests.insert(request_id.clone());
 		}
 
-		let request = LSPS2Request::GetInfo(GetInfoRequest { token });
+		let request = LSPS2Request::GetInfo(LSPS2GetInfoRequest { token });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 
@@ -181,7 +181,7 @@ where
 	}
 
 	fn handle_get_info_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: LSPS2GetInfoResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
