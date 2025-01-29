@@ -417,7 +417,9 @@ macro_rules! define_run_body {
 						log_trace!($logger, "Pruning and persisting network graph.");
 						network_graph.remove_stale_channels_and_tracking_with_time(duration_since_epoch.as_secs());
 					} else {
-						log_warn!($logger, "Not pruning network graph, consider enabling `std` or doing so manually with remove_stale_channels_and_tracking_with_time.");
+						log_warn!($logger,
+							"Not pruning network graph, consider implementing the fetch_time argument or calling remove_stale_channels_and_tracking_with_time manually."
+						);
 						log_trace!($logger, "Persisting network graph.");
 					}
 
@@ -599,11 +601,6 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// The `sleeper` future is free to return early after it has triggered the exit condition.
 ///
 /// See [`BackgroundProcessor::start`] for information on which actions this handles.
-///
-/// Requires the `futures` feature. Note that while this method is available without the `std`
-/// feature, doing so will skip calling [`NetworkGraph::remove_stale_channels_and_tracking`],
-/// you should call [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] regularly
-/// manually instead.
 ///
 /// The `mobile_interruptable_platform` flag should be set if we're currently running on a
 /// mobile device, where we may need to check for interruption of the application regularly. If you
