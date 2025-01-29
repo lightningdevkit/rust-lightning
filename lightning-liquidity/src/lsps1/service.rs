@@ -11,7 +11,7 @@
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
-	ChannelInfo, CreateOrderRequest, CreateOrderResponse, GetInfoResponse, GetOrderRequest,
+	LSPS1ChannelInfo, CreateOrderRequest, CreateOrderResponse, GetInfoResponse, GetOrderRequest,
 	LSPS1Message, LSPS1Options, LSPS1Request, LSPS1Response, OrderId, OrderParameters, OrderState,
 	PaymentInfo, LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 };
@@ -364,7 +364,7 @@ where
 	/// [`LSPS1ServiceEvent::CheckPaymentConfirmation`]: crate::lsps1::event::LSPS1ServiceEvent::CheckPaymentConfirmation
 	pub fn update_order_status(
 		&self, request_id: RequestId, counterparty_node_id: PublicKey, order_id: OrderId,
-		order_state: OrderState, channel: Option<ChannelInfo>,
+		order_state: OrderState, channel: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();

@@ -11,7 +11,7 @@
 
 use super::event::LSPS1ClientEvent;
 use super::msgs::{
-	CreateOrderRequest, CreateOrderResponse, GetInfoRequest, GetInfoResponse, GetOrderRequest,
+	CreateOrderRequest, CreateOrderResponse, LSPS1GetInfoRequest, LSPS1GetInfoResponse, GetOrderRequest,
 	LSPS1Message, LSPS1Request, LSPS1Response, OrderId, OrderParameters,
 };
 use crate::message_queue::MessageQueue;
@@ -94,14 +94,14 @@ where
 			peer_state_lock.pending_get_info_requests.insert(request_id.clone());
 		}
 
-		let request = LSPS1Request::GetInfo(GetInfoRequest {});
+		let request = LSPS1Request::GetInfo(LSPS1GetInfoRequest {});
 		let msg = LSPS1Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 		request_id
 	}
 
 	fn handle_get_info_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: LSPS1GetInfoResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.write().unwrap();
 

@@ -10,7 +10,7 @@
 //! Contains LSPS1 event types
 
 use super::msgs::OrderId;
-use super::msgs::{ChannelInfo, LSPS1Options, OrderParameters, PaymentInfo};
+use super::msgs::{LSPS1ChannelInfo, LSPS1Options, OrderParameters, PaymentInfo};
 
 use crate::lsps0::ser::{RequestId, ResponseError};
 
@@ -84,7 +84,7 @@ pub enum LSPS1ClientEvent {
 		/// The details regarding payment of the order
 		payment: PaymentInfo,
 		/// The details regarding state of the channel ordered.
-		channel: Option<ChannelInfo>,
+		channel: Option<LSPS1ChannelInfo>,
 	},
 	/// Information from the LSP about the status of a previously created order.
 	///
@@ -108,7 +108,7 @@ pub enum LSPS1ClientEvent {
 		/// The details regarding payment of the order
 		payment: PaymentInfo,
 		/// The details regarding state of the channel ordered.
-		channel: Option<ChannelInfo>,
+		channel: Option<LSPS1ChannelInfo>,
 	},
 	/// A request previously issued via [`LSPS1ClientHandler::create_order`] or [`LSPS1ClientHandler::check_order_status`].
 	/// failed as the LSP returned an error response.

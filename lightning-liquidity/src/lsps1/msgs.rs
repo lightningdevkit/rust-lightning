@@ -35,7 +35,7 @@ pub struct OrderId(pub String);
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(default)]
-pub struct GetInfoRequest {}
+pub struct LSPS1GetInfoRequest {}
 
 /// An object representing the supported protocol options.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -68,9 +68,9 @@ pub struct LSPS1Options {
 	pub max_channel_balance_sat: u64,
 }
 
-/// A response to a [`GetInfoRequest`].
+/// A response to a [`LSPS1GetInfoRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct GetInfoResponse {
+pub struct LSPS1GetInfoResponse {
 	/// All options supported by the LSP.
 	#[serde(flatten)]
 	pub options: LSPS1Options,
@@ -131,7 +131,7 @@ pub struct CreateOrderResponse {
 	/// Contains details about how to pay for the order.
 	pub payment: PaymentInfo,
 	/// Contains information about the channel state.
-	pub channel: Option<ChannelInfo>,
+	pub channel: Option<LSPS1ChannelInfo>,
 }
 
 /// An object representing the state of an order.
@@ -233,7 +233,7 @@ pub struct OnchainPayment {
 
 /// Details regarding the state of an ordered channel.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ChannelInfo {
+pub struct LSPS1ChannelInfo {
 	/// The datetime when the funding transaction has been published.
 	pub funded_at: chrono::DateTime<Utc>,
 	/// The outpoint of the funding transaction.
@@ -256,7 +256,7 @@ pub struct GetOrderRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Request {
 	/// A request to learn about the options supported by the LSP.
-	GetInfo(GetInfoRequest),
+	GetInfo(LSPS1GetInfoRequest),
 	/// A request to create a channel order.
 	CreateOrder(CreateOrderRequest),
 	/// A request to query a previously created channel order.
@@ -266,9 +266,9 @@ pub enum LSPS1Request {
 /// An enum that captures all the valid JSON-RPC responses in the LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Response {
-	/// A successful response to a [`GetInfoRequest`].
-	GetInfo(GetInfoResponse),
-	/// An error response to a [`GetInfoRequest`].
+	/// A successful response to a [`LSPS1GetInfoRequest`].
+	GetInfo(LSPS1GetInfoResponse),
+	/// An error response to a [`LSPS1GetInfoRequest`].
 	GetInfoError(ResponseError),
 	/// A successful response to a [`CreateOrderRequest`].
 	CreateOrder(CreateOrderResponse),
@@ -460,7 +460,7 @@ mod tests {
 			"funding_outpoint": "0301e0480b374b32851a9462db29dc19fe830a7f7d7a88b81612b9d42099c0ae:0",
 			"expires_at": "2012-04-23T18:25:43.511Z"
 		}"#;
-		let _channel: ChannelInfo = serde_json::from_str(json_str).unwrap();
+		let _channel: LSPS1ChannelInfo = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#""CANCELLED""#;
 		let payment_state: PaymentState = serde_json::from_str(json_str).unwrap();
