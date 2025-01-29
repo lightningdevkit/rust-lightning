@@ -23,7 +23,7 @@ use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvi
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, ChannelPhase};
-use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
@@ -1187,7 +1187,7 @@ fn holding_cell_htlc_counting() {
 	// the holding cell waiting on B's RAA to send. At this point we should not be able to add
 	// another HTLC.
 	{
-		unwrap_send_err!(nodes[1].node.send_payment_with_route(route, payment_hash_1,
+		unwrap_send_err!(nodes[1], nodes[1].node.send_payment_with_route(route, payment_hash_1,
 				RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)
 			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1313,18 +1313,22 @@ fn test_duplicate_htlc_different_direction_onchain() {
 
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
+	// post-bump fee (288 satoshis) + dust threshold for output type (294 satoshis) = 582
+	let payment_value_sats = 582;
+	let payment_value_msats = payment_value_sats * 1000;
+
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
-	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 800_000);
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_value_msats);
 	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], payment_value_msats, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
 	nodes[0].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[0], payment_hash, 800_000);
+	expect_payment_claimed!(nodes[0], payment_hash, payment_value_msats);
 	check_added_monitors!(nodes[0], 1);
 
 	// Broadcast node 1 commitment txn
@@ -1333,7 +1337,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	assert_eq!(remote_txn[0].output.len(), 4); // 1 local, 1 remote, 1 htlc inbound, 1 htlc outbound
 	let mut has_both_htlcs = 0; // check htlcs match ones committed
 	for outp in remote_txn[0].output.iter() {
-		if outp.value.to_sat() == 800_000 / 1000 {
+		if outp.value.to_sat() == payment_value_sats {
 			has_both_htlcs += 1;
 		} else if outp.value.to_sat() == 900_000 / 1000 {
 			has_both_htlcs += 1;
@@ -1353,18 +1357,15 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	check_spends!(claim_txn[1], remote_txn[0]);
 	check_spends!(claim_txn[2], remote_txn[0]);
 	let preimage_tx = &claim_txn[0];
-	let (preimage_bump_tx, timeout_tx) = if claim_txn[1].input[0].previous_output == preimage_tx.input[0].previous_output {
-		(&claim_txn[1], &claim_txn[2])
-	} else {
-		(&claim_txn[2], &claim_txn[1])
-	};
+	let timeout_tx = claim_txn.iter().skip(1).find(|t| t.input[0].previous_output != preimage_tx.input[0].previous_output).unwrap();
+	let preimage_bump_tx = claim_txn.iter().skip(1).find(|t| t.input[0].previous_output == preimage_tx.input[0].previous_output).unwrap();
 
 	assert_eq!(preimage_tx.input.len(), 1);
 	assert_eq!(preimage_bump_tx.input.len(), 1);
 
 	assert_eq!(preimage_tx.input.len(), 1);
 	assert_eq!(preimage_tx.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
-	assert_eq!(remote_txn[0].output[preimage_tx.input[0].previous_output.vout as usize].value.to_sat(), 800);
+	assert_eq!(remote_txn[0].output[preimage_tx.input[0].previous_output.vout as usize].value.to_sat(), payment_value_sats);
 
 	assert_eq!(timeout_tx.input.len(), 1);
 	assert_eq!(timeout_tx.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
@@ -1410,14 +1411,8 @@ fn test_basic_channel_reserve() {
 		get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 	route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 	let err = nodes[0].node.send_payment_with_route(route, our_payment_hash,
-		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
-	match err {
-		PaymentSendFailure::AllFailedResendSafe(ref fails) => {
-			if let &APIError::ChannelUnavailable { .. } = &fails[0] {}
-			else { panic!("Unexpected error variant"); }
-		},
-		_ => panic!("Unexpected error variant"),
-	}
+		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0));
+	unwrap_send_err!(nodes[0], err, true, APIError::ChannelUnavailable { .. }, {}	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send);
@@ -1603,7 +1598,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	}
 
 	// However one more HTLC should be significantly over the reserve amount and fail.
-	unwrap_send_err!(nodes[1].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[1], nodes[1].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1703,7 +1698,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	let (mut route, our_payment_hash, _, our_payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt);
 	route.paths[0].hops[0].fee_msat += 1;
-	unwrap_send_err!(nodes[1].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[1], nodes[1].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { .. }, {});
 }
@@ -1915,7 +1910,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 
-		unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+		unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1987,7 +1982,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		let mut route = route_1.clone();
 		route.paths[0].hops.last_mut().unwrap().fee_msat = recv_value_2 + 1;
 		let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
-		unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+		unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -2017,7 +2012,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		let (mut route, our_payment_hash, _, our_payment_secret) =
 			get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
 		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
-		unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+		unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 			), true, APIError::ChannelUnavailable { .. }, {});
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -2282,6 +2277,138 @@ fn channel_reserve_in_flight_removes() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 }
 
+enum PostFailBackAction {
+	TimeoutOnChain,
+	ClaimOnChain,
+	FailOffChain,
+	ClaimOffChain,
+}
+
+#[test]
+fn test_fail_back_before_backwards_timeout() {
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::TimeoutOnChain);
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::ClaimOnChain);
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::FailOffChain);
+	do_test_fail_back_before_backwards_timeout(PostFailBackAction::ClaimOffChain);
+}
+
+fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBackAction) {
+	// Test that we fail an HTLC upstream if we are still waiting for confirmation downstream
+	// just before the upstream timeout expires
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	for node in nodes.iter() {
+		*node.fee_estimator.sat_per_kw.lock().unwrap() = 2000;
+	}
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Start every node on the same block height to make reasoning about timeouts easier
+	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+
+	// Force close the B<->C channel by timing out the HTLC
+	let timeout_blocks = TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1;
+	connect_blocks(&nodes[1], timeout_blocks);
+	let node_1_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
+	check_closed_event(&nodes[1], 1, ClosureReason::HTLCsTimedOut, false, &[node_c_id], 100_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	// After the A<->B HTLC gets within LATENCY_GRACE_PERIOD_BLOCKS we will fail the HTLC to avoid
+	// the channel force-closing. Note that we already connected `TEST_FINAL_CLTV +
+	// LATENCY_GRACE_PERIOD_BLOCKS` blocks above, so we subtract that from the HTLC expiry (which
+	// is `TEST_FINAL_CLTV` + `MIN_CLTV_EXPIRY_DELTA`).
+	let upstream_timeout_blocks = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS * 2;
+	connect_blocks(&nodes[1], upstream_timeout_blocks);
+
+	// Connect blocks for nodes[0] to make sure they don't go on-chain
+	connect_blocks(&nodes[0], timeout_blocks + upstream_timeout_blocks);
+
+	// Check that nodes[1] fails the HTLC upstream
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1],
+		vec![HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()),
+			channel_id: chan_2.2
+		}]);
+	check_added_monitors!(nodes[1], 1);
+	let htlc_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	let msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. } = htlc_updates;
+
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().blamed_chan_closed(true));
+
+	// Make sure we handle possible duplicate fails or extra messages after failing back
+	match post_fail_back_action {
+		PostFailBackAction::TimeoutOnChain => {
+			// Confirm nodes[1]'s claim with timeout, make sure we don't fail upstream again
+			mine_transaction(&nodes[1], &node_1_txn[0]); // Commitment
+			mine_transaction(&nodes[1], &node_1_txn[1]); // HTLC timeout
+			connect_blocks(&nodes[1], ANTI_REORG_DELAY);
+			// Expect handling another fail back event, but the HTLC is already gone
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1],
+				vec![HTLCDestination::NextHopChannel {
+					node_id: Some(nodes[2].node.get_our_node_id()),
+					channel_id: chan_2.2
+				}]);
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		},
+		PostFailBackAction::ClaimOnChain => {
+			nodes[2].node.claim_funds(payment_preimage);
+			expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
+			check_added_monitors!(nodes[2], 1);
+			get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+
+			connect_blocks(&nodes[2], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+			let node_2_txn = test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::SUCCESS);
+			check_closed_broadcast!(nodes[2], true);
+			check_closed_event(&nodes[2], 1, ClosureReason::HTLCsTimedOut, false, &[node_b_id], 100_000);
+			check_added_monitors!(nodes[2], 1);
+
+			mine_transaction(&nodes[1], &node_2_txn[0]); // Commitment
+			mine_transaction(&nodes[1], &node_2_txn[1]); // HTLC success
+			connect_blocks(&nodes[1], ANTI_REORG_DELAY);
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		},
+		PostFailBackAction::FailOffChain => {
+			nodes[2].node.fail_htlc_backwards(&payment_hash);
+			expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2],
+				vec![HTLCDestination::FailedPayment { payment_hash }]);
+			check_added_monitors!(nodes[2], 1);
+			let commitment_update = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+			let update_fail = commitment_update.update_fail_htlcs[0].clone();
+
+			nodes[1].node.handle_update_fail_htlc(nodes[2].node.get_our_node_id(), &update_fail);
+			let err_msg = get_err_msg(&nodes[1], &nodes[2].node.get_our_node_id());
+			assert_eq!(err_msg.channel_id, chan_2.2);
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		},
+		PostFailBackAction::ClaimOffChain => {
+			nodes[2].node.claim_funds(payment_preimage);
+			expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
+			check_added_monitors!(nodes[2], 1);
+			let commitment_update = get_htlc_update_msgs(&nodes[2], &nodes[1].node.get_our_node_id());
+			let update_fulfill = commitment_update.update_fulfill_htlcs[0].clone();
+
+			nodes[1].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), &update_fulfill);
+			let err_msg = get_err_msg(&nodes[1], &nodes[2].node.get_our_node_id());
+			assert_eq!(err_msg.channel_id, chan_2.2);
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		},
+	};
+}
+
 #[test]
 fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
@@ -2386,7 +2513,7 @@ fn channel_monitor_network_test() {
 	let node2_commitment_txid;
 	{
 		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::NONE);
-		connect_blocks(&nodes[2], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + MIN_CLTV_EXPIRY_DELTA as u32 + 1);
+		connect_blocks(&nodes[2], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 		test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
 		node2_commitment_txid = node_txn[0].compute_txid();
 
@@ -3324,8 +3451,8 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
 	mine_transaction(&nodes[1], &commitment_tx[0]);
-	check_closed_event!(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false
-		, [nodes[2].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false,
+		&[nodes[2].node.get_our_node_id()], 100000);
 	let htlc_expiry = get_monitor!(nodes[1], chan_2.2).get_claimable_balances().iter().filter_map(|bal|
 			if let Balance::MaybeTimeoutClaimableHTLC { claimable_height, .. } = bal {
 				Some(*claimable_height)
@@ -6490,10 +6617,11 @@ fn test_payment_route_reaching_same_channel_twice() {
 	let cloned_hops = route.paths[0].hops.clone();
 	route.paths[0].hops.extend_from_slice(&cloned_hops);
 
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 	), false, APIError::InvalidRoute { ref err },
 	assert_eq!(err, &"Path went through the same channel twice"));
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
 
 // BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
@@ -6512,7 +6640,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	route.paths[0].hops[0].fee_msat = 100;
 
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -6529,13 +6657,13 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	route.paths[0].hops[0].fee_msat = 0;
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)),
 		true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send 0-msat HTLC"));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send 0-msat HTLC", 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send 0-msat HTLC", 2);
 }
 
 #[test]
@@ -6576,7 +6704,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000);
 	route.paths[0].hops.last_mut().unwrap().cltv_expiry_delta = 500000001;
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::InvalidRoute { ref err },
 		assert_eq!(err, &"Channel CLTV overflowed?"));
@@ -6620,7 +6748,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		expect_pending_htlcs_forwardable!(nodes[1]);
 		expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 100000);
 	}
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { .. }, {});
 
@@ -6644,7 +6772,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	// Manually create a route over our max in flight (which our router normally automatically
 	// limits us to.
 	route.paths[0].hops[0].fee_msat =  max_in_flight + 1;
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, our_payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 		), true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -7935,22 +8063,31 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
-	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
-	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
+	let remote_txn = {
+		// post-bump fee (288 satoshis) + dust threshold for output type (294 satoshis) = 582
+		let htlc_value_a_msats = 582_000;
+		let htlc_value_b_msats = 583_000;
 
-	// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
-	let remote_txn = get_local_commitment_txn!(nodes[0], chan.2);
-	assert_eq!(remote_txn[0].output.len(), 4);
-	assert_eq!(remote_txn[0].input.len(), 1);
-	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
+		let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], htlc_value_a_msats);
+		route_payment(&nodes[1], &vec!(&nodes[0])[..], htlc_value_b_msats);
 
-	// Claim a HTLC without revocation (provide B monitor with preimage)
-	nodes[1].node.claim_funds(payment_preimage);
-	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
-	mine_transaction(&nodes[1], &remote_txn[0]);
-	check_added_monitors!(nodes[1], 2);
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
+		// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
+		let remote_txn = get_local_commitment_txn!(nodes[0], chan.2);
+		assert_eq!(remote_txn[0].output.len(), 4);
+		assert_eq!(remote_txn[0].input.len(), 1);
+		assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
+
+		// Claim a HTLC without revocation (provide B monitor with preimage)
+		nodes[1].node.claim_funds(payment_preimage);
+		expect_payment_claimed!(nodes[1], payment_hash, htlc_value_a_msats);
+		mine_transaction(&nodes[1], &remote_txn[0]);
+		check_added_monitors!(nodes[1], 2);
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
+		// depending on the block connection style, node 1 may have broadcast either 3 or 10 txs
+
+		remote_txn
+	};
 
 	// One or more claim tx should have been broadcast, check it
 	let timeout;
@@ -9787,6 +9924,8 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	*nodes[0].connect_style.borrow_mut() = ConnectStyle::BestBlockFirstSkippingBlocks;
 
+	let node_c_id = nodes[2].node.get_our_node_id();
+
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (chan_announce, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 	let (_, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
@@ -9802,7 +9941,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 
 	let conf_height = nodes[1].best_block_info().1;
 	if !test_height_before_timelock {
-		connect_blocks(&nodes[1], 24 * 6);
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV - LATENCY_GRACE_PERIOD_BLOCKS);
 	}
 	nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
 		&nodes[1].get_block_header(conf_height), &[(0, &node_txn[0])], conf_height);
@@ -9821,10 +9960,6 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 			&spending_txn[0]
 		};
 		check_spends!(htlc_tx, node_txn[0]);
-		// We should also generate a SpendableOutputs event with the to_self output (as its
-		// timelock is up).
-		let descriptor_spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
-		assert_eq!(descriptor_spend_txn.len(), 1);
 
 		// If we also discover that the HTLC-Timeout transaction was confirmed some time ago, we
 		// should immediately fail-backwards the HTLC to the previous hop, without waiting for an
@@ -9843,6 +9978,18 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
 		expect_payment_failed_with_update!(nodes[0], payment_hash, false, chan_announce.contents.short_channel_id, true);
+
+		// We should also generate a SpendableOutputs event with the to_self output (once the
+		// timelock is up).
+		connect_blocks(&nodes[1], (BREAKDOWN_TIMEOUT as u32) - TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS - 1);
+		let descriptor_spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
+		assert_eq!(descriptor_spend_txn.len(), 1);
+
+		// When the HTLC times out on the A<->B edge, the B<->C channel will fail the HTLC back to
+		// avoid the A<->B channel closing (even though it already has). This will generate a
+		// spurious HTLCHandlingFailed event.
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1],
+			vec![HTLCDestination::NextHopChannel { node_id: Some(node_c_id), channel_id }]);
 	}
 }
 
@@ -10294,11 +10441,11 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			if on_holder_tx { dust_outbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat + 1 };
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
-			unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash,
+			unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 				), true, APIError::ChannelUnavailable { .. }, {});
 		} else {
-			unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash,
+			unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 				), true, APIError::ChannelUnavailable { .. }, {});
 		}

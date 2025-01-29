@@ -16,7 +16,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATE
 use crate::sign::EntropySource;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -24,7 +24,7 @@ use crate::types::payment::{PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::chan_utils;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
-use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry, RetryableSendFailure};
+use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, ProbeSendFailure, Retry, RetryableSendFailure};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
@@ -599,7 +599,7 @@ fn no_pending_leak_on_initial_send_failure() {
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	unwrap_send_err!(nodes[0].node.send_payment_with_route(route, payment_hash,
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 		), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Peer for first hop currently disconnected"));
@@ -946,7 +946,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// confirming, we will fail as it's considered still-pending...
 	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 1_000 } else { 1_000_000 });
 	match nodes[0].node.send_payment_with_route(new_route.clone(), payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
-		Err(PaymentSendFailure::DuplicatePayment) => {},
+		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -985,7 +985,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
 	match nodes[0].node.send_payment_with_route(new_route.clone(), payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
-		Err(PaymentSendFailure::DuplicatePayment) => {},
+		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1004,7 +1004,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	match nodes[0].node.send_payment_with_route(new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
-		Err(PaymentSendFailure::DuplicatePayment) => {},
+		Err(RetryableSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1249,6 +1249,7 @@ fn sent_probe_is_probe_of_sending_node() {
 	// First check we refuse to build a single-hop probe
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[1], 100_000);
 	assert!(nodes[0].node.send_probe(route.paths[0].clone()).is_err());
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 
 	// Then build an actual two-hop probing path
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], 100_000);
@@ -1547,7 +1548,7 @@ fn claimed_send_payment_idempotent() {
 			let send_result = nodes[0].node.send_payment_with_route(route.clone(), second_payment_hash,
 				RecipientOnionFields::secret_only(second_payment_secret), payment_id);
 			match send_result {
-				Err(PaymentSendFailure::DuplicatePayment) => {},
+				Err(RetryableSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 
@@ -1626,7 +1627,7 @@ fn abandoned_send_payment_idempotent() {
 			let send_result = nodes[0].node.send_payment_with_route(route.clone(), second_payment_hash,
 				RecipientOnionFields::secret_only(second_payment_secret), payment_id);
 			match send_result {
-				Err(PaymentSendFailure::DuplicatePayment) => {},
+				Err(RetryableSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 
@@ -4374,4 +4375,107 @@ fn test_non_strict_forwarding() {
 	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	expect_payment_failed_conditions_event(events, payment_hash, false, PaymentFailedConditions::new().blamed_scid(routed_scid));
+}
+
+#[test]
+fn remove_pending_outbounds_on_buggy_router() {
+	// Ensure that if a payment errors due to a bogus route, we'll abandon the payment and remove the
+	// pending outbound from storage.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 10_000;
+	let payment_id = PaymentId([42; 32]);
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, amt_msat);
+
+	// Extend the path by itself, essentially simulating route going through same channel twice
+	let cloned_hops = route.paths[0].hops.clone();
+	route.paths[0].hops.extend_from_slice(&cloned_hops);
+	let route_params = route.route_params.clone().unwrap();
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+
+	nodes[0].node.send_payment(
+		payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id, route_params,
+		Retry::Attempts(1) // Even though another attempt is allowed, the payment should fail
+	).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match &events[0] {
+		Event::PaymentPathFailed { failure, payment_failed_permanently, .. } => {
+			assert_eq!(failure, &PathFailure::InitialSend {
+				err: APIError::InvalidRoute { err: "Path went through the same channel twice".to_string() }
+			});
+			assert!(!payment_failed_permanently);
+		},
+		_ => panic!()
+	}
+	match events[1] {
+		Event::PaymentFailed { reason, .. } => {
+			assert_eq!(reason.unwrap(), PaymentFailureReason::UnexpectedError);
+		},
+		_ => panic!()
+	}
+	assert!(nodes[0].node.list_recent_payments().is_empty());
+}
+
+#[test]
+fn remove_pending_outbound_probe_on_buggy_path() {
+	// Ensure that if a probe errors due to a bogus route, we'll return an error and remove the
+	// pending outbound from storage.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 10_000;
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, amt_msat);
+
+	// Extend the path by itself, essentially simulating route going through same channel twice
+	let cloned_hops = route.paths[0].hops.clone();
+	route.paths[0].hops.extend_from_slice(&cloned_hops);
+
+	assert_eq!(
+		nodes[0].node.send_probe(route.paths.pop().unwrap()).unwrap_err(),
+		ProbeSendFailure::ParameterError(
+			APIError::InvalidRoute { err: "Path went through the same channel twice".to_string() }
+		)
+	);
+	assert!(nodes[0].node.list_recent_payments().is_empty());
+}
+
+#[test]
+fn pay_route_without_params() {
+	// Make sure we can use ChannelManager::send_payment_with_route to pay a route where
+	// Route::route_parameters is None.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 10_000;
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[1].node.bolt11_invoice_features()).unwrap();
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, amt_msat);
+	route.route_params.take();
+	nodes[0].node.send_payment_with_route(
+		route, payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0)
+	).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], &[&nodes[1]], amt_msat, payment_hash, Some(payment_secret), node_1_msgs, true, None);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+	);
 }

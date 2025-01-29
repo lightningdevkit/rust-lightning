@@ -538,6 +538,15 @@ impl SpendableOutputDescriptor {
 		};
 		Ok((psbt, expected_max_weight))
 	}
+
+	/// Returns the outpoint of the spendable output.
+	pub fn outpoint(&self) -> OutPoint {
+		match self {
+			Self::StaticOutput { outpoint, .. } => *outpoint,
+			Self::StaticPaymentOutput(descriptor) => descriptor.outpoint,
+			Self::DelayedPaymentOutput(descriptor) => descriptor.outpoint,
+		}
+	}
 }
 
 /// The parameters required to derive a channel signer via [`SignerProvider`].
