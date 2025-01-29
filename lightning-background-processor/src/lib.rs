@@ -747,13 +747,13 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 #[cfg(feature = "futures")]
 pub async fn process_events_async<
 	'a,
-	UL: 'static + Deref + Send + Sync,
-	CF: 'static + Deref + Send + Sync,
-	T: 'static + Deref + Send + Sync,
-	F: 'static + Deref + Send + Sync,
-	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
-	L: 'static + Deref + Send + Sync,
-	P: 'static + Deref + Send + Sync,
+	UL: 'static + Deref,
+	CF: 'static + Deref,
+	T: 'static + Deref,
+	F: 'static + Deref,
+	G: 'static + Deref<Target = NetworkGraph<L>>,
+	L: 'static + Deref,
+	P: 'static + Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
@@ -761,11 +761,11 @@ pub async fn process_events_async<
 		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
 		+ Send
 		+ Sync,
-	CM: 'static + Deref + Send + Sync,
-	OM: 'static + Deref + Send + Sync,
-	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
-	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-	PM: 'static + Deref + Send + Sync,
+	CM: 'static + Deref,
+	OM: 'static + Deref,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
+	PM: 'static + Deref,
 	LM: 'static + Deref,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: for<'b> WriteableScore<'b>,
@@ -786,9 +786,9 @@ where
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 	PS::Target: 'static + Persister<'a, CM, L, S>,
-	CM::Target: AChannelManager + Send + Sync,
-	OM::Target: AOnionMessenger + Send + Sync,
-	PM::Target: APeerManager + Send + Sync,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
 	LM::Target: ALiquidityManager,
 {
 	let mut should_break = false;
@@ -932,25 +932,25 @@ impl BackgroundProcessor {
 	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
 		'a,
-		UL: 'static + Deref + Send + Sync,
-		CF: 'static + Deref + Send + Sync,
-		T: 'static + Deref + Send + Sync,
-		F: 'static + Deref + Send + Sync,
-		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
-		L: 'static + Deref + Send + Sync,
-		P: 'static + Deref + Send + Sync,
+		UL: 'static + Deref,
+		CF: 'static + Deref,
+		T: 'static + Deref,
+		F: 'static + Deref + Send,
+		G: 'static + Deref<Target = NetworkGraph<L>>,
+		L: 'static + Deref + Send,
+		P: 'static + Deref,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
 		M: 'static
 			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
 			+ Send
 			+ Sync,
-		CM: 'static + Deref + Send + Sync,
-		OM: 'static + Deref + Send + Sync,
-		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
+		CM: 'static + Deref + Send,
+		OM: 'static + Deref + Send,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-		PM: 'static + Deref + Send + Sync,
-		LM: 'static + Deref + Send + Sync,
+		PM: 'static + Deref + Send,
+		LM: 'static + Deref + Send,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
 	>(
@@ -966,10 +966,10 @@ impl BackgroundProcessor {
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 		PS::Target: 'static + Persister<'a, CM, L, S>,
-		CM::Target: AChannelManager + Send + Sync,
-		OM::Target: AOnionMessenger + Send + Sync,
-		PM::Target: APeerManager + Send + Sync,
-		LM::Target: ALiquidityManager + Send + Sync,
+		CM::Target: AChannelManager,
+		OM::Target: AOnionMessenger,
+		PM::Target: APeerManager,
+		LM::Target: ALiquidityManager,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
