@@ -1,5 +1,4 @@
 lightning/src/blinded_path/mod.rs
-lightning/src/blinded_path/payment.rs
 lightning/src/blinded_path/utils.rs
 lightning/src/chain/chaininterface.rs
 lightning/src/chain/chainmonitor.rs
