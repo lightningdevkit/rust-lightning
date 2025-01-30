@@ -1,4 +1,3 @@
-lightning/src/blinded_path/mod.rs
 lightning/src/chain/chaininterface.rs
 lightning/src/chain/chainmonitor.rs
 lightning/src/chain/channelmonitor.rs
