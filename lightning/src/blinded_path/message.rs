@@ -14,23 +14,23 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use bitcoin::hashes::hmac::Hmac;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
+use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NodeIdLookUp};
+use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use crate::types::payment::PaymentHash;
 use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
-use crate::crypto::streams::ChaChaPolyReadAdapter;
+use crate::types::payment::PaymentHash;
 use crate::util::scid_utils;
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
+use bitcoin::hashes::hmac::Hmac;
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use core::mem;
 use core::ops::Deref;
@@ -55,8 +55,12 @@ impl Readable for BlindedMessagePath {
 impl BlindedMessagePath {
 	/// Create a one-hop blinded path for a message.
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
+		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
 		Self::new(&[], recipient_node_id, context, entropy_source, secp_ctx)
 	}
 
@@ -68,20 +72,28 @@ impl BlindedMessagePath {
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()> where ES::Target: EntropySource {
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
 		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id)
+			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id),
 		);
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+		let blinding_secret =
+			SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
 		Ok(Self(BlindedPath {
 			introduction_node,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: blinded_hops(
-				secp_ctx, intermediate_nodes, recipient_node_id,
-				context, &blinding_secret,
-			).map_err(|_| ())?,
+				secp_ctx,
+				intermediate_nodes,
+				recipient_node_id,
+				context,
+				&blinding_secret,
+			)
+			.map_err(|_| ())?,
 		}))
 	}
 
@@ -97,9 +109,9 @@ impl BlindedMessagePath {
 			if let Some(node_info) = network_graph.node(&node_id) {
 				if let Some((scid, channel_info)) = node_info
 					.channels
-						.iter()
-						.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
-						.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
+					.iter()
+					.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
+					.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
 				{
 					let direction = if node_id == channel_info.node_one {
 						Direction::NodeOne
@@ -117,7 +129,7 @@ impl BlindedMessagePath {
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
 	/// it is found in the network graph).
 	pub fn public_introduction_node_id<'a>(
-		&self, network_graph: &'a ReadOnlyNetworkGraph
+		&self, network_graph: &'a ReadOnlyNetworkGraph,
 	) -> Option<&'a NodeId> {
 		self.0.public_introduction_node_id(network_graph)
 	}
@@ -144,7 +156,7 @@ impl BlindedMessagePath {
 	///
 	/// Will only modify `self` when returning `Ok`.
 	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
-		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
+		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
@@ -158,28 +170,31 @@ impl BlindedMessagePath {
 		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
 		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
 			Ok(ChaChaPolyReadAdapter {
-				readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
+				readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override }),
 			}) => {
 				let next_node_id = match next_hop {
 					NextMessageHop::NodeId(pubkey) => pubkey,
-					NextMessageHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
+					NextMessageHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid)
+					{
 						Some(pubkey) => pubkey,
 						None => return Err(()),
 					},
 				};
 				let mut new_blinding_point = match next_blinding_override {
 					Some(blinding_point) => blinding_point,
-					None => {
-						onion_utils::next_hop_pubkey(secp_ctx, self.0.blinding_point,
-							control_tlvs_ss.as_ref()).map_err(|_| ())?
-					}
+					None => onion_utils::next_hop_pubkey(
+						secp_ctx,
+						self.0.blinding_point,
+						control_tlvs_ss.as_ref(),
+					)
+					.map_err(|_| ())?,
 				};
 				mem::swap(&mut self.0.blinding_point, &mut new_blinding_point);
 				self.0.introduction_node = IntroductionNode::NodeId(next_node_id);
 				self.0.blinded_hops.remove(0);
 				Ok(())
 			},
-			_ => Err(())
+			_ => Err(()),
 		}
 	}
 
@@ -189,7 +204,7 @@ impl BlindedMessagePath {
 
 	#[cfg(test)]
 	pub fn from_raw(
-		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>
+		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>,
 	) -> Self {
 		Self(BlindedPath {
 			introduction_node: IntroductionNode::NodeId(introduction_node_id),
@@ -241,7 +256,7 @@ pub(crate) struct ReceiveTlvs {
 	/// If `context` is `Some`, it is used to identify the blinded path that this onion message is
 	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
-	pub context: Option<MessageContext>
+	pub context: Option<MessageContext>,
 }
 
 impl Writeable for ForwardTlvs {
@@ -480,20 +495,24 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
 	recipient_node_id: PublicKey, context: MessageContext, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let pks = intermediate_nodes.iter().map(|node| node.node_id)
+	let pks = intermediate_nodes
+		.iter()
+		.map(|node| node.node_id)
 		.chain(core::iter::once(recipient_node_id));
-	let tlvs = pks.clone()
+	let tlvs = pks
+		.clone()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
 		.zip(intermediate_nodes.iter().map(|node| node.short_channel_id))
 		.map(|(pubkey, scid)| match scid {
 			Some(scid) => NextMessageHop::ShortChannelId(scid),
 			None => NextMessageHop::NodeId(pubkey),
 		})
-		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ context: Some(context) })));
+		.map(|next_hop| {
+			ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None })
+		})
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { context: Some(context) })));
 
 	let path = pks.zip(tlvs);
 
 	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
-
