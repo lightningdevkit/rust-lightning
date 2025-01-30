@@ -9,16 +9,16 @@
 
 //! Utilities for testing BOLT 12 Offers interfaces
 
-use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 
-use core::time::Duration;
-use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
-use crate::sign::EntropySource;
-use crate::types::payment::PaymentHash;
-use crate::types::features::BlindedHopFeatures;
+use crate::blinded_path::BlindedHop;
 use crate::offers::merkle::TaggedHash;
+use crate::sign::EntropySource;
+use crate::types::features::BlindedHopFeatures;
+use crate::types::payment::PaymentHash;
+use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -69,7 +69,8 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 pub(crate) fn payment_paths() -> Vec<BlindedPaymentPath> {
 	vec![
 		BlindedPaymentPath::from_raw(
-			pubkey(40), pubkey(41),
+			pubkey(40),
+			pubkey(41),
 			vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
@@ -84,7 +85,8 @@ pub(crate) fn payment_paths() -> Vec<BlindedPaymentPath> {
 			},
 		),
 		BlindedPaymentPath::from_raw(
-			pubkey(40), pubkey(41),
+			pubkey(40),
+			pubkey(41),
 			vec![
 				BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 				BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
