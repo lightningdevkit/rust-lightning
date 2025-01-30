@@ -38,7 +38,7 @@ fn test_priv_forwarding_rejection() {
 	no_announce_cfg.accept_forwards_to_priv_channels = false;
 	let persister;
 	let new_chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg.clone()), None]);
 	let nodes_1_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -577,7 +577,7 @@ fn test_0conf_channel_with_async_monitor() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(chan_config), None]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(chan_config.clone()), None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
@@ -744,7 +744,7 @@ fn test_0conf_close_no_early_chan_update() {
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let error_message = "Channel force-closed";
 
@@ -769,7 +769,7 @@ fn test_public_0conf_channel() {
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
@@ -823,7 +823,7 @@ fn test_0conf_channel_reorg() {
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
@@ -902,7 +902,7 @@ fn test_zero_conf_accept_reject() {
 
 	// 2.1 First try the non-0conf method to manually accept
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42,
-		None, Some(manually_accept_conf)).unwrap();
+		None, Some(manually_accept_conf.clone())).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
 		nodes[1].node.get_our_node_id());
 
@@ -1014,7 +1014,7 @@ fn test_0conf_ann_sigs_racing_conf() {
 	let mut chan_config = test_default_channel_config();
 	chan_config.manually_accept_inbound_channels = true;
 
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway

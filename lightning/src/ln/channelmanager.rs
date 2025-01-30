@@ -1728,7 +1728,7 @@ where
 /// let default_config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
 ///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
-///     entropy_source, node_signer, signer_provider, default_config, params, current_timestamp,
+///     entropy_source, node_signer, signer_provider, default_config.clone(), params, current_timestamp,
 /// );
 ///
 /// // Restart from deserialized data
@@ -16120,7 +16120,7 @@ mod tests {
 		let chanmon_cfg = create_chanmon_cfgs(2);
 		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
 		let mut user_config = test_default_channel_config();
-		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config), Some(user_config)]);
+		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config.clone()), Some(user_config.clone())]);
 		let nodes = create_network(2, &node_cfg, &node_chanmgr);
 		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel = &nodes[0].node.list_channels()[0];
@@ -16207,7 +16207,7 @@ mod tests {
 		let chanmon_cfg = create_chanmon_cfgs(2);
 		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
 		let user_config = test_default_channel_config();
-		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config), Some(user_config)]);
+		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config.clone()), Some(user_config)]);
 		let nodes = create_network(2, &node_cfg, &node_chanmgr);
 		let error_message = "Channel force-closed";
 
