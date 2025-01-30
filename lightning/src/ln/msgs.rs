@@ -1658,7 +1658,11 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
+	///
+	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
+	/// Indicates a connection to the peer failed/an existing connection was lost.
+	fn peer_disconnected(&self, their_node_id: PublicKey);
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.

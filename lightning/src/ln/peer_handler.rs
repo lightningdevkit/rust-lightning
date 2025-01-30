@@ -121,6 +121,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
 	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> { None }
 	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
+	fn peer_disconnected(&self, _their_node_id: PublicKey) { }
 	fn handle_reply_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
@@ -1716,15 +1717,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if let Err(()) = self.message_handler.chan_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.custom_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Custom Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
 				self.message_handler.onion_message_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
@@ -2538,6 +2542,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		debug_assert!(peer.their_node_id.is_some());
 		if let Some((node_id, _)) = peer.their_node_id {
 			log_trace!(WithContext::from(&self.logger, Some(node_id), None, None), "Disconnecting peer with id {} due to {}", node_id, reason);
+			self.message_handler.route_handler.peer_disconnected(node_id);
 			self.message_handler.chan_handler.peer_disconnected(node_id);
 			self.message_handler.onion_message_handler.peer_disconnected(node_id);
 			self.message_handler.custom_message_handler.peer_disconnected(node_id);
@@ -2562,6 +2567,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					let removed = self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 					debug_assert!(removed.is_some(), "descriptor maps should be consistent");
 					if !peer.handshake_complete() { return; }
+					self.message_handler.route_handler.peer_disconnected(node_id);
 					self.message_handler.chan_handler.peer_disconnected(node_id);
 					self.message_handler.onion_message_handler.peer_disconnected(node_id);
 					self.message_handler.custom_message_handler.peer_disconnected(node_id);
