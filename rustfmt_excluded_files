@@ -39,7 +39,6 @@ lightning/src/ln/shutdown_tests.rs
 lightning/src/ln/types.rs
 lightning/src/ln/wire.rs
 lightning/src/offers/mod.rs
-lightning/src/offers/offer.rs
 lightning/src/offers/parse.rs
 lightning/src/offers/payer.rs
 lightning/src/offers/refund.rs
