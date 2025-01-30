@@ -9,8 +9,8 @@
 
 //! Creating blinded paths and related utilities live here.
 
-pub mod payment;
 pub mod message;
+pub mod payment;
 pub(crate) mod utils;
 
 use bitcoin::secp256k1::PublicKey;
@@ -90,7 +90,9 @@ impl NodeIdLookUp for EmptyNodeIdLookUp {
 
 impl Deref for EmptyNodeIdLookUp {
 	type Target = EmptyNodeIdLookUp;
-	fn deref(&self) -> &Self { self }
+	fn deref(&self) -> &Self {
+		self
+	}
 }
 
 /// An encrypted payload and node id corresponding to a hop in a payment or onion message path, to
@@ -108,7 +110,7 @@ pub struct BlindedHop {
 
 impl BlindedPath {
 	pub(super) fn public_introduction_node_id<'a>(
-		&self, network_graph: &'a ReadOnlyNetworkGraph
+		&self, network_graph: &'a ReadOnlyNetworkGraph,
 	) -> Option<&'a NodeId> {
 		match &self.introduction_node {
 			IntroductionNode::NodeId(pubkey) => {
@@ -116,12 +118,10 @@ impl BlindedPath {
 				network_graph.nodes().get_key_value(&node_id).map(|(key, _)| key)
 			},
 			IntroductionNode::DirectedShortChannelId(direction, scid) => {
-				network_graph
-					.channel(*scid)
-					.map(|c| match direction {
-						Direction::NodeOne => &c.node_one,
-						Direction::NodeTwo => &c.node_two,
-					})
+				network_graph.channel(*scid).map(|c| match direction {
+					Direction::NodeOne => &c.node_one,
+					Direction::NodeTwo => &c.node_two,
+				})
 			},
 		}
 	}
@@ -155,7 +155,7 @@ impl Readable for BlindedPath {
 		let introduction_node = match first_byte {
 			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
 			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
-			2|3 => {
+			2 | 3 => {
 				let mut bytes = [0; 33];
 				bytes[0] = first_byte;
 				r.read_exact(&mut bytes[1..])?;
@@ -165,16 +165,14 @@ impl Readable for BlindedPath {
 		};
 		let blinding_point = Readable::read(r)?;
 		let num_hops: u8 = Readable::read(r)?;
-		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
+		if num_hops == 0 {
+			return Err(DecodeError::InvalidValue);
+		}
 		let mut blinded_hops: Vec<BlindedHop> = Vec::with_capacity(num_hops.into());
 		for _ in 0..num_hops {
 			blinded_hops.push(Readable::read(r)?);
 		}
-		Ok(BlindedPath {
-			introduction_node,
-			blinding_point,
-			blinded_hops,
-		})
+		Ok(BlindedPath { introduction_node, blinding_point, blinded_hops })
 	}
 }
 
