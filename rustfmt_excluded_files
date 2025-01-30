@@ -38,7 +38,6 @@ lightning/src/ln/script.rs
 lightning/src/ln/shutdown_tests.rs
 lightning/src/ln/types.rs
 lightning/src/ln/wire.rs
-lightning/src/offers/invoice_error.rs
 lightning/src/offers/invoice_request.rs
 lightning/src/offers/merkle.rs
 lightning/src/offers/mod.rs
