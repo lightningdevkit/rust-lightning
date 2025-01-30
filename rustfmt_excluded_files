@@ -39,7 +39,6 @@ lightning/src/ln/shutdown_tests.rs
 lightning/src/ln/types.rs
 lightning/src/ln/wire.rs
 lightning/src/offers/mod.rs
-lightning/src/offers/test_utils.rs
 lightning/src/routing/mod.rs
 lightning/src/routing/router.rs
 lightning/src/routing/scoring.rs
