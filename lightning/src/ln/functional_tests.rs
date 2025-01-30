@@ -15,7 +15,7 @@ use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE};
 use crate::chain::transaction::OutPoint;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
 use crate::events::bump_transaction::WalletSource;
@@ -2631,14 +2631,12 @@ fn test_justice_tx_htlc_timeout() {
 		mine_transaction(&nodes[1], &revoked_local_txn[0]);
 		{
 			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-			// The unpinnable, revoked to_self output, and the pinnable, revoked htlc output will
-			// be claimed in separate transactions.
-			assert_eq!(node_txn.len(), 2);
-			for tx in node_txn.iter() {
-				assert_eq!(tx.input.len(), 1);
-				check_spends!(tx, revoked_local_txn[0]);
-			}
-			assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+			// The revoked HTLC output is not pinnable for another `TEST_FINAL_CLTV` blocks, and is
+			// thus claimed in the same transaction with the revoked to_self output.
+			assert_eq!(node_txn.len(), 1);
+			assert_eq!(node_txn[0].input.len(), 2);
+			check_spends!(node_txn[0], revoked_local_txn[0]);
+			assert_ne!(node_txn[0].input[0].previous_output, node_txn[0].input[1].previous_output);
 			node_txn.clear();
 		}
 		check_added_monitors!(nodes[1], 1);
@@ -2858,28 +2856,26 @@ fn claim_htlc_outputs() {
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(node_txn.len(), 2); // Two penalty transactions:
-		assert_eq!(node_txn[0].input.len(), 1); // Claims the unpinnable, revoked output.
-		assert_eq!(node_txn[1].input.len(), 2); // Claims both pinnable, revoked HTLC outputs separately.
-		check_spends!(node_txn[0], revoked_local_txn[0]);
-		check_spends!(node_txn[1], revoked_local_txn[0]);
-		assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
-		assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[1].previous_output);
-		assert_ne!(node_txn[1].input[0].previous_output, node_txn[1].input[1].previous_output);
+		assert_eq!(node_txn.len(), 2); // ChannelMonitor: penalty txn
+
+		// The ChannelMonitor should claim the accepted HTLC output separately from the offered
+		// HTLC and to_self outputs.
+		let accepted_claim = node_txn.iter().filter(|tx| tx.input.len() == 1).next().unwrap();
+		let offered_to_self_claim = node_txn.iter().filter(|tx| tx.input.len() == 2).next().unwrap();
+		check_spends!(accepted_claim, revoked_local_txn[0]);
+		check_spends!(offered_to_self_claim, revoked_local_txn[0]);
+		assert_eq!(accepted_claim.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 
 		let mut witness_lens = BTreeSet::new();
-		witness_lens.insert(node_txn[0].input[0].witness.last().unwrap().len());
-		witness_lens.insert(node_txn[1].input[0].witness.last().unwrap().len());
-		witness_lens.insert(node_txn[1].input[1].witness.last().unwrap().len());
-		assert_eq!(witness_lens.len(), 3);
+		witness_lens.insert(offered_to_self_claim.input[0].witness.last().unwrap().len());
+		witness_lens.insert(offered_to_self_claim.input[1].witness.last().unwrap().len());
+		assert_eq!(witness_lens.len(), 2);
 		assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
-		assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT); // revoked offered HTLC
-		assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // revoked received HTLC
+		assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT);
 
-		// Finally, mine the penalty transactions and check that we get an HTLC failure after
+		// Finally, mine the penalty transaction and check that we get an HTLC failure after
 		// ANTI_REORG_DELAY confirmations.
-		mine_transaction(&nodes[1], &node_txn[0]);
-		mine_transaction(&nodes[1], &node_txn[1]);
+		mine_transaction(&nodes[1], accepted_claim);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 		expect_payment_failed!(nodes[1], payment_hash_2, false);
 	}
@@ -5042,8 +5038,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	check_spends!(spend_txn[2], node_txn[0], commitment_tx[0]); // All outputs
 }
 
-#[test]
-fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
+fn do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(split_tx: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5059,20 +5054,28 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 
+	if split_tx {
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE + 1);
+	}
+
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
 
-	// The unpinnable, revoked to_self output and the pinnable, revoked HTLC output will be claimed
-	// in separate transactions.
+	// If the HTLC expires in more than COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE blocks, we'll
+	// claim both the revoked and HTLC outputs in one transaction, otherwise we'll split them as we
+	// consider the HTLC output as pinnable and want to claim pinnable and unpinnable outputs
+	// separately.
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	assert_eq!(node_txn.len(), 2);
+	assert_eq!(node_txn.len(), if split_tx { 2 } else { 1 });
 	for tx in node_txn.iter() {
-		assert_eq!(tx.input.len(), 1);
+		assert_eq!(tx.input.len(), if split_tx { 1 } else { 2 });
 		check_spends!(tx, revoked_local_txn[0]);
 	}
-	assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+	if split_tx {
+		assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+	}
 
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
@@ -5080,6 +5083,12 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
+}
+
+#[test]
+fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
+	do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(true);
+	do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(false);
 }
 
 #[test]
@@ -5114,6 +5123,10 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
 	assert_ne!(revoked_htlc_txn[0].lock_time, LockTime::ZERO); // HTLC-Timeout
 
+	// In order to connect `revoked_htlc_txn[0]` we must first advance the chain by
+	// `TEST_FINAL_CLTV` blocks as otherwise the transaction is consensus-invalid due to its
+	// locktime.
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
 	// B will generate justice tx from A's revoked commitment/HTLC tx
 	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()]));
 	check_closed_broadcast!(nodes[1], true);
