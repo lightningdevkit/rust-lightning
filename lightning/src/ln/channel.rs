@@ -57,6 +57,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::{ClosureReason, Event};
+use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, TransactionU16LenLimited, Writeable, Writer};
 use crate::util::logger::{Logger, Record, WithContext};
@@ -4475,7 +4476,6 @@ pub(super) fn calculate_our_funding_satoshis(
 	holder_dust_limit_satoshis: u64,
 ) -> Result<u64, APIError> {
 	let mut total_input_satoshis = 0u64;
-	let mut our_contributed_weight = 0u64;
 
 	for (idx, input) in funding_inputs.iter().enumerate() {
 		if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
@@ -4486,6 +4486,9 @@ pub(super) fn calculate_our_funding_satoshis(
 					input.1.as_transaction().compute_txid(), input.0.previous_output.vout, idx) });
 		}
 	}
+	// inputs:
+	let mut our_contributed_weight = (funding_inputs.len() as u64) * BASE_INPUT_WEIGHT;
+	// witnesses:
 	our_contributed_weight = our_contributed_weight.saturating_add(total_witness_weight.to_wu());
 
 	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
@@ -10464,7 +10467,7 @@ mod tests {
 	use bitcoin::amount::Amount;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::script::{ScriptBuf, Builder};
-	use bitcoin::transaction::{Transaction, TxOut, Version};
+	use bitcoin::transaction::{Transaction, TxIn, TxOut, Version};
 	use bitcoin::opcodes;
 	use bitcoin::network::Network;
 	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
@@ -10486,7 +10489,7 @@ mod tests {
 	use crate::routing::router::{Path, RouteHop};
 	use crate::util::config::UserConfig;
 	use crate::util::errors::APIError;
-	use crate::util::ser::{ReadableArgs, Writeable};
+	use crate::util::ser::{ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 	use crate::util::test_utils::{OnGetShutdownScriptpubkey, TestKeysInterface};
 	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
@@ -12235,5 +12238,84 @@ mod tests {
 		node_a_chan.set_batch_ready();
 		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
 		assert!(node_a_chan.check_get_channel_ready(0, &&logger).is_some());
+	}
+
+	fn funding_input_sats(input_value_sats: u64) -> (TxIn, TransactionU16LenLimited) {
+		let input_1_prev_out = TxOut { value: Amount::from_sat(input_value_sats), script_pubkey: ScriptBuf::default() };
+		let input_1_prev_tx = Transaction {
+			input: vec![], output: vec![input_1_prev_out],
+			version: Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
+		};
+		let input_1_txin = TxIn {
+			previous_output: bitcoin::OutPoint { txid: input_1_prev_tx.compute_txid(), vout: 0 },
+			..Default::default()
+		};
+		(input_1_txin, TransactionU16LenLimited::new(input_1_prev_tx).unwrap())
+	}
+
+	#[test]
+	fn test_calculate_our_funding_satoshis() {
+		use crate::ln::channel::calculate_our_funding_satoshis;
+		use bitcoin::Weight;
+
+		// normal use case, output is less than the available inputs
+		assert_eq!(
+			calculate_our_funding_satoshis(
+				true,
+				&[
+					funding_input_sats(200_000),
+					funding_input_sats(100_000),
+				],
+				Weight::from_wu(300),
+				2000,
+				1000,
+			).unwrap(),
+			298332
+		);
+
+		assert_eq!(
+			calculate_our_funding_satoshis(
+				true,
+				&[funding_input_sats(20_000)],
+				Weight::from_wu(300),
+				2000,
+				1000,
+			).unwrap(),
+			18652
+		);
+
+		assert_eq!(
+			calculate_our_funding_satoshis(
+				true,
+				&[funding_input_sats(20_000)],
+				Weight::from_wu(0),
+				2000,
+				1000,
+			).unwrap(),
+			19252
+		);
+
+		assert_eq!(
+			calculate_our_funding_satoshis(
+				false,
+				&[funding_input_sats(20_000)],
+				Weight::from_wu(0),
+				2000,
+				1000,
+			).unwrap(),
+			19680
+		);
+
+		// below dust limit
+		assert_eq!(
+			calculate_our_funding_satoshis(
+				true,
+				&[funding_input_sats(20_000)],
+				Weight::from_wu(300),
+				2000,
+				20_000,
+			).unwrap(),
+			0
+		);
 	}
 }
