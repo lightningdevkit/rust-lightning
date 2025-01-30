@@ -1240,10 +1240,8 @@ impl Readable for PackageTemplate {
 /// input amounts.
 ///
 /// If the proposed fee is less than the available spent output's values, we return the proposed
-/// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`], we
-/// return nothing.
-///
-/// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT
+/// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`],
+/// we return nothing.
 fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 	input_amounts: u64, predicted_weight: u64, conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 ) -> Option<(u64, u64)>
