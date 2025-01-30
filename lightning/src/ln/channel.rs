@@ -47,6 +47,8 @@ use crate::ln::chan_utils::{
 	get_commitment_transaction_number_obscure_factor,
 	ClosingTransaction, commit_tx_fee_sat, per_outbound_htlc_counterparty_commit_tx_fee_msat,
 };
+#[cfg(splicing)]
+use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
@@ -55,8 +57,6 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Channel
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
-#[cfg(splicing)]
-use crate::sign::P2WPKH_WITNESS_WEIGHT;
 use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
@@ -8250,8 +8250,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let funding_input_count = our_funding_inputs.len() + 1;
 		// Input witness weight, extended with weight for spending old funding
 		let total_witness_weight = Weight::from_wu(
-			witness_weight.to_wu()
-				.saturating_add(2 * P2WPKH_WITNESS_WEIGHT)
+			witness_weight.to_wu().saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT)
 		);
 		let estimated_fee = estimate_v2_funding_transaction_fee(true, funding_input_count, total_witness_weight, funding_feerate_per_kw);
 		let available_input = sum_input.saturating_sub(estimated_fee);
