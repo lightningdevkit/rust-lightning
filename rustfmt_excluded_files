@@ -54,7 +54,6 @@ lightning/src/offers/refund.rs
 lightning/src/offers/signer.rs
 lightning/src/offers/test_utils.rs
 lightning/src/onion_message/mod.rs
-lightning/src/onion_message/packet.rs
 lightning/src/routing/mod.rs
 lightning/src/routing/router.rs
 lightning/src/routing/scoring.rs
