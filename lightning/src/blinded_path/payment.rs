@@ -13,15 +13,13 @@ use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
-use crate::types::payment::PaymentSecret;
 use crate::ln::channel_state::CounterpartyForwardingInfo;
 use crate::ln::channelmanager::Verification;
-use crate::types::features::BlindedHopFeatures;
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -30,7 +28,12 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
+use crate::types::features::BlindedHopFeatures;
+use crate::types::payment::PaymentSecret;
+use crate::util::ser::{
+	FixedLengthReader, HighZeroBytesDroppedBigSize, LengthReadableArgs, Readable, WithoutLength,
+	Writeable, Writer,
+};
 
 use core::mem;
 use core::ops::Deref;
@@ -89,14 +92,22 @@ impl BlindedPaymentPath {
 	/// Create a one-hop blinded path for a payment.
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
+		entropy_source: ES, secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
 		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
 		Self::new(
-			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
-			entropy_source, secp_ctx
+			&[],
+			payee_node_id,
+			payee_tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
+			entropy_source,
+			secp_ctx,
 		)
 	}
 
@@ -111,32 +122,44 @@ impl BlindedPaymentPath {
 		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
 		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Self, ()> where ES::Target: EntropySource {
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
 		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
+			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 		);
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+		let blinding_secret =
+			SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
 		let blinded_payinfo = compute_payinfo(
-			intermediate_nodes, &payee_tlvs.tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
+			intermediate_nodes,
+			&payee_tlvs.tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
 		)?;
 		Ok(Self {
 			inner_path: BlindedPath {
 				introduction_node,
 				blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 				blinded_hops: blinded_hops(
-					secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
-				).map_err(|_| ())?,
+					secp_ctx,
+					intermediate_nodes,
+					payee_node_id,
+					payee_tlvs,
+					&blinding_secret,
+				)
+				.map_err(|_| ())?,
 			},
-			payinfo: blinded_payinfo
+			payinfo: blinded_payinfo,
 		})
 	}
 
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
 	/// it is found in the network graph).
 	pub fn public_introduction_node_id<'a>(
-		&self, network_graph: &'a ReadOnlyNetworkGraph
+		&self, network_graph: &'a ReadOnlyNetworkGraph,
 	) -> Option<&'a NodeId> {
 		self.inner_path.public_introduction_node_id(network_graph)
 	}
@@ -163,35 +186,40 @@ impl BlindedPaymentPath {
 	///
 	/// Will only modify `self` when returning `Ok`.
 	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
-		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
+		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
+		let control_tlvs_ss =
+			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-		let encrypted_control_tlvs = &self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
+		let encrypted_control_tlvs =
+			&self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
 		let mut s = Cursor::new(encrypted_control_tlvs);
 		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
 		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
 			Ok(ChaChaPolyReadAdapter {
-				readable: BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. })
+				readable: BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
 			}) => {
 				let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
 					Some(node_id) => node_id,
 					None => return Err(()),
 				};
 				let mut new_blinding_point = onion_utils::next_hop_pubkey(
-					secp_ctx, self.inner_path.blinding_point, control_tlvs_ss.as_ref()
-				).map_err(|_| ())?;
+					secp_ctx,
+					self.inner_path.blinding_point,
+					control_tlvs_ss.as_ref(),
+				)
+				.map_err(|_| ())?;
 				mem::swap(&mut self.inner_path.blinding_point, &mut new_blinding_point);
 				self.inner_path.introduction_node = IntroductionNode::NodeId(next_node_id);
 				self.inner_path.blinded_hops.remove(0);
 				Ok(())
 			},
-			_ => Err(())
+			_ => Err(()),
 		}
 	}
 
@@ -206,7 +234,7 @@ impl BlindedPaymentPath {
 	#[cfg(any(test, fuzzing))]
 	pub fn from_raw(
 		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>,
-		payinfo: BlindedPayInfo
+		payinfo: BlindedPayInfo,
 	) -> Self {
 		Self {
 			inner_path: BlindedPath {
@@ -214,7 +242,7 @@ impl BlindedPaymentPath {
 				blinding_point,
 				blinded_hops,
 			},
-			payinfo
+			payinfo,
 		}
 	}
 
@@ -406,7 +434,9 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 
 	fn try_from(info: CounterpartyForwardingInfo) -> Result<Self, ()> {
 		let CounterpartyForwardingInfo {
-			fee_base_msat, fee_proportional_millionths, cltv_expiry_delta
+			fee_base_msat,
+			fee_proportional_millionths,
+			cltv_expiry_delta,
 		} = info;
 
 		// Avoid exposing esoteric CLTV expiry deltas
@@ -424,9 +454,11 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 
 impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let features_opt =
-			if self.features == BlindedHopFeatures::empty() { None }
-			else { Some(WithoutLength(&self.features)) };
+		let features_opt = if self.features == BlindedHopFeatures::empty() {
+			None
+		} else {
+			Some(WithoutLength(&self.features))
+		};
 		encode_tlv_stream!(w, {
 			(2, self.short_channel_id, required),
 			(10, self.payment_relay, required),
@@ -488,7 +520,7 @@ impl Readable for BlindedPaymentTlvs {
 
 		if let Some(short_channel_id) = scid {
 			if payment_secret.is_some() {
-				return Err(DecodeError::InvalidValue)
+				return Err(DecodeError::InvalidValue);
 			}
 			Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
 				short_channel_id,
@@ -498,7 +530,9 @@ impl Readable for BlindedPaymentTlvs {
 				features: features.unwrap_or_else(BlindedHopFeatures::empty),
 			}))
 		} else {
-			if payment_relay.is_some() || features.is_some() { return Err(DecodeError::InvalidValue) }
+			if payment_relay.is_some() || features.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
 			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
 				tlvs: UnauthenticatedReceiveTlvs {
 					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
@@ -513,12 +547,14 @@ impl Readable for BlindedPaymentTlvs {
 
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode],
-	payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
+	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let pks = intermediate_nodes.iter().map(|node| node.node_id)
-		.chain(core::iter::once(payee_node_id));
-	let tlvs = intermediate_nodes.iter().map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
+	let pks =
+		intermediate_nodes.iter().map(|node| node.node_id).chain(core::iter::once(payee_node_id));
+	let tlvs = intermediate_nodes
+		.iter()
+		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 
 	let path = pks.zip(tlvs);
@@ -527,7 +563,9 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 }
 
 /// `None` if underflow occurs.
-pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &PaymentRelay) -> Option<u64> {
+pub(crate) fn amt_to_forward_msat(
+	inbound_amt_msat: u64, payment_relay: &PaymentRelay,
+) -> Option<u64> {
 	let inbound_amt = inbound_amt_msat as u128;
 	let base = payment_relay.fee_base_msat as u128;
 	let prop = payment_relay.fee_proportional_millionths as u128;
@@ -557,26 +595,31 @@ pub(super) fn compute_payinfo(
 	for tlvs in intermediate_nodes.iter().rev().map(|n| &n.tlvs) {
 		// In the future, we'll want to take the intersection of all supported features for the
 		// `BlindedPayInfo`, but there are no features in that context right now.
-		if tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) { return Err(()) }
+		if tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) {
+			return Err(());
+		}
 
 		let next_base_fee = tlvs.payment_relay.fee_base_msat as u64;
 		let next_prop_mil = tlvs.payment_relay.fee_proportional_millionths as u64;
 		// Use integer arithmetic to compute `ceil(a/b)` as `(a+b-1)/b`
 		// ((curr_base_fee * (1_000_000 + next_prop_mil)) / 1_000_000) + next_base_fee
-		curr_base_fee = curr_base_fee.checked_mul(1_000_000 + next_prop_mil)
+		curr_base_fee = curr_base_fee
+			.checked_mul(1_000_000 + next_prop_mil)
 			.and_then(|f| f.checked_add(1_000_000 - 1))
 			.map(|f| f / 1_000_000)
 			.and_then(|f| f.checked_add(next_base_fee))
 			.ok_or(())?;
 		// ceil(((curr_prop_mil + 1_000_000) * (next_prop_mil + 1_000_000)) / 1_000_000) - 1_000_000
-		curr_prop_mil = curr_prop_mil.checked_add(1_000_000)
+		curr_prop_mil = curr_prop_mil
+			.checked_add(1_000_000)
 			.and_then(|f1| next_prop_mil.checked_add(1_000_000).and_then(|f2| f2.checked_mul(f1)))
 			.and_then(|f| f.checked_add(1_000_000 - 1))
 			.map(|f| f / 1_000_000)
 			.and_then(|f| f.checked_sub(1_000_000))
 			.ok_or(())?;
 
-		cltv_expiry_delta = cltv_expiry_delta.checked_add(tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
+		cltv_expiry_delta =
+			cltv_expiry_delta.checked_add(tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
 	}
 
 	let mut htlc_minimum_msat: u64 = 1;
@@ -587,18 +630,22 @@ pub(super) fn compute_payinfo(
 		// in the amount that this node receives and contribute towards reaching its min.
 		htlc_minimum_msat = amt_to_forward_msat(
 			core::cmp::max(node.tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat),
-			&node.tlvs.payment_relay
-		).unwrap_or(1); // If underflow occurs, we definitely reached this node's min
+			&node.tlvs.payment_relay,
+		)
+		.unwrap_or(1); // If underflow occurs, we definitely reached this node's min
 		htlc_maximum_msat = amt_to_forward_msat(
-			core::cmp::min(node.htlc_maximum_msat, htlc_maximum_msat), &node.tlvs.payment_relay
-		).ok_or(())?; // If underflow occurs, we cannot send to this hop without exceeding their max
+			core::cmp::min(node.htlc_maximum_msat, htlc_maximum_msat),
+			&node.tlvs.payment_relay,
+		)
+		.ok_or(())?; // If underflow occurs, we cannot send to this hop without exceeding their max
 	}
-	htlc_minimum_msat = core::cmp::max(
-		payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat
-	);
+	htlc_minimum_msat =
+		core::cmp::max(payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat);
 	htlc_maximum_msat = core::cmp::min(payee_htlc_maximum_msat, htlc_maximum_msat);
 
-	if htlc_maximum_msat < htlc_minimum_msat { return Err(()) }
+	if htlc_maximum_msat < htlc_minimum_msat {
+		return Err(());
+	}
 	Ok(BlindedPayInfo {
 		fee_base_msat: u32::try_from(curr_base_fee).map_err(|_| ())?,
 		fee_proportional_millionths: u32::try_from(curr_prop_mil).map_err(|_| ())?,
@@ -677,62 +724,67 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{Bolt12RefundContext, PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, UnauthenticatedReceiveTlvs};
-	use crate::types::payment::PaymentSecret;
-	use crate::types::features::BlindedHopFeatures;
+	use crate::blinded_path::payment::{
+		Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode,
+		PaymentRelay, UnauthenticatedReceiveTlvs,
+	};
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
+	use crate::types::features::BlindedHopFeatures;
+	use crate::types::payment::PaymentSecret;
+	use bitcoin::secp256k1::PublicKey;
 
 	#[test]
 	fn compute_payinfo() {
 		// Taken from the spec example for aggregating blinded payment info. See
 		// https://github.com/lightning/bolts/blob/master/proposals/route-blinding.md#blinded-payments
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 144,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 100,
+		let intermediate_nodes = vec![
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 144,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 100,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 100,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 100,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value(),
-		}, PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 144,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 100,
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 144,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 100,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1_000,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1_000,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value(),
-		}];
+		];
 		let recv_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12).unwrap();
+		let blinded_payinfo =
+			super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12)
+				.unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 201);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 1001);
 		assert_eq!(blinded_payinfo.cltv_expiry_delta, 300);
@@ -744,13 +796,11 @@ mod tests {
 	fn compute_payinfo_1_hop() {
 		let recv_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
-		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
+		let blinded_payinfo =
+			super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 0);
 		assert_eq!(blinded_payinfo.cltv_expiry_delta, TEST_FINAL_CLTV as u16);
@@ -763,51 +813,57 @@ mod tests {
 		// If no hops charge fees, the htlc_minimum_msat should just be the maximum htlc_minimum_msat
 		// along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 0,
-					fee_base_msat: 0,
+		let intermediate_nodes = vec![
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 0,
+						fee_base_msat: 0,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}, PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 0,
-					fee_base_msat: 0,
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 0,
+						fee_base_msat: 0,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 2_000,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 2_000,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}];
+		];
 		let recv_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 3,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 3 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
+		let blinded_payinfo = super::compute_payinfo(
+			&intermediate_nodes[..],
+			&recv_tlvs,
+			htlc_maximum_msat,
+			TEST_FINAL_CLTV as u16,
+		)
+		.unwrap();
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, 2_000);
 	}
 
@@ -816,54 +872,66 @@ mod tests {
 		// Create a path with varying fees and htlc_mins, and make sure htlc_minimum_msat ends up as the
 		// max (htlc_min - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 1_000,
+		let intermediate_nodes = vec![
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 1_000,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 5_000,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 5_000,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}, PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 200,
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 200,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 2_000,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 2_000,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}];
+		];
 		let recv_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 		let htlc_minimum_msat = 3798;
-		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1, TEST_FINAL_CLTV as u16).is_err());
+		assert!(super::compute_payinfo(
+			&intermediate_nodes[..],
+			&recv_tlvs,
+			htlc_minimum_msat - 1,
+			TEST_FINAL_CLTV as u16
+		)
+		.is_err());
 
 		let htlc_maximum_msat = htlc_minimum_msat + 1;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
+		let blinded_payinfo = super::compute_payinfo(
+			&intermediate_nodes[..],
+			&recv_tlvs,
+			htlc_maximum_msat,
+			TEST_FINAL_CLTV as u16,
+		)
+		.unwrap();
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, htlc_minimum_msat);
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, htlc_maximum_msat);
 	}
@@ -873,51 +941,57 @@ mod tests {
 		// Create a path with varying fees and `htlc_maximum_msat`s, and make sure the aggregated max
 		// htlc ends up as the min (htlc_max - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 1_000,
+		let intermediate_nodes = vec![
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 1_000,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: 5_000,
 			},
-			htlc_maximum_msat: 5_000,
-		}, PaymentForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 1,
+			PaymentForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 1,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1,
+					},
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1,
-				},
-				next_blinding_override: None,
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: 10_000,
 			},
-			htlc_maximum_msat: 10_000
-		}];
+		];
 		let recv_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
 		};
 
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();
+		let blinded_payinfo = super::compute_payinfo(
+			&intermediate_nodes[..],
+			&recv_tlvs,
+			10_000,
+			TEST_FINAL_CLTV as u16,
+		)
+		.unwrap();
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 3997);
 	}
 }
