@@ -9,11 +9,11 @@
 
 //! Parsing and formatting for bech32 message encoding.
 
-use bitcoin::secp256k1;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::CursorReadable;
 use bech32::primitives::decode::CheckedHrpstringError;
+use bitcoin::secp256k1;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -25,16 +25,16 @@ pub(super) use sealed::Bech32Encode;
 pub use sealed::Bech32Encode;
 
 mod sealed {
-	use bech32::{EncodeError, Hrp, NoChecksum, encode_to_fmt};
-	use bech32::primitives::decode::CheckedHrpstring;
-	use core::fmt;
 	use super::Bolt12ParseError;
+	use bech32::primitives::decode::CheckedHrpstring;
+	use bech32::{encode_to_fmt, EncodeError, Hrp, NoChecksum};
+	use core::fmt;
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
 
 	/// Indicates a message can be encoded using bech32.
-	pub trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=Bolt12ParseError> {
+	pub trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error = Bolt12ParseError> {
 		/// Human readable part of the message's bech32 encoding.
 		const BECH32_HRP: &'static str;
 
@@ -234,7 +234,7 @@ impl From<secp256k1::Error> for Bolt12ParseError {
 mod bolt12_tests {
 	use super::Bolt12ParseError;
 	use crate::offers::offer::Offer;
-	use bech32::primitives::decode::{CheckedHrpstringError, UncheckedHrpstringError, CharError};
+	use bech32::primitives::decode::{CharError, CheckedHrpstringError, UncheckedHrpstringError};
 
 	#[test]
 	fn encodes_offer_as_bech32_without_checksum() {
@@ -294,7 +294,12 @@ mod bolt12_tests {
 		let mixed_case_offer = "LnO1PqPs7sJqPgTyZm3qV4UxZmTsD3JjQeR9Wd3hY6TsW35k7mSjZfPy7nZ5YqCnYgRfDeJ82uM5Wf5k2uCkYyPwA3EyT44h6tXtXqUqH7Lz5dJgE4AfGfJn7k4rGrKuAg0jSd5xVxG";
 		match mixed_case_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", mixed_case_offer),
-			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MixedCase)))),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::Bech32(CheckedHrpstringError::Parse(
+					UncheckedHrpstringError::Char(CharError::MixedCase)
+				))
+			),
 		}
 	}
 }
@@ -320,7 +325,12 @@ mod tests {
 		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxo";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::InvalidChar('o'))))),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::Bech32(CheckedHrpstringError::Parse(
+					UncheckedHrpstringError::Char(CharError::InvalidChar('o'))
+				))
+			),
 		}
 	}
 
