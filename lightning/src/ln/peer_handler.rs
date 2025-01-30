@@ -88,6 +88,8 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
+	///
+	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
 
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
@@ -1718,10 +1720,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.chan_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.custom_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Custom Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.chan_handler.peer_disconnected(their_node_id);
+				self.message_handler.onion_message_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 
