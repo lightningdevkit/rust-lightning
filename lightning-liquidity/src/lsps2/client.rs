@@ -8,7 +8,7 @@
 
 //! Contains the main bLIP-52 / LSPS2 client object, [`LSPS2ClientHandler`].
 
-use crate::events::{Event, EventQueue};
+use crate::events::EventQueue;
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
@@ -198,13 +198,11 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS2Client(
-					LSPS2ClientEvent::OpeningParametersReady {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						opening_fee_params_menu: result.opening_fee_params_menu,
-					},
-				));
+				self.pending_events.enqueue(LSPS2ClientEvent::OpeningParametersReady {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					opening_fee_params_menu: result.opening_fee_params_menu,
+				});
 			},
 			None => {
 				return Err(LightningError {
@@ -264,15 +262,13 @@ where
 					})?;
 
 				if let Ok(intercept_scid) = result.jit_channel_scid.to_scid() {
-					self.pending_events.enqueue(Event::LSPS2Client(
-						LSPS2ClientEvent::InvoiceParametersReady {
-							request_id,
-							counterparty_node_id: *counterparty_node_id,
-							intercept_scid,
-							cltv_expiry_delta: result.lsp_cltv_expiry_delta,
-							payment_size_msat: jit_channel.payment_size_msat,
-						},
-					));
+					self.pending_events.enqueue(LSPS2ClientEvent::InvoiceParametersReady {
+						request_id,
+						counterparty_node_id: *counterparty_node_id,
+						intercept_scid,
+						cltv_expiry_delta: result.lsp_cltv_expiry_delta,
+						payment_size_msat: jit_channel.payment_size_msat,
+					});
 				} else {
 					return Err(LightningError {
 						err: format!(

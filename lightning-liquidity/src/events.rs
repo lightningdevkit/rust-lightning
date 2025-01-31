@@ -28,7 +28,7 @@ use core::task::{Poll, Waker};
 pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
 
 pub(crate) struct EventQueue {
-	queue: Arc<Mutex<VecDeque<Event>>>,
+	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
 	condvar: crate::sync::Condvar,
@@ -47,11 +47,11 @@ impl EventQueue {
 		Self { queue, waker }
 	}
 
-	pub fn enqueue(&self, event: Event) {
+	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
 		{
 			let mut queue = self.queue.lock().unwrap();
 			if queue.len() < MAX_EVENT_QUEUE_SIZE {
-				queue.push_back(event);
+				queue.push_back(event.into());
 			} else {
 				return;
 			}
@@ -64,19 +64,21 @@ impl EventQueue {
 		self.condvar.notify_one();
 	}
 
-	pub fn next_event(&self) -> Option<Event> {
+	pub fn next_event(&self) -> Option<LiquidityEvent> {
 		self.queue.lock().unwrap().pop_front()
 	}
 
-	pub async fn next_event_async(&self) -> Event {
+	pub async fn next_event_async(&self) -> LiquidityEvent {
 		EventFuture { event_queue: Arc::clone(&self.queue), waker: Arc::clone(&self.waker) }.await
 	}
 
 	#[cfg(feature = "std")]
-	pub fn wait_next_event(&self) -> Event {
+	pub fn wait_next_event(&self) -> LiquidityEvent {
 		let mut queue = self
 			.condvar
-			.wait_while(self.queue.lock().unwrap(), |queue: &mut VecDeque<Event>| queue.is_empty())
+			.wait_while(self.queue.lock().unwrap(), |queue: &mut VecDeque<LiquidityEvent>| {
+				queue.is_empty()
+			})
 			.unwrap();
 
 		let event = queue.pop_front().expect("non-empty queue");
@@ -95,14 +97,14 @@ impl EventQueue {
 		event
 	}
 
-	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
+	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.queue.lock().unwrap().split_off(0).into()
 	}
 }
 
 /// An event which you should probably take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
+pub enum LiquidityEvent {
 	/// An LSPS0 client event.
 	LSPS0Client(lsps0::event::LSPS0ClientEvent),
 	/// An LSPS1 (Channel Request) client event.
@@ -116,13 +118,44 @@ pub enum Event {
 	LSPS2Service(lsps2::event::LSPS2ServiceEvent),
 }
 
+impl From<lsps0::event::LSPS0ClientEvent> for LiquidityEvent {
+	fn from(event: lsps0::event::LSPS0ClientEvent) -> Self {
+		Self::LSPS0Client(event)
+	}
+}
+
+impl From<lsps1::event::LSPS1ClientEvent> for LiquidityEvent {
+	fn from(event: lsps1::event::LSPS1ClientEvent) -> Self {
+		Self::LSPS1Client(event)
+	}
+}
+
+#[cfg(lsps1_service)]
+impl From<lsps1::event::LSPS1ServiceEvent> for LiquidityEvent {
+	fn from(event: lsps1::event::LSPS1ServiceEvent) -> Self {
+		Self::LSPS1Service(event)
+	}
+}
+
+impl From<lsps2::event::LSPS2ClientEvent> for LiquidityEvent {
+	fn from(event: lsps2::event::LSPS2ClientEvent) -> Self {
+		Self::LSPS2Client(event)
+	}
+}
+
+impl From<lsps2::event::LSPS2ServiceEvent> for LiquidityEvent {
+	fn from(event: lsps2::event::LSPS2ServiceEvent) -> Self {
+		Self::LSPS2Service(event)
+	}
+}
+
 struct EventFuture {
-	event_queue: Arc<Mutex<VecDeque<Event>>>,
+	event_queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl Future for EventFuture {
-	type Output = Event;
+	type Output = LiquidityEvent;
 
 	fn poll(
 		self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>,
@@ -154,7 +187,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let counterparty_node_id =
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let expected_event = Event::LSPS0Client(LSPS0ClientEvent::ListProtocolsResponse {
+		let expected_event = LiquidityEvent::LSPS0Client(LSPS0ClientEvent::ListProtocolsResponse {
 			counterparty_node_id,
 			protocols: Vec::new(),
 		});
