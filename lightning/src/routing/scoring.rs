@@ -1528,6 +1528,12 @@ DirectedChannelLiquidity< L, HT, T> {
 		}
 
 		if score_params.probing_diversity_penalty_msat != 0 {
+			// We use `last_duration_since_epoch` as a stand-in for the current time as we don't
+			// want to fetch the current time in every score call (slowing things down
+			// substantially on some platforms where a syscall is required), don't want to add an
+			// unnecessary `std` requirement. Assuming we're probing somewhat regularly, it should
+			// reliably be close to the current time, (and using the last the last time we probed
+			// is also fine here).
 			let time_since_update = last_duration_since_epoch.saturating_sub(*self.last_datapoint);
 			let mul = Duration::from_secs(60 * 60 * 24).saturating_sub(time_since_update).as_secs();
 			let penalty = score_params.probing_diversity_penalty_msat.saturating_mul(mul * mul);
