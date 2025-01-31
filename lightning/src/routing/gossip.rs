@@ -1660,8 +1660,7 @@ where
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
-		// In Nov, 2023 there were about 15,000 nodes; we cap allocations to 1.5x that.
-		let mut channels = IndexedMap::with_capacity(cmp::min(channels_count as usize, 22500));
+		let mut channels = IndexedMap::with_capacity(CHAN_COUNT_ESTIMATE);
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
 			let chan_info: ChannelInfo = Readable::read(reader)?;
@@ -1673,8 +1672,7 @@ where
 		if nodes_count > u32::max_value() as u64 / 2 {
 			return Err(DecodeError::InvalidValue);
 		}
-		// In Nov, 2023 there were about 69K channels; we cap allocations to 1.5x that.
-		let mut nodes = IndexedMap::with_capacity(cmp::min(nodes_count as usize, 103500));
+		let mut nodes = IndexedMap::with_capacity(NODE_COUNT_ESTIMATE);
 		for i in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
 			let mut node_info: NodeInfo = Readable::read(reader)?;
@@ -1750,6 +1748,15 @@ where
 	}
 }
 
+// In Jan, 2025 there were about 49K channels.
+// We over-allocate by a bit because 20% more is better than the double we get if we're slightly
+// too low
+const CHAN_COUNT_ESTIMATE: usize = 60_000;
+// In Jan, 2025 there were about 15K nodes
+// We over-allocate by a bit because 33% more is better than the double we get if we're slightly
+// too low
+const NODE_COUNT_ESTIMATE: usize = 20_000;
+
 impl<L: Deref> NetworkGraph<L>
 where
 	L::Target: Logger,
@@ -1760,8 +1767,8 @@ where
 			secp_ctx: Secp256k1::verification_only(),
 			chain_hash: ChainHash::using_genesis_block(network),
 			logger,
-			channels: RwLock::new(IndexedMap::new()),
-			nodes: RwLock::new(IndexedMap::new()),
+			channels: RwLock::new(IndexedMap::with_capacity(CHAN_COUNT_ESTIMATE)),
+			nodes: RwLock::new(IndexedMap::with_capacity(NODE_COUNT_ESTIMATE)),
 			next_node_counter: AtomicUsize::new(0),
 			removed_node_counters: Mutex::new(Vec::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
