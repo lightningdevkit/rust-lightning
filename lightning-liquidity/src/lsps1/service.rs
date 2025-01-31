@@ -15,12 +15,11 @@ use super::msgs::{
 	LSPS1Message, LSPS1Options, LSPS1Request, LSPS1Response, OrderId, OrderParameters, OrderState,
 	PaymentInfo, LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 };
-use super::utils::is_valid;
 use crate::message_queue::MessageQueue;
 
 use crate::events::{Event, EventQueue};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
-use crate::prelude::{new_hash_map, HashMap, String, ToString};
+use crate::prelude::{new_hash_map, HashMap, String};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 
@@ -306,7 +305,7 @@ where
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetOrderRequest,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -456,4 +455,26 @@ where
 			},
 		}
 	}
+}
+
+fn check_range(min: u64, max: u64, value: u64) -> bool {
+	(value >= min) && (value <= max)
+}
+
+fn is_valid(order: &OrderParameters, options: &LSPS1Options) -> bool {
+	let bool = check_range(
+		options.min_initial_client_balance_sat,
+		options.max_initial_client_balance_sat,
+		order.client_balance_sat,
+	) && check_range(
+		options.min_initial_lsp_balance_sat,
+		options.max_initial_lsp_balance_sat,
+		order.lsp_balance_sat,
+	) && check_range(
+		1,
+		options.max_channel_expiry_blocks.into(),
+		order.channel_expiry_blocks.into(),
+	);
+
+	bool
 }
