@@ -762,6 +762,13 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// Specifically, the following penalty is applied
 	/// `probing_diversity_penalty_msat * max(0, (86400 - current time + last update))^2 / 86400^2` is
 	///
+	/// As this is a maximum value, when setting this you should consider it in relation to the
+	/// other values set to ensure that, at maximum, we strongly avoid paths which we recently
+	/// tried (similar to if they have a low success probability). For example, you might set this
+	/// to be the sum of [`Self::base_penalty_msat`] and
+	/// [`Self::historical_liquidity_penalty_multiplier_msat`] (plus some multiple of their
+	/// corresponding `amount_multiplier`s).
+	///
 	/// Default value: 0
 	pub probing_diversity_penalty_msat: u64,
 }
