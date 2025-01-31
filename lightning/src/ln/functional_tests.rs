@@ -562,19 +562,23 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	if steps & 0x0f == 2 { return; }
 	nodes[0].node.handle_accept_channel(nodes[1].node.get_our_node_id(), &accept_channel);
 
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
 	if steps & 0x0f == 3 { return; }
 	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
+	let channel_id = ChannelId::v1_from_funding_txid(
+		funding_created.funding_txid.as_byte_array(), funding_created.funding_output_index
+	);
+
 	if steps & 0x0f == 4 { return; }
 	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created);
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -586,7 +590,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	{
 		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 
@@ -2517,7 +2521,7 @@ fn channel_monitor_network_test() {
 
 	// Drop the ChannelMonitor for the previous channel to avoid it broadcasting transactions and
 	// confusing us in the following tests.
-	let chan_3_mon = nodes[3].chain_monitor.chain_monitor.remove_monitor(&OutPoint { txid: chan_3.3.compute_txid(), index: 0 });
+	let chan_3_mon = nodes[3].chain_monitor.chain_monitor.remove_monitor(&chan_3.2);
 
 	// One pending HTLC to time out:
 	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[3], &[&nodes[4]], 3_000_000);
@@ -2587,7 +2591,7 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[3].node.list_channels().len(), 0);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
-	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.compute_txid(), index: 0 }, chan_3_mon),
+	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(chan_3.2, chan_3_mon),
 		Ok(ChannelMonitorUpdateStatus::Completed));
 	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [node_id_4], 100000);
 }
@@ -3217,7 +3221,7 @@ fn test_htlc_on_chain_success() {
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0.txid, chan_2.3.compute_txid());
+		assert_eq!(added_monitors[0].0, chan_2.2);
 		added_monitors.clear();
 	}
 	let forwarded_events = nodes[1].node.get_and_clear_pending_events();
@@ -3255,8 +3259,8 @@ fn test_htlc_on_chain_success() {
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 2);
-		assert_eq!(added_monitors[0].0.txid, chan_1.3.compute_txid());
-		assert_eq!(added_monitors[1].0.txid, chan_1.3.compute_txid());
+		assert_eq!(added_monitors[0].0, chan_1.2);
+		assert_eq!(added_monitors[1].0, chan_1.2);
 		added_monitors.clear();
 	}
 	assert_eq!(events.len(), 3);
@@ -8270,7 +8274,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, penalty_txn));
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	{
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(OutPoint { txid: chan.3.compute_txid(), index: 0 }).unwrap();
+		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan.2).unwrap();
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.pending_claim_requests.is_empty());
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.claimable_outpoints.is_empty());
 	}
@@ -8885,7 +8889,6 @@ fn test_update_err_monitor_lockdown() {
 
 	// Create some initial channel
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let outpoint = OutPoint { txid: chan_1.3.compute_txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
@@ -8899,14 +8902,14 @@ fn test_update_err_monitor_lockdown() {
 	let persister = test_utils::TestPersister::new();
 	let watchtower = {
 		let new_monitor = {
-			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_1.2).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
+		assert_eq!(watchtower.watch_channel(chan_1.2, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		watchtower
 	};
 	let block = create_dummy_block(BlockHash::all_zeros(), 42, Vec::new());
@@ -8928,8 +8931,8 @@ fn test_update_err_monitor_lockdown() {
 		let mut node_0_peer_state_lock;
 		if let Some(channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2).as_funded_mut() {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
-				assert_eq!(watchtower.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::InProgress);
-				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
+				assert_eq!(watchtower.chain_monitor.update_channel(chan_1.2, &update), ChannelMonitorUpdateStatus::InProgress);
+				assert_eq!(nodes[0].chain_monitor.update_channel(chan_1.2, &update), ChannelMonitorUpdateStatus::Completed);
 			} else { assert!(false); }
 		} else {
 			assert!(false);
@@ -8955,7 +8958,6 @@ fn test_concurrent_monitor_claim() {
 
 	// Create some initial channel
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let outpoint = OutPoint { txid: chan_1.3.compute_txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
@@ -8972,14 +8974,14 @@ fn test_concurrent_monitor_claim() {
 	);
 	let watchtower_alice = {
 		let new_monitor = {
-			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_1.2).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &alice_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
+		assert_eq!(watchtower.watch_channel(chan_1.2, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		watchtower
 	};
 	let block = create_dummy_block(BlockHash::all_zeros(), 42, Vec::new());
@@ -9004,14 +9006,14 @@ fn test_concurrent_monitor_claim() {
 	let bob_broadcaster = test_utils::TestBroadcaster::with_blocks(Arc::clone(&alice_broadcaster.blocks));
 	let watchtower_bob = {
 		let new_monitor = {
-			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(chan_1.2).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &bob_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
+		assert_eq!(watchtower.watch_channel(chan_1.2, new_monitor), Ok(ChannelMonitorUpdateStatus::Completed));
 		watchtower
 	};
 	watchtower_bob.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), HTLC_TIMEOUT_BROADCAST - 1);
@@ -9031,9 +9033,9 @@ fn test_concurrent_monitor_claim() {
 		if let Some(channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2).as_funded_mut() {
 			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 				// Watchtower Alice should already have seen the block and reject the update
-				assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::InProgress);
-				assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
-				assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
+				assert_eq!(watchtower_alice.chain_monitor.update_channel(chan_1.2, &update), ChannelMonitorUpdateStatus::InProgress);
+				assert_eq!(watchtower_bob.chain_monitor.update_channel(chan_1.2, &update), ChannelMonitorUpdateStatus::Completed);
+				assert_eq!(nodes[0].chain_monitor.update_channel(chan_1.2, &update), ChannelMonitorUpdateStatus::Completed);
 			} else { assert!(false); }
 		} else {
 			assert!(false);
@@ -9454,9 +9456,9 @@ fn test_peer_funding_sidechannel() {
 
 #[test]
 fn test_duplicate_conflicting_funding_from_second_peer() {
-	// Test that if a user tries to fund a channel with a funding outpoint they'd previously used
+	// Test that if a user tries to fund a channel with a channel ID they'd previously used
 	// we don't try to remove the previous ChannelMonitor. This is largely a test to ensure we
-	// don't regress in the fuzzer, as such funding getting passed our outpoint-matches checks
+	// don't regress in the fuzzer, as such funding getting passed our channel_id-matches checks
 	// implies the user (and our counterparty) has reused cryptographic keys across channels, which
 	// we require the user not do.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -9466,14 +9468,15 @@ fn test_duplicate_conflicting_funding_from_second_peer() {
 
 	let temp_chan_id = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
 
-	let (_, tx, funding_output) =
+	let (_, tx, funding_outpoint) =
 		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+	let real_chan_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 
 	// Now that we have a funding outpoint, create a dummy `ChannelMonitor` and insert it into
 	// nodes[0]'s ChainMonitor so that the initial `ChannelMonitor` write fails.
 	let dummy_chan_id = create_chan_between_nodes(&nodes[2], &nodes[3]).3;
 	let dummy_monitor = get_monitor!(nodes[2], dummy_chan_id).clone();
-	nodes[0].chain_monitor.chain_monitor.watch_channel(funding_output, dummy_monitor).unwrap();
+	nodes[0].chain_monitor.chain_monitor.watch_channel(real_chan_id, dummy_monitor).unwrap();
 
 	nodes[0].node.funding_transaction_generated(temp_chan_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 
@@ -9488,7 +9491,7 @@ fn test_duplicate_conflicting_funding_from_second_peer() {
 	// watch_channel call which failed), but zero monitor updates.
 	check_added_monitors!(nodes[0], 1);
 	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
-	let err_reason = ClosureReason::ProcessingError { err: "Channel funding outpoint was a duplicate".to_owned() };
+	let err_reason = ClosureReason::ProcessingError { err: "Channel ID was a duplicate".to_owned() };
 	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(temp_chan_id, true, err_reason)]);
 }
 
@@ -9580,17 +9583,21 @@ fn test_duplicate_chan_id() {
 	}
 
 	// Move the first channel through the funding flow...
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
 	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	let channel_id = ChannelId::v1_from_funding_txid(
+		funding_created_msg.funding_txid.as_byte_array(), funding_created_msg.funding_output_index
+	);
+
 	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created_msg);
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -9677,7 +9684,7 @@ fn test_duplicate_chan_id() {
 	{
 		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
+		assert_eq!(added_monitors[0].0, channel_id);
 		added_monitors.clear();
 	}
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());

@@ -716,8 +716,8 @@ fn test_0conf_channel_with_async_monitor() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (outpoint, _, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&bs_raa.channel_id).unwrap().clone();
-	nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
+	let (_, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&bs_raa.channel_id).unwrap().clone();
+	nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(bs_raa.channel_id, latest_update).unwrap();
 	check_added_monitors!(nodes[1], 0);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);

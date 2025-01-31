@@ -1574,8 +1574,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
-	pub fn get_funding_txo(&self) -> (OutPoint, ScriptBuf) {
-		self.inner.lock().unwrap().get_funding_txo().clone()
+	pub fn get_funding_txo(&self) -> OutPoint {
+		self.inner.lock().unwrap().get_funding_txo()
+	}
+
+	/// Gets the funding script of the channel this ChannelMonitor is monitoring for.
+	pub fn get_funding_script(&self) -> ScriptBuf {
+		self.inner.lock().unwrap().get_funding_script()
 	}
 
 	/// Gets the channel_id of the channel this ChannelMonitor is monitoring for.
@@ -1599,8 +1604,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let lock = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*lock, None);
-		log_trace!(&logger, "Registering funding outpoint {}", &lock.get_funding_txo().0);
-		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
+		log_trace!(&logger, "Registering funding outpoint {}", &lock.get_funding_txo());
+		filter.register_tx(&lock.funding_info.0.txid, &lock.funding_info.1);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
 			for (index, script_pubkey) in outputs.iter() {
 				assert!(*index <= u16::MAX as u32);
@@ -2061,7 +2066,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					"Thought we were done claiming funds, but claimable_balances now has entries");
 				log_error!(logger,
 					"WARNING: LDK thought it was done claiming all the available funds in the ChannelMonitor for channel {}, but later decided it had more to claim. This is potentially an important bug in LDK, please report it at https://github.com/lightningdevkit/rust-lightning/issues/new",
-					inner.get_funding_txo().0);
+					inner.get_funding_txo());
 				inner.balances_empty_height = None;
 				(false, true)
 			},
@@ -2070,7 +2075,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				// None. It is set to the current block height.
 				log_debug!(logger,
 					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
-					inner.get_funding_txo().0, ARCHIVAL_DELAY_BLOCKS);
+					inner.get_funding_txo(), ARCHIVAL_DELAY_BLOCKS);
 				inner.balances_empty_height = Some(current_height);
 				(false, true)
 			},
@@ -3296,8 +3301,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.latest_update_id
 	}
 
-	fn get_funding_txo(&self) -> &(OutPoint, ScriptBuf) {
-		&self.funding_info
+	fn get_funding_txo(&self) -> OutPoint {
+		self.funding_info.0
+	}
+
+	fn get_funding_script(&self) -> ScriptBuf {
+		self.funding_info.1.clone()
 	}
 
 	pub fn channel_id(&self) -> ChannelId {

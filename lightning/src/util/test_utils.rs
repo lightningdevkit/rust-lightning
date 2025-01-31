@@ -387,9 +387,9 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, ChannelMonitor<TestChannelSigner>)>>,
+	pub added_monitors: Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
-	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, u64)>>,
+	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (u64, u64)>>,
 	pub chain_monitor: ChainMonitor<
 		TestChannelSigner,
 		&'a TestChainSource,
@@ -432,14 +432,14 @@ impl<'a> TestChainMonitor<'a> {
 	}
 
 	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
-		let (outpoint, _, latest_update) =
+		let (_, latest_update) =
 			self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
-		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
+		self.chain_monitor.channel_monitor_updated(*channel_id, latest_update).unwrap();
 	}
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(
-		&self, funding_txo: OutPoint, monitor: ChannelMonitor<TestChannelSigner>,
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<TestChannelSigner>,
 	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
@@ -452,23 +452,21 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		.unwrap()
 		.1;
 		assert!(new_monitor == monitor);
-		self.latest_monitor_update_id.lock().unwrap().insert(
-			monitor.channel_id(),
-			(funding_txo, monitor.get_latest_update_id(), monitor.get_latest_update_id()),
-		);
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
-		self.chain_monitor.watch_channel(funding_txo, new_monitor)
+		self.latest_monitor_update_id
+			.lock()
+			.unwrap()
+			.insert(channel_id, (monitor.get_latest_update_id(), monitor.get_latest_update_id()));
+		self.added_monitors.lock().unwrap().push((channel_id, monitor));
+		self.chain_monitor.watch_channel(channel_id, new_monitor)
 	}
 
 	fn update_channel(
-		&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate,
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
 	) -> chain::ChannelMonitorUpdateStatus {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
 		assert_eq!(ChannelMonitorUpdate::read(&mut &w.0[..]).unwrap(), *update);
-		let channel_id =
-			update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
 
 		self.monitor_updates
 			.lock()
@@ -491,11 +489,11 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		self.latest_monitor_update_id
 			.lock()
 			.unwrap()
-			.insert(channel_id, (funding_txo, update.update_id, update.update_id));
-		let update_res = self.chain_monitor.update_channel(funding_txo, update);
+			.insert(channel_id, (update.update_id, update.update_id));
+		let update_res = self.chain_monitor.update_channel(channel_id, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		let monitor = self.chain_monitor.get_monitor(funding_txo).unwrap();
+		let monitor = self.chain_monitor.get_monitor(channel_id).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
@@ -510,7 +508,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		} else {
 			assert!(new_monitor == *monitor);
 		}
-		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
+		self.added_monitors.lock().unwrap().push((channel_id, new_monitor));
 		update_res
 	}
 
