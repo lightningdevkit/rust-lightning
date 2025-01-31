@@ -4,7 +4,7 @@ mod common;
 
 use common::{create_service_and_client_nodes, get_lsps_message, Node};
 
-use lightning_liquidity::events::Event;
+use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::event::{LSPS2ClientEvent, LSPS2ServiceEvent};
 use lightning_liquidity::lsps2::msgs::RawOpeningFeeParams;
@@ -113,7 +113,7 @@ fn invoice_generation_flow() {
 
 	let get_info_event = service_node.liquidity_manager.next_event().unwrap();
 	match get_info_event {
-		Event::LSPS2Service(LSPS2ServiceEvent::GetInfo {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::GetInfo {
 			request_id,
 			counterparty_node_id,
 			token,
@@ -151,7 +151,7 @@ fn invoice_generation_flow() {
 
 	let opening_params_event = client_node.liquidity_manager.next_event().unwrap();
 	let opening_fee_params = match opening_params_event {
-		Event::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
+		LiquidityEvent::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
 			request_id,
 			counterparty_node_id,
 			opening_fee_params_menu,
@@ -175,7 +175,7 @@ fn invoice_generation_flow() {
 
 	let buy_event = service_node.liquidity_manager.next_event().unwrap();
 	match buy_event {
-		Event::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
 			request_id,
 			counterparty_node_id,
 			opening_fee_params: ofp,
@@ -210,7 +210,7 @@ fn invoice_generation_flow() {
 
 	let invoice_params_event = client_node.liquidity_manager.next_event().unwrap();
 	match invoice_params_event {
-		Event::LSPS2Client(LSPS2ClientEvent::InvoiceParametersReady {
+		LiquidityEvent::LSPS2Client(LSPS2ClientEvent::InvoiceParametersReady {
 			request_id,
 			counterparty_node_id,
 			intercept_scid: iscid,

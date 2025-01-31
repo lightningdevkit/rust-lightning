@@ -9,7 +9,7 @@
 
 //! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
-use crate::events::{Event, EventQueue};
+use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSMessage, ProtocolMessageHandler, RequestId, ResponseError,
 	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
@@ -806,13 +806,13 @@ where
 						};
 						match jit_channel.htlc_intercepted(htlc) {
 							Ok(Some(HTLCInterceptedAction::OpenChannel(open_channel_params))) => {
-								let event = Event::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+								let event = LSPS2ServiceEvent::OpenChannel {
 									their_network_key: counterparty_node_id.clone(),
 									amt_to_forward_msat: open_channel_params.amt_to_forward_msat,
 									opening_fee_msat: open_channel_params.opening_fee_msat,
 									user_channel_id: jit_channel.user_channel_id,
 									intercept_scid,
-								});
+								};
 								self.pending_events.enqueue(event);
 							},
 							Ok(Some(HTLCInterceptedAction::ForwardHTLC(channel_id))) => {
@@ -1091,11 +1091,11 @@ where
 				request,
 			) {
 				(Ok(()), msg) => {
-					let event = Event::LSPS2Service(LSPS2ServiceEvent::GetInfo {
+					let event = LSPS2ServiceEvent::GetInfo {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
 						token: params.token,
-					});
+					};
 					self.pending_events.enqueue(event);
 
 					(Ok(()), msg)
@@ -1210,12 +1210,12 @@ where
 				request,
 			) {
 				(Ok(()), msg) => {
-					let event = Event::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
+					let event = LSPS2ServiceEvent::BuyRequest {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
 						opening_fee_params: params.opening_fee_params,
 						payment_size_msat: params.payment_size_msat,
-					});
+					};
 					self.pending_events.enqueue(event);
 
 					(Ok(()), msg)

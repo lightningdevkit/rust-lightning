@@ -4,7 +4,7 @@
 //! specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
-use crate::events::{Event, EventQueue};
+use crate::events::EventQueue;
 use crate::lsps0::event::LSPS0ClientEvent;
 use crate::lsps0::msgs::{
 	LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsRequest, ListProtocolsResponse,
@@ -62,12 +62,10 @@ where
 	) -> Result<(), LightningError> {
 		match response {
 			LSPS0Response::ListProtocols(ListProtocolsResponse { protocols }) => {
-				self.pending_events.enqueue(Event::LSPS0Client(
-					LSPS0ClientEvent::ListProtocolsResponse {
-						counterparty_node_id: *counterparty_node_id,
-						protocols,
-					},
-				));
+				self.pending_events.enqueue(LSPS0ClientEvent::ListProtocolsResponse {
+					counterparty_node_id: *counterparty_node_id,
+					protocols,
+				});
 				Ok(())
 			},
 			LSPS0Response::ListProtocolsError(ResponseError { code, message, data, .. }) => {

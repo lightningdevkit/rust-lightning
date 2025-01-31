@@ -1,4 +1,4 @@
-use crate::events::{Event, EventQueue};
+use crate::events::{EventQueue, LiquidityEvent};
 use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
 use crate::lsps0::ser::{
@@ -73,7 +73,7 @@ pub struct LiquidityClientConfig {
 /// [`LiquidityManager`] to wake the [`PeerManager`] when there are pending messages to be sent.
 ///
 /// Users need to continually poll [`LiquidityManager::get_and_clear_pending_events`] in order to surface
-/// [`Event`]'s that likely need to be handled.
+/// [`LiquidityEvent`]'s that likely need to be handled.
 ///
 /// If the LSPS2 service is configured, users must forward the following parameters from LDK events:
 /// - [`Event::HTLCIntercepted`] to [`LSPS2ServiceHandler::htlc_intercepted`]
@@ -329,7 +329,7 @@ where {
 	///
 	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
 	#[cfg(feature = "std")]
-	pub fn wait_next_event(&self) -> Event {
+	pub fn wait_next_event(&self) -> LiquidityEvent {
 		self.pending_events.wait_next_event()
 	}
 
@@ -342,7 +342,7 @@ where {
 	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
 	///
 	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
-	pub fn next_event(&self) -> Option<Event> {
+	pub fn next_event(&self) -> Option<LiquidityEvent> {
 		self.pending_events.next_event()
 	}
 
@@ -355,7 +355,7 @@ where {
 	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
 	///
 	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
-	pub async fn next_event_async(&self) -> Event {
+	pub async fn next_event_async(&self) -> LiquidityEvent {
 		self.pending_events.next_event_async().await
 	}
 
@@ -368,7 +368,7 @@ where {
 	/// [`MAX_EVENT_QUEUE_SIZE`] has been reached.
 	///
 	/// [`MAX_EVENT_QUEUE_SIZE`]: crate::events::MAX_EVENT_QUEUE_SIZE
-	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
+	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.pending_events.get_and_clear_pending_events()
 	}
 

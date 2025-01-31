@@ -17,7 +17,7 @@ use super::msgs::{
 };
 use crate::message_queue::MessageQueue;
 
-use crate::events::{Event, EventQueue};
+use crate::events::EventQueue;
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
 use crate::prelude::{new_hash_map, HashMap, String};
 use crate::sync::{Arc, Mutex, RwLock};
@@ -219,13 +219,11 @@ where
 				.insert(request_id.clone(), LSPS1Request::CreateOrder(params.clone()));
 		}
 
-		self.pending_events.enqueue(Event::LSPS1Service(
-			LSPS1ServiceEvent::RequestForPaymentDetails {
-				request_id,
-				counterparty_node_id: *counterparty_node_id,
-				order: params.order,
-			},
-		));
+		self.pending_events.enqueue(LSPS1ServiceEvent::RequestForPaymentDetails {
+			request_id,
+			counterparty_node_id: *counterparty_node_id,
+			order: params.order,
+		});
 
 		Ok(())
 	}
@@ -322,11 +320,11 @@ where
 
 				if let Err(e) = outbound_channel.awaiting_payment() {
 					peer_state_lock.outbound_channels_by_order_id.remove(&params.order_id);
-					self.pending_events.enqueue(Event::LSPS1Service(LSPS1ServiceEvent::Refund {
+					self.pending_events.enqueue(LSPS1ServiceEvent::Refund {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
 						order_id: params.order_id,
-					}));
+					});
 					return Err(e);
 				}
 
@@ -334,13 +332,11 @@ where
 					.pending_requests
 					.insert(request_id.clone(), LSPS1Request::GetOrder(params.clone()));
 
-				self.pending_events.enqueue(Event::LSPS1Service(
-					LSPS1ServiceEvent::CheckPaymentConfirmation {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						order_id: params.order_id,
-					},
-				));
+				self.pending_events.enqueue(LSPS1ServiceEvent::CheckPaymentConfirmation {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					order_id: params.order_id,
+				});
 			},
 			None => {
 				return Err(LightningError {
