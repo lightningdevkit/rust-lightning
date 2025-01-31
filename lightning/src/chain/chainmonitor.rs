@@ -342,7 +342,7 @@ where C::Target: chain::Filter,
 			// `ChannelMonitorUpdate` after a channel persist for a channel with the same
 			// `latest_update_id`.
 			let _pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-			let funding_txo = monitor.get_funding_txo().0;
+			let funding_txo = monitor.get_funding_txo();
 			match self.persister.update_persisted_channel(funding_txo, None, monitor) {
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(logger, "Finished syncing Channel Monitor for channel {} for block-data",
@@ -516,7 +516,7 @@ where C::Target: chain::Filter,
 			// Completed event.
 			return Ok(());
 		}
-		let funding_txo = monitor_data.monitor.get_funding_txo().0;
+		let funding_txo = monitor_data.monitor.get_funding_txo();
 		self.pending_monitor_events.lock().unwrap().push((funding_txo, channel_id, vec![MonitorEvent::Completed {
 			funding_txo,
 			channel_id,
@@ -535,7 +535,7 @@ where C::Target: chain::Filter,
 		let monitors = self.monitors.read().unwrap();
 		let monitor = &monitors.get(&channel_id).unwrap().monitor;
 		let counterparty_node_id = monitor.get_counterparty_node_id();
-		let funding_txo = monitor.get_funding_txo().0;
+		let funding_txo = monitor.get_funding_txo();
 		self.pending_monitor_events.lock().unwrap().push((funding_txo, channel_id, vec![MonitorEvent::Completed {
 			funding_txo,
 			channel_id,
@@ -642,7 +642,7 @@ where C::Target: chain::Filter,
 				have_monitors_to_prune = true;
 			}
 			if needs_persistence {
-				self.persister.update_persisted_channel(monitor_holder.monitor.get_funding_txo().0, None, &monitor_holder.monitor);
+				self.persister.update_persisted_channel(monitor_holder.monitor.get_funding_txo(), None, &monitor_holder.monitor);
 			}
 		}
 		if have_monitors_to_prune {
@@ -655,7 +655,7 @@ where C::Target: chain::Filter,
 						"Archiving fully resolved ChannelMonitor for channel ID {}",
 						channel_id
 					);
-					self.persister.archive_persisted_channel(monitor_holder.monitor.get_funding_txo().0);
+					self.persister.archive_persisted_channel(monitor_holder.monitor.get_funding_txo());
 					false
 				} else {
 					true
@@ -769,7 +769,7 @@ where C::Target: chain::Filter,
 		log_trace!(logger, "Got new ChannelMonitor for channel {}", log_funding_info!(monitor));
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
-		let persist_res = self.persister.persist_new_channel(monitor.get_funding_txo().0, &monitor);
+		let persist_res = self.persister.persist_new_channel(monitor.get_funding_txo(), &monitor);
 		match persist_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_info!(logger, "Persistence of new ChannelMonitor for channel {} in progress", log_funding_info!(monitor));
@@ -825,7 +825,7 @@ where C::Target: chain::Filter,
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
 				let update_id = update.update_id;
-				let funding_txo = monitor.get_funding_txo().0;
+				let funding_txo = monitor.get_funding_txo();
 				let persist_res = if update_res.is_err() {
 					// Even if updating the monitor returns an error, the monitor's state will
 					// still be changed. Therefore, we should persist the updated monitor despite the error.
@@ -878,7 +878,7 @@ where C::Target: chain::Filter,
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
 			if monitor_events.len() > 0 {
-				let monitor_funding_txo = monitor_state.monitor.get_funding_txo().0;
+				let monitor_funding_txo = monitor_state.monitor.get_funding_txo();
 				let monitor_channel_id = monitor_state.monitor.channel_id();
 				let counterparty_node_id = monitor_state.monitor.get_counterparty_node_id();
 				pending_monitor_events.push((monitor_funding_txo, monitor_channel_id, monitor_events, counterparty_node_id));

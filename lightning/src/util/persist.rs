@@ -356,8 +356,8 @@ where
 			(&*entropy_source, &*signer_provider),
 		) {
 			Ok((block_hash, channel_monitor)) => {
-				if channel_monitor.get_funding_txo().0.txid != txid
-					|| channel_monitor.get_funding_txo().0.index != index
+				if channel_monitor.get_funding_txo().txid != txid
+					|| channel_monitor.get_funding_txo().index != index
 				{
 					return Err(io::Error::new(
 						io::ErrorKind::InvalidData,
@@ -617,8 +617,8 @@ where
 			(&*self.entropy_source, &*self.signer_provider),
 		) {
 			Ok((blockhash, channel_monitor)) => {
-				if channel_monitor.get_funding_txo().0.txid != outpoint.txid
-					|| channel_monitor.get_funding_txo().0.index != outpoint.index
+				if channel_monitor.get_funding_txo().txid != outpoint.txid
+					|| channel_monitor.get_funding_txo().index != outpoint.index
 				{
 					log_error!(
 						self.logger,
@@ -1219,7 +1219,7 @@ mod tests {
 					// check that when we read it, we got the right update id
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 
-					let monitor_name = MonitorName::from(mon.get_funding_txo().0);
+					let monitor_name = MonitorName::from(mon.get_funding_txo());
 					assert_eq!(
 						persister_0
 							.kv_store
@@ -1238,7 +1238,7 @@ mod tests {
 				assert_eq!(persisted_chan_data_1.len(), 1);
 				for (_, mon) in persisted_chan_data_1.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
-					let monitor_name = MonitorName::from(mon.get_funding_txo().0);
+					let monitor_name = MonitorName::from(mon.get_funding_txo());
 					assert_eq!(
 						persister_1
 							.kv_store
@@ -1433,7 +1433,7 @@ mod tests {
 		// Get the monitor and make a fake stale update at update_id=1 (lowest height of an update possible)
 		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates().unwrap();
 		let (_, monitor) = &persisted_chan_data[0];
-		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
+		let monitor_name = MonitorName::from(monitor.get_funding_txo());
 		persister_0
 			.kv_store
 			.write(

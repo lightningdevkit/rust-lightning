@@ -8131,7 +8131,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 			hash_map::Entry::Vacant(e) => {
 				let mut outpoint_to_peer_lock = self.outpoint_to_peer.lock().unwrap();
-				match outpoint_to_peer_lock.entry(monitor.get_funding_txo().0) {
+				match outpoint_to_peer_lock.entry(monitor.get_funding_txo()) {
 					hash_map::Entry::Occupied(_) => {
 						fail_chan!("The funding_created message had the same funding_txid as an existing channel - funding is not possible");
 					},
@@ -13365,7 +13365,7 @@ where
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 					channel_id: Some(monitor.channel_id()),
 				};
-				let funding_txo = monitor.get_funding_txo().0;
+				let funding_txo = monitor.get_funding_txo();
 				if let Some(counterparty_node_id) = monitor.get_counterparty_node_id() {
 					let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 						counterparty_node_id,
@@ -13576,7 +13576,7 @@ where
 			) => { {
 				let mut max_in_flight_update_id = 0;
 				$chan_in_flight_upds.retain(|upd| upd.update_id > $monitor.get_latest_update_id());
-				let funding_txo = $monitor.get_funding_txo().0;
+				let funding_txo = $monitor.get_funding_txo();
 				for update in $chan_in_flight_upds.iter() {
 					log_trace!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
 						update.update_id, $channel_info_log, &$monitor.channel_id());
@@ -13741,7 +13741,7 @@ where
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
-				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo().0);
+				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo());
 				if counterparty_opt.is_none() {
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
@@ -13821,7 +13821,7 @@ where
 									// `ChannelMonitor` is removed.
 									let compl_action =
 										EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-											channel_funding_outpoint: monitor.get_funding_txo().0,
+											channel_funding_outpoint: monitor.get_funding_txo(),
 											channel_id: monitor.channel_id(),
 											counterparty_node_id: path.hops[0].pubkey,
 										};
@@ -13934,7 +13934,7 @@ where
 									// channel_id -> peer map entry).
 									counterparty_opt.is_none(),
 									counterparty_opt.cloned().or(monitor.get_counterparty_node_id()),
-									monitor.get_funding_txo().0, monitor.channel_id()))
+									monitor.get_funding_txo(), monitor.channel_id()))
 							} else { None }
 						} else {
 							// If it was an outbound payment, we've handled it above - if a preimage
