@@ -173,7 +173,7 @@ where {
 		#[cfg(lsps1_service)]
 		let lsps1_service_handler = service_config.as_ref().and_then(|config| {
 			if let Some(number) =
-				<LSPS1ServiceHandler<ES> as ProtocolMessageHandler>::PROTOCOL_NUMBER
+				<LSPS1ServiceHandler<ES, CM, C> as ProtocolMessageHandler>::PROTOCOL_NUMBER
 			{
 				supported_protocols.push(number);
 			}
