@@ -2537,7 +2537,7 @@ where
 				}
 			};
 
-		let node_pubkey;
+		let mut node_pubkey = None;
 		{
 			let channels = self.channels.read().unwrap();
 			match channels.get(&msg.short_channel_id) {
@@ -2556,16 +2556,31 @@ where
 					} else {
 						channel.node_one.as_slice()
 					};
-					node_pubkey = PublicKey::from_slice(node_id).map_err(|_| LightningError {
-						err: "Couldn't parse source node pubkey".to_owned(),
-						action: ErrorAction::IgnoreAndLog(Level::Debug),
-					})?;
+					if sig.is_some() {
+						// PublicKey parsing isn't entirely trivial as it requires that we check
+						// that the provided point is on the curve. Thus, if we don't have a
+						// signature to verify, we want to skip the parsing step entirely.
+						// This represents a substantial speedup in applying RGS snapshots.
+						node_pubkey =
+							Some(PublicKey::from_slice(node_id).map_err(|_| LightningError {
+								err: "Couldn't parse source node pubkey".to_owned(),
+								action: ErrorAction::IgnoreAndLog(Level::Debug),
+							})?);
+					}
 				},
 			}
 		}
 
-		let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
 		if let Some(sig) = sig {
+			let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
+			let node_pubkey = if let Some(pubkey) = node_pubkey {
+				pubkey
+			} else {
+				debug_assert!(false, "node_pubkey should have been decoded above");
+				let err = "node_pubkey wasn't decoded but we need it to check a sig".to_owned();
+				let action = ErrorAction::IgnoreAndLog(Level::Error);
+				return Err(LightningError { err, action });
+			};
 			secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &node_pubkey, "channel_update");
 		}
 
