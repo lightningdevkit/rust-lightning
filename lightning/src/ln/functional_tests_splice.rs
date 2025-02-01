@@ -231,7 +231,7 @@ fn test_v1_splice_in() {
 
 	// Create additional inputs
 	let extra_splice_funding_input_sats = 35_000;
-	let (funding_inputs, total_weight) = create_dual_funding_utxos_with_prev_txs(
+	let funding_inputs = create_dual_funding_utxos_with_prev_txs(
 		&initiator_node,
 		&[extra_splice_funding_input_sats],
 	);
@@ -243,7 +243,6 @@ fn test_v1_splice_in() {
 			&acceptor_node.node.get_our_node_id(),
 			splice_in_sats as i64,
 			funding_inputs,
-			total_weight,
 			funding_feerate_per_kw,
 			locktime,
 		)
