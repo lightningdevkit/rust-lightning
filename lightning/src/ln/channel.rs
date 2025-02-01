@@ -4754,6 +4754,7 @@ pub(super) fn calculate_our_funding_satoshis(
 /// the fees of the inputs, fees of the inputs weight, and for the initiator,
 /// the fees of the common fields as well as the output and extra input weights.
 /// Returns estimated (partial) fees as additional information
+#[cfg(splicing)]
 pub(super) fn check_v2_funding_inputs_sufficient(
 	contribution_amount: i64, funding_inputs: &[(TxIn, Transaction, Weight)], is_initiator: bool,
 	extra_common_input_weight: Option<Weight>, funding_feerate_sat_per_1000_weight: u32,
@@ -8477,21 +8478,15 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		// TODO(splicing): check for quiescence
 
-		let pre_channel_value = self.funding.get_value_satoshis();
-		// Sanity check: capacity cannot decrease below 0
-		if (pre_channel_value as i64).saturating_add(our_funding_contribution_satoshis) < 0 {
-			return Err(ChannelError::Warn(format!(
-				"Post-splicing channel value cannot be negative. It was {} + {}",
-				pre_channel_value, our_funding_contribution_satoshis
-			)));
-		}
-
 		if our_funding_contribution_satoshis < 0 {
 			return Err(ChannelError::Warn(format!(
 				"TODO(splicing): Splice-out not supported, only splice in, contribution {}",
 				our_funding_contribution_satoshis,
 			)));
 		}
+
+		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
+		// (or below channel reserve)
 
 		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
@@ -8554,18 +8549,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Got splice_init when channel was not in an operational state".to_owned()));
 		}
 
-		let pre_channel_value = self.funding.get_value_satoshis();
-		// Sanity check: capacity cannot decrease below 0
-		if (pre_channel_value as i64)
-			.saturating_add(their_funding_contribution_satoshis)
-			.saturating_add(our_funding_contribution_satoshis) < 0
-		{
-			return Err(ChannelError::Warn(format!(
-				"Post-splicing channel value cannot be negative. It was {} + {} + {}",
-				pre_channel_value, their_funding_contribution_satoshis, our_funding_contribution_satoshis,
-			)));
-		}
-
 		if their_funding_contribution_satoshis.saturating_add(our_funding_contribution_satoshis) < 0 {
 			return Err(ChannelError::Warn(format!(
 				"Splice-out not supported, only splice in, relative {} + {}",
@@ -8573,8 +8556,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
+		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
+		// similarly to the check in `splice_channel`.
+
 		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
-		// it can go below reserve, therefore no pre-check is done here.
+		// it can't go below reserve, therefore no pre-check is done here.
 		// TODO(splicing): Once splice acceptor can contribute, add reserve pre-check, similar to the one in `splice_ack`.
 
 		// TODO(splicing): Store msg.funding_pubkey
@@ -13068,7 +13054,6 @@ mod tests {
 
 		// higher fee rate, does not cover
 		{
-			let expected_fee: u64 = 1948;
 			let res = check_v2_funding_inputs_sufficient(
 				298032,
 				&[
