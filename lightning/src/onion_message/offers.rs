@@ -9,20 +9,20 @@
 
 //! Message handling for BOLT 12 Offers.
 
-use core::fmt;
 use crate::blinded_path::message::OffersContext;
 use crate::io::{self, Read};
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
-use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::parse::Bolt12ParseError;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
+use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use crate::onion_message::messenger::{ResponseInstruction, Responder, MessageSendInstructions};
+use core::fmt;
 
 use crate::prelude::*;
 
@@ -51,7 +51,9 @@ pub trait OffersMessageHandler {
 	///
 	/// Typically, this is used for messages initiating a payment flow rather than in response to
 	/// another message. The latter should use the return value of [`Self::handle_message`].
-	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> { vec![] }
+	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
+		vec![]
+	}
 }
 
 /// Possible BOLT 12 Offers messages sent and received via an [`OnionMessage`].
@@ -81,9 +83,7 @@ impl OffersMessage {
 	/// Returns whether `tlv_type` corresponds to a TLV record for Offers.
 	pub fn is_known_type(tlv_type: u64) -> bool {
 		match tlv_type {
-			INVOICE_REQUEST_TLV_TYPE
-			| INVOICE_TLV_TYPE
-			| INVOICE_ERROR_TLV_TYPE => true,
+			INVOICE_REQUEST_TLV_TYPE | INVOICE_TLV_TYPE | INVOICE_ERROR_TLV_TYPE => true,
 			#[cfg(async_payments)]
 			STATIC_INVOICE_TLV_TYPE => true,
 			_ => false,
@@ -116,17 +116,17 @@ impl fmt::Debug for OffersMessage {
 		match self {
 			OffersMessage::InvoiceRequest(message) => {
 				write!(f, "{:?}", message.as_tlv_stream())
-			}
+			},
 			OffersMessage::Invoice(message) => {
 				write!(f, "{:?}", message.as_tlv_stream())
-			}
+			},
 			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(message) => {
 				write!(f, "{:?}", message)
-			}
+			},
 			OffersMessage::InvoiceError(message) => {
 				write!(f, "{:?}", message)
-			}
+			},
 		}
 	}
 }

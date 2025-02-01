@@ -9,26 +9,29 @@
 
 //! Structs and enums useful for constructing and reading an onion message packet.
 
-use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1::PublicKey;
 
-use crate::blinded_path::message::{BlindedMessagePath, ForwardTlvs, NextMessageHop, ReceiveTlvs};
-use crate::blinded_path::utils::Padding;
-use crate::ln::msgs::DecodeError;
-use crate::ln::onion_utils;
 #[cfg(async_payments)]
 use super::async_payments::AsyncPaymentsMessage;
 use super::dns_resolution::DNSResolverMessage;
 use super::messenger::CustomOnionMessageHandler;
 use super::offers::OffersMessage;
+use crate::blinded_path::message::{BlindedMessagePath, ForwardTlvs, NextMessageHop, ReceiveTlvs};
+use crate::blinded_path::utils::Padding;
 use crate::crypto::streams::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::ln::msgs::DecodeError;
+use crate::ln::onion_utils;
 use crate::util::logger::Logger;
-use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
+use crate::util::ser::{
+	BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable,
+	ReadableArgs, Writeable, Writer,
+};
 
-use core::cmp;
-use core::fmt;
 use crate::io::{self, Read};
 use crate::prelude::*;
+use core::cmp;
+use core::fmt;
 
 // Per the spec, an onion message packet's `hop_data` field length should be
 // SMALL_PACKET_HOP_DATA_LEN if it fits, else BIG_PACKET_HOP_DATA_LEN if it fits.
@@ -56,18 +59,17 @@ pub struct Packet {
 impl onion_utils::Packet for Packet {
 	type Data = Vec<u8>;
 	fn new(public_key: PublicKey, hop_data: Vec<u8>, hmac: [u8; 32]) -> Packet {
-		Self {
-			version: 0,
-			public_key,
-			hop_data,
-			hmac,
-		}
+		Self { version: 0, public_key, hop_data, hmac }
 	}
 }
 
 impl fmt::Debug for Packet {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_fmt(format_args!("Onion message packet version {} with hmac {:?}", self.version, &self.hmac[..]))
+		f.write_fmt(format_args!(
+			"Onion message packet version {} with hmac {:?}",
+			self.version,
+			&self.hmac[..]
+		))
 	}
 }
 
@@ -100,12 +102,7 @@ impl LengthReadable for Packet {
 		}
 
 		let hmac = Readable::read(r)?;
-		Ok(Packet {
-			version,
-			public_key,
-			hop_data,
-			hmac,
-		})
+		Ok(Packet { version, public_key, hop_data, hmac })
 	}
 }
 
@@ -116,11 +113,7 @@ pub(super) enum Payload<T: OnionMessageContents> {
 	/// This payload is for an intermediate hop.
 	Forward(ForwardControlTlvs),
 	/// This payload is for the final hop.
-	Receive {
-		control_tlvs: ReceiveControlTlvs,
-		reply_path: Option<BlindedMessagePath>,
-		message: T,
-	}
+	Receive { control_tlvs: ReceiveControlTlvs, reply_path: Option<BlindedMessagePath>, message: T },
 }
 
 /// The contents of an [`OnionMessage`] as read from the wire.
@@ -225,12 +218,12 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
-				_encode_varint_length_prefixed_tlv!(w, {
-					(4, *encrypted_bytes, required_vec)
-				})
+				_encode_varint_length_prefixed_tlv!(w, { (4, *encrypted_bytes, required_vec) })
 			},
 			Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes), reply_path, message,
+				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes),
+				reply_path,
+				message,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
@@ -240,12 +233,12 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 			},
 			Payload::Forward(ForwardControlTlvs::Unblinded(control_tlvs)) => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
-				_encode_varint_length_prefixed_tlv!(w, {
-					(4, write_adapter, required)
-				})
+				_encode_varint_length_prefixed_tlv!(w, { (4, write_adapter, required) })
 			},
 			Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs), reply_path, message,
+				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs),
+				reply_path,
+				message,
 			} => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				_encode_varint_length_prefixed_tlv!(w, {
@@ -261,7 +254,8 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
 impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized> ReadableArgs<(SharedSecret, &H, &L)>
-for Payload<ParsedOnionMessageContents<<H as CustomOnionMessageHandler>::CustomMessage>> {
+	for Payload<ParsedOnionMessageContents<<H as CustomOnionMessageHandler>::CustomMessage>>
+{
 	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
 		let (encrypted_tlvs_ss, handler, logger) = args;
 
@@ -311,13 +305,13 @@ for Payload<ParsedOnionMessageContents<<H as CustomOnionMessageHandler>::CustomM
 
 		match read_adapter {
 			None => return Err(DecodeError::InvalidValue),
-			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(tlvs)}) => {
+			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(tlvs) }) => {
 				if message_type.is_some() {
-					return Err(DecodeError::InvalidValue)
+					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
-			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
+			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs) }) => {
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
 					reply_path,
@@ -366,11 +360,9 @@ impl Readable for ControlTlvs {
 				next_blinding_override,
 			})
 		} else if valid_recv_fmt {
-			ControlTlvs::Receive(ReceiveTlvs {
-				context,
-			})
+			ControlTlvs::Receive(ReceiveTlvs { context })
 		} else {
-			return Err(DecodeError::InvalidValue)
+			return Err(DecodeError::InvalidValue);
 		};
 
 		Ok(payload_fmt)

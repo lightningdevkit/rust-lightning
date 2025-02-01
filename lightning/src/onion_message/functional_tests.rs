@@ -9,24 +9,32 @@
 
 //! Onion message testing and test utilities live here.
 
+use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
+use super::dns_resolution::{
+	DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery,
+};
+use super::messenger::{
+	CustomOnionMessageHandler, DefaultMessageRouter, Destination, MessageSendInstructions,
+	OnionMessagePath, OnionMessenger, Responder, ResponseInstruction, SendError, SendSuccess,
+};
+use super::offers::{OffersMessage, OffersMessageHandler};
+use super::packet::{OnionMessageContents, Packet};
+use crate::blinded_path::message::{
+	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext,
+	MessageForwardNode, OffersContext,
+};
 use crate::blinded_path::EmptyNodeIdLookUp;
-use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
-use crate::types::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
+use crate::types::features::{ChannelFeatures, InitFeatures};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
-use super::dns_resolution::{DNSResolverMessageHandler, DNSResolverMessage, DNSSECProof, DNSSECQuery};
-use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, Responder, ResponseInstruction, MessageSendInstructions, SendError, SendSuccess};
-use super::offers::{OffersMessage, OffersMessageHandler};
-use super::packet::{OnionMessageContents, Packet};
 
-use bitcoin::network::Network;
 use bitcoin::hex::FromHex;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
@@ -46,22 +54,26 @@ struct MessengerNode {
 		Arc<test_utils::TestNodeSigner>,
 		Arc<test_utils::TestLogger>,
 		Arc<EmptyNodeIdLookUp>,
-		Arc<DefaultMessageRouter<
-			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
-			Arc<test_utils::TestLogger>,
-			Arc<test_utils::TestKeysInterface>
-		>>,
+		Arc<
+			DefaultMessageRouter<
+				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+				Arc<test_utils::TestLogger>,
+				Arc<test_utils::TestKeysInterface>,
+			>,
+		>,
 		Arc<TestOffersMessageHandler>,
 		Arc<TestAsyncPaymentsMessageHandler>,
 		Arc<TestDNSResolverMessageHandler>,
-		Arc<TestCustomMessageHandler>
+		Arc<TestCustomMessageHandler>,
 	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
-	gossip_sync: Arc<P2PGossipSync<
-		Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
-		Arc<test_utils::TestChainSource>,
-		Arc<test_utils::TestLogger>
-	>>
+	gossip_sync: Arc<
+		P2PGossipSync<
+			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+			Arc<test_utils::TestChainSource>,
+			Arc<test_utils::TestLogger>,
+		>,
+	>,
 }
 
 impl Drop for MessengerNode {
@@ -76,7 +88,10 @@ impl Drop for MessengerNode {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+	fn handle_message(
+		&self, _message: OffersMessage, _context: Option<OffersContext>,
+		_responder: Option<Responder>,
+	) -> Option<(OffersMessage, ResponseInstruction)> {
 		None
 	}
 }
@@ -156,21 +171,17 @@ impl TestCustomMessageHandler {
 	}
 
 	fn expect_message(&self, message: TestCustomMessage) {
-		self.expectations.lock().unwrap().push_back(
-			OnHandleCustomMessage {
-				expect: message,
-				include_reply_path: false,
-			}
-		);
+		self.expectations
+			.lock()
+			.unwrap()
+			.push_back(OnHandleCustomMessage { expect: message, include_reply_path: false });
 	}
 
 	fn expect_message_and_response(&self, message: TestCustomMessage) {
-		self.expectations.lock().unwrap().push_back(
-			OnHandleCustomMessage {
-				expect: message,
-				include_reply_path: true,
-			}
-		);
+		self.expectations
+			.lock()
+			.unwrap()
+			.push_back(OnHandleCustomMessage { expect: message, include_reply_path: true });
 	}
 
 	fn get_next_expectation(&self) -> OnHandleCustomMessage {
@@ -189,7 +200,9 @@ impl Drop for TestCustomMessageHandler {
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> Option<(Self::CustomMessage, ResponseInstruction)> {
+	fn handle_custom_message(
+		&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>,
+	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		let expectation = self.get_next_expectation();
 		assert_eq!(msg, expectation.expect);
 
@@ -204,14 +217,22 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 		}
 
 		match responder {
-			Some(responder) if expectation.include_reply_path => {
-				Some((response, responder.respond_with_reply_path(MessageContext::Custom(context.unwrap_or_else(Vec::new)))))
-			},
+			Some(responder) if expectation.include_reply_path => Some((
+				response,
+				responder.respond_with_reply_path(MessageContext::Custom(
+					context.unwrap_or_else(Vec::new),
+				)),
+			)),
 			Some(responder) => Some((response, responder.respond())),
-			None => None
+			None => None,
 		}
 	}
-	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
+	fn read_custom_message<R: io::Read>(
+		&self, message_type: u64, buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, DecodeError>
+	where
+		Self: Sized,
+	{
 		match message_type {
 			CUSTOM_PING_MESSAGE_TYPE => {
 				let buf = read_to_end(buffer)?;
@@ -226,16 +247,15 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 			_ => Ok(None),
 		}
 	}
-	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, MessageSendInstructions)> {
+	fn release_pending_custom_messages(
+		&self,
+	) -> Vec<(Self::CustomMessage, MessageSendInstructions)> {
 		vec![]
 	}
 }
 
 fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
-	let cfgs = (1..=num_messengers)
-		.into_iter()
-		.map(|_| MessengerCfg::new())
-		.collect();
+	let cfgs = (1..=num_messengers).into_iter().map(|_| MessengerCfg::new()).collect();
 	create_nodes_using_cfgs(cfgs)
 }
 
@@ -260,38 +280,46 @@ impl MessengerCfg {
 fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 	let gossip_logger = Arc::new(test_utils::TestLogger::with_id("gossip".to_string()));
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, gossip_logger.clone()));
-	let gossip_sync = Arc::new(
-		P2PGossipSync::new(network_graph.clone(), None, gossip_logger)
-	);
+	let gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), None, gossip_logger));
 
 	let mut nodes = Vec::new();
 	for (i, cfg) in cfgs.into_iter().enumerate() {
-		let secret_key = cfg.secret_override.unwrap_or(SecretKey::from_slice(&[(i + 1) as u8; 32]).unwrap());
+		let secret_key =
+			cfg.secret_override.unwrap_or(SecretKey::from_slice(&[(i + 1) as u8; 32]).unwrap());
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let seed = [i as u8; 32];
 		let entropy_source = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
 		let node_signer = Arc::new(test_utils::TestNodeSigner::new(secret_key));
 
 		let node_id_lookup = Arc::new(EmptyNodeIdLookUp {});
-		let message_router = Arc::new(
-			DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone())
-		);
+		let message_router =
+			Arc::new(DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone()));
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let async_payments_message_handler = Arc::new(TestAsyncPaymentsMessageHandler {});
 		let dns_resolver_message_handler = Arc::new(TestDNSResolverMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
 		let messenger = if cfg.intercept_offline_peer_oms {
 			OnionMessenger::new_with_offline_peer_interception(
-				entropy_source.clone(), node_signer.clone(), logger.clone(),
-				node_id_lookup, message_router, offers_message_handler,
-				async_payments_message_handler, dns_resolver_message_handler,
+				entropy_source.clone(),
+				node_signer.clone(),
+				logger.clone(),
+				node_id_lookup,
+				message_router,
+				offers_message_handler,
+				async_payments_message_handler,
+				dns_resolver_message_handler,
 				custom_message_handler.clone(),
 			)
 		} else {
 			OnionMessenger::new(
-				entropy_source.clone(), node_signer.clone(), logger.clone(),
-				node_id_lookup, message_router, offers_message_handler,
-				async_payments_message_handler, dns_resolver_message_handler,
+				entropy_source.clone(),
+				node_signer.clone(),
+				logger.clone(),
+				node_id_lookup,
+				message_router,
+				offers_message_handler,
+				async_payments_message_handler,
+				dns_resolver_message_handler,
 				custom_message_handler.clone(),
 			)
 		};
@@ -330,7 +358,8 @@ fn release_events(node: &MessengerNode) -> Vec<Event> {
 }
 
 fn add_channel_to_graph(
-	node_a: &MessengerNode, node_b: &MessengerNode, secp_ctx: &Secp256k1<All>, short_channel_id: u64
+	node_a: &MessengerNode, node_b: &MessengerNode, secp_ctx: &Secp256k1<All>,
+	short_channel_id: u64,
 ) {
 	let gossip_sync = node_a.gossip_sync.deref();
 	let privkey_a = &node_a.privkey;
@@ -347,7 +376,7 @@ fn pass_along_path(path: &Vec<MessengerNode>) {
 	let mut prev_node = &path[0];
 	for node in path.into_iter().skip(1) {
 		let events = prev_node.messenger.release_pending_msgs();
-		let onion_msg =  {
+		let onion_msg = {
 			let msgs = events.get(&node.node_id).unwrap();
 			assert_eq!(msgs.len(), 1);
 			msgs[0].clone()
@@ -392,7 +421,14 @@ fn one_blinded_hop() {
 
 	let secp_ctx = Secp256k1::new();
 	let context = MessageContext::Custom(Vec::new());
-	let blinded_path = BlindedMessagePath::new(&[], nodes[1].node_id, context, &*nodes[1].entropy_source, &secp_ctx).unwrap();
+	let blinded_path = BlindedMessagePath::new(
+		&[],
+		nodes[1].node_id,
+		context,
+		&*nodes[1].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
@@ -406,9 +442,17 @@ fn two_unblinded_two_blinded() {
 	let test_msg = TestCustomMessage::Pong;
 
 	let secp_ctx = Secp256k1::new();
-	let intermediate_nodes = [MessageForwardNode { node_id: nodes[3].node_id, short_channel_id: None }];
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[3].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
-	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[4].node_id, context, &*nodes[4].entropy_source, &secp_ctx).unwrap();
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[4].node_id,
+		context,
+		&*nodes[4].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].node_id, nodes[2].node_id],
 		destination: Destination::BlindedPath(blinded_path),
@@ -431,7 +475,14 @@ fn three_blinded_hops() {
 		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
-	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[3].node_id,
+		context,
+		&*nodes[3].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -455,14 +506,22 @@ fn async_response_over_one_blinded_hop() {
 	// 3. Simulate the creation of a Blinded Reply path provided by Bob.
 	let secp_ctx = Secp256k1::new();
 	let context = MessageContext::Custom(Vec::new());
-	let reply_path = BlindedMessagePath::new(&[], nodes[1].node_id, context, &*nodes[1].entropy_source, &secp_ctx).unwrap();
+	let reply_path = BlindedMessagePath::new(
+		&[],
+		nodes[1].node_id,
+		context,
+		&*nodes[1].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 
 	// 4. Create a responder using the reply path for Alice.
 	let responder = Some(Responder::new(reply_path));
 
 	// 5. Expect Alice to receive the message and create a response instruction for it.
 	alice.custom_message_handler.expect_message(message.clone());
-	let response_instruction = nodes[0].custom_message_handler.handle_custom_message(message, None, responder);
+	let response_instruction =
+		nodes[0].custom_message_handler.handle_custom_message(message, None, responder);
 
 	// 6. Simulate Alice asynchronously responding back to Bob with a response.
 	let (msg, instructions) = response_instruction.unwrap();
@@ -492,12 +551,15 @@ fn async_response_with_reply_path_succeeds() {
 	// Alice receives a message from Bob with an added reply_path for responding back.
 	let message = TestCustomMessage::Ping;
 	let context = MessageContext::Custom(Vec::new());
-	let reply_path = BlindedMessagePath::new(&[], bob.node_id, context, &*bob.entropy_source, &secp_ctx).unwrap();
+	let reply_path =
+		BlindedMessagePath::new(&[], bob.node_id, context, &*bob.entropy_source, &secp_ctx)
+			.unwrap();
 
 	// Alice asynchronously responds to Bob, expecting a response back from him.
 	let responder = Responder::new(reply_path);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
-	let response_instruction = alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
+	let response_instruction =
+		alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
 
 	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
@@ -530,14 +592,17 @@ fn async_response_with_reply_path_fails() {
 	// Alice receives a message from Bob with an added reply_path for responding back.
 	let message = TestCustomMessage::Ping;
 	let context = MessageContext::Custom(Vec::new());
-	let reply_path = BlindedMessagePath::new(&[], bob.node_id, context, &*bob.entropy_source, &secp_ctx).unwrap();
+	let reply_path =
+		BlindedMessagePath::new(&[], bob.node_id, context, &*bob.entropy_source, &secp_ctx)
+			.unwrap();
 
 	// Alice tries to asynchronously respond to Bob, but fails because the nodes are unannounced and
 	// disconnected. Thus, a reply path could no be created for the response.
 	disconnect_peers(alice, bob);
 	let responder = Responder::new(reply_path);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
-	let response_instruction = alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
+	let response_instruction =
+		alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
 
 	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
@@ -576,7 +641,14 @@ fn we_are_intro_node() {
 		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
-	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[2].node_id,
+		context,
+		&*nodes[2].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -585,9 +657,17 @@ fn we_are_intro_node() {
 	pass_along_path(&nodes);
 
 	// Try with a two-hop blinded path where we are the introduction node.
-	let intermediate_nodes = [MessageForwardNode { node_id: nodes[0].node_id, short_channel_id: None }];
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[0].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
-	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[1].node_id, context, &*nodes[1].entropy_source, &secp_ctx).unwrap();
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[1].node_id,
+		context,
+		&*nodes[1].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -604,9 +684,17 @@ fn invalid_blinded_path_error() {
 	let test_msg = TestCustomMessage::Pong;
 
 	let secp_ctx = Secp256k1::new();
-	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
-	let mut blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
+	let mut blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[2].node_id,
+		context,
+		&*nodes[2].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	blinded_path.clear_blinded_hops();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
@@ -632,8 +720,18 @@ fn reply_path() {
 		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
-	let reply_path = BlindedMessagePath::new(&intermediate_nodes, nodes[0].node_id, context, &*nodes[0].entropy_source, &secp_ctx).unwrap();
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), Some(reply_path)).unwrap();
+	let reply_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[0].node_id,
+		context,
+		&*nodes[0].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
+	nodes[0]
+		.messenger
+		.send_onion_message_using_path(path, test_msg.clone(), Some(reply_path))
+		.unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Ping);
 	pass_along_path(&nodes);
 	// Make sure the last node successfully decoded the reply path.
@@ -647,14 +745,28 @@ fn reply_path() {
 		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
-	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[3].node_id,
+		context,
+		&*nodes[3].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let intermediate_nodes = [
 		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
 		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
-	let reply_path = BlindedMessagePath::new(&intermediate_nodes, nodes[0].node_id, context, &*nodes[0].entropy_source, &secp_ctx).unwrap();
+	let reply_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[0].node_id,
+		context,
+		&*nodes[0].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let instructions = MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path };
 
 	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
@@ -672,7 +784,7 @@ fn invalid_custom_message_type() {
 	let nodes = create_nodes(2);
 
 	#[derive(Debug)]
-	struct InvalidCustomMessage{}
+	struct InvalidCustomMessage {}
 	impl OnionMessageContents for InvalidCustomMessage {
 		fn tlv_type(&self) -> u64 {
 			// Onion message contents must have a TLV >= 64.
@@ -689,7 +801,9 @@ fn invalid_custom_message_type() {
 	}
 
 	impl Writeable for InvalidCustomMessage {
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> { unreachable!() }
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> {
+			unreachable!()
+		}
 	}
 
 	let test_msg = InvalidCustomMessage {};
@@ -707,7 +821,8 @@ fn peer_buffer_full() {
 	let destination = Destination::Node(nodes[1].node_id);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
-	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
+	for _ in 0..188 {
+		// Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
 		nodes[0].messenger.send_onion_message(test_msg.clone(), instructions.clone()).unwrap();
 	}
 	let err = nodes[0].messenger.send_onion_message(test_msg, instructions.clone()).unwrap_err();
@@ -723,17 +838,17 @@ fn many_hops() {
 	let test_msg = TestCustomMessage::Pong;
 
 	let mut intermediate_nodes = vec![];
-	for i in 1..(num_nodes-1) {
+	for i in 1..(num_nodes - 1) {
 		intermediate_nodes.push(nodes[i].node_id);
 	}
 
 	let path = OnionMessagePath {
 		intermediate_nodes,
-		destination: Destination::Node(nodes[num_nodes-1].node_id),
+		destination: Destination::Node(nodes[num_nodes - 1].node_id),
 		first_node_addresses: None,
 	};
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
-	nodes[num_nodes-1].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	nodes[num_nodes - 1].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	pass_along_path(&nodes);
 }
 
@@ -744,11 +859,17 @@ fn requests_peer_connection_for_buffered_messages() {
 	let secp_ctx = Secp256k1::new();
 	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
 
-	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(
-		&intermediate_nodes, nodes[2].node_id, context, &*nodes[0].entropy_source, &secp_ctx
-	).unwrap();
+		&intermediate_nodes,
+		nodes[2].node_id,
+		context,
+		&*nodes[0].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -784,11 +905,17 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 	let secp_ctx = Secp256k1::new();
 	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
 
-	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(
-		&intermediate_nodes, nodes[2].node_id, context, &*nodes[0].entropy_source, &secp_ctx
-	).unwrap();
+		&intermediate_nodes,
+		nodes[2].node_id,
+		context,
+		&*nodes[0].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -819,7 +946,11 @@ fn intercept_offline_peer_oms() {
 	// new_with_offline_peer_interception, we will intercept OMs for offline
 	// peers, generate the right events, and forward OMs when they are re-injected
 	// by the user.
-	let node_cfgs = vec![MessengerCfg::new(), MessengerCfg::new().with_offline_peer_interception(), MessengerCfg::new()];
+	let node_cfgs = vec![
+		MessengerCfg::new(),
+		MessengerCfg::new().with_offline_peer_interception(),
+		MessengerCfg::new(),
+	];
 	let mut nodes = create_nodes_using_cfgs(node_cfgs);
 
 	let peer_conn_evs = release_events(&nodes[1]);
@@ -830,17 +961,23 @@ fn intercept_offline_peer_oms() {
 				let node_idx = if i == 0 { 0 } else { 2 };
 				assert_eq!(peer_node_id, &nodes[node_idx].node_id);
 			},
-			_ => panic!()
+			_ => panic!(),
 		}
 	}
 
 	let message = TestCustomMessage::Pong;
 	let secp_ctx = Secp256k1::new();
-	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(
-		&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx
-	).unwrap();
+		&intermediate_nodes,
+		nodes[2].node_id,
+		context,
+		&*nodes[2].entropy_source,
+		&secp_ctx,
+	)
+	.unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
@@ -857,12 +994,15 @@ fn intercept_offline_peer_oms() {
 			assert_eq!(peer_node_id, final_node_vec[0].node_id);
 			message
 		},
-		_ => panic!()
+		_ => panic!(),
 	};
 
 	// Ensure that we'll refuse to forward the re-injected OM until after the
 	// outbound peer comes back online.
-	let err = nodes[1].messenger.forward_onion_message(onion_message.clone(), &final_node_vec[0].node_id).unwrap_err();
+	let err = nodes[1]
+		.messenger
+		.forward_onion_message(onion_message.clone(), &final_node_vec[0].node_id)
+		.unwrap_err();
 	assert_eq!(err, SendError::InvalidFirstHop(final_node_vec[0].node_id));
 
 	connect_peers(&nodes[1], &final_node_vec[0]);
@@ -872,7 +1012,7 @@ fn intercept_offline_peer_oms() {
 		Event::OnionMessagePeerConnected { peer_node_id } => {
 			assert_eq!(peer_node_id, final_node_vec[0].node_id);
 		},
-		_ => panic!()
+		_ => panic!(),
 	}
 
 	nodes[1].messenger.forward_onion_message(onion_message, &final_node_vec[0].node_id).unwrap();
@@ -888,10 +1028,10 @@ fn spec_test_vector() {
 		"4343434343434343434343434343434343434343434343434343434343434343", // Carol
 		"4444444444444444444444444444444444444444444444444444444444444444", // Dave
 	]
-		.iter()
-		.map(|secret_hex| SecretKey::from_slice(&<Vec<u8>>::from_hex(secret_hex).unwrap()).unwrap())
-		.map(|secret| MessengerCfg::new().with_node_secret(secret))
-		.collect();
+	.iter()
+	.map(|secret_hex| SecretKey::from_slice(&<Vec<u8>>::from_hex(secret_hex).unwrap()).unwrap())
+	.map(|secret| MessengerCfg::new().with_node_secret(secret))
+	.collect();
 	let nodes = create_nodes_using_cfgs(node_cfgs);
 
 	// Hardcode the sender->Alice onion message, because it includes an unknown TLV of type 1, which
@@ -904,7 +1044,16 @@ fn spec_test_vector() {
 		<Packet as LengthReadable>::read(&mut packet_reader).unwrap();
 	let secp_ctx = Secp256k1::new();
 	let sender_to_alice_om = msgs::OnionMessage {
-		blinding_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("6363636363636363636363636363636363636363636363636363636363636363").unwrap()).unwrap()),
+		blinding_point: PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&<Vec<u8>>::from_hex(
+					"6363636363636363636363636363636363636363636363636363636363636363",
+				)
+				.unwrap(),
+			)
+			.unwrap(),
+		),
 		onion_routing_packet: sender_to_alice_packet,
 	};
 	// The spec test vectors prepend the OM message type (513) to the encoded onion message strings,
@@ -918,7 +1067,8 @@ fn spec_test_vector() {
 	let bob_to_carol_om = nodes[1].messenger.next_onion_message_for_peer(nodes[2].node_id).unwrap();
 	assert_eq!(bob_to_carol_om.encode(), <Vec<u8>>::from_hex("02b684babfd400c8dd48b367e9754b8021a3594a34dc94d7101776c7f6a86d0582055600029a77e8523162efa1f4208f4f2050cd5c386ddb6ce6d36235ea569d217ec52209fb85fdf7dbc4786c373eebdba0ddc184cfbe6da624f610e93f62c70f2c56be1090b926359969f040f932c03f53974db5656233bd60af375517d4323002937d784c2c88a564bcefe5c33d3fc21c26d94dfacab85e2e19685fd2ff4c543650958524439b6da68779459aee5ffc9dc543339acec73ff43be4c44ddcbe1c11d50e2411a67056ba9db7939d780f5a86123fdd3abd6f075f7a1d78ab7daf3a82798b7ec1e9f1345bc0d1e935098497067e2ae5a51ece396fcb3bb30871ad73aee51b2418b39f00c8e8e22be4a24f4b624e09cb0414dd46239de31c7be035f71e8da4f5a94d15b44061f46414d3f355069b5c5b874ba56704eb126148a22ec873407fe118972127e63ff80e682e410f297f23841777cec0517e933eaf49d7e34bd203266b42081b3a5193b51ccd34b41342bc67cf73523b741f5c012ba2572e9dda15fbe131a6ac2ff24dc2a7622d58b9f3553092cfae7fae3c8864d95f97aa49ec8edeff5d9f5782471160ee412d82ff6767030fc63eec6a93219a108cd41433834b26676a39846a944998796c79cd1cc460531b8ded659cedfd8aecefd91944f00476f1496daafb4ea6af3feacac1390ea510709783c2aa81a29de27f8959f6284f4684102b17815667cbb0645396ac7d542b878d90c42a1f7f00c4c4eedb2a22a219f38afadb4f1f562b6e000a94e75cc38f535b43a3c0384ccef127fde254a9033a317701c710b2b881065723486e3f4d3eea5e12f374a41565fe43fa137c1a252c2153dde055bb343344c65ad0529010ece29bbd405effbebfe3ba21382b94a60ac1a5ffa03f521792a67b30773cb42e862a8a02a8bbd41b842e115969c87d1ff1f8c7b5726b9f20772dd57fe6e4ea41f959a2a673ffad8e2f2a472c4c8564f3a5a47568dd75294b1c7180c500f7392a7da231b1fe9e525ea2d7251afe9ca52a17fe54a116cb57baca4f55b9b6de915924d644cba9dade4ccc01939d7935749c008bafc6d3ad01cd72341ce5ddf7a5d7d21cf0465ab7a3233433aef21f9acf2bfcdc5a8cc003adc4d82ac9d72b36eb74e05c9aa6ccf439ac92e6b84a3191f0764dd2a2e0b4cc3baa08782b232ad6ecd3ca6029bc08cc094aef3aebddcaddc30070cb6023a689641de86cfc6341c8817215a4650f844cd2ca60f2f10c6e44cfc5f23912684d4457bf4f599879d30b79bf12ef1ab8d34dddc15672b82e56169d4c770f0a2a7a960b1e8790773f5ff7fce92219808f16d061cc85e053971213676d28fb48925e9232b66533dbd938458eb2cc8358159df7a2a2e4cf87500ede2afb8ce963a845b98978edf26a6948d4932a6b95d022004556d25515fe158092ce9a913b4b4a493281393ca731e8d8e5a3449b9d888fc4e73ffcbb9c6d6d66e88e03cf6e81a0496ede6e4e4172b08c000601993af38f80c7f68c9d5fff9e0e215cff088285bf039ca731744efcb7825a272ca724517736b4890f47e306b200aa2543c363e2c9090bcf3cf56b5b86868a62471c7123a41740392fc1d5ab28da18dca66618e9af7b42b62b23aba907779e73ca03ec60e6ab9e0484b9cae6578e0fddb6386cb3468506bf6420298bf4a690947ab582255551d82487f271101c72e19e54872ab47eae144db66bc2f8194a666a5daec08d12822cb83a61946234f2dfdbd6ca7d8763e6818adee7b401fcdb1ac42f9df1ac5cc5ac131f2869013c8d6cd29d4c4e3d05bccd34ca83366d616296acf854fa05149bfd763a25b9938e96826a037fdcb85545439c76df6beed3bdbd01458f9cf984997cc4f0a7ac3cc3f5e1eeb59c09cadcf5a537f16e444149c8f17d4bdaef16c9fbabc5ef06eb0f0bf3a07a1beddfeacdaf1df5582d6dbd6bb808d6ab31bc22e5d7").unwrap());
 	nodes[2].messenger.handle_onion_message(nodes[1].node_id, &bob_to_carol_om);
-	let carol_to_dave_om = nodes[2].messenger.next_onion_message_for_peer(nodes[3].node_id).unwrap();
+	let carol_to_dave_om =
+		nodes[2].messenger.next_onion_message_for_peer(nodes[3].node_id).unwrap();
 	assert_eq!(carol_to_dave_om.encode(), <Vec<u8>>::from_hex("025aaca62db7ce6b46386206ef9930daa32e979a35cb185a41cb951aa7d254b03c055600025550b2910294fa73bda99b9de9c851be9cbb481e23194a1743033630efba546b86e7d838d0f6e9cc0ed088dbf6889f0dceca3bfc745bd77d013a31311fa932a8bf1d28387d9ff521eabc651dee8f861fed609a68551145a451f017ec44978addeee97a423c08445531da488fd1ddc998e9cdbfcea59517b53fbf1833f0bbe6188dba6ca773a247220ec934010daca9cc185e1ceb136803469baac799e27a0d82abe53dc48a06a55d1f643885cc7894677dd20a4e4152577d1ba74b870b9279f065f9b340cedb3ca13b7df218e853e10ccd1b59c42a2acf93f489e170ee4373d30ab158b60fc20d3ba73a1f8c750951d69fb5b9321b968ddc8114936412346aff802df65516e1c09c51ef19849ff36c0199fd88c8bec301a30fef0c7cb497901c038611303f64e4174b5daf42832aa5586b84d2c9b95f382f4269a5d1bd4be898618dc78dfd451170f72ca16decac5b03e60702112e439cadd104fb3bbb3d5023c9b80823fdcd0a212a7e1aaa6eeb027adc7f8b3723031d135a09a979a4802788bb7861c6cc85501fb91137768b70aeab309b27b885686604ffc387004ac4f8c44b101c39bc0597ef7fd957f53fc5051f534b10eb3852100962b5e58254e5558689913c26ad6072ea41f5c5db10077cfc91101d4ae393be274c74297da5cc381cd88d54753aaa7df74b2f9da8d88a72bc9218fcd1f19e4ff4aace182312b9509c5175b6988f044c5756d232af02a451a02ca752f3c52747773acff6fd07d2032e6ce562a2c42105d106eba02d0b1904182cdc8c74875b082d4989d3a7e9f0e73de7c75d357f4af976c28c0b206c5e8123fc2391d078592d0d5ff686fd245c0a2de2e535b7cca99c0a37d432a8657393a9e3ca53eec1692159046ba52cb9bc97107349d8673f74cbc97e231f1108005c8d03e24ca813cea2294b39a7a493bcc062708f1f6cf0074e387e7d50e0666ce784ef4d31cb860f6cad767438d9ea5156ff0ae86e029e0247bf94df75ee0cda4f2006061455cb2eaff513d558863ae334cef7a3d45f55e7cc13153c6719e9901c1d4db6c03f643b69ea4860690305651794284d9e61eb848ccdf5a77794d376f0af62e46d4835acce6fd9eef5df73ebb8ea3bb48629766967f446e744ecc57ff3642c4aa1ccee9a2f72d5caa75fa05787d08b79408fce792485fdecdc25df34820fb061275d70b84ece540b0fc47b2453612be34f2b78133a64e812598fbe225fd85415f8ffe5340ce955b5fd9d67dd88c1c531dde298ed25f96df271558c812c26fa386966c76f03a6ebccbca49ac955916929bd42e134f982dde03f924c464be5fd1ba44f8dc4c3cbc8162755fd1d8f7dc044b15b1a796c53df7d8769bb167b2045b49cc71e08908796c92c16a235717cabc4bb9f60f8f66ff4fff1f9836388a99583acebdff4a7fb20f48eedcd1f4bdcc06ec8b48e35307df51d9bc81d38a94992dd135b30079e1f592da6e98dff496cb1a7776460a26b06395b176f585636ebdf7eab692b227a31d6979f5a6141292698e91346b6c806b90c7c6971e481559cae92ee8f4136f2226861f5c39ddd29bbdb118a35dece03f49a96804caea79a3dacfbf09d65f2611b5622de51d98e18151acb3bb84c09caaa0cc80edfa743a4679f37d6167618ce99e73362fa6f213409931762618a61f1738c071bba5afc1db24fe94afb70c40d731908ab9a505f76f57a7d40e708fd3df0efc5b7cbb2a7b75cd23449e09684a2f0e2bfa0d6176c35f96fe94d92fc9fa4103972781f81cb6e8df7dbeb0fc529c600d768bed3f08828b773d284f69e9a203459d88c12d6df7a75be2455fec128f07a497a2b2bf626cc6272d0419ca663e9dc66b8224227eb796f0246dcae9c5b0b6cfdbbd40c3245a610481c92047c968c9fc92c04b89cc41a0c15355a8f").unwrap());
 	// Dave handles the onion message but he'll log that he errored while decoding the hop data
 	// because he sees it as an empty onion message (the only contents of the sender's OM is "hello"
