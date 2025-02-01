@@ -587,16 +587,11 @@ where
 			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
 		});
 
+		let entropy = &**entropy_source;
 		let paths = peer_info
 			.into_iter()
 			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(
-					&[peer],
-					recipient,
-					context.clone(),
-					&**entropy_source,
-					secp_ctx,
-				)
+				BlindedMessagePath::new(&[peer], recipient, context.clone(), entropy, secp_ctx)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -1050,13 +1045,11 @@ where
 		let blinding_factor = {
 			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
 			hmac.input(control_tlvs_ss.as_ref());
-			Hmac::from_engine(hmac).to_byte_array()
+			let hmac = Hmac::from_engine(hmac).to_byte_array();
+			Scalar::from_be_bytes(hmac).unwrap()
 		};
-		match node_signer.ecdh(
-			Recipient::Node,
-			&msg.onion_routing_packet.public_key,
-			Some(&Scalar::from_be_bytes(blinding_factor).unwrap()),
-		) {
+		let packet_pubkey = &msg.onion_routing_packet.public_key;
+		match node_signer.ecdh(Recipient::Node, packet_pubkey, Some(&blinding_factor)) {
 			Ok(ss) => ss.secret_bytes(),
 			Err(()) => {
 				log_trace!(logger, "Failed to compute onion packet shared secret");
@@ -1064,18 +1057,15 @@ where
 			},
 		}
 	};
-	match onion_utils::decode_next_untagged_hop(
+	let next_hop = onion_utils::decode_next_untagged_hop(
 		onion_decode_ss,
 		&msg.onion_routing_packet.hop_data[..],
 		msg.onion_routing_packet.hmac,
 		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
-	) {
+	);
+	match next_hop {
 		Ok((
-			Payload::Receive::<
-				ParsedOnionMessageContents<
-					<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage,
-				>,
-			> {
+			Payload::Receive {
 				message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
@@ -1117,11 +1107,10 @@ where
 			// unwrapping the onion layers to get to the final payload. Since we don't have the option
 			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
 			// for now.
-			let new_pubkey = match onion_utils::next_hop_pubkey(
-				&secp_ctx,
-				msg.onion_routing_packet.public_key,
-				&onion_decode_ss,
-			) {
+			let packet_pubkey = msg.onion_routing_packet.public_key;
+			let new_pubkey_opt =
+				onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss);
+			let new_pubkey = match new_pubkey_opt {
 				Ok(pk) => pk,
 				Err(e) => {
 					log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
@@ -1406,14 +1395,14 @@ where
 			.map_err(|_| SendError::GetNodeIdFailed)?;
 		let secp_ctx = &self.secp_ctx;
 
-		let peers = self
-			.message_recipients
-			.lock()
-			.unwrap()
-			.iter()
-			.filter(|(_, peer)| matches!(peer, OnionMessageRecipient::ConnectedPeer(_)))
-			.map(|(node_id, _)| *node_id)
-			.collect::<Vec<_>>();
+		let peers = {
+			let message_recipients = self.message_recipients.lock().unwrap();
+			message_recipients
+				.iter()
+				.filter(|(_, peer)| matches!(peer, OnionMessageRecipient::ConnectedPeer(_)))
+				.map(|(node_id, _)| *node_id)
+				.collect::<Vec<_>>()
+		};
 
 		self.message_router
 			.create_blinded_paths(recipient, context, peers, secp_ctx)
@@ -1627,10 +1616,9 @@ where
 			if num_peer_connecteds <= 1 {
 				for event in peer_connecteds {
 					if handler(event).await.is_ok() {
-						self.pending_peer_connected_events
-							.lock()
-							.unwrap()
-							.drain(..num_peer_connecteds);
+						let mut pending_peer_connected_events =
+							self.pending_peer_connected_events.lock().unwrap();
+						pending_peer_connected_events.drain(..num_peer_connecteds);
 					} else {
 						// We failed handling the event. Return to have it eventually replayed.
 						self.pending_events_processor.store(false, Ordering::Release);
@@ -1988,12 +1976,13 @@ where
 		&self, their_node_id: PublicKey, init: &msgs::Init, _inbound: bool,
 	) -> Result<(), ()> {
 		if init.features.supports_onion_messages() {
-			self.message_recipients
-				.lock()
-				.unwrap()
-				.entry(their_node_id)
-				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
-				.mark_connected();
+			{
+				let mut message_recipients = self.message_recipients.lock().unwrap();
+				message_recipients
+					.entry(their_node_id)
+					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
+					.mark_connected();
+			}
 			if self.intercept_messages_for_offline_peers {
 				let mut pending_peer_connected_events =
 					self.pending_peer_connected_events.lock().unwrap();
@@ -2090,11 +2079,8 @@ where
 			);
 		}
 
-		self.message_recipients
-			.lock()
-			.unwrap()
-			.get_mut(&peer_node_id)
-			.and_then(|buffer| buffer.dequeue_message())
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+		message_recipients.get_mut(&peer_node_id).and_then(|buffer| buffer.dequeue_message())
 	}
 }
 
