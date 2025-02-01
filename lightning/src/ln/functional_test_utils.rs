@@ -1237,7 +1237,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 /// Return the inputs (with prev tx), and the total witness weight for these inputs
 pub fn create_dual_funding_utxos_with_prev_txs(
 	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
-) -> (Vec<(TxIn, Transaction)>, Weight) {
+) -> Vec<(TxIn, Transaction, Weight)> {
 	// Ensure we have unique transactions per node by using the locktime.
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1261,11 +1261,13 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 				script_sig: ScriptBuf::new(),
 				sequence: Sequence::ZERO,
 				witness: Witness::new(),
-			}, tx.clone()));
+			},
+			tx.clone(),
+			Weight::from_wu(P2WPKH_WITNESS_WEIGHT),
+		));
 	}
-	let total_weight = Weight::from_wu(utxo_values_in_satoshis.len() as u64 * P2WPKH_WITNESS_WEIGHT);
 
-	(inputs, total_weight)
+	inputs
 }
 
 pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: ChannelId) -> Transaction {
