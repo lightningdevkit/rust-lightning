@@ -1661,11 +1661,12 @@ where
 	}
 }
 
+const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
+pub(super) const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
+
 fn outbound_buffer_full(
 	peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, OnionMessageRecipient>,
 ) -> bool {
-	const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
-	const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
 	let mut total_buffered_bytes = 0;
 	let mut peer_buffered_bytes = 0;
 	for (pk, peer_buf) in buffer {

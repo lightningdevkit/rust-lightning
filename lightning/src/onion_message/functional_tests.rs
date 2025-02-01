@@ -765,8 +765,7 @@ fn peer_buffer_full() {
 	let destination = Destination::Node(nodes[1].node_id);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
-	for _ in 0..188 {
-		// Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
+	for _ in 0..super::messenger::MAX_PER_PEER_BUFFER_SIZE / 1401 + 1 {
 		nodes[0].messenger.send_onion_message(test_msg.clone(), instructions.clone()).unwrap();
 	}
 	let err = nodes[0].messenger.send_onion_message(test_msg, instructions.clone()).unwrap_err();
