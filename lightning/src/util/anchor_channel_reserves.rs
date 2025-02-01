@@ -25,6 +25,7 @@ use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::chainmonitor::Persist;
 use crate::chain::Filter;
 use crate::events::bump_transaction::Utxo;
+use crate::ln::chan_utils::MAX_HTLCS;
 use crate::ln::channelmanager::AChannelManager;
 use crate::prelude::new_hash_set;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -33,6 +34,7 @@ use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::Amount;
 use bitcoin::FeeRate;
 use bitcoin::Weight;
+use core::cmp::min;
 use core::ops::Deref;
 
 // Transaction weights based on:
@@ -150,6 +152,15 @@ pub struct AnchorChannelReserveContext {
 	pub taproot_wallet: bool,
 }
 
+/// Errors around anchor channel reserve calculations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnchorChannelReserveError {
+	/// An overflow occurred in a fee calculation, caused by an excessive fee rate or weight.
+	FeeOverflow,
+	/// An overflow occurred calculating a total amount of reserves.
+	AmountOverflow,
+}
+
 /// A default for the [AnchorChannelReserveContext] parameters is provided as follows:
 /// - The upper bound fee rate is set to the 99th percentile of the median block fee rate since 2019:
 ///   ~50 sats/vbyte.
@@ -171,28 +182,31 @@ impl Default for AnchorChannelReserveContext {
 ///
 /// This reserve currently needs to be allocated as a disjoint set of UTXOs per channel,
 /// as claims are not yet aggregated across channels.
-pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount {
+pub fn get_reserve_per_channel(
+	context: &AnchorChannelReserveContext,
+) -> Result<Amount, AnchorChannelReserveError> {
+	let num_htlcs = min(context.expected_accepted_htlcs, MAX_HTLCS) as u64;
 	let weight = Weight::from_wu(
 		COMMITMENT_TRANSACTION_BASE_WEIGHT +
 		// Reserves are calculated in terms of accepted HTLCs, as their timeout defines the urgency of
 		// on-chain resolution. Each accepted HTLC is assumed to be forwarded to calculate an upper
 		// bound for the reserve, resulting in `expected_accepted_htlcs` inbound HTLCs and
 		// `expected_accepted_htlcs` outbound HTLCs per channel in aggregate.
-		2 * (context.expected_accepted_htlcs as u64) * COMMITMENT_TRANSACTION_PER_HTLC_WEIGHT +
+		2 * num_htlcs * COMMITMENT_TRANSACTION_PER_HTLC_WEIGHT +
 		anchor_output_spend_transaction_weight(context) +
 		// As an upper bound, it is assumed that each HTLC is resolved in a separate transaction.
 		// However, they might be aggregated when possible depending on timelocks and expiries.
-		htlc_success_transaction_weight(context) * (context.expected_accepted_htlcs as u64) +
-		htlc_timeout_transaction_weight(context) * (context.expected_accepted_htlcs as u64),
+		htlc_success_transaction_weight(context) * num_htlcs +
+		htlc_timeout_transaction_weight(context) * num_htlcs,
 	);
-	context.upper_bound_fee_rate.fee_wu(weight).unwrap_or(Amount::MAX)
+	context.upper_bound_fee_rate.fee_wu(weight).ok_or(AnchorChannelReserveError::FeeOverflow)
 }
 
 /// Calculates the number of anchor channels that can be supported by the reserve provided
 /// by `utxos`.
 pub fn get_supportable_anchor_channels(
 	context: &AnchorChannelReserveContext, utxos: &[Utxo],
-) -> u64 {
+) -> Result<u64, AnchorChannelReserveError> {
 	// Get the reserve needed per channel, replacing the fee for an initial spend with the actual value
 	// below.
 	let default_satisfaction_fee = context
@@ -202,8 +216,8 @@ pub fn get_supportable_anchor_channels(
 		} else {
 			P2WPKH_INPUT_WEIGHT
 		}))
-		.unwrap_or(Amount::MAX);
-	let reserve_per_channel = get_reserve_per_channel(context) - default_satisfaction_fee;
+		.ok_or(AnchorChannelReserveError::FeeOverflow)?;
+	let reserve_per_channel = get_reserve_per_channel(context)? - default_satisfaction_fee;
 
 	let mut total_fractional_amount = Amount::from_sat(0);
 	let mut num_whole_utxos = 0;
@@ -211,13 +225,19 @@ pub fn get_supportable_anchor_channels(
 		let satisfaction_fee = context
 			.upper_bound_fee_rate
 			.fee_wu(Weight::from_wu(utxo.satisfaction_weight))
-			.unwrap_or(Amount::MAX);
-		let amount = utxo.output.value.checked_sub(satisfaction_fee).unwrap_or(Amount::MIN);
+			.ok_or(AnchorChannelReserveError::FeeOverflow)?;
+		let amount = if let Some(amount) = utxo.output.value.checked_sub(satisfaction_fee) {
+			amount
+		} else {
+			// The UTXO is considered dust at the given fee rate.
+			continue;
+		};
 		if amount >= reserve_per_channel {
 			num_whole_utxos += 1;
 		} else {
-			total_fractional_amount =
-				total_fractional_amount.checked_add(amount).unwrap_or(Amount::MAX);
+			total_fractional_amount = total_fractional_amount
+				.checked_add(amount)
+				.ok_or(AnchorChannelReserveError::AmountOverflow)?;
 		}
 	}
 	// We require disjoint sets of UTXOs for the reserve of each channel,
@@ -225,7 +245,7 @@ pub fn get_supportable_anchor_channels(
 	//
 	// A worst-case coin selection is assumed for fractional UTXOs, selecting up to double the
 	// required amount.
-	num_whole_utxos + total_fractional_amount.to_sat() / reserve_per_channel.to_sat() / 2
+	Ok(num_whole_utxos + total_fractional_amount.to_sat() / reserve_per_channel.to_sat() / 2)
 }
 
 /// Verifies whether the anchor channel reserve provided by `utxos` is sufficient to support
@@ -258,7 +278,7 @@ pub fn can_support_additional_anchor_channel<
 >(
 	context: &AnchorChannelReserveContext, utxos: &[Utxo], a_channel_manager: &AChannelManagerRef,
 	chain_monitor: &ChainMonitorRef,
-) -> bool
+) -> Result<bool, AnchorChannelReserveError>
 where
 	AChannelManagerRef::Target: AChannelManager,
 	FilterRef::Target: Filter,
@@ -289,7 +309,8 @@ where
 			anchor_channels.insert(channel.channel_id);
 		}
 	}
-	get_supportable_anchor_channels(context, utxos) > anchor_channels.len() as u64
+	get_supportable_anchor_channels(context, utxos)
+		.map(|num_channels| num_channels > anchor_channels.len() as u64)
 }
 
 #[cfg(test)]
@@ -308,7 +329,7 @@ mod test {
 				expected_accepted_htlcs: 1,
 				taproot_wallet: false,
 			}),
-			Amount::from_sat(4349)
+			Ok(Amount::from_sat(4349))
 		);
 	}
 
@@ -329,7 +350,7 @@ mod test {
 	#[test]
 	fn test_get_supportable_anchor_channels() {
 		let context = AnchorChannelReserveContext::default();
-		let reserve_per_channel = get_reserve_per_channel(&context);
+		let reserve_per_channel = get_reserve_per_channel(&context).unwrap();
 		// Only 3 disjoint sets with a value greater than the required reserve can be created.
 		let utxos = vec![
 			make_p2wpkh_utxo(reserve_per_channel * 3 / 2),
@@ -338,7 +359,7 @@ mod test {
 			make_p2wpkh_utxo(reserve_per_channel * 99 / 100),
 			make_p2wpkh_utxo(reserve_per_channel * 20 / 100),
 		];
-		assert_eq!(get_supportable_anchor_channels(&context, utxos.as_slice()), 3);
+		assert_eq!(get_supportable_anchor_channels(&context, utxos.as_slice()), Ok(3));
 	}
 
 	#[test]
