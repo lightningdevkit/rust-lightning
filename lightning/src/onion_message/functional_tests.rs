@@ -31,7 +31,7 @@ use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{ChannelFeatures, InitFeatures};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
-use crate::util::test_utils;
+use crate::util::test_utils::{TestChainSource, TestKeysInterface, TestLogger, TestNodeSigner};
 
 use bitcoin::hex::FromHex;
 use bitcoin::network::Network;
@@ -45,35 +45,26 @@ use core::ops::Deref;
 
 use crate::prelude::*;
 
+type NetGraph = NetworkGraph<Arc<TestLogger>>;
+type MessageRouter = DefaultMessageRouter<Arc<NetGraph>, Arc<TestLogger>, Arc<TestKeysInterface>>;
+
 struct MessengerNode {
 	node_id: PublicKey,
 	privkey: SecretKey,
-	entropy_source: Arc<test_utils::TestKeysInterface>,
+	entropy_source: Arc<TestKeysInterface>,
 	messenger: OnionMessenger<
-		Arc<test_utils::TestKeysInterface>,
-		Arc<test_utils::TestNodeSigner>,
-		Arc<test_utils::TestLogger>,
+		Arc<TestKeysInterface>,
+		Arc<TestNodeSigner>,
+		Arc<TestLogger>,
 		Arc<EmptyNodeIdLookUp>,
-		Arc<
-			DefaultMessageRouter<
-				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
-				Arc<test_utils::TestLogger>,
-				Arc<test_utils::TestKeysInterface>,
-			>,
-		>,
+		Arc<MessageRouter>,
 		Arc<TestOffersMessageHandler>,
 		Arc<TestAsyncPaymentsMessageHandler>,
 		Arc<TestDNSResolverMessageHandler>,
 		Arc<TestCustomMessageHandler>,
 	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
-	gossip_sync: Arc<
-		P2PGossipSync<
-			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
-			Arc<test_utils::TestChainSource>,
-			Arc<test_utils::TestLogger>,
-		>,
-	>,
+	gossip_sync: Arc<P2PGossipSync<Arc<NetGraph>, Arc<TestChainSource>, Arc<TestLogger>>>,
 }
 
 impl Drop for MessengerNode {
@@ -278,7 +269,7 @@ impl MessengerCfg {
 }
 
 fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
-	let gossip_logger = Arc::new(test_utils::TestLogger::with_id("gossip".to_string()));
+	let gossip_logger = Arc::new(TestLogger::with_id("gossip".to_string()));
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, gossip_logger.clone()));
 	let gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), None, gossip_logger));
 
@@ -286,10 +277,10 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 	for (i, cfg) in cfgs.into_iter().enumerate() {
 		let secret_key =
 			cfg.secret_override.unwrap_or(SecretKey::from_slice(&[(i + 1) as u8; 32]).unwrap());
-		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
+		let logger = Arc::new(TestLogger::with_id(format!("node {}", i)));
 		let seed = [i as u8; 32];
-		let entropy_source = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
-		let node_signer = Arc::new(test_utils::TestNodeSigner::new(secret_key));
+		let entropy_source = Arc::new(TestKeysInterface::new(&seed, Network::Testnet));
+		let node_signer = Arc::new(TestNodeSigner::new(secret_key));
 
 		let node_id_lookup = Arc::new(EmptyNodeIdLookUp {});
 		let message_router =
