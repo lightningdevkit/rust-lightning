@@ -8394,10 +8394,11 @@ impl<SP: Deref> FundedChannel<SP> where
 	}
 
 	/// Initiate splicing.
-	/// - witness_weight: The witness weight for contributed inputs.
+	/// - our_funding_inputs: the inputs we contribute to the new funding transaction.
+	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, witness_weight: Weight,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, ChannelError> {
 		// Check if a splice has been initiated already.
@@ -8436,14 +8437,15 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Pre-check that inputs are sufficient to cover our contribution.
 		// Note: fees are not taken into account here.
 		let sum_input: u64 = our_funding_inputs.iter().map(
-			|(txin, tx)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat()).unwrap_or(0)
+			|(txin, tx, _)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat()).unwrap_or(0)
 		).sum();
 
 		// The +1 is to include the input of the old funding
 		let funding_input_count = our_funding_inputs.len() + 1;
 		// Input witness weight, extended with weight for spending old funding
 		let total_witness_weight = Weight::from_wu(
-			witness_weight.to_wu().saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT)
+			our_funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum::<u64>()
+			.saturating_add(FUNDING_TRANSACTION_WITNESS_WEIGHT)
 		);
 		let estimated_fee = estimate_v2_funding_transaction_fee(true, funding_input_count, total_witness_weight, funding_feerate_per_kw);
 		let available_input = sum_input.saturating_sub(estimated_fee);
@@ -9904,6 +9906,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
+	/// TODO(dual_funding): Include witness weight info with the inputs.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
