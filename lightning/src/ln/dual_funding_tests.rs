@@ -61,17 +61,7 @@ fn do_test_v2_channel_establishment(
 		.collect();
 
 	// Alice creates a dual-funded channel as initiator.
-	let funding_feerate = node_cfgs[0]
-		.fee_estimator
-		.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-	let funding_satoshis = calculate_our_funding_satoshis(
-		true,
-		&initiator_funding_inputs[..],
-		total_weight,
-		funding_feerate,
-		MIN_CHAN_DUST_LIMIT_SATOSHIS,
-	)
-	.unwrap();
+	let funding_satoshis = session.funding_input_sats;
 	let mut channel = PendingV2Channel::new_outbound(
 		&LowerBoundedFeeEstimator(node_cfgs[0].fee_estimator),
 		&nodes[0].node.entropy_source,
