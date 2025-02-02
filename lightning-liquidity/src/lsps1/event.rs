@@ -9,8 +9,8 @@
 
 //! Contains bLIP-51 / LSPS1 event types
 
-use super::msgs::OrderId;
-use super::msgs::{ChannelInfo, LSPS1Options, OrderParameters, PaymentInfo};
+use super::msgs::LSPS1OrderId;
+use super::msgs::{LSPS1ChannelInfo, LSPS1Options, LSPS1OrderParams, LSPS1PaymentInfo};
 
 use crate::lsps0::ser::{RequestId, ResponseError};
 
@@ -78,13 +78,13 @@ pub enum LSPS1ClientEvent {
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The id of the channel order.
-		order_id: OrderId,
+		order_id: LSPS1OrderId,
 		/// The order created by client and approved by LSP.
-		order: OrderParameters,
+		order: LSPS1OrderParams,
 		/// The details regarding payment of the order
-		payment: PaymentInfo,
+		payment: LSPS1PaymentInfo,
 		/// The details regarding state of the channel ordered.
-		channel: Option<ChannelInfo>,
+		channel: Option<LSPS1ChannelInfo>,
 	},
 	/// Information from the LSP about the status of a previously created order.
 	///
@@ -102,13 +102,13 @@ pub enum LSPS1ClientEvent {
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The id of the channel order.
-		order_id: OrderId,
+		order_id: LSPS1OrderId,
 		/// The order created by client and approved by LSP.
-		order: OrderParameters,
+		order: LSPS1OrderParams,
 		/// The details regarding payment of the order
-		payment: PaymentInfo,
+		payment: LSPS1PaymentInfo,
 		/// The details regarding state of the channel ordered.
-		channel: Option<ChannelInfo>,
+		channel: Option<LSPS1ChannelInfo>,
 	},
 	/// A request previously issued via [`LSPS1ClientHandler::create_order`] or [`LSPS1ClientHandler::check_order_status`].
 	/// failed as the LSP returned an error response.
@@ -151,7 +151,7 @@ pub enum LSPS1ServiceEvent {
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// The order requested by the client.
-		order: OrderParameters,
+		order: LSPS1OrderParams,
 	},
 	/// A request from client to check the status of the payment.
 	///
@@ -169,7 +169,7 @@ pub enum LSPS1ServiceEvent {
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// The order id of order with pending payment.
-		order_id: OrderId,
+		order_id: LSPS1OrderId,
 	},
 	/// If error is encountered, refund the amount if paid by the client.
 	Refund {
@@ -178,6 +178,6 @@ pub enum LSPS1ServiceEvent {
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// The order id of the refunded order.
-		order_id: OrderId,
+		order_id: LSPS1OrderId,
 	},
 }
