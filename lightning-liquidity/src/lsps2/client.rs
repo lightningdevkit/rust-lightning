@@ -26,8 +26,8 @@ use core::default::Default;
 use core::ops::Deref;
 
 use crate::lsps2::msgs::{
-	BuyRequest, BuyResponse, GetInfoRequest, GetInfoResponse, LSPS2Message, LSPS2Request,
-	LSPS2Response, OpeningFeeParams,
+	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2Request, LSPS2Response,
 };
 
 /// Client-side configuration options for JIT channels.
@@ -122,7 +122,7 @@ where
 			peer_state_lock.pending_get_info_requests.insert(request_id.clone());
 		}
 
-		let request = LSPS2Request::GetInfo(GetInfoRequest { token });
+		let request = LSPS2Request::GetInfo(LSPS2GetInfoRequest { token });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 
@@ -149,7 +149,7 @@ where
 	/// [`InvoiceParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::InvoiceParametersReady
 	pub fn select_opening_params(
 		&self, counterparty_node_id: PublicKey, payment_size_msat: Option<u64>,
-		opening_fee_params: OpeningFeeParams,
+		opening_fee_params: LSPS2OpeningFeeParams,
 	) -> Result<RequestId, APIError> {
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
@@ -173,7 +173,7 @@ where
 			}
 		}
 
-		let request = LSPS2Request::Buy(BuyRequest { opening_fee_params, payment_size_msat });
+		let request = LSPS2Request::Buy(LSPS2BuyRequest { opening_fee_params, payment_size_msat });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 
@@ -181,7 +181,8 @@ where
 	}
 
 	fn handle_get_info_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		result: LSPS2GetInfoResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -245,7 +246,7 @@ where
 	}
 
 	fn handle_buy_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: BuyResponse,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: LSPS2BuyResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
