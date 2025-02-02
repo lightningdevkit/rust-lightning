@@ -99,5 +99,8 @@ mod offers_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod dual_funding_tests;
+#[cfg(all(not(taproot), test))]
+#[allow(unused_mut)]
+mod upgrade_downgrade_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
