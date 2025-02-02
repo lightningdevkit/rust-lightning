@@ -11,8 +11,9 @@
 
 use super::event::LSPS1ClientEvent;
 use super::msgs::{
-	CreateOrderRequest, CreateOrderResponse, GetInfoRequest, GetInfoResponse, GetOrderRequest,
-	LSPS1Message, LSPS1Request, LSPS1Response, OrderId, OrderParameters,
+	LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoRequest, LSPS1GetInfoResponse,
+	LSPS1GetOrderRequest, LSPS1Message, LSPS1OrderId, LSPS1OrderParams, LSPS1Request,
+	LSPS1Response,
 };
 use crate::message_queue::MessageQueue;
 
@@ -94,14 +95,15 @@ where
 			peer_state_lock.pending_get_info_requests.insert(request_id.clone());
 		}
 
-		let request = LSPS1Request::GetInfo(GetInfoRequest {});
+		let request = LSPS1Request::GetInfo(LSPS1GetInfoRequest {});
 		let msg = LSPS1Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 		request_id
 	}
 
 	fn handle_get_info_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		result: LSPS1GetInfoResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.write().unwrap();
 
@@ -184,7 +186,7 @@ where
 	///
 	/// The client agrees to paying channel fees according to the provided parameters.
 	pub fn create_order(
-		&self, counterparty_node_id: &PublicKey, order: OrderParameters,
+		&self, counterparty_node_id: &PublicKey, order: LSPS1OrderParams,
 		refund_onchain_address: Option<Address>,
 	) -> RequestId {
 		let (request_id, request_msg) = {
@@ -195,8 +197,10 @@ where
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
 			let request_id = crate::utils::generate_request_id(&self.entropy_source);
-			let request =
-				LSPS1Request::CreateOrder(CreateOrderRequest { order, refund_onchain_address });
+			let request = LSPS1Request::CreateOrder(LSPS1CreateOrderRequest {
+				order,
+				refund_onchain_address,
+			});
 			let msg = LSPS1Message::Request(request_id.clone(), request).into();
 			peer_state_lock.pending_create_order_requests.insert(request_id.clone());
 
@@ -212,7 +216,7 @@ where
 
 	fn handle_create_order_response(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
-		response: CreateOrderResponse,
+		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -302,7 +306,7 @@ where
 	///
 	/// [`LSPS1ClientEvent::OrderStatus`]: crate::lsps1::event::LSPS1ClientEvent::OrderStatus
 	pub fn check_order_status(
-		&self, counterparty_node_id: &PublicKey, order_id: OrderId,
+		&self, counterparty_node_id: &PublicKey, order_id: LSPS1OrderId,
 	) -> RequestId {
 		let (request_id, request_msg) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
@@ -314,7 +318,8 @@ where
 			let request_id = crate::utils::generate_request_id(&self.entropy_source);
 			peer_state_lock.pending_get_order_requests.insert(request_id.clone());
 
-			let request = LSPS1Request::GetOrder(GetOrderRequest { order_id: order_id.clone() });
+			let request =
+				LSPS1Request::GetOrder(LSPS1GetOrderRequest { order_id: order_id.clone() });
 			let msg = LSPS1Message::Request(request_id.clone(), request).into();
 
 			(request_id, Some(msg))
@@ -329,7 +334,7 @@ where
 
 	fn handle_get_order_response(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
-		response: CreateOrderResponse,
+		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {

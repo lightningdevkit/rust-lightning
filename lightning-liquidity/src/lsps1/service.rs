@@ -11,9 +11,10 @@
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
-	ChannelInfo, CreateOrderRequest, CreateOrderResponse, GetInfoResponse, GetOrderRequest,
-	LSPS1Message, LSPS1Options, LSPS1Request, LSPS1Response, OrderId, OrderParameters, OrderState,
-	PaymentInfo, LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
+	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
+	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
+	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
+	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 };
 use crate::message_queue::MessageQueue;
 
@@ -54,8 +55,8 @@ impl From<ChannelStateError> for LightningError {
 
 #[derive(PartialEq, Debug)]
 enum OutboundRequestState {
-	OrderCreated { order_id: OrderId },
-	WaitingPayment { order_id: OrderId },
+	OrderCreated { order_id: LSPS1OrderId },
+	WaitingPayment { order_id: LSPS1OrderId },
 	Ready,
 }
 
@@ -71,9 +72,9 @@ impl OutboundRequestState {
 }
 
 struct OutboundLSPS1Config {
-	order: OrderParameters,
+	order: LSPS1OrderParams,
 	created_at: chrono::DateTime<Utc>,
-	payment: PaymentInfo,
+	payment: LSPS1PaymentInfo,
 }
 
 struct OutboundCRChannel {
@@ -83,8 +84,8 @@ struct OutboundCRChannel {
 
 impl OutboundCRChannel {
 	fn new(
-		order: OrderParameters, created_at: chrono::DateTime<Utc>, order_id: OrderId,
-		payment: PaymentInfo,
+		order: LSPS1OrderParams, created_at: chrono::DateTime<Utc>, order_id: LSPS1OrderId,
+		payment: LSPS1PaymentInfo,
 	) -> Self {
 		Self {
 			state: OutboundRequestState::OrderCreated { order_id },
@@ -105,13 +106,13 @@ impl OutboundCRChannel {
 
 #[derive(Default)]
 struct PeerState {
-	outbound_channels_by_order_id: HashMap<OrderId, OutboundCRChannel>,
+	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
 	request_to_cid: HashMap<RequestId, u128>,
 	pending_requests: HashMap<RequestId, LSPS1Request>,
 }
 
 impl PeerState {
-	fn insert_outbound_channel(&mut self, order_id: OrderId, channel: OutboundCRChannel) {
+	fn insert_outbound_channel(&mut self, order_id: LSPS1OrderId, channel: OutboundCRChannel) {
 		self.outbound_channels_by_order_id.insert(order_id, channel);
 	}
 
@@ -119,7 +120,7 @@ impl PeerState {
 		self.request_to_cid.insert(request_id, channel_id);
 	}
 
-	fn remove_outbound_channel(&mut self, order_id: OrderId) {
+	fn remove_outbound_channel(&mut self, order_id: LSPS1OrderId) {
 		self.outbound_channels_by_order_id.remove(&order_id);
 	}
 }
@@ -166,7 +167,7 @@ where
 	fn handle_get_info_request(
 		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
-		let response = LSPS1Response::GetInfo(GetInfoResponse {
+		let response = LSPS1Response::GetInfo(LSPS1GetInfoResponse {
 			options: self
 				.config
 				.supported_options
@@ -184,7 +185,8 @@ where
 	}
 
 	fn handle_create_order_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: CreateOrderRequest,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		params: LSPS1CreateOrderRequest,
 	) -> Result<(), LightningError> {
 		if !is_valid(&params.order, &self.config.supported_options.as_ref().unwrap()) {
 			let response = LSPS1Response::CreateOrderError(ResponseError {
@@ -234,7 +236,7 @@ where
 	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub fn send_payment_details(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, payment: PaymentInfo,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, payment: LSPS1PaymentInfo,
 		created_at: chrono::DateTime<Utc>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
@@ -256,10 +258,10 @@ where
 
 							peer_state_lock.insert_outbound_channel(order_id.clone(), channel);
 
-							let response = LSPS1Response::CreateOrder(CreateOrderResponse {
+							let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
 								order: params.order,
 								order_id,
-								order_state: OrderState::Created,
+								order_state: LSPS1OrderState::Created,
 								created_at,
 								payment,
 								channel: None,
@@ -300,7 +302,8 @@ where
 	}
 
 	fn handle_get_order_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetOrderRequest,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		params: LSPS1GetOrderRequest,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -358,8 +361,8 @@ where
 	///
 	/// [`LSPS1ServiceEvent::CheckPaymentConfirmation`]: crate::lsps1::event::LSPS1ServiceEvent::CheckPaymentConfirmation
 	pub fn update_order_status(
-		&self, request_id: RequestId, counterparty_node_id: PublicKey, order_id: OrderId,
-		order_state: OrderState, channel: Option<ChannelInfo>,
+		&self, request_id: RequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		order_state: LSPS1OrderState, channel: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -373,7 +376,7 @@ where
 					{
 						let config = &outbound_channel.config;
 
-						let response = LSPS1Response::GetOrder(CreateOrderResponse {
+						let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
 							order_id,
 							order: config.order.clone(),
 							order_state,
@@ -411,9 +414,9 @@ where
 		result
 	}
 
-	fn generate_order_id(&self) -> OrderId {
+	fn generate_order_id(&self) -> LSPS1OrderId {
 		let bytes = self.entropy_source.get_secure_random_bytes();
-		OrderId(utils::hex_str(&bytes[0..16]))
+		LSPS1OrderId(utils::hex_str(&bytes[0..16]))
 	}
 }
 
@@ -457,7 +460,7 @@ fn check_range(min: u64, max: u64, value: u64) -> bool {
 	(value >= min) && (value <= max)
 }
 
-fn is_valid(order: &OrderParameters, options: &LSPS1Options) -> bool {
+fn is_valid(order: &LSPS1OrderParams, options: &LSPS1Options) -> bool {
 	let bool = check_range(
 		options.min_initial_client_balance_sat,
 		options.max_initial_client_balance_sat,
