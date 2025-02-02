@@ -72,7 +72,12 @@ const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 /// This value ensures a reply fits within the 65k payload limit and is consistent with other implementations.
 const MAX_SCIDS_PER_REPLY: usize = 8000;
 
-/// Represents the compressed public key of a node
+/// A compressed pubkey which a node uses to sign announcements and decode HTLCs routed through it.
+///
+/// This type stores a simple byte array which is not checked for validity (i.e. that it describes
+/// a point which lies on the secp256k1 curve), unlike [`PublicKey`], as validity checking would
+/// otherwise represent a large portion of [`NetworkGraph`] deserialization time (and RGS
+/// application).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NodeId([u8; PUBLIC_KEY_SIZE]);
 
