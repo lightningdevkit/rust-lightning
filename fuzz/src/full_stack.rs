@@ -465,7 +465,7 @@ impl SignerProvider for KeyProvider {
 		f = key;
 		let signer = InMemorySigner::new(&secp_ctx, a, b, c, d, e, f, keys_id, keys_id);
 
-		TestChannelSigner::new_with_revoked(DynSigner::new(signer), state, false)
+		TestChannelSigner::new_with_revoked(DynSigner::new(signer), state, false, false)
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
