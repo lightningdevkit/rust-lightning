@@ -15,7 +15,7 @@ pub(crate) const LSPS0_LISTPROTOCOLS_METHOD_NAME: &str = "lsps0.list_protocols";
 /// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
-pub struct ListProtocolsRequest {}
+pub struct LSPS0ListProtocolsRequest {}
 
 /// A response to a `list_protocols` request.
 ///
@@ -23,7 +23,7 @@ pub struct ListProtocolsRequest {}
 /// specification](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ListProtocolsResponse {
+pub struct LSPS0ListProtocolsResponse {
 	/// A list of supported protocols.
 	pub protocols: Vec<u16>,
 }
@@ -36,7 +36,7 @@ pub struct ListProtocolsResponse {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0Request {
 	/// A request calling `list_protocols`.
-	ListProtocols(ListProtocolsRequest),
+	ListProtocols(LSPS0ListProtocolsRequest),
 }
 
 impl LSPS0Request {
@@ -56,7 +56,7 @@ impl LSPS0Request {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0Response {
 	/// A response to a `list_protocols` request.
-	ListProtocols(ListProtocolsResponse),
+	ListProtocols(LSPS0ListProtocolsResponse),
 	/// An error response to a `list_protocols` request.
 	ListProtocolsError(ResponseError),
 }
@@ -118,7 +118,7 @@ mod tests {
 			msg,
 			LSPSMessage::LSPS0(LSPS0Message::Request(
 				RequestId("request:id:xyz123".to_string()),
-				LSPS0Request::ListProtocols(ListProtocolsRequest {})
+				LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {})
 			))
 		);
 	}
@@ -127,7 +127,7 @@ mod tests {
 	fn serializes_request() {
 		let request = LSPSMessage::LSPS0(LSPS0Message::Request(
 			RequestId("request:id:xyz123".to_string()),
-			LSPS0Request::ListProtocols(ListProtocolsRequest {}),
+			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		));
 		let json = serde_json::to_string(&request).unwrap();
 		assert_eq!(
@@ -156,7 +156,9 @@ mod tests {
 			response,
 			LSPSMessage::LSPS0(LSPS0Message::Response(
 				RequestId("request:id:xyz123".to_string()),
-				LSPS0Response::ListProtocols(ListProtocolsResponse { protocols: vec![1, 2, 3] })
+				LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse {
+					protocols: vec![1, 2, 3]
+				})
 			))
 		);
 	}
@@ -212,7 +214,7 @@ mod tests {
 	fn serializes_response() {
 		let response = LSPSMessage::LSPS0(LSPS0Message::Response(
 			RequestId("request:id:xyz123".to_string()),
-			LSPS0Response::ListProtocols(ListProtocolsResponse { protocols: vec![1, 2, 3] }),
+			LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols: vec![1, 2, 3] }),
 		));
 		let json = serde_json::to_string(&response).unwrap();
 		assert_eq!(

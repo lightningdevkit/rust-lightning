@@ -13,7 +13,7 @@
 //! specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
-use crate::lsps0::msgs::{LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsResponse};
+use crate::lsps0::msgs::{LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request, LSPS0Response};
 use crate::lsps0::ser::{ProtocolMessageHandler, RequestId};
 use crate::message_queue::MessageQueue;
 use crate::prelude::Vec;
@@ -43,7 +43,7 @@ impl LSPS0ServiceHandler {
 			LSPS0Request::ListProtocols(_) => {
 				let msg = LSPS0Message::Response(
 					request_id,
-					LSPS0Response::ListProtocols(ListProtocolsResponse {
+					LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse {
 						protocols: self.protocols.clone(),
 					}),
 				);
@@ -79,7 +79,7 @@ impl ProtocolMessageHandler for LSPS0ServiceHandler {
 #[cfg(test)]
 mod tests {
 
-	use crate::lsps0::msgs::ListProtocolsRequest;
+	use crate::lsps0::msgs::LSPS0ListProtocolsRequest;
 	use crate::lsps0::ser::LSPSMessage;
 	use crate::tests::utils;
 	use alloc::string::ToString;
@@ -96,7 +96,7 @@ mod tests {
 
 		let list_protocols_request = LSPS0Message::Request(
 			RequestId("xyz123".to_string()),
-			LSPS0Request::ListProtocols(ListProtocolsRequest {}),
+			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		);
 		let counterparty_node_id = utils::parse_pubkey(
 			"027100442c3b79f606f80f322d98d499eefcb060599efc5d4ecb00209c2cb54190",
@@ -115,7 +115,7 @@ mod tests {
 			*message,
 			LSPSMessage::LSPS0(LSPS0Message::Response(
 				RequestId("xyz123".to_string()),
-				LSPS0Response::ListProtocols(ListProtocolsResponse { protocols: vec![] })
+				LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols: vec![] })
 			))
 		);
 	}

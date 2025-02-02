@@ -7,7 +7,8 @@
 use crate::events::EventQueue;
 use crate::lsps0::event::LSPS0ClientEvent;
 use crate::lsps0::msgs::{
-	LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsRequest, ListProtocolsResponse,
+	LSPS0ListProtocolsRequest, LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request,
+	LSPS0Response,
 };
 use crate::lsps0::ser::{ProtocolMessageHandler, ResponseError};
 use crate::message_queue::MessageQueue;
@@ -51,7 +52,7 @@ where
 	pub fn list_protocols(&self, counterparty_node_id: &PublicKey) {
 		let msg = LSPS0Message::Request(
 			utils::generate_request_id(&self.entropy_source),
-			LSPS0Request::ListProtocols(ListProtocolsRequest {}),
+			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		);
 
 		self.pending_messages.enqueue(counterparty_node_id, msg.into());
@@ -61,7 +62,7 @@ where
 		&self, response: LSPS0Response, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
 		match response {
-			LSPS0Response::ListProtocols(ListProtocolsResponse { protocols }) => {
+			LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols }) => {
 				self.pending_events.enqueue(LSPS0ClientEvent::ListProtocolsResponse {
 					counterparty_node_id: *counterparty_node_id,
 					protocols,
@@ -146,7 +147,7 @@ mod tests {
 			*message,
 			LSPSMessage::LSPS0(LSPS0Message::Request(
 				RequestId("00000000000000000000000000000000".to_string()),
-				LSPS0Request::ListProtocols(ListProtocolsRequest {})
+				LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {})
 			))
 		);
 	}

@@ -5,7 +5,7 @@
 //! information.
 
 use crate::lsps0::msgs::{
-	LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsRequest,
+	LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request, LSPS0Response,
 	LSPS0_LISTPROTOCOLS_METHOD_NAME,
 };
 
@@ -428,7 +428,7 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 			Some(method) => match method {
 				LSPSMethod::LSPS0ListProtocols => Ok(LSPSMessage::LSPS0(LSPS0Message::Request(
 					id,
-					LSPS0Request::ListProtocols(ListProtocolsRequest {}),
+					LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 				))),
 				LSPSMethod::LSPS1GetInfo => {
 					let request = serde_json::from_value(params.unwrap_or(json!({})))
