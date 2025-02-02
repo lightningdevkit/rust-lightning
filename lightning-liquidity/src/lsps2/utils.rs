@@ -1,6 +1,6 @@
 //! Utilities for implementing the bLIP-52 / LSPS2 standard.
 
-use crate::lsps2::msgs::OpeningFeeParams;
+use crate::lsps2::msgs::LSPS2OpeningFeeParams;
 use crate::utils;
 
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Determines if the given parameters are valid given the secret used to generate the promise.
 pub fn is_valid_opening_fee_params(
-	fee_params: &OpeningFeeParams, promise_secret: &[u8; 32],
+	fee_params: &LSPS2OpeningFeeParams, promise_secret: &[u8; 32],
 ) -> bool {
 	if is_expired_opening_fee_params(fee_params) {
 		return false;
@@ -32,7 +32,7 @@ pub fn is_valid_opening_fee_params(
 
 /// Determines if the given parameters are expired, or still valid.
 #[cfg_attr(not(feature = "std"), allow(unused_variables))]
-pub fn is_expired_opening_fee_params(fee_params: &OpeningFeeParams) -> bool {
+pub fn is_expired_opening_fee_params(fee_params: &LSPS2OpeningFeeParams) -> bool {
 	#[cfg(feature = "std")]
 	{
 		let seconds_since_epoch = SystemTime::now()

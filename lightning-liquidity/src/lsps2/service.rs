@@ -40,8 +40,8 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::lsps2::msgs::{
-	BuyRequest, BuyResponse, GetInfoRequest, GetInfoResponse, LSPS2Message, LSPS2Request,
-	LSPS2Response, OpeningFeeParams, RawOpeningFeeParams,
+	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2RawOpeningFeeParams, LSPS2Request, LSPS2Response,
 	LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
 	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
 	LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
@@ -142,7 +142,7 @@ impl OutboundJITChannelState {
 	}
 
 	fn htlc_intercepted(
-		&mut self, opening_fee_params: &OpeningFeeParams, payment_size_msat: &Option<u64>,
+		&mut self, opening_fee_params: &LSPS2OpeningFeeParams, payment_size_msat: &Option<u64>,
 		htlc: InterceptedHTLC,
 	) -> Result<(Self, Option<HTLCInterceptedAction>), ChannelStateError> {
 		match self {
@@ -395,13 +395,14 @@ impl OutboundJITChannelState {
 struct OutboundJITChannel {
 	state: OutboundJITChannelState,
 	user_channel_id: u128,
-	opening_fee_params: OpeningFeeParams,
+	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 }
 
 impl OutboundJITChannel {
 	fn new(
-		payment_size_msat: Option<u64>, opening_fee_params: OpeningFeeParams, user_channel_id: u128,
+		payment_size_msat: Option<u64>, opening_fee_params: LSPS2OpeningFeeParams,
+		user_channel_id: u128,
 	) -> Self {
 		Self {
 			user_channel_id,
@@ -647,7 +648,7 @@ where
 	/// [`LSPS2ServiceEvent::GetInfo`]: crate::lsps2::event::LSPS2ServiceEvent::GetInfo
 	pub fn opening_fee_params_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: RequestId,
-		opening_fee_params_menu: Vec<RawOpeningFeeParams>,
+		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -658,7 +659,7 @@ where
 
 					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
 						Some(LSPS2Request::GetInfo(_)) => {
-							let response = LSPS2Response::GetInfo(GetInfoResponse {
+							let response = LSPS2Response::GetInfo(LSPS2GetInfoResponse {
 								opening_fee_params_menu: opening_fee_params_menu
 									.into_iter()
 									.map(|param| {
@@ -736,7 +737,7 @@ where
 							peer_state_lock
 								.insert_outbound_channel(intercept_scid, outbound_jit_channel);
 
-							let response = LSPS2Response::Buy(BuyResponse {
+							let response = LSPS2Response::Buy(LSPS2BuyResponse {
 								jit_channel_scid: intercept_scid.into(),
 								lsp_cltv_expiry_delta: cltv_expiry_delta,
 								client_trusts_lsp,
@@ -1076,7 +1077,7 @@ where
 	}
 
 	fn handle_get_info_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetInfoRequest,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: LSPS2GetInfoRequest,
 	) -> Result<(), LightningError> {
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
@@ -1112,7 +1113,7 @@ where
 	}
 
 	fn handle_buy_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: BuyRequest,
+		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: LSPS2BuyRequest,
 	) -> Result<(), LightningError> {
 		if let Some(payment_size_msat) = params.payment_size_msat {
 			if payment_size_msat < params.opening_fee_params.min_payment_size_msat {
@@ -1513,7 +1514,7 @@ mod tests {
 	#[test]
 	fn test_jit_channel_state_mpp() {
 		let payment_size_msat = Some(500_000_000);
-		let opening_fee_params = OpeningFeeParams {
+		let opening_fee_params = LSPS2OpeningFeeParams {
 			min_fee_msat: 10_000_000,
 			proportional: 10_000,
 			valid_until: Utc.timestamp_opt(3000, 0).unwrap(),
@@ -1705,7 +1706,7 @@ mod tests {
 	#[test]
 	fn test_jit_channel_state_no_mpp() {
 		let payment_size_msat = None;
-		let opening_fee_params = OpeningFeeParams {
+		let opening_fee_params = LSPS2OpeningFeeParams {
 			min_fee_msat: 10_000_000,
 			proportional: 10_000,
 			valid_until: Utc.timestamp_opt(3000, 0).unwrap(),

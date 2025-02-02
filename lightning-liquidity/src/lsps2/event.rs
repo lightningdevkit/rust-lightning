@@ -9,7 +9,7 @@
 
 //! Contains bLIP-52 / LSPS2 event types
 
-use super::msgs::OpeningFeeParams;
+use super::msgs::LSPS2OpeningFeeParams;
 use crate::lsps0::ser::RequestId;
 use crate::prelude::{String, Vec};
 
@@ -36,7 +36,7 @@ pub enum LSPS2ClientEvent {
 		counterparty_node_id: PublicKey,
 		/// The menu of fee parameters the LSP is offering at this time.
 		/// You must select one of these if you wish to proceed.
-		opening_fee_params_menu: Vec<OpeningFeeParams>,
+		opening_fee_params_menu: Vec<LSPS2OpeningFeeParams>,
 	},
 	/// Provides the necessary information to generate a payable invoice that then may be given to
 	/// the payer.
@@ -103,7 +103,7 @@ pub enum LSPS2ServiceEvent {
 		/// The client node id that is making this request.
 		counterparty_node_id: PublicKey,
 		/// The channel parameters they have selected.
-		opening_fee_params: OpeningFeeParams,
+		opening_fee_params: LSPS2OpeningFeeParams,
 		/// The size of the initial payment they would like to receive.
 		payment_size_msat: Option<u64>,
 	},

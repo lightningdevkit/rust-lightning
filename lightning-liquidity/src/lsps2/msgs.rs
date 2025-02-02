@@ -27,7 +27,7 @@ pub(crate) const LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE: i32 = 203;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 /// A request made to an LSP to learn their current channel fees and parameters.
-pub struct GetInfoRequest {
+pub struct LSPS2GetInfoRequest {
 	/// An optional token to provide to the LSP.
 	pub token: Option<String>,
 }
@@ -35,8 +35,8 @@ pub struct GetInfoRequest {
 /// Fees and parameters for a JIT Channel without the promise.
 ///
 /// The promise will be calculated automatically for the LSP and this type converted
-/// into an [`OpeningFeeParams`] for transit over the wire.
-pub struct RawOpeningFeeParams {
+/// into an [`LSPS2OpeningFeeParams`] for transit over the wire.
+pub struct LSPS2RawOpeningFeeParams {
 	/// The minimum fee required for the channel open.
 	pub min_fee_msat: u64,
 	/// A fee proportional to the size of the initial payment.
@@ -53,8 +53,10 @@ pub struct RawOpeningFeeParams {
 	pub max_payment_size_msat: u64,
 }
 
-impl RawOpeningFeeParams {
-	pub(crate) fn into_opening_fee_params(self, promise_secret: &[u8; 32]) -> OpeningFeeParams {
+impl LSPS2RawOpeningFeeParams {
+	pub(crate) fn into_opening_fee_params(
+		self, promise_secret: &[u8; 32],
+	) -> LSPS2OpeningFeeParams {
 		let mut hmac = HmacEngine::<Sha256>::new(promise_secret);
 		hmac.input(&self.min_fee_msat.to_be_bytes());
 		hmac.input(&self.proportional.to_be_bytes());
@@ -65,7 +67,7 @@ impl RawOpeningFeeParams {
 		hmac.input(&self.max_payment_size_msat.to_be_bytes());
 		let promise_bytes = Hmac::from_engine(hmac).to_byte_array();
 		let promise = utils::hex_str(&promise_bytes[..]);
-		OpeningFeeParams {
+		LSPS2OpeningFeeParams {
 			min_fee_msat: self.min_fee_msat,
 			proportional: self.proportional,
 			valid_until: self.valid_until.clone(),
@@ -82,9 +84,9 @@ impl RawOpeningFeeParams {
 /// Fees and parameters for a JIT Channel including the promise.
 ///
 /// The promise is an HMAC calculated using a secret known to the LSP and the rest of the fields as input.
-/// It exists so the LSP can verify the authenticity of a client provided OpeningFeeParams by recalculating
+/// It exists so the LSP can verify the authenticity of a client provided LSPS2OpeningFeeParams by recalculating
 /// the promise using the secret. Once verified they can be confident it was not modified by the client.
-pub struct OpeningFeeParams {
+pub struct LSPS2OpeningFeeParams {
 	/// The minimum fee required for the channel open.
 	#[serde(with = "string_amount")]
 	pub min_fee_msat: u64,
@@ -106,18 +108,18 @@ pub struct OpeningFeeParams {
 	pub promise: String,
 }
 
-/// A response to a [`GetInfoRequest`]
+/// A response to a [`LSPS2GetInfoRequest`]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct GetInfoResponse {
+pub struct LSPS2GetInfoResponse {
 	/// A set of opening fee parameters.
-	pub opening_fee_params_menu: Vec<OpeningFeeParams>,
+	pub opening_fee_params_menu: Vec<LSPS2OpeningFeeParams>,
 }
 
 /// A request to buy a JIT channel.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct BuyRequest {
+pub struct LSPS2BuyRequest {
 	/// The fee parameters you would like to use.
-	pub opening_fee_params: OpeningFeeParams,
+	pub opening_fee_params: LSPS2OpeningFeeParams,
 	/// The size of the initial payment you expect to receive.
 	#[serde(default)]
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -127,9 +129,9 @@ pub struct BuyRequest {
 
 /// A newtype that holds a `short_channel_id` in human readable format of BBBxTTTx000.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct InterceptScid(String);
+pub struct LSPS2InterceptScid(String);
 
-impl From<u64> for InterceptScid {
+impl From<u64> for LSPS2InterceptScid {
 	fn from(scid: u64) -> Self {
 		let block = scid_utils::block_from_scid(scid);
 		let tx_index = scid_utils::tx_index_from_scid(scid);
@@ -139,20 +141,20 @@ impl From<u64> for InterceptScid {
 	}
 }
 
-impl InterceptScid {
-	/// Try to convert a [`InterceptScid`] into a u64 used by LDK.
+impl LSPS2InterceptScid {
+	/// Try to convert a [`LSPS2InterceptScid`] into a u64 used by LDK.
 	pub fn to_scid(&self) -> Result<u64, ()> {
 		utils::scid_from_human_readable_string(&self.0)
 	}
 }
 
-/// A response to a [`BuyRequest`].
+/// A response to a [`LSPS2BuyRequest`].
 ///
 /// Includes information needed to construct an invoice.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct BuyResponse {
+pub struct LSPS2BuyResponse {
 	/// The intercept short channel id used by LSP to identify need to open channel.
-	pub jit_channel_scid: InterceptScid,
+	pub jit_channel_scid: LSPS2InterceptScid,
 	/// The locktime expiry delta the lsp requires.
 	pub lsp_cltv_expiry_delta: u32,
 	/// A flag that indicates who is trusting who.
@@ -164,20 +166,20 @@ pub struct BuyResponse {
 /// An enum that captures all the valid JSON-RPC requests in the bLIP-52 / LSPS2 protocol.
 pub enum LSPS2Request {
 	/// A request to learn an LSP's channel fees and parameters.
-	GetInfo(GetInfoRequest),
+	GetInfo(LSPS2GetInfoRequest),
 	/// A request to buy a JIT channel from an LSP.
-	Buy(BuyRequest),
+	Buy(LSPS2BuyRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// An enum that captures all the valid JSON-RPC responses in the bLIP-52 / LSPS2 protocol.
 pub enum LSPS2Response {
 	/// A successful response to a [`LSPS2Request::GetInfo`] request.
-	GetInfo(GetInfoResponse),
+	GetInfo(LSPS2GetInfoResponse),
 	/// An error response to a [`LSPS2Request::GetInfo`] request.
 	GetInfoError(ResponseError),
 	/// A successful response to a [`LSPS2Request::Buy`] request.
-	Buy(BuyResponse),
+	Buy(LSPS2BuyResponse),
 	/// An error response to a [`LSPS2Request::Buy`] request.
 	BuyError(ResponseError),
 }
@@ -226,7 +228,7 @@ mod tests {
 		let min_payment_size_msat = 1;
 		let max_payment_size_msat = 100_000_000;
 
-		let raw = RawOpeningFeeParams {
+		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
 			valid_until: valid_until.clone().into(),
@@ -261,7 +263,7 @@ mod tests {
 		let min_payment_size_msat = 1;
 		let max_payment_size_msat = 100_000_000;
 
-		let raw = RawOpeningFeeParams {
+		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
 			valid_until: valid_until.into(),
@@ -288,7 +290,7 @@ mod tests {
 		let min_payment_size_msat = 1;
 		let max_payment_size_msat = 100_000_000;
 
-		let raw = RawOpeningFeeParams {
+		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
 			valid_until: valid_until.into(),
@@ -317,7 +319,7 @@ mod tests {
 		let min_payment_size_msat = 1;
 		let max_payment_size_msat = 100_000_000;
 
-		let raw = RawOpeningFeeParams {
+		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
 			valid_until: valid_until.into(),
@@ -343,7 +345,7 @@ mod tests {
 		let min_payment_size_msat = 1;
 		let max_payment_size_msat = 100_000_000;
 
-		let raw = RawOpeningFeeParams {
+		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
 			proportional,
 			valid_until: valid_until.into(),
@@ -362,13 +364,13 @@ mod tests {
 
 		let payment_size_msat = Some(1234);
 		let buy_request_fixed =
-			BuyRequest { opening_fee_params: opening_fee_params.clone(), payment_size_msat };
+			LSPS2BuyRequest { opening_fee_params: opening_fee_params.clone(), payment_size_msat };
 		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"payment_size_msat":"1234"}"#;
 		assert_eq!(json_str, serde_json::json!(buy_request_fixed).to_string());
 		assert_eq!(buy_request_fixed, serde_json::from_str(json_str).unwrap());
 
 		let payment_size_msat = None;
-		let buy_request_variable = BuyRequest { opening_fee_params, payment_size_msat };
+		let buy_request_variable = LSPS2BuyRequest { opening_fee_params, payment_size_msat };
 
 		// Check we skip serialization if payment_size_msat is None.
 		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"}}"#;
@@ -407,7 +409,7 @@ mod tests {
 			}
 			]
 		}"#;
-		let _get_info_response: GetInfoResponse = serde_json::from_str(json_str).unwrap();
+		let _get_info_response: LSPS2GetInfoResponse = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"opening_fee_params": {
@@ -422,13 +424,13 @@ mod tests {
 			},
 			"payment_size_msat": "42000"
 		}"#;
-		let _buy_request: BuyRequest = serde_json::from_str(json_str).unwrap();
+		let _buy_request: LSPS2BuyRequest = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"jit_channel_scid": "29451x4815x1",
 			"lsp_cltv_expiry_delta" : 144,
 			"client_trusts_lsp": false
 		}"#;
-		let _buy_response: BuyResponse = serde_json::from_str(json_str).unwrap();
+		let _buy_response: LSPS2BuyResponse = serde_json::from_str(json_str).unwrap();
 	}
 }

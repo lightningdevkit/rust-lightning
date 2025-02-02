@@ -7,7 +7,7 @@ use common::{create_service_and_client_nodes, get_lsps_message, Node};
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::event::{LSPS2ClientEvent, LSPS2ServiceEvent};
-use lightning_liquidity::lsps2::msgs::RawOpeningFeeParams;
+use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
@@ -125,7 +125,7 @@ fn invoice_generation_flow() {
 		_ => panic!("Unexpected event"),
 	}
 
-	let raw_opening_params = RawOpeningFeeParams {
+	let raw_opening_params = LSPS2RawOpeningFeeParams {
 		min_fee_msat: 100,
 		proportional: 21,
 		valid_until: DateTime::parse_from_rfc3339("2035-05-20T08:30:45Z").unwrap().into(),
