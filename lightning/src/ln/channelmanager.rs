@@ -14849,6 +14849,70 @@ mod tests {
 	}
 
 	#[test]
+	fn test_peer_storage() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+	
+		// Since we do not send peer storage, we manually simulate receiving a dummy 
+		// `PeerStorage` from the channel partner.
+		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
+
+		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+		nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
+			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
+		nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, false).unwrap();
+
+		let node_0_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(node_0_events.len(), 2);
+
+		for msg in node_0_events{
+			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
+				nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), msg);
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg {
+				nodes[1].node.handle_peer_storage_retrieval(nodes[0].node.get_our_node_id(), msg.clone());
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			} else {
+				panic!("Unexpected event")
+			}
+		}
+
+		let msg_events_after_peer_storage_retrieval = nodes[1].node.get_and_clear_pending_msg_events();
+
+		// Check if we receive a warning message.
+		let peer_storage_warning: Vec<&MessageSendEvent> = msg_events_after_peer_storage_retrieval
+									.iter()
+									.filter(|event| match event {
+										MessageSendEvent::HandleError { .. } => true,
+										_ => false,
+									})
+									.collect();
+
+		assert_eq!(peer_storage_warning.len(), 1);
+
+		match peer_storage_warning[0] {
+			MessageSendEvent::HandleError { node_id, action } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				match action {
+					ErrorAction::SendWarningMessage { msg, .. } =>
+						assert_eq!(msg.data, "Invalid peer_storage_retrieval message received.".to_owned()),
+					_ => panic!("Unexpected error action"),
+				}
+			}
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	#[test]
 	fn test_keysend_dup_payment_hash() {
 		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
 		//      outbound regular payment fails as expected.
