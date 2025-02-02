@@ -57,6 +57,12 @@ for DIR in "${WORKSPACE_MEMBERS[@]}"; do
 	cargo doc -p "$DIR" --document-private-items
 done
 
+echo -e "\n\nTesting upgrade from prior versions of LDK"
+pushd lightning-tests
+[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
+cargo test
+popd
+
 echo -e "\n\nChecking and testing Block Sync Clients with features"
 
 cargo test -p lightning-block-sync --verbose --color always --features rest-client
