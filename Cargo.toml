@@ -21,6 +21,7 @@ members = [
 
 exclude = [
     "lightning-transaction-sync",
+    "lightning-tests",
     "ext-functional-test-demo",
     "no-std-check",
     "msrv-no-dev-deps-check",
