@@ -19,7 +19,7 @@ use super::msgs::{
 use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
-use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
 use crate::prelude::{new_hash_map, HashMap, String};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
@@ -107,8 +107,8 @@ impl OutboundCRChannel {
 #[derive(Default)]
 struct PeerState {
 	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
-	request_to_cid: HashMap<RequestId, u128>,
-	pending_requests: HashMap<RequestId, LSPS1Request>,
+	request_to_cid: HashMap<LSPSRequestId, u128>,
+	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 }
 
 impl PeerState {
@@ -116,7 +116,7 @@ impl PeerState {
 		self.outbound_channels_by_order_id.insert(order_id, channel);
 	}
 
-	fn insert_request(&mut self, request_id: RequestId, channel_id: u128) {
+	fn insert_request(&mut self, request_id: LSPSRequestId, channel_id: u128) {
 		self.request_to_cid.insert(request_id, channel_id);
 	}
 
@@ -165,7 +165,7 @@ where
 	}
 
 	fn handle_get_info_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
 		let response = LSPS1Response::GetInfo(LSPS1GetInfoResponse {
 			options: self
@@ -185,11 +185,11 @@ where
 	}
 
 	fn handle_create_order_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1CreateOrderRequest,
 	) -> Result<(), LightningError> {
 		if !is_valid(&params.order, &self.config.supported_options.as_ref().unwrap()) {
-			let response = LSPS1Response::CreateOrderError(ResponseError {
+			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 				message: format!("Order does not match options supported by LSP server"),
 				data: Some(format!(
@@ -236,8 +236,8 @@ where
 	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub fn send_payment_details(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, payment: LSPS1PaymentInfo,
-		created_at: chrono::DateTime<Utc>,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		payment: LSPS1PaymentInfo, created_at: chrono::DateTime<Utc>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -302,7 +302,7 @@ where
 	}
 
 	fn handle_get_order_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1GetOrderRequest,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -361,7 +361,7 @@ where
 	///
 	/// [`LSPS1ServiceEvent::CheckPaymentConfirmation`]: crate::lsps1::event::LSPS1ServiceEvent::CheckPaymentConfirmation
 	pub fn update_order_status(
-		&self, request_id: RequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
 		order_state: LSPS1OrderState, channel: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
@@ -420,7 +420,7 @@ where
 	}
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref> ProtocolMessageHandler
+impl<ES: Deref, CM: Deref + Clone, C: Deref> LSPSProtocolMessageHandler
 	for LSPS1ServiceHandler<ES, CM, C>
 where
 	ES::Target: EntropySource,

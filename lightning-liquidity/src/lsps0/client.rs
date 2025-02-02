@@ -10,7 +10,7 @@ use crate::lsps0::msgs::{
 	LSPS0ListProtocolsRequest, LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request,
 	LSPS0Response,
 };
-use crate::lsps0::ser::{ProtocolMessageHandler, ResponseError};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSResponseError};
 use crate::message_queue::MessageQueue;
 use crate::sync::Arc;
 use crate::utils;
@@ -69,20 +69,20 @@ where
 				});
 				Ok(())
 			},
-			LSPS0Response::ListProtocolsError(ResponseError { code, message, data, .. }) => {
-				Err(LightningError {
-					err: format!(
-						"ListProtocols error received. code = {}, message = {}, data = {:?}",
-						code, message, data
-					),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
-				})
-			},
+			LSPS0Response::ListProtocolsError(LSPSResponseError {
+				code, message, data, ..
+			}) => Err(LightningError {
+				err: format!(
+					"ListProtocols error received. code = {}, message = {}, data = {:?}",
+					code, message, data
+				),
+				action: ErrorAction::IgnoreAndLog(Level::Info),
+			}),
 		}
 	}
 }
 
-impl<ES: Deref> ProtocolMessageHandler for LSPS0ClientHandler<ES>
+impl<ES: Deref> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES>
 where
 	ES::Target: EntropySource,
 {
@@ -113,7 +113,7 @@ mod tests {
 	use alloc::string::ToString;
 	use alloc::sync::Arc;
 
-	use crate::lsps0::ser::{LSPSMessage, RequestId};
+	use crate::lsps0::ser::{LSPSMessage, LSPSRequestId};
 	use crate::tests::utils::{self, TestEntropy};
 
 	use super::*;
@@ -146,7 +146,7 @@ mod tests {
 		assert_eq!(
 			*message,
 			LSPSMessage::LSPS0(LSPS0Message::Request(
-				RequestId("00000000000000000000000000000000".to_string()),
+				LSPSRequestId("00000000000000000000000000000000".to_string()),
 				LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {})
 			))
 		);

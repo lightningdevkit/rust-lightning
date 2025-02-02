@@ -1,6 +1,6 @@
 //! Message, request, and other primitive types used to implement LSPS0.
 
-use crate::lsps0::ser::{LSPSMessage, RequestId, ResponseError};
+use crate::lsps0::ser::{LSPSMessage, LSPSRequestId, LSPSResponseError};
 use crate::prelude::Vec;
 
 use serde::{Deserialize, Serialize};
@@ -58,7 +58,7 @@ pub enum LSPS0Response {
 	/// A response to a `list_protocols` request.
 	ListProtocols(LSPS0ListProtocolsResponse),
 	/// An error response to a `list_protocols` request.
-	ListProtocolsError(ResponseError),
+	ListProtocolsError(LSPSResponseError),
 }
 
 /// An bLIP-50 / LSPS0 protocol message.
@@ -69,9 +69,9 @@ pub enum LSPS0Response {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0Message {
 	/// A request variant.
-	Request(RequestId, LSPS0Request),
+	Request(LSPSRequestId, LSPS0Request),
 	/// A response variant.
-	Response(RequestId, LSPS0Response),
+	Response(LSPSRequestId, LSPS0Response),
 }
 
 impl TryFrom<LSPSMessage> for LSPS0Message {
@@ -117,7 +117,7 @@ mod tests {
 		assert_eq!(
 			msg,
 			LSPSMessage::LSPS0(LSPS0Message::Request(
-				RequestId("request:id:xyz123".to_string()),
+				LSPSRequestId("request:id:xyz123".to_string()),
 				LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {})
 			))
 		);
@@ -126,7 +126,7 @@ mod tests {
 	#[test]
 	fn serializes_request() {
 		let request = LSPSMessage::LSPS0(LSPS0Message::Request(
-			RequestId("request:id:xyz123".to_string()),
+			LSPSRequestId("request:id:xyz123".to_string()),
 			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		));
 		let json = serde_json::to_string(&request).unwrap();
@@ -147,7 +147,7 @@ mod tests {
 	    }"#;
 		let mut request_id_to_method_map = new_hash_map();
 		request_id_to_method_map
-			.insert(RequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
+			.insert(LSPSRequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
 
 		let response =
 			LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
@@ -155,7 +155,7 @@ mod tests {
 		assert_eq!(
 			response,
 			LSPSMessage::LSPS0(LSPS0Message::Response(
-				RequestId("request:id:xyz123".to_string()),
+				LSPSRequestId("request:id:xyz123".to_string()),
 				LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse {
 					protocols: vec![1, 2, 3]
 				})
@@ -175,7 +175,7 @@ mod tests {
 	    }"#;
 		let mut request_id_to_method_map = new_hash_map();
 		request_id_to_method_map
-			.insert(RequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
+			.insert(LSPSRequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
 
 		let response =
 			LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
@@ -183,8 +183,8 @@ mod tests {
 		assert_eq!(
 			response,
 			LSPSMessage::LSPS0(LSPS0Message::Response(
-				RequestId("request:id:xyz123".to_string()),
-				LSPS0Response::ListProtocolsError(ResponseError {
+				LSPSRequestId("request:id:xyz123".to_string()),
+				LSPS0Response::ListProtocolsError(LSPSResponseError {
 					code: -32617,
 					message: "Unknown Error".to_string(),
 					data: None
@@ -204,7 +204,7 @@ mod tests {
 	    }"#;
 		let mut request_id_to_method_map = new_hash_map();
 		request_id_to_method_map
-			.insert(RequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
+			.insert(LSPSRequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
 
 		let response = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map);
 		assert!(response.is_err());
@@ -213,7 +213,7 @@ mod tests {
 	#[test]
 	fn serializes_response() {
 		let response = LSPSMessage::LSPS0(LSPS0Message::Response(
-			RequestId("request:id:xyz123".to_string()),
+			LSPSRequestId("request:id:xyz123".to_string()),
 			LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols: vec![1, 2, 3] }),
 		));
 		let json = serde_json::to_string(&response).unwrap();

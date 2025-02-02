@@ -18,7 +18,7 @@ use super::msgs::{
 use crate::message_queue::MessageQueue;
 
 use crate::events::EventQueue;
-use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
 use crate::prelude::{new_hash_map, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
 
@@ -40,9 +40,9 @@ pub struct LSPS1ClientConfig {
 
 #[derive(Default)]
 struct PeerState {
-	pending_get_info_requests: HashSet<RequestId>,
-	pending_create_order_requests: HashSet<RequestId>,
-	pending_get_order_requests: HashSet<RequestId>,
+	pending_get_info_requests: HashSet<LSPSRequestId>,
+	pending_create_order_requests: HashSet<LSPSRequestId>,
+	pending_get_order_requests: HashSet<LSPSRequestId>,
 }
 
 /// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
@@ -81,10 +81,10 @@ where
 	///
 	/// `counterparty_node_id` is the `node_id` of the LSP you would like to use.
 	///
-	/// Returns the used [`RequestId`], which will be returned via [`SupportedOptionsReady`].
+	/// Returns the used [`LSPSRequestId`], which will be returned via [`SupportedOptionsReady`].
 	///
 	/// [`SupportedOptionsReady`]: crate::lsps1::event::LSPS1ClientEvent::SupportedOptionsReady
-	pub fn request_supported_options(&self, counterparty_node_id: PublicKey) -> RequestId {
+	pub fn request_supported_options(&self, counterparty_node_id: PublicKey) -> LSPSRequestId {
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 		{
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
@@ -102,7 +102,7 @@ where
 	}
 
 	fn handle_get_info_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		result: LSPS1GetInfoResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.write().unwrap();
@@ -139,7 +139,8 @@ where
 	}
 
 	fn handle_get_info_error(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -188,7 +189,7 @@ where
 	pub fn create_order(
 		&self, counterparty_node_id: &PublicKey, order: LSPS1OrderParams,
 		refund_onchain_address: Option<Address>,
-	) -> RequestId {
+	) -> LSPSRequestId {
 		let (request_id, request_msg) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
 			let inner_state_lock = outer_state_lock
@@ -215,7 +216,7 @@ where
 	}
 
 	fn handle_create_order_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -257,7 +258,8 @@ where
 	}
 
 	fn handle_create_order_error(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -307,7 +309,7 @@ where
 	/// [`LSPS1ClientEvent::OrderStatus`]: crate::lsps1::event::LSPS1ClientEvent::OrderStatus
 	pub fn check_order_status(
 		&self, counterparty_node_id: &PublicKey, order_id: LSPS1OrderId,
-	) -> RequestId {
+	) -> LSPSRequestId {
 		let (request_id, request_msg) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
 			let inner_state_lock = outer_state_lock
@@ -333,7 +335,7 @@ where
 	}
 
 	fn handle_get_order_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -375,7 +377,8 @@ where
 	}
 
 	fn handle_get_order_error(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, error: ResponseError,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -419,7 +422,7 @@ where
 	}
 }
 
-impl<ES: Deref> ProtocolMessageHandler for LSPS1ClientHandler<ES>
+impl<ES: Deref> LSPSProtocolMessageHandler for LSPS1ClientHandler<ES>
 where
 	ES::Target: EntropySource,
 {

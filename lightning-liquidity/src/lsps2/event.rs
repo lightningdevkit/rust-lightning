@@ -10,7 +10,7 @@
 //! Contains bLIP-52 / LSPS2 event types
 
 use super::msgs::LSPS2OpeningFeeParams;
-use crate::lsps0::ser::RequestId;
+use crate::lsps0::ser::LSPSRequestId;
 use crate::prelude::{String, Vec};
 
 use bitcoin::secp256k1::PublicKey;
@@ -31,7 +31,7 @@ pub enum LSPS2ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS2ClientHandler::request_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::request_opening_params
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP that provided this response.
 		counterparty_node_id: PublicKey,
 		/// The menu of fee parameters the LSP is offering at this time.
@@ -50,7 +50,7 @@ pub enum LSPS2ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The intercept short channel id to use in the route hint.
@@ -79,7 +79,7 @@ pub enum LSPS2ServiceEvent {
 		/// An identifier that must be passed to [`LSPS2ServiceHandler::opening_fee_params_generated`].
 		///
 		/// [`LSPS2ServiceHandler::opening_fee_params_generated`]: crate::lsps2::service::LSPS2ServiceHandler::opening_fee_params_generated
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// An optional token that can be used as an API key, coupon code, etc.
@@ -99,7 +99,7 @@ pub enum LSPS2ServiceEvent {
 		/// An identifier that must be passed into [`LSPS2ServiceHandler::invoice_parameters_generated`].
 		///
 		/// [`LSPS2ServiceHandler::invoice_parameters_generated`]: crate::lsps2::service::LSPS2ServiceHandler::invoice_parameters_generated
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The client node id that is making this request.
 		counterparty_node_id: PublicKey,
 		/// The channel parameters they have selected.

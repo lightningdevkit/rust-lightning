@@ -2,8 +2,8 @@ use crate::events::{EventQueue, LiquidityEvent};
 use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSMethod, ProtocolMessageHandler, RawLSPSMessage, RequestId, ResponseError,
-	JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
+	LSPSMessage, LSPSMethod, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	RawLSPSMessage, JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
 	LSPS_MESSAGE_TYPE_ID,
 };
 use crate::lsps0::service::LSPS0ServiceHandler;
@@ -95,7 +95,7 @@ where
 {
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
-	request_id_to_method_map: Mutex<HashMap<RequestId, LSPSMethod>>,
+	request_id_to_method_map: Mutex<HashMap<LSPSRequestId, LSPSMethod>>,
 	// We ignore peers if they send us bogus data.
 	ignored_peers: RwLock<HashSet<PublicKey>>,
 	lsps0_client_handler: LSPS0ClientHandler<ES>,
@@ -146,7 +146,7 @@ where {
 		let lsps2_service_handler = service_config.as_ref().and_then(|config| {
 			config.lsps2_service_config.as_ref().map(|config| {
 				if let Some(number) =
-					<LSPS2ServiceHandler<CM> as ProtocolMessageHandler>::PROTOCOL_NUMBER
+					<LSPS2ServiceHandler<CM> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 				{
 					supported_protocols.push(number);
 				}
@@ -173,7 +173,7 @@ where {
 		#[cfg(lsps1_service)]
 		let lsps1_service_handler = service_config.as_ref().and_then(|config| {
 			if let Some(number) =
-				<LSPS1ServiceHandler<ES, CM, C> as ProtocolMessageHandler>::PROTOCOL_NUMBER
+				<LSPS1ServiceHandler<ES, CM, C> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
 			{
 				supported_protocols.push(number);
 			}
@@ -485,7 +485,7 @@ where
 				LSPSMessage::from_str_with_id_map(&msg.payload, &mut request_id_to_method_map)
 			}
 			.map_err(|_| {
-				let error = ResponseError {
+				let error = LSPSResponseError {
 					code: JSONRPC_INVALID_MESSAGE_ERROR_CODE,
 					message: JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE.to_string(),
 					data: None,
