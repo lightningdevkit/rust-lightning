@@ -462,14 +462,14 @@ impl SignerProvider for KeyProvider {
 		f = key;
 		let signer = InMemorySigner::new(&secp_ctx, a, b, c, d, e, f, value, keys_id, keys_id);
 
-		TestChannelSigner::new_with_revoked(signer, state, false)
+		TestChannelSigner::new_with_revoked(signer, state, false, false)
 	}
 
 	fn read_chan_signer(&self, mut data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
+		Ok(TestChannelSigner::new_with_revoked(inner, state, false, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

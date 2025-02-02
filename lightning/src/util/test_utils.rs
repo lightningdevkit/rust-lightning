@@ -375,7 +375,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
+		Ok(TestChannelSigner::new_with_revoked(inner, state, false, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
@@ -1451,6 +1451,7 @@ pub struct TestKeysInterface {
 	pub backing: sign::PhantomKeysManager,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
+	pub disable_all_state_policy_checks: bool,
 	enforcement_states: Mutex<HashMap<[u8; 32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 	pub unavailable_signers_ops: Mutex<HashMap<[u8; 32], HashSet<SignerOp>>>,
@@ -1515,8 +1516,9 @@ impl SignerProvider for TestKeysInterface {
 	) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		let signer =
-			TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
+		let rev_checks = self.disable_revocation_policy_check;
+		let state_checks = self.disable_all_state_policy_checks;
+		let signer = TestChannelSigner::new_with_revoked(keys, state, rev_checks, state_checks);
 		#[cfg(test)]
 		if let Some(ops) = self.unavailable_signers_ops.lock().unwrap().get(&channel_keys_id) {
 			for &op in ops {
@@ -1556,6 +1558,7 @@ impl TestKeysInterface {
 			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
+			disable_all_state_policy_checks: false,
 			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
 			unavailable_signers_ops: Mutex::new(new_hash_map()),
