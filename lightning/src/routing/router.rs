@@ -2937,6 +2937,7 @@ where L::Target: Logger {
 			introduction_node_id_cache.len(),
 			"introduction_node_id_cache was built by iterating the blinded_route_hints, so they should be the same len"
 		);
+		let mut blind_intros_added = hash_map_with_capacity(payment_params.payee.blinded_route_hints().len());
 		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
 			// Only add the hops in this route to our candidate set if either
 			// we have a direct channel to the first hop or the first hop is
@@ -2951,12 +2952,21 @@ where L::Target: Logger {
 			} else {
 				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_counter, source_node_id, hint, hint_idx })
 			};
-			let mut path_contribution_msat = path_value_msat;
 			if let Some(hop_used_msat) = add_entry!(&candidate,
-				0, path_contribution_msat, 0, 0_u64, 0, 0)
+				0, path_value_msat, 0, 0_u64, 0, 0)
 			{
-				path_contribution_msat = hop_used_msat;
+				blind_intros_added.insert(source_node_id, (hop_used_msat, candidate));
 			} else { continue }
+		}
+		// If we added a blinded path from an introduction node to the destination, where the
+		// introduction node is one of our direct peers, we need to scan our `first_channels`
+		// to detect this. However, doing so immediately after calling `add_entry`, above, could
+		// result in incorrect behavior if we, in a later loop iteration, update the fee from the
+		// same introduction point to the destination (due to a different blinded path with the
+		// same introduction point having a lower score).
+		// Thus, we track the nodes that we added paths from in `blind_intros_added` and scan for
+		// introduction points we have a channel with after processing all blinded paths.
+		for (source_node_id, (path_contribution_msat, candidate)) in blind_intros_added {
 			if let Some((first_channels, peer_node_counter)) = first_hop_targets.get_mut(source_node_id) {
 				sort_first_hop_channels(
 					first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
