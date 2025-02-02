@@ -14,7 +14,7 @@
 //! information.
 
 use crate::lsps0::msgs::{LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request, LSPS0Response};
-use crate::lsps0::ser::{ProtocolMessageHandler, RequestId};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId};
 use crate::message_queue::MessageQueue;
 use crate::prelude::Vec;
 use crate::sync::Arc;
@@ -37,7 +37,7 @@ impl LSPS0ServiceHandler {
 	}
 
 	fn handle_request(
-		&self, request_id: RequestId, request: LSPS0Request, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, request: LSPS0Request, counterparty_node_id: &PublicKey,
 	) -> Result<(), lightning::ln::msgs::LightningError> {
 		match request {
 			LSPS0Request::ListProtocols(_) => {
@@ -54,7 +54,7 @@ impl LSPS0ServiceHandler {
 	}
 }
 
-impl ProtocolMessageHandler for LSPS0ServiceHandler {
+impl LSPSProtocolMessageHandler for LSPS0ServiceHandler {
 	type ProtocolMessage = LSPS0Message;
 	const PROTOCOL_NUMBER: Option<u16> = None;
 
@@ -95,7 +95,7 @@ mod tests {
 		let lsps0_handler = Arc::new(LSPS0ServiceHandler::new(protocols, pending_messages.clone()));
 
 		let list_protocols_request = LSPS0Message::Request(
-			RequestId("xyz123".to_string()),
+			LSPSRequestId("xyz123".to_string()),
 			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		);
 		let counterparty_node_id = utils::parse_pubkey(
@@ -114,7 +114,7 @@ mod tests {
 		assert_eq!(
 			*message,
 			LSPSMessage::LSPS0(LSPS0Message::Response(
-				RequestId("xyz123".to_string()),
+				LSPSRequestId("xyz123".to_string()),
 				LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols: vec![] })
 			))
 		);

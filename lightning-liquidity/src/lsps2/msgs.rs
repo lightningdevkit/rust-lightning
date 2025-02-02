@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use lightning::util::scid_utils;
 
 use crate::lsps0::ser::{
-	string_amount, string_amount_option, LSPSMessage, RequestId, ResponseError,
+	string_amount, string_amount_option, LSPSMessage, LSPSRequestId, LSPSResponseError,
 };
 use crate::prelude::{String, Vec};
 use crate::utils;
@@ -177,20 +177,20 @@ pub enum LSPS2Response {
 	/// A successful response to a [`LSPS2Request::GetInfo`] request.
 	GetInfo(LSPS2GetInfoResponse),
 	/// An error response to a [`LSPS2Request::GetInfo`] request.
-	GetInfoError(ResponseError),
+	GetInfoError(LSPSResponseError),
 	/// A successful response to a [`LSPS2Request::Buy`] request.
 	Buy(LSPS2BuyResponse),
 	/// An error response to a [`LSPS2Request::Buy`] request.
-	BuyError(ResponseError),
+	BuyError(LSPSResponseError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// An enum that captures all valid JSON-RPC messages in the bLIP-52 / LSPS2 protocol.
 pub enum LSPS2Message {
 	/// An LSPS2 JSON-RPC request.
-	Request(RequestId, LSPS2Request),
+	Request(LSPSRequestId, LSPS2Request),
 	/// An LSPS2 JSON-RPC response.
-	Response(RequestId, LSPS2Response),
+	Response(LSPSRequestId, LSPS2Response),
 }
 
 impl TryFrom<LSPSMessage> for LSPS2Message {

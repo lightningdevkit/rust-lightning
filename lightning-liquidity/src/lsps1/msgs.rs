@@ -2,7 +2,7 @@
 
 use crate::lsps0::ser::{
 	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSMessage,
-	RequestId, ResponseError,
+	LSPSRequestId, LSPSResponseError,
 };
 
 use crate::prelude::String;
@@ -272,24 +272,24 @@ pub enum LSPS1Response {
 	/// A successful response to a [`LSPS1GetInfoRequest`].
 	GetInfo(LSPS1GetInfoResponse),
 	/// An error response to a [`LSPS1GetInfoRequest`].
-	GetInfoError(ResponseError),
+	GetInfoError(LSPSResponseError),
 	/// A successful response to a [`LSPS1CreateOrderRequest`].
 	CreateOrder(LSPS1CreateOrderResponse),
 	/// An error response to a [`LSPS1CreateOrderRequest`].
-	CreateOrderError(ResponseError),
+	CreateOrderError(LSPSResponseError),
 	/// A successful response to a [`LSPS1GetOrderRequest`].
 	GetOrder(LSPS1CreateOrderResponse),
 	/// An error response to a [`LSPS1GetOrderRequest`].
-	GetOrderError(ResponseError),
+	GetOrderError(LSPSResponseError),
 }
 
 /// An enum that captures all valid JSON-RPC messages in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Message {
 	/// An LSPS1 JSON-RPC request.
-	Request(RequestId, LSPS1Request),
+	Request(LSPSRequestId, LSPS1Request),
 	/// An LSPS1 JSON-RPC response.
-	Response(RequestId, LSPS1Response),
+	Response(LSPSRequestId, LSPS1Response),
 }
 
 impl TryFrom<LSPSMessage> for LSPS1Message {

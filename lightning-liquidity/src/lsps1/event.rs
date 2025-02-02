@@ -12,7 +12,7 @@
 use super::msgs::LSPS1OrderId;
 use super::msgs::{LSPS1ChannelInfo, LSPS1Options, LSPS1OrderParams, LSPS1PaymentInfo};
 
-use crate::lsps0::ser::{RequestId, ResponseError};
+use crate::lsps0::ser::{LSPSRequestId, LSPSResponseError};
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -34,7 +34,7 @@ pub enum LSPS1ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS1ClientHandler::request_supported_options`]: crate::lsps1::client::LSPS1ClientHandler::request_supported_options
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP that provided this response.
 		counterparty_node_id: PublicKey,
 		/// All options supported by the LSP.
@@ -51,11 +51,11 @@ pub enum LSPS1ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS1ClientHandler::request_supported_options`]: crate::lsps1::client::LSPS1ClientHandler::request_supported_options
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP that provided this response.
 		counterparty_node_id: PublicKey,
 		/// The error that was returned.
-		error: ResponseError,
+		error: LSPSResponseError,
 	},
 	/// Confirmation from the LSP about the order created by the client.
 	///
@@ -74,7 +74,7 @@ pub enum LSPS1ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS1ClientHandler::create_order`]: crate::lsps1::client::LSPS1ClientHandler::create_order
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The id of the channel order.
@@ -98,7 +98,7 @@ pub enum LSPS1ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The id of the channel order.
@@ -123,11 +123,11 @@ pub enum LSPS1ClientEvent {
 		///
 		/// [`LSPS1ClientHandler::create_order`]: crate::lsps1::client::LSPS1ClientHandler::create_order
 		/// [`LSPS1ClientHandler::check_order_status`]: crate::lsps1::client::LSPS1ClientHandler::check_order_status
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The error that was returned.
-		error: ResponseError,
+		error: LSPSResponseError,
 	},
 }
 
@@ -147,7 +147,7 @@ pub enum LSPS1ServiceEvent {
 		/// An identifier that must be passed to [`LSPS1ServiceHandler::send_payment_details`].
 		///
 		/// [`LSPS1ServiceHandler::send_payment_details`]: crate::lsps1::service::LSPS1ServiceHandler::send_payment_details
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// The order requested by the client.
@@ -165,7 +165,7 @@ pub enum LSPS1ServiceEvent {
 		/// An identifier that must be passed to [`LSPS1ServiceHandler::update_order_status`].
 		///
 		/// [`LSPS1ServiceHandler::update_order_status`]: crate::lsps1::service::LSPS1ServiceHandler::update_order_status
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// The order id of order with pending payment.
@@ -174,7 +174,7 @@ pub enum LSPS1ServiceEvent {
 	/// If error is encountered, refund the amount if paid by the client.
 	Refund {
 		/// An identifier.
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// The order id of the refunded order.

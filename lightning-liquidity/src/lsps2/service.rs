@@ -11,7 +11,7 @@
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
-	LSPSMessage, ProtocolMessageHandler, RequestId, ResponseError,
+	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
 	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
@@ -457,7 +457,7 @@ struct PeerState {
 	outbound_channels_by_intercept_scid: HashMap<u64, OutboundJITChannel>,
 	intercept_scid_by_user_channel_id: HashMap<u128, u64>,
 	intercept_scid_by_channel_id: HashMap<ChannelId, u64>,
-	pending_requests: HashMap<RequestId, LSPS2Request>,
+	pending_requests: HashMap<LSPSRequestId, LSPS2Request>,
 }
 
 impl PeerState {
@@ -523,7 +523,7 @@ macro_rules! get_or_insert_peer_state_entry {
 		match $outer_state_lock.entry(*$counterparty_node_id) {
 			Entry::Vacant(e) => {
 				if is_limited_by_max_total_peers {
-					let error_response = ResponseError {
+					let error_response = LSPSResponseError {
 						code: JSONRPC_INTERNAL_ERROR_ERROR_CODE,
 						message: JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE.to_string(), data: None,
 					};
@@ -592,7 +592,7 @@ where
 	///
 	/// [`LSPS2ServiceEvent::GetInfo`]: crate::lsps2::event::LSPS2ServiceEvent::GetInfo
 	pub fn invalid_token_provided(
-		&self, counterparty_node_id: &PublicKey, request_id: RequestId,
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -603,7 +603,7 @@ where
 
 					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
 						Some(LSPS2Request::GetInfo(_)) => {
-							let response = LSPS2Response::GetInfoError(ResponseError {
+							let response = LSPS2Response::GetInfoError(LSPSResponseError {
 								code: LSPS2_GET_INFO_REQUEST_UNRECOGNIZED_OR_STALE_TOKEN_ERROR_CODE,
 								message: "an unrecognized or stale token was provided".to_string(),
 								data: None,
@@ -647,7 +647,7 @@ where
 	///
 	/// [`LSPS2ServiceEvent::GetInfo`]: crate::lsps2::event::LSPS2ServiceEvent::GetInfo
 	pub fn opening_fee_params_generated(
-		&self, counterparty_node_id: &PublicKey, request_id: RequestId,
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
 		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
@@ -706,7 +706,7 @@ where
 	///
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
 	pub fn invoice_parameters_generated(
-		&self, counterparty_node_id: &PublicKey, request_id: RequestId, intercept_scid: u64,
+		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
 		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let (result, response) = {
@@ -1077,7 +1077,8 @@ where
 	}
 
 	fn handle_get_info_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: LSPS2GetInfoRequest,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		params: LSPS2GetInfoRequest,
 	) -> Result<(), LightningError> {
 		let (result, response) = {
 			let mut outer_state_lock = self.per_peer_state.write().unwrap();
@@ -1113,11 +1114,11 @@ where
 	}
 
 	fn handle_buy_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: LSPS2BuyRequest,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey, params: LSPS2BuyRequest,
 	) -> Result<(), LightningError> {
 		if let Some(payment_size_msat) = params.payment_size_msat {
 			if payment_size_msat < params.opening_fee_params.min_payment_size_msat {
-				let response = LSPS2Response::BuyError(ResponseError {
+				let response = LSPS2Response::BuyError(LSPSResponseError {
 					code: LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
 					message: "payment size is below our minimum supported payment size".to_string(),
 					data: None,
@@ -1132,7 +1133,7 @@ where
 			}
 
 			if payment_size_msat > params.opening_fee_params.max_payment_size_msat {
-				let response = LSPS2Response::BuyError(ResponseError {
+				let response = LSPS2Response::BuyError(LSPSResponseError {
 					code: LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
 					message: "payment size is above our maximum supported payment size".to_string(),
 					data: None,
@@ -1152,7 +1153,7 @@ where
 			) {
 				Some(opening_fee) => {
 					if opening_fee >= payment_size_msat {
-						let response = LSPS2Response::BuyError(ResponseError {
+						let response = LSPS2Response::BuyError(LSPSResponseError {
 							code: LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_SMALL_ERROR_CODE,
 							message: "payment size is too small to cover the opening fee"
 								.to_string(),
@@ -1167,7 +1168,7 @@ where
 					}
 				},
 				None => {
-					let response = LSPS2Response::BuyError(ResponseError {
+					let response = LSPS2Response::BuyError(LSPSResponseError {
 						code: LSPS2_BUY_REQUEST_PAYMENT_SIZE_TOO_LARGE_ERROR_CODE,
 						message: "overflow error when calculating opening_fee".to_string(),
 						data: None,
@@ -1184,7 +1185,7 @@ where
 
 		// TODO: if payment_size_msat is specified, make sure our node has sufficient incoming liquidity from public network to receive it.
 		if !is_valid_opening_fee_params(&params.opening_fee_params, &self.config.promise_secret) {
-			let response = LSPS2Response::BuyError(ResponseError {
+			let response = LSPS2Response::BuyError(LSPSResponseError {
 				code: LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
 				message: "valid_until is already past OR the promise did not match the provided parameters".to_string(),
 				data: None,
@@ -1233,11 +1234,11 @@ where
 	}
 
 	fn insert_pending_request<'a>(
-		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: RequestId,
+		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: LSPSRequestId,
 		counterparty_node_id: PublicKey, request: LSPS2Request,
 	) -> (Result<(), LightningError>, Option<LSPSMessage>) {
 		if self.total_pending_requests.load(Ordering::Relaxed) >= MAX_TOTAL_PENDING_REQUESTS {
-			let response = LSPS2Response::BuyError(ResponseError {
+			let response = LSPS2Response::BuyError(LSPSResponseError {
 				code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
 				message: "Reached maximum number of pending requests. Please try again later."
 					.to_string(),
@@ -1259,7 +1260,7 @@ where
 			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
 			(Ok(()), None)
 		} else {
-			let response = LSPS2Response::BuyError(ResponseError {
+			let response = LSPS2Response::BuyError(LSPSResponseError {
 				code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
 				message: "Reached maximum number of pending requests. Please try again later."
 					.to_string(),
@@ -1279,7 +1280,7 @@ where
 	}
 
 	fn remove_pending_request<'a>(
-		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: &RequestId,
+		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: &LSPSRequestId,
 	) -> Option<LSPS2Request> {
 		match peer_state_lock.pending_requests.remove(request_id) {
 			Some(req) => {
@@ -1346,7 +1347,7 @@ where
 	}
 }
 
-impl<CM: Deref + Clone> ProtocolMessageHandler for LSPS2ServiceHandler<CM>
+impl<CM: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
 where
 	CM::Target: AChannelManager,
 {
