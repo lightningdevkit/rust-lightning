@@ -443,85 +443,29 @@ impl SignerProvider for KeyProvider {
 		[ctr; 32]
 	}
 
-	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+	fn derive_channel_signer(&self, keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
-		let ctr = channel_keys_id[0];
+		let ctr = keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
-		TestChannelSigner::new_with_revoked(
-			DynSigner::new(if inbound {
-				InMemorySigner::new(
-					&secp_ctx,
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 1, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 2, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 3, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 4, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 5, ctr,
-					])
-					.unwrap(),
-					[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 6, ctr,
-					],
-					channel_keys_id,
-					channel_keys_id,
-				)
-			} else {
-				InMemorySigner::new(
-					&secp_ctx,
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 7, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 8, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 9, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 10, ctr,
-					])
-					.unwrap(),
-					SecretKey::from_slice(&[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 11, ctr,
-					])
-					.unwrap(),
-					[
-						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-						0, 0, 0, 0, 0, 12, ctr,
-					],
-					channel_keys_id,
-					channel_keys_id,
-				)
-			}),
-			state,
-			false,
-		)
+
+		let (a, b, c, d, e, f);
+		let mut key = [0; 32];
+		key[31] = ctr;
+		key[30] = 1 + if inbound { 0 } else { 6 };
+		a = SecretKey::from_slice(&key).unwrap();
+		key[30] = 2 + if inbound { 0 } else { 6 };
+		b = SecretKey::from_slice(&key).unwrap();
+		key[30] = 3 + if inbound { 0 } else { 6 };
+		c = SecretKey::from_slice(&key).unwrap();
+		key[30] = 4 + if inbound { 0 } else { 6 };
+		d = SecretKey::from_slice(&key).unwrap();
+		key[30] = 5 + if inbound { 0 } else { 6 };
+		e = SecretKey::from_slice(&key).unwrap();
+		key[30] = 6 + if inbound { 0 } else { 6 };
+		f = key;
+		let signer = InMemorySigner::new(&secp_ctx, a, b, c, d, e, f, keys_id, keys_id);
+
+		TestChannelSigner::new_with_revoked(DynSigner::new(signer), state, false)
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
