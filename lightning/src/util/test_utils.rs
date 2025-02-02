@@ -1530,13 +1530,8 @@ impl SignerProvider for TestKeysInterface {
 		signer
 	}
 
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
-		let mut reader = io::Cursor::new(buffer);
-
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
-		let state = self.make_enforcement_state_cell(inner.commitment_seed);
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, self.disable_revocation_policy_check))
+	fn read_chan_signer(&self, _buffer: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
+		unreachable!();
 	}
 
 	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
