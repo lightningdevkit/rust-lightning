@@ -57,7 +57,7 @@ use crate::types::features::Bolt11InvoiceFeatures;
 #[cfg(trampoline)]
 use crate::routing::gossip::NodeId;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, RouteParametersConfig, Router, FixedRouter, Route};
-use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
+use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
@@ -4303,11 +4303,15 @@ where
 			// we don't allow forwards outbound over them.
 			return Err(("Refusing to forward to a private channel based on our config.", 0x4000 | 10));
 		}
-		if chan.context.get_channel_type().supports_scid_privacy() && next_packet.outgoing_scid != chan.context.outbound_scid_alias() {
-			// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
-			// "refuse to forward unless the SCID alias was used", so we pretend
-			// we don't have the channel here.
-			return Err(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10));
+		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
+			if chan.context.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
+				// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
+				// "refuse to forward unless the SCID alias was used", so we pretend
+				// we don't have the channel here.
+				return Err(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10));
+			}
+		} else {
+			return Err(("Cannot forward by Node ID without SCID.", 0x4000 | 10));
 		}
 
 		// Note that we could technically not return an error yet here and just hope
@@ -4359,7 +4363,13 @@ where
 	fn can_forward_htlc(
 		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
 	) -> Result<(), (&'static str, u16)> {
-		match self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut FundedChannel<SP>| {
+		let outgoing_scid = match next_packet_details.outgoing_connector {
+			HopConnector::ShortChannelId(scid) => scid,
+			HopConnector::Trampoline(_) => {
+				return Err(("Cannot forward by Node ID without SCID.", 0x4000 | 10));
+			}
+		};
+		match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
 			self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
 		}) {
 			Some(Ok(())) => {},
@@ -4368,8 +4378,8 @@ where
 				// If we couldn't find the channel info for the scid, it may be a phantom or
 				// intercept forward.
 				if (self.default_configuration.accept_intercept_htlcs &&
-					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, next_packet_details.outgoing_scid, &self.chain_hash)) ||
-					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, next_packet_details.outgoing_scid, &self.chain_hash)
+					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)) ||
+					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)
 				{} else {
 					return Err(("Don't have available channel for forwarding as requested.", 0x4000 | 10));
 				}
@@ -5720,7 +5730,12 @@ where
 				};
 
 				let is_intro_node_blinded_forward = next_hop.is_intro_node_blinded_forward();
-				let outgoing_scid_opt = next_packet_details_opt.as_ref().map(|d| d.outgoing_scid);
+				let outgoing_scid_opt = next_packet_details_opt.as_ref().and_then(|d| {
+					match d.outgoing_connector {
+						HopConnector::ShortChannelId(scid) => { Some(scid) }
+						HopConnector::Trampoline(_) => { None }
+					}
+				});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
 
 				// Process the HTLC on the incoming channel.
