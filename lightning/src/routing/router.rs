@@ -1164,6 +1164,7 @@ impl_writeable_tlv_based!(RouteHintHop, {
 #[repr(align(64))] // Force the size to 64 bytes
 struct RouteGraphNode {
 	node_id: NodeId,
+	node_counter: u32,
 	score: u64,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
 	// This value is upper-bounded by us by:
@@ -1178,7 +1179,7 @@ struct RouteGraphNode {
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		other.score.cmp(&self.score).then_with(|| other.node_id.cmp(&self.node_id))
+		other.score.cmp(&self.score).then_with(|| other.node_counter.cmp(&self.node_counter))
 	}
 }
 
@@ -2625,6 +2626,7 @@ where L::Target: Logger {
 								if !old_entry.was_processed && new_cost < old_cost {
 									let new_graph_node = RouteGraphNode {
 										node_id: src_node_id,
+										node_counter: src_node_counter,
 										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
 										total_cltv_delta: hop_total_cltv_delta,
 										value_contribution_msat,
@@ -2703,7 +2705,7 @@ where L::Target: Logger {
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
-		( $node: expr, $node_id: expr, $next_hops_value_contribution: expr,
+		( $node: expr, $node_counter: expr, $node_id: expr, $next_hops_value_contribution: expr,
 		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => {
 			let fee_to_target_msat;
 			let next_hops_path_htlc_minimum_msat;
@@ -2843,7 +2845,9 @@ where L::Target: Logger {
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee, path_value_msat, 0, 0);
+				add_entries_to_cheapest_to_target_node!(
+					node, node.node_counter, payee, path_value_msat, 0, 0
+				);
 			},
 		});
 
@@ -3071,7 +3075,7 @@ where L::Target: Logger {
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { node_id, total_cltv_delta, mut value_contribution_msat, path_length_to_node, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_id, node_counter, total_cltv_delta, mut value_contribution_msat, path_length_to_node, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
@@ -3209,7 +3213,8 @@ where L::Target: Logger {
 			match network_nodes.get(&node_id) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, node_id,
+					add_entries_to_cheapest_to_target_node!(
+						node, node_counter, node_id,
 						value_contribution_msat,
 						total_cltv_delta, path_length_to_node);
 				},
