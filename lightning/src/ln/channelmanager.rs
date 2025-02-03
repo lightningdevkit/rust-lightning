@@ -4286,11 +4286,12 @@ where
 	/// - our_funding_contribution_satoshis: the amount contributed by us to the channel. This will increase our channel balance.
 	/// - our_funding_inputs: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
+	/// - locktime: Optional locktime for the new funding transaction. If None, set to the current block height.
 	#[cfg(splicing)]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
-		funding_feerate_per_kw: u32, locktime: u32,
+		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4304,6 +4305,7 @@ where
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let locktime = locktime.unwrap_or(self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)
 						.map_err(|err| APIError::APIMisuseError {
