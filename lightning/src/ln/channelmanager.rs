@@ -4270,6 +4270,7 @@ where
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
