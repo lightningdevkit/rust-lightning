@@ -1179,7 +1179,10 @@ struct RouteGraphNode {
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		other.score.cmp(&self.score).then_with(|| other.node_counter.cmp(&self.node_counter))
+		other.score.cmp(&self.score)
+			.then_with(|| self.value_contribution_msat.cmp(&other.value_contribution_msat))
+			.then_with(|| other.path_length_to_node.cmp(&self.path_length_to_node))
+			.then_with(|| other.node_counter.cmp(&self.node_counter))
 	}
 }
 
@@ -1809,11 +1812,7 @@ struct PathBuildingHop<'a> {
 	/// The value will be actually deducted from the counterparty balance on the previous link.
 	hop_use_fee_msat: u64,
 
-	#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-	// In tests, we apply further sanity checks on cases where we skip nodes we already processed
-	// to ensure it is specifically in cases where the fee has gone down because of a decrease in
-	// value_contribution_msat, which requires tracking it here. See comments below where it is
-	// used for more info.
+	/// The quantity of funds we're willing to route over this channel
 	value_contribution_msat: u64,
 }
 
@@ -1834,9 +1833,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("total_fee_msat - (next_hops_fee_msat + hop_use_fee_msat)", &(&self.total_fee_msat.saturating_sub(self.next_hops_fee_msat).saturating_sub(self.hop_use_fee_msat)))
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
-			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
-		#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-		let debug_struct = debug_struct
+			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta())
 			.field("value_contribution_msat", &self.value_contribution_msat);
 		debug_struct.finish()
 	}
@@ -2546,7 +2543,6 @@ where L::Target: Logger {
 								path_penalty_msat: u64::max_value(),
 								was_processed: false,
 								is_first_hop_target: false,
-								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								value_contribution_msat,
 							});
 							dist_entry.as_mut().unwrap()
@@ -2622,8 +2618,11 @@ where L::Target: Logger {
 									.saturating_add(old_entry.path_penalty_msat);
 								let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
 									.saturating_add(path_penalty_msat);
+								let should_replace =
+									new_cost < old_cost
+									|| (new_cost == old_cost && old_entry.value_contribution_msat < value_contribution_msat);
 
-								if !old_entry.was_processed && new_cost < old_cost {
+								if !old_entry.was_processed && should_replace {
 									let new_graph_node = RouteGraphNode {
 										node_id: src_node_id,
 										node_counter: src_node_counter,
@@ -2640,10 +2639,7 @@ where L::Target: Logger {
 									old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
 									old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
 									old_entry.path_penalty_msat = path_penalty_msat;
-									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-									{
-										old_entry.value_contribution_msat = value_contribution_msat;
-									}
+									old_entry.value_contribution_msat = value_contribution_msat;
 									hop_contribution_amt_msat = Some(value_contribution_msat);
 								} else if old_entry.was_processed && new_cost < old_cost {
 									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
@@ -2814,7 +2810,6 @@ where L::Target: Logger {
 				path_penalty_msat: u64::max_value(),
 				was_processed: false,
 				is_first_hop_target: true,
-				#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 				value_contribution_msat: 0,
 			});
 		}
