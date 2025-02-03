@@ -5740,374 +5740,13 @@ mod tests {
 	}
 
 	#[test]
-	fn long_mpp_route_test() {
-		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
-		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = ln_test_utils::TestScorer::new();
-		let random_seed_bytes = [42; 32];
-		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
-			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
-			.unwrap();
-
-		// We need a route consisting of 3 paths:
-		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
-		// Note that these paths overlap (channels 5, 12, 13).
-		// We will route 300 sats.
-		// Each path will have 100 sats capacity, those channels which
-		// are used twice will have 200 sats capacity.
-
-		// Disable other potential paths.
-		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 2,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 2,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 7,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 2,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Path via {node0, node2} is channels {1, 3, 5}.
-		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 1,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 3,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Capacity of 200 sats because this channel will be used by 3rd path as well.
-		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 5,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 5,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 3, // disable direction 1
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
-		// Add 100 sats to the capacities of {12, 13}, because these channels
-		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
-		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 12,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 13,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 6,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 11,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Path via {node7, node2} is channels {12, 13, 5}.
-		// We already limited them to 200 sats (they are used twice for 100 sats).
-		// Nothing to do here.
-
+	fn mpp_tests() {
+		let secp_ctx = Secp256k1::new();
+		let (_, _, _, nodes) = get_nodes(&secp_ctx);
 		{
-			// Attempt to route more than available results in a failure.
-			let route_params = RouteParameters::from_payment_params_and_value(
-				payment_params.clone(), 350_000);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
-					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
-					&scorer, &Default::default(), &random_seed_bytes) {
-						assert_eq!(err, "Failed to find a sufficient route to the given destination");
-			} else { panic!(); }
-		}
-
-		{
-			// Now, attempt to route 300 sats (exact amount we can route).
-			// Our algorithm should provide us with these 3 paths, 100 sats each.
-			let route_params = RouteParameters::from_payment_params_and_value(
-				payment_params, 300_000);
-			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
-			assert_eq!(route.paths.len(), 3);
-
-			let mut total_amount_paid_msat = 0;
-			for path in &route.paths {
-				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.final_value_msat();
-			}
-			assert_eq!(total_amount_paid_msat, 300_000);
-		}
-
-	}
-
-	#[test]
-	fn mpp_cheaper_route_test() {
-		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
-		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = ln_test_utils::TestScorer::new();
-		let random_seed_bytes = [42; 32];
-		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
-			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
-			.unwrap();
-
-		// This test checks that if we have two cheaper paths and one more expensive path,
-		// so that liquidity-wise any 2 of 3 combination is sufficient,
-		// two cheaper paths will be taken.
-		// These paths have equal available liquidity.
-
-		// We need a combination of 3 paths:
-		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
-		// Note that these paths overlap (channels 5, 12, 13).
-		// Each path will have 100 sats capacity, those channels which
-		// are used twice will have 200 sats capacity.
-
-		// Disable other potential paths.
-		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 2,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 2,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 7,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 2,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Path via {node0, node2} is channels {1, 3, 5}.
-		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 1,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 3,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Capacity of 200 sats because this channel will be used by 3rd path as well.
-		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 5,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 5,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 3, // disable direction 1
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
-		// Add 100 sats to the capacities of {12, 13}, because these channels
-		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
-		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 12,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 13,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 200_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 6,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 1_000,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-			short_channel_id: 11,
-			timestamp: 2,
-			message_flags: 1, // Only must_be_one
-			channel_flags: 0,
-			cltv_expiry_delta: 0,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 100_000,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
-		});
-
-		// Path via {node7, node2} is channels {12, 13, 5}.
-		// We already limited them to 200 sats (they are used twice for 100 sats).
-		// Nothing to do here.
-
-		{
-			// Now, attempt to route 180 sats.
-			// Our algorithm should provide us with these 2 paths.
-			let route_params = RouteParameters::from_payment_params_and_value(
-				payment_params, 180_000);
-			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
-				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
+			// Check that if we have two cheaper paths and a more expensive (fewer hops) path, we
+			// choose the two cheaper paths:
+			let route = do_mpp_route_tests(180_000).unwrap();
 			assert_eq!(route.paths.len(), 2);
 
 			let mut total_value_transferred_msat = 0;
@@ -6124,6 +5763,190 @@ mod tests {
 			let total_fees_paid = total_paid_msat - total_value_transferred_msat;
 			assert_eq!(total_fees_paid, 0);
 		}
+		{
+			// Check that if we use the same channels but need to send more than we could fit in
+			// the cheaper paths we select all three paths:
+			let route = do_mpp_route_tests(300_000).unwrap();
+			assert_eq!(route.paths.len(), 3);
+
+			let mut total_amount_paid_msat = 0;
+			for path in &route.paths {
+				assert_eq!(path.hops.last().unwrap().pubkey, nodes[3]);
+				total_amount_paid_msat += path.final_value_msat();
+			}
+			assert_eq!(total_amount_paid_msat, 300_000);
+		}
+		// Check that trying to pay more than our available liquidity fails.
+		assert!(do_mpp_route_tests(300_001).is_err());
+	}
+
+	fn do_mpp_route_tests(amt: u64) -> Result<Route, LightningError> {
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::new();
+		let random_seed_bytes = [42; 32];
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
+
+		// Build a setup where we have three potential paths from us to node3:
+		//  {node0, node2, node4} (channels 1, 3, 6, 11), fee 0 msat,
+		//  {node7, node2, node4} (channels 12, 13, 6, 11), fee 0 msat, and
+		//  {node1} (channel 2, then a new channel 16), fee 1000 msat.
+		// Note that these paths overlap on channels 6 and 11.
+		// Each channel will have 100 sats capacity except for 6 and 11, which have 200.
+
+		// Disable other potential paths.
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 7,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 4,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via {node0, node2} is channels {1, 3, 5}.
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 1,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 3,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		add_channel(&gossip_sync, &secp_ctx, &privkeys[1], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(16)), 16);
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 16,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 1_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 16,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 3, // disable direction 1
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 1_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
+		// Add 100 sats to the capacities of {12, 13}, because these channels
+		// are also used for 3rd path. 100 sats for the rest. Total capacity: 100 sats.
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 12,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 13,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 6,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 200_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 11,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 200_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Path via {node7, node2} is channels {12, 13, 5}.
+		// We already limited them to 200 sats (they are used twice for 100 sats).
+		// Nothing to do here.
+
+		let route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amt);
+		let res = get_route(&our_id, &route_params, &network_graph.read_only(), None,
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes);
+		res
 	}
 
 	#[test]
