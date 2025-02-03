@@ -11013,6 +11013,36 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
+	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
+	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
+	///
+	/// ## Usage
+	/// 1. Static invoice server calls [`Self::blinded_paths_for_async_recipient`]
+	/// 2. Static invoice server communicates the resulting paths out-of-band to the async recipient,
+	///     who includes these paths in their [`UserConfig::paths_to_static_invoice_server`]
+	/// 3. Async recipient automatically sends [`OfferPathsRequest`]s over the configured paths, and
+	///     uses the resulting paths from the server's [`OfferPaths`] response to build their async
+	///     receive offer
+	///
+	/// If `relative_expiry` is unset, the [`BlindedMessagePath`]s expiry will default to
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`].
+	///
+	/// Returns the paths to be included in the recipient's
+	/// [`UserConfig::paths_to_static_invoice_server`] as well as a nonce that uniquely identifies the
+	/// recipient that has been configured with these paths. // TODO link to events that surface this nonce
+	///
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`]: crate::onion_message::async_payments::DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY
+	#[cfg(async_payments)]
+	pub fn blinded_paths_for_async_recipient(
+		&self, relative_expiry: Option<Duration>,
+	) -> Result<(Vec<BlindedMessagePath>, Nonce), ()> {
+		let peers = self.get_peers_for_blinded_path();
+		let entropy = &*self.entropy_source;
+		self.flow.blinded_paths_for_async_recipient(peers, relative_expiry, entropy)
+	}
+
 	#[cfg(any(test, async_payments))]
 	#[rustfmt::skip]
 	pub(super) fn duration_since_epoch(&self) -> Duration {

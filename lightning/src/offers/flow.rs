@@ -232,6 +232,51 @@ impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
 {
+	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
+	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
+	///
+	/// ## Usage
+	/// 1. Static invoice server calls [`Self::blinded_paths_for_async_recipient`]
+	/// 2. Static invoice server communicates the resulting paths out-of-band to the async recipient,
+	///     who includes these paths in their [`UserConfig::paths_to_static_invoice_server`]
+	/// 3. Async recipient automatically sends [`OfferPathsRequest`]s to the server over the
+	///     configured paths, and uses the paths from the server's [`OfferPaths`] response to build
+	///     their async receive offer
+	///
+	/// If `relative_expiry` is unset, the [`BlindedMessagePath`]s expiry will default to
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`].
+	///
+	/// Returns the paths to be included in the recipient's
+	/// [`UserConfig::paths_to_static_invoice_server`] as well as a nonce that uniquely identifies the
+	/// recipient that has been configured with these paths. // TODO link to events that surface this nonce
+	///
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`]: crate::onion_message::async_payments::DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY
+	#[cfg(async_payments)]
+	pub fn blinded_paths_for_async_recipient<ES: Deref>(
+		&self, peers: Vec<MessageForwardNode>, relative_expiry: Option<Duration>, entropy: ES,
+	) -> Result<(Vec<BlindedMessagePath>, Nonce), ()>
+	where
+		ES::Target: EntropySource,
+	{
+		let expanded_key = &self.inbound_payment_key;
+
+		let path_absolute_expiry = relative_expiry
+			.unwrap_or(Duration::from_secs(u64::MAX))
+			.saturating_add(self.duration_since_epoch());
+
+		let recipient_id_nonce = Nonce::from_entropy_source(entropy);
+		let hmac = signer::hmac_for_offer_paths_request_context(recipient_id_nonce, expanded_key);
+
+		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPathsRequest {
+			recipient_id_nonce,
+			hmac,
+			path_absolute_expiry,
+		});
+		self.create_blinded_paths(peers, context).map(|paths| (paths, recipient_id_nonce))
+	}
+
 	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
 	/// the path's intended lifetime.
 	///
