@@ -2514,8 +2514,15 @@ where L::Target: Logger {
 						let curr_min = cmp::max(
 							$next_hops_path_htlc_minimum_msat, htlc_minimum_msat
 						);
-						let candidate_fees = $candidate.fees();
 						let src_node_counter = $candidate.src_node_counter();
+						let mut candidate_fees = $candidate.fees();
+						if src_node_counter == payer_node_counter {
+							// We do not charge ourselves a fee to use our own channels.
+							candidate_fees = RoutingFees {
+								proportional_millionths: 0,
+								base_msat: 0,
+							};
+						}
 						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, candidate_fees)
 							.saturating_add(curr_min);
 
