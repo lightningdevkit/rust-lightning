@@ -250,6 +250,34 @@ impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
 {
+	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
+	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
+	///
+	/// If `relative_expiry` is unset, the [`BlindedMessagePath`]s will never expire.
+	///
+	/// Returns the paths that the recipient should be configured with via
+	/// [`Self::set_paths_to_static_invoice_server`].
+	///
+	/// Errors if blinded path creation fails or the provided `recipient_id` is larger than 1KiB.
+	#[cfg(async_payments)]
+	pub(crate) fn blinded_paths_for_async_recipient(
+		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
+		peers: Vec<MessageForwardNode>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		if recipient_id.len() > 1024 {
+			return Err(());
+		}
+
+		let path_absolute_expiry =
+			relative_expiry.map(|exp| exp.saturating_add(self.duration_since_epoch()));
+
+		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPathsRequest {
+			recipient_id,
+			path_absolute_expiry,
+		});
+		self.create_blinded_paths(peers, context)
+	}
+
 	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
 	/// the path's intended lifetime.
 	///

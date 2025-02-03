@@ -405,6 +405,24 @@ pub enum OffersContext {
 /// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 #[derive(Clone, Debug)]
 pub enum AsyncPaymentsContext {
+	/// Context used by a [`BlindedMessagePath`] provided out-of-band to an async recipient, where the
+	/// context is provided back to the static invoice server in corresponding [`OfferPathsRequest`]s.
+	///
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	OfferPathsRequest {
+		/// An identifier for the async recipient that is requesting blinded paths to include in their
+		/// [`Offer::paths`]. This ID will be surfaced when the async recipient eventually sends a
+		/// corresponding [`ServeStaticInvoice`] message, and can be used to rate limit the recipient.
+		///
+		/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		recipient_id: Vec<u8>,
+		/// An optional field indicating the time as duration since the Unix epoch at which this path
+		/// expires and messages sent over it should be ignored.
+		///
+		/// Useful to timeout async recipients that are no longer supported as clients.
+		path_absolute_expiry: Option<core::time::Duration>,
+	},
 	/// Context used by a reply path to an [`OfferPathsRequest`], provided back to us as an async
 	/// recipient in corresponding [`OfferPaths`] messages from the static invoice server.
 	///
@@ -527,6 +545,10 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(3, StaticInvoicePersisted) => {
 		(0, offer_id, required),
 		(2, path_absolute_expiry, required),
+	},
+	(4, OfferPathsRequest) => {
+		(0, recipient_id, required),
+		(2, path_absolute_expiry, option),
 	},
 );
 
