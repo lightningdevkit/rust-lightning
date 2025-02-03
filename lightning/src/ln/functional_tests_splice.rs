@@ -227,7 +227,6 @@ fn test_v1_splice_in() {
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats: u64 = 20000;
 	let funding_feerate_per_kw = 1024; // TODO
-	let locktime = 0; // TODO
 
 	// Create additional inputs
 	let extra_splice_funding_input_sats = 35_000;
@@ -244,7 +243,7 @@ fn test_v1_splice_in() {
 			splice_in_sats as i64,
 			funding_inputs,
 			funding_feerate_per_kw,
-			locktime,
+			None, // locktime
 		)
 		.unwrap();
 	// Extract the splice message from node0 to node1
