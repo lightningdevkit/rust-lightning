@@ -1784,6 +1784,12 @@ struct PathBuildingHop<'a> {
 	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
 	/// avoid processing them again.
 	was_processed: bool,
+	/// If we've already processed a channel backwards from a target node, we shouldn't update our
+	/// selected best path from that node to the destination. This should never happen, but with
+	/// multiple codepaths processing channels we've had issues here in the past, so in debug-mode
+	/// we track it and assert on it when processing a node.
+	#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+	best_path_from_hop_selected: bool,
 	/// When processing a node as the next best-score candidate, we want to quickly check if it is
 	/// a direct counterparty of ours, using our local channel information immediately if we can.
 	///
@@ -2427,6 +2433,19 @@ where L::Target: Logger {
 			// We "return" whether we updated the path at the end, and how much we can route via
 			// this channel, via this:
 			let mut hop_contribution_amt_msat = None;
+
+			#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+			if let Some(counter) = $candidate.target_node_counter() {
+				// Once we are adding paths backwards from a given target, we've selected the best
+				// path from that target to the destination and it should no longer change. We thus
+				// set the best-path selected flag and check that it doesn't change below.
+				if let Some(node) = &mut dist[counter as usize] {
+					node.best_path_from_hop_selected = true;
+				} else if counter != payee_node_counter {
+					panic!("No dist entry for target node counter {}", counter);
+				}
+			}
+
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
 			// practice these cases should be caught earlier:
 			// - for regular channels at channel announcement (TODO)
@@ -2591,6 +2610,8 @@ where L::Target: Logger {
 								was_processed: false,
 								is_first_hop_target: false,
 								is_last_hop_target: false,
+								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+								best_path_from_hop_selected: false,
 								value_contribution_msat,
 							});
 							dist_entry.as_mut().unwrap()
@@ -2671,6 +2692,11 @@ where L::Target: Logger {
 									|| (new_cost == old_cost && old_entry.value_contribution_msat < value_contribution_msat);
 
 								if !old_entry.was_processed && should_replace {
+									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+									{
+										assert!(!old_entry.best_path_from_hop_selected);
+									}
+
 									let new_graph_node = RouteGraphNode {
 										node_id: src_node_id,
 										node_counter: src_node_counter,
@@ -2884,6 +2910,8 @@ where L::Target: Logger {
 				is_first_hop_target: true,
 				is_last_hop_target: false,
 				value_contribution_msat: 0,
+				#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+				best_path_from_hop_selected: false,
 			});
 		}
 		for (target_node_counter, candidates) in last_hop_candidates.iter() {
@@ -2911,6 +2939,8 @@ where L::Target: Logger {
 					is_first_hop_target: false,
 					is_last_hop_target: true,
 					value_contribution_msat: 0,
+					#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+					best_path_from_hop_selected: false,
 				});
 			}
 		}
