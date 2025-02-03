@@ -1977,13 +1977,21 @@ mod bucketed_history {
 				*bucket = ((*bucket as u32 + *other_bucket as u32) / 2) as u16;
 			}
 		}
+
+		/// Applies decay at the given half-life to all buckets.
+		fn decay(&mut self, half_lives: f64) {
+			let factor = (1024.0 * powf64(0.5, half_lives)) as u64;
+			for bucket in self.buckets.iter_mut() {
+				*bucket = ((*bucket as u64) * factor / 1024) as u16;
+			}
+		}
 	}
 
 	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
 	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
 	#[derive(Clone, Copy)]
-	#[repr(C)] // Force the fields in memory to be in the order we specify.
+	#[repr(C)]// Force the fields in memory to be in the order we specify.
 	pub(super) struct HistoricalLiquidityTracker {
 		// This struct sits inside a `(u64, ChannelLiquidity)` in memory, and we first read the
 		// liquidity offsets in `ChannelLiquidity` when calculating the non-historical score. This
@@ -2031,13 +2039,8 @@ mod bucketed_history {
 		}
 
 		pub(super) fn decay_buckets(&mut self, half_lives: f64) {
-			let divisor = powf64(2048.0, half_lives) as u64;
-			for bucket in self.min_liquidity_offset_history.buckets.iter_mut() {
-				*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
-			}
-			for bucket in self.max_liquidity_offset_history.buckets.iter_mut() {
-				*bucket = ((*bucket as u64) * 1024 / divisor) as u16;
-			}
+			self.min_liquidity_offset_history.decay(half_lives);
+			self.max_liquidity_offset_history.decay(half_lives);
 			self.recalculate_valid_point_count();
 		}
 
@@ -2271,6 +2274,28 @@ mod bucketed_history {
 				bucket1.buckets,
 				[
 					16u16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+					0, 0, 0, 0, 0, 0, 0
+				]
+			);
+		}
+
+		#[test]
+		fn historical_liquidity_bucket_decay() {
+			let mut bucket = HistoricalBucketRangeTracker::new();
+			bucket.track_datapoint(100, 1000);
+			assert_eq!(
+				bucket.buckets,
+				[
+					0u16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+					0, 0, 0, 0, 0, 0, 0
+				]
+			);
+
+			bucket.decay(2.0);
+			assert_eq!(
+				bucket.buckets,
+				[
+					0u16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 					0, 0, 0, 0, 0, 0, 0
 				]
 			);
