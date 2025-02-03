@@ -65,6 +65,10 @@ const ASYNC_PAYMENTS_OFFER_PATHS_INPUT: &[u8; 16] = &[10; 16];
 #[cfg(async_payments)]
 const ASYNC_PAYMENTS_STATIC_INV_PERSISTED_INPUT: &[u8; 16] = &[11; 16];
 
+///
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_OFFER_PATHS_REQUEST_INPUT: &[u8; 16] = &[12; 16];
+
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
 #[derive(Clone)]
@@ -579,6 +583,19 @@ pub(crate) fn verify_held_htlc_available_context(
 	} else {
 		Err(())
 	}
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_offer_paths_request_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Paths Please"; // TODO
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_OFFER_PATHS_REQUEST_INPUT);
+
+	Hmac::from_engine(hmac)
 }
 
 #[cfg(async_payments)]

@@ -232,6 +232,43 @@ impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
 {
+	/// [`BlindedMessagePath`]s that an async recipient will be configured with via
+	/// [`UserConfig::paths_to_static_invoice_server`], enabling the recipient to request blinded
+	/// paths from us for inclusion in their [`Offer::paths`].
+	///
+	/// If `relative_expiry` is unset, the resulting [`BlindedMessagePath`]s will not expire.
+	///
+	/// Returns the paths to be included in the recipient's
+	/// [`UserConfig::paths_to_static_invoice_server`] as well as a nonce that uniquely identifies the
+	/// recipient that has been configured with these paths.
+	///
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`]: crate::onion_message::async_payments::DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY
+	#[cfg(async_payments)]
+	pub fn blinded_paths_for_async_recipient<ES: Deref>(
+		&self, peers: Vec<MessageForwardNode>, relative_expiry: Option<Duration>, entropy: ES,
+	) -> Result<(Vec<BlindedMessagePath>, Nonce), ()>
+	where
+		ES::Target: EntropySource,
+	{
+		let expanded_key = &self.inbound_payment_key;
+
+		let path_absolute_expiry = relative_expiry
+			.unwrap_or(Duration::from_secs(u64::MAX))
+			.saturating_add(self.duration_since_epoch());
+
+		let recipient_id_nonce = Nonce::from_entropy_source(entropy);
+		let hmac = signer::hmac_for_offer_paths_request_context(recipient_id_nonce, expanded_key);
+
+		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPathsRequest {
+			recipient_id_nonce,
+			hmac,
+			path_absolute_expiry,
+		});
+		self.create_blinded_paths(peers, context).map(|paths| (paths, recipient_id_nonce))
+	}
+
 	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
 	/// the path's intended lifetime.
 	///

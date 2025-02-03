@@ -406,6 +406,34 @@ pub enum OffersContext {
 /// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 #[derive(Clone, Debug)]
 pub enum AsyncPaymentsContext {
+	/// Context used by a [`BlindedMessagePath`] that an async recipient is configured with in
+	/// [`UserConfig::paths_to_static_invoice_server`], provided back to us in corresponding
+	/// [`OfferPathsRequest`]s.
+	///
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	OfferPathsRequest {
+		/// An identifier for the async recipient that is requesting blinded paths to include in their
+		/// [`Offer::paths`]. This ID is intended to be included in the reply path to our [`OfferPaths`]
+		/// response, and subsequently rate limit [`ServeStaticInvoice`] messages from recipients.
+		///
+		/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		recipient_id_nonce: Nonce,
+		/// Authentication code for the [`OfferPathsRequest`].
+		///
+		/// Prevents nodes from requesting offer paths from us without having been previously configured
+		/// with a [`BlindedMessagePath`] that we generated.
+		///
+		/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Useful to timeout async recipients that are no longer supported as clients.
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context used by a reply path to an [`OfferPathsRequest`], provided back to us in corresponding
 	/// [`OfferPaths`] messages.
 	///
@@ -580,6 +608,11 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(10, nonce, required),
 		(12, hmac, required),
 		(14, path_absolute_expiry, required),
+	},
+	(4, OfferPathsRequest) => {
+		(0, recipient_id_nonce, required),
+		(2, hmac, required),
+		(4, path_absolute_expiry, required),
 	},
 );
 
