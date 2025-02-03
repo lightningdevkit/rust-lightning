@@ -124,14 +124,13 @@ fn htlc_timeout_transaction_weight(context: &AnchorChannelReserveContext) -> u64
 		}
 }
 
-fn anchor_output_spend_transaction_weight(context: &AnchorChannelReserveContext) -> u64 {
+fn anchor_output_spend_transaction_weight(
+	context: &AnchorChannelReserveContext, input_weight: Weight,
+) -> u64 {
 	TRANSACTION_BASE_WEIGHT
 		+ ANCHOR_INPUT_WEIGHT
-		+ if context.taproot_wallet {
-			P2TR_INPUT_WEIGHT + P2TR_OUTPUT_WEIGHT
-		} else {
-			P2WPKH_INPUT_WEIGHT + P2WPKH_OUTPUT_WEIGHT
-		}
+		+ input_weight.to_wu()
+		+ if context.taproot_wallet { P2TR_OUTPUT_WEIGHT } else { P2WPKH_OUTPUT_WEIGHT }
 }
 
 /// Parameters defining the context around the anchor channel reserve requirement calculation.
@@ -167,11 +166,9 @@ impl Default for AnchorChannelReserveContext {
 	}
 }
 
-/// Returns the amount that needs to be maintained as a reserve per anchor channel.
-///
-/// This reserve currently needs to be allocated as a disjoint set of UTXOs per channel,
-/// as claims are not yet aggregated across channels.
-pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount {
+fn get_reserve_per_channel_with_input(
+	context: &AnchorChannelReserveContext, initial_input_weight: Weight,
+) -> Amount {
 	let weight = Weight::from_wu(
 		COMMITMENT_TRANSACTION_BASE_WEIGHT +
 		// Reserves are calculated in terms of accepted HTLCs, as their timeout defines the urgency of
@@ -179,7 +176,7 @@ pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount 
 		// bound for the reserve, resulting in `expected_accepted_htlcs` inbound HTLCs and
 		// `expected_accepted_htlcs` outbound HTLCs per channel in aggregate.
 		2 * (context.expected_accepted_htlcs as u64) * COMMITMENT_TRANSACTION_PER_HTLC_WEIGHT +
-		anchor_output_spend_transaction_weight(context) +
+		anchor_output_spend_transaction_weight(context, initial_input_weight) +
 		// As an upper bound, it is assumed that each HTLC is resolved in a separate transaction.
 		// However, they might be aggregated when possible depending on timelocks and expiries.
 		htlc_success_transaction_weight(context) * (context.expected_accepted_htlcs as u64) +
@@ -188,22 +185,33 @@ pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount 
 	context.upper_bound_fee_rate.fee_wu(weight).unwrap_or(Amount::MAX)
 }
 
+/// Returns the amount that needs to be maintained as a reserve per anchor channel.
+///
+/// This reserve currently needs to be allocated as a disjoint set of UTXOs per channel,
+/// as claims are not yet aggregated across channels.
+///
+/// Note that the returned amount assumes that the reserve will be provided by a single UTXO of the
+/// type indicated by [AnchorChannelReserveContext::taproot_wallet]. Larger sets of UTXOs with more
+/// complex witnesses will require a correspondingly larger reserve due to the weight required to
+/// spend them.
+pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount {
+	get_reserve_per_channel_with_input(
+		context,
+		if context.taproot_wallet {
+			Weight::from_wu(P2TR_INPUT_WEIGHT)
+		} else {
+			Weight::from_wu(P2WPKH_INPUT_WEIGHT)
+		},
+	)
+}
+
 /// Calculates the number of anchor channels that can be supported by the reserve provided
 /// by `utxos`.
 pub fn get_supportable_anchor_channels(
 	context: &AnchorChannelReserveContext, utxos: &[Utxo],
 ) -> u64 {
-	// Get the reserve needed per channel, replacing the fee for an initial spend with the actual value
-	// below.
-	let default_satisfaction_fee = context
-		.upper_bound_fee_rate
-		.fee_wu(Weight::from_wu(if context.taproot_wallet {
-			P2TR_INPUT_WEIGHT
-		} else {
-			P2WPKH_INPUT_WEIGHT
-		}))
-		.unwrap_or(Amount::MAX);
-	let reserve_per_channel = get_reserve_per_channel(context) - default_satisfaction_fee;
+	// Get the reserve needed per channel, accounting for the actual satisfaction weight below.
+	let reserve_per_channel = get_reserve_per_channel_with_input(context, Weight::ZERO);
 
 	let mut total_fractional_amount = Amount::from_sat(0);
 	let mut num_whole_utxos = 0;
@@ -347,20 +355,20 @@ mod test {
 		// https://mempool.space/tx/188b0f9f26999a48611dba4e2a88507251eba31f3695d005023de3514cba34bd
 		// DER-encoded ECDSA signatures vary in size and can be 71-73 bytes.
 		assert_eq!(
-			anchor_output_spend_transaction_weight(&AnchorChannelReserveContext {
-				taproot_wallet: false,
-				..Default::default()
-			}),
+			anchor_output_spend_transaction_weight(
+				&AnchorChannelReserveContext { taproot_wallet: false, ..Default::default() },
+				Weight::from_wu(P2WPKH_INPUT_WEIGHT),
+			),
 			717
 		);
 
 		// Example:
 		// https://mempool.space/tx/9c493177e395ec77d9e725e1cfd465c5f06d4a5816dd0274c3a8c2442d854a85
 		assert_eq!(
-			anchor_output_spend_transaction_weight(&AnchorChannelReserveContext {
-				taproot_wallet: true,
-				..Default::default()
-			}),
+			anchor_output_spend_transaction_weight(
+				&AnchorChannelReserveContext { taproot_wallet: true, ..Default::default() },
+				Weight::from_wu(P2TR_INPUT_WEIGHT),
+			),
 			723
 		);
 	}
