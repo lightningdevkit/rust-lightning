@@ -11499,6 +11499,34 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, expanded_key)
 	}
 
+	/// [`BlindedMessagePath`]s for an async recipient to communicate with this node and interactively
+	/// build [`Offer`]s and [`StaticInvoice`]s for receiving async payments.
+	///
+	/// ## Usage
+	/// 1. Static invoice server calls [`Self::blinded_paths_for_async_recipient`]
+	/// 2. Static invoice server communicates the resulting paths out-of-band to the async recipient,
+	///    who calls [`Self::set_paths_to_static_invoice_server`] to configure themselves with these
+	///    paths
+	/// 3. Async recipient automatically sends [`OfferPathsRequest`]s over the configured paths, and
+	///    uses the resulting paths from the server's [`OfferPaths`] response to build their async
+	///    receive offer
+	///
+	/// If `relative_expiry` is unset, the [`BlindedMessagePath`]s will never expire.
+	///
+	/// Returns the paths that the recipient should be configured with via
+	/// [`Self::set_paths_to_static_invoice_server`].
+	///
+	/// The provided `recipient_id` must uniquely identify the recipient, and will be surfaced later
+	/// when the recipient provides us with a static invoice to persist and serve to payers on their
+	/// behalf.
+	#[cfg(async_payments)]
+	pub fn blinded_paths_for_async_recipient(
+		&self, recipient_id: Vec<u8>, relative_expiry: Option<Duration>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let peers = self.get_peers_for_blinded_path();
+		self.flow.blinded_paths_for_async_recipient(recipient_id, relative_expiry, peers)
+	}
+
 	#[cfg(any(test, async_payments))]
 	pub(super) fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
