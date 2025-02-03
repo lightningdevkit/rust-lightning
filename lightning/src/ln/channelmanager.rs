@@ -94,7 +94,7 @@ use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
 	crate::offers::offer::Amount,
 	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
-	crate::onion_message::async_payments::REPLY_PATH_RELATIVE_EXPIRY,
+	crate::onion_message::async_payments::{DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY, REPLY_PATH_RELATIVE_EXPIRY},
 };
 
 #[cfg(feature = "dnssec")]
@@ -10823,6 +10823,39 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
+	}
+
+	/// [`BlindedMessagePath`]s that an async recipient will be configured with via
+	/// [`UserConfig::paths_to_static_invoice_server`], enabling the recipient to request blinded
+	/// paths from us for inclusion in their [`Offer::paths`].
+	///
+	/// If `relative_expiry` is unset, the [`BlindedMessagePath`]s expiry will default to
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`].
+	///
+	/// Returns the paths to be included in the recipient's
+	/// [`UserConfig::paths_to_static_invoice_server`] as well as a nonce that uniquely identifies the
+	/// recipient that has been configured with these paths. // TODO link to events that surface this nonce
+	///
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY`]: crate::onion_message::async_payments::DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY
+	#[cfg(async_payments)]
+	pub fn blinded_paths_for_async_recipient(
+		&self, relative_expiry: Option<Duration>
+	) -> Result<(Vec<BlindedMessagePath>, Nonce), ()> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+
+		let path_absolute_expiry = relative_expiry.unwrap_or(DEFAULT_CONFIG_PATH_RELATIVE_EXPIRY)
+			.saturating_add(self.duration_since_epoch());
+
+		let recipient_id_nonce = Nonce::from_entropy_source(entropy);
+		let hmac = signer::hmac_for_offer_paths_request_context(recipient_id_nonce, expanded_key);
+
+		let context = MessageContext::AsyncPayments(
+			AsyncPaymentsContext::OfferPathsRequest { recipient_id_nonce, hmac, path_absolute_expiry }
+		);
+		self.create_blinded_paths(context).map(|paths| (paths, recipient_id_nonce))
 	}
 
 	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
