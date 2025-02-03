@@ -964,6 +964,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 
 		// Ensure that the remaining channel is fully operation and not blocked (and that after a
 		// cycle of commitment updates the payment preimage is ultimately pruned).
+		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		send_payment(&nodes[0], &[&nodes[2], &nodes[3]], 100_000);
 		assert!(!get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
 	}
