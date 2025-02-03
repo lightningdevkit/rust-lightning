@@ -8510,8 +8510,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn get_splice_init(&self, our_funding_contribution_satoshis: i64,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> msgs::SpliceInit {
-		// Reuse the existing funding pubkey, in spite of the channel value changing
-		// (though at this point we don't know the new value yet, due tue the optional counterparty contribution)
+		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
 		// Note that channel_keys_id is supposed NOT to change
 		let funding_pubkey = self.funding.get_holder_pubkeys().funding_pubkey.clone();
 		msgs::SpliceInit {
@@ -8575,7 +8574,8 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// Get the splice_ack message that can be sent in response to splice initiation.
 	#[cfg(splicing)]
 	pub fn get_splice_ack(&self, our_funding_contribution_satoshis: i64) -> msgs::SpliceAck {
-		// Reuse the existing funding pubkey, in spite of the channel value changing
+		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
+		// Note that channel_keys_id is supposed NOT to change
 		let funding_pubkey = self.funding.get_holder_pubkeys().funding_pubkey;
 		msgs::SpliceAck {
 			channel_id: self.context.channel_id,

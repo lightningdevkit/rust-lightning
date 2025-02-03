@@ -48,8 +48,6 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		&nodes[0],
 		&[session.initiator_input_value_satoshis],
 	);
-	let total_weight =
-		Weight::from_wu(initiator_funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum());
 	let initiator_funding_inputs: Vec<_> = initiator_funding_inputs
 		.into_iter()
 		.map(|(txin, tx, _)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
