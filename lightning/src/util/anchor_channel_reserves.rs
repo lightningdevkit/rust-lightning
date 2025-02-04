@@ -187,13 +187,24 @@ fn get_reserve_per_channel_with_input(
 
 /// Returns the amount that needs to be maintained as a reserve per anchor channel.
 ///
-/// This reserve currently needs to be allocated as a disjoint set of UTXOs per channel,
+/// This reserve currently needs to be allocated as a disjoint set of at least 1 UTXO per channel,
 /// as claims are not yet aggregated across channels.
 ///
-/// Note that the returned amount assumes that the reserve will be provided by a single UTXO of the
-/// type indicated by [AnchorChannelReserveContext::taproot_wallet]. Larger sets of UTXOs with more
-/// complex witnesses will require a correspondingly larger reserve due to the weight required to
-/// spend them.
+/// To only require 1 UTXO per channel, it is assumed that, on average, transactions are able to
+/// get confirmed within 1 block with [ConfirmationTarget::UrgentOnChainSweep], or that only a
+/// portion of channels will go through unilateral closure at the same time, allowing UTXOs to be
+/// shared. Otherwise, multiple UTXOs would be needed per channel:
+/// - HTLC time-out transactions with different expiries cannot be aggregated. This could result in
+/// many individual transactions that need to be confirmed starting from different, but potentially
+/// sequential block heights.
+/// - If each transaction takes N blocks to confirm, at least N UTXOs are needed to provide the
+/// necessary concurrency.
+///
+/// The returned amount includes the fee to spend a single UTXO of the type indicated by
+/// [AnchorChannelReserveContext::taproot_wallet]. Larger sets of UTXOs with more complex witnesses
+/// will need to include the corresponding fee required to spend them.
+///
+/// [ConfirmationTarget::UrgentOnChainSweep]: crate::chain::chaininterface::ConfirmationTarget::UrgentOnChainSweep
 pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount {
 	get_reserve_per_channel_with_input(
 		context,
