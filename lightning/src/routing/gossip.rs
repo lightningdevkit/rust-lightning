@@ -72,7 +72,12 @@ const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 /// This value ensures a reply fits within the 65k payload limit and is consistent with other implementations.
 const MAX_SCIDS_PER_REPLY: usize = 8000;
 
-/// Represents the compressed public key of a node
+/// A compressed pubkey which a node uses to sign announcements and decode HTLCs routed through it.
+///
+/// This type stores a simple byte array which is not checked for validity (i.e. that it describes
+/// a point which lies on the secp256k1 curve), unlike [`PublicKey`], as validity checking would
+/// otherwise represent a large portion of [`NetworkGraph`] deserialization time (and RGS
+/// application).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NodeId([u8; PUBLIC_KEY_SIZE]);
 
@@ -1660,8 +1665,7 @@ where
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
-		// In Nov, 2023 there were about 15,000 nodes; we cap allocations to 1.5x that.
-		let mut channels = IndexedMap::with_capacity(cmp::min(channels_count as usize, 22500));
+		let mut channels = IndexedMap::with_capacity(CHAN_COUNT_ESTIMATE);
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
 			let chan_info: ChannelInfo = Readable::read(reader)?;
@@ -1673,8 +1677,7 @@ where
 		if nodes_count > u32::max_value() as u64 / 2 {
 			return Err(DecodeError::InvalidValue);
 		}
-		// In Nov, 2023 there were about 69K channels; we cap allocations to 1.5x that.
-		let mut nodes = IndexedMap::with_capacity(cmp::min(nodes_count as usize, 103500));
+		let mut nodes = IndexedMap::with_capacity(NODE_COUNT_ESTIMATE);
 		for i in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
 			let mut node_info: NodeInfo = Readable::read(reader)?;
@@ -1750,6 +1753,15 @@ where
 	}
 }
 
+// In Jan, 2025 there were about 49K channels.
+// We over-allocate by a bit because 20% more is better than the double we get if we're slightly
+// too low
+const CHAN_COUNT_ESTIMATE: usize = 60_000;
+// In Jan, 2025 there were about 15K nodes
+// We over-allocate by a bit because 33% more is better than the double we get if we're slightly
+// too low
+const NODE_COUNT_ESTIMATE: usize = 20_000;
+
 impl<L: Deref> NetworkGraph<L>
 where
 	L::Target: Logger,
@@ -1760,8 +1772,8 @@ where
 			secp_ctx: Secp256k1::verification_only(),
 			chain_hash: ChainHash::using_genesis_block(network),
 			logger,
-			channels: RwLock::new(IndexedMap::new()),
-			nodes: RwLock::new(IndexedMap::new()),
+			channels: RwLock::new(IndexedMap::with_capacity(CHAN_COUNT_ESTIMATE)),
+			nodes: RwLock::new(IndexedMap::with_capacity(NODE_COUNT_ESTIMATE)),
 			next_node_counter: AtomicUsize::new(0),
 			removed_node_counters: Mutex::new(Vec::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
@@ -1992,8 +2004,8 @@ where
 	///
 	/// All other parameters as used in [`msgs::UnsignedChannelAnnouncement`] fields.
 	pub fn add_channel_from_partial_announcement(
-		&self, short_channel_id: u64, timestamp: u64, features: ChannelFeatures,
-		node_id_1: PublicKey, node_id_2: PublicKey,
+		&self, short_channel_id: u64, timestamp: u64, features: ChannelFeatures, node_id_1: NodeId,
+		node_id_2: NodeId,
 	) -> Result<(), LightningError> {
 		if node_id_1 == node_id_2 {
 			return Err(LightningError {
@@ -2002,13 +2014,11 @@ where
 			});
 		};
 
-		let node_1 = NodeId::from_pubkey(&node_id_1);
-		let node_2 = NodeId::from_pubkey(&node_id_2);
 		let channel_info = ChannelInfo {
 			features,
-			node_one: node_1.clone(),
+			node_one: node_id_1,
 			one_to_two: None,
-			node_two: node_2.clone(),
+			node_two: node_id_2,
 			two_to_one: None,
 			capacity_sats: None,
 			announcement_message: None,
@@ -2537,7 +2547,7 @@ where
 				}
 			};
 
-		let node_pubkey;
+		let mut node_pubkey = None;
 		{
 			let channels = self.channels.read().unwrap();
 			match channels.get(&msg.short_channel_id) {
@@ -2556,16 +2566,31 @@ where
 					} else {
 						channel.node_one.as_slice()
 					};
-					node_pubkey = PublicKey::from_slice(node_id).map_err(|_| LightningError {
-						err: "Couldn't parse source node pubkey".to_owned(),
-						action: ErrorAction::IgnoreAndLog(Level::Debug),
-					})?;
+					if sig.is_some() {
+						// PublicKey parsing isn't entirely trivial as it requires that we check
+						// that the provided point is on the curve. Thus, if we don't have a
+						// signature to verify, we want to skip the parsing step entirely.
+						// This represents a substantial speedup in applying RGS snapshots.
+						node_pubkey =
+							Some(PublicKey::from_slice(node_id).map_err(|_| LightningError {
+								err: "Couldn't parse source node pubkey".to_owned(),
+								action: ErrorAction::IgnoreAndLog(Level::Debug),
+							})?);
+					}
 				},
 			}
 		}
 
-		let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
 		if let Some(sig) = sig {
+			let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
+			let node_pubkey = if let Some(pubkey) = node_pubkey {
+				pubkey
+			} else {
+				debug_assert!(false, "node_pubkey should have been decoded above");
+				let err = "node_pubkey wasn't decoded but we need it to check a sig".to_owned();
+				let action = ErrorAction::IgnoreAndLog(Level::Error);
+				return Err(LightningError { err, action });
+			};
 			secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &node_pubkey, "channel_update");
 		}
 

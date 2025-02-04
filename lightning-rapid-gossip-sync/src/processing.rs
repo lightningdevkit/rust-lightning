@@ -3,7 +3,6 @@ use core::ops::Deref;
 use core::sync::atomic::Ordering;
 
 use bitcoin::constants::ChainHash;
-use bitcoin::secp256k1::PublicKey;
 
 use lightning::io;
 use lightning::ln::msgs::{
@@ -117,7 +116,7 @@ where
 		};
 
 		let node_id_count: u32 = Readable::read(read_cursor)?;
-		let mut node_ids: Vec<PublicKey> = Vec::with_capacity(core::cmp::min(
+		let mut node_ids: Vec<NodeId> = Vec::with_capacity(core::cmp::min(
 			node_id_count,
 			MAX_INITIAL_NODE_ID_VECTOR_CAPACITY,
 		) as usize);
@@ -154,9 +153,8 @@ where
 				let key_parity = node_detail_flag & 0b_0000_0011;
 				pubkey_bytes[0] = key_parity;
 
-				let current_pubkey = PublicKey::from_slice(&pubkey_bytes)?;
-				let current_node_id = NodeId::from_pubkey(&current_pubkey);
-				node_ids.push(current_pubkey);
+				let current_node_id = NodeId::from_slice(&pubkey_bytes)?;
+				node_ids.push(current_node_id);
 
 				if is_reminder || has_address_details || feature_detail_marker > 0 {
 					let mut synthetic_node_announcement = UnsignedNodeAnnouncement {
