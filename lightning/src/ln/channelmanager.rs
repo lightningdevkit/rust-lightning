@@ -12960,7 +12960,7 @@ where
 			(13, htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_opt, option),
 			(15, self.inbound_payment_id_secret, required),
-			(17, in_flight_monitor_updates, required),
+			(17, in_flight_monitor_updates, option),
 		});
 
 		Ok(())
@@ -13503,7 +13503,7 @@ where
 			(13, claimable_htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs, option),
 			(15, inbound_payment_id_secret, option),
-			(17, in_flight_monitor_updates, required),
+			(17, in_flight_monitor_updates, option),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		if fake_scid_rand_bytes.is_none() {
