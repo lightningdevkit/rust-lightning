@@ -5,7 +5,7 @@
 //! information.
 
 use crate::lsps0::msgs::{
-	LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsRequest,
+	LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request, LSPS0Response,
 	LSPS0_LISTPROTOCOLS_METHOD_NAME,
 };
 
@@ -24,8 +24,11 @@ use lightning::util::ser::WithoutLength;
 
 use bitcoin::secp256k1::PublicKey;
 
-use core::fmt;
+use core::fmt::{self, Display};
 use core::str::FromStr;
+
+#[cfg(feature = "std")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -138,7 +141,7 @@ pub const LSPS_MESSAGE_TYPE_ID: u16 = 37913;
 ///
 /// The messages the protocol uses need to be able to be mapped
 /// from and into [`LSPSMessage`].
-pub(crate) trait ProtocolMessageHandler {
+pub(crate) trait LSPSProtocolMessageHandler {
 	type ProtocolMessage: TryFrom<LSPSMessage> + Into<LSPSMessage>;
 	const PROTOCOL_NUMBER: Option<u16>;
 
@@ -184,14 +187,52 @@ impl wire::Type for RawLSPSMessage {
 /// more information.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
-pub struct RequestId(pub String);
+pub struct LSPSRequestId(pub String);
+
+/// An object representing datetimes as described in bLIP-50 / LSPS0.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct LSPSDateTime(chrono::DateTime<chrono::Utc>);
+
+impl LSPSDateTime {
+	/// Returns the LSPSDateTime as RFC3339 formatted string.
+	pub fn to_rfc3339(&self) -> String {
+		self.0.to_rfc3339()
+	}
+
+	/// Returns if the given time is in the past.
+	#[cfg(feature = "std")]
+	pub fn is_past(&self) -> bool {
+		let now_seconds_since_epoch = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("system clock to be ahead of the unix epoch")
+			.as_secs();
+		let datetime_seconds_since_epoch =
+			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
+		now_seconds_since_epoch > datetime_seconds_since_epoch
+	}
+}
+
+impl FromStr for LSPSDateTime {
+	type Err = ();
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let datetime = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| ())?;
+		Ok(Self(datetime.into()))
+	}
+}
+
+impl Display for LSPSDateTime {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.to_rfc3339())
+	}
+}
 
 /// An error returned in response to an JSON-RPC request.
 ///
 /// Please refer to the [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification#error_object) for
 /// more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ResponseError {
+pub struct LSPSResponseError {
 	/// A number that indicates the error type that occurred.
 	pub code: i32,
 	/// A string providing a short description of the error.
@@ -204,7 +245,7 @@ pub struct ResponseError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPSMessage {
 	/// An invalid variant.
-	Invalid(ResponseError),
+	Invalid(LSPSResponseError),
 	/// An LSPS0 message.
 	LSPS0(LSPS0Message),
 	/// An LSPS1 message.
@@ -219,7 +260,7 @@ impl LSPSMessage {
 	/// The given `request_id_to_method` associates request ids with method names, as response objects
 	/// don't carry the latter.
 	pub(crate) fn from_str_with_id_map(
-		json_str: &str, request_id_to_method_map: &mut HashMap<RequestId, LSPSMethod>,
+		json_str: &str, request_id_to_method_map: &mut HashMap<LSPSRequestId, LSPSMethod>,
 	) -> Result<Self, serde_json::Error> {
 		let deserializer = &mut serde_json::Deserializer::from_str(json_str);
 		let visitor = LSPSMessageVisitor { request_id_to_method_map };
@@ -227,16 +268,16 @@ impl LSPSMessage {
 	}
 
 	/// Returns the request id and the method.
-	pub(crate) fn get_request_id_and_method(&self) -> Option<(RequestId, LSPSMethod)> {
+	pub(crate) fn get_request_id_and_method(&self) -> Option<(LSPSRequestId, LSPSMethod)> {
 		match self {
 			LSPSMessage::LSPS0(LSPS0Message::Request(request_id, request)) => {
-				Some((RequestId(request_id.0.clone()), request.into()))
+				Some((LSPSRequestId(request_id.0.clone()), request.into()))
 			},
 			LSPSMessage::LSPS1(LSPS1Message::Request(request_id, request)) => {
-				Some((RequestId(request_id.0.clone()), request.into()))
+				Some((LSPSRequestId(request_id.0.clone()), request.into()))
 			},
 			LSPSMessage::LSPS2(LSPS2Message::Request(request_id, request)) => {
-				Some((RequestId(request_id.0.clone()), request.into()))
+				Some((LSPSRequestId(request_id.0.clone()), request.into()))
 			},
 			_ => None,
 		}
@@ -361,7 +402,7 @@ impl Serialize for LSPSMessage {
 }
 
 struct LSPSMessageVisitor<'a> {
-	request_id_to_method_map: &'a mut HashMap<RequestId, LSPSMethod>,
+	request_id_to_method_map: &'a mut HashMap<LSPSRequestId, LSPSMethod>,
 }
 
 impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
@@ -375,11 +416,11 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 	where
 		A: MapAccess<'de>,
 	{
-		let mut id: Option<RequestId> = None;
+		let mut id: Option<LSPSRequestId> = None;
 		let mut method: Option<LSPSMethod> = None;
 		let mut params = None;
 		let mut result = None;
-		let mut error: Option<ResponseError> = None;
+		let mut error: Option<LSPSResponseError> = None;
 
 		while let Some(key) = map.next_key()? {
 			match key {
@@ -428,7 +469,7 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 			Some(method) => match method {
 				LSPSMethod::LSPS0ListProtocols => Ok(LSPSMessage::LSPS0(LSPS0Message::Request(
 					id,
-					LSPS0Request::ListProtocols(ListProtocolsRequest {}),
+					LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 				))),
 				LSPSMethod::LSPS1GetInfo => {
 					let request = serde_json::from_value(params.unwrap_or(json!({})))

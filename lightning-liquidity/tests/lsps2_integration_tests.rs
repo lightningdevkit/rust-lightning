@@ -4,10 +4,11 @@ mod common;
 
 use common::{create_service_and_client_nodes, get_lsps_message, Node};
 
-use lightning_liquidity::events::Event;
+use lightning_liquidity::events::LiquidityEvent;
+use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::event::{LSPS2ClientEvent, LSPS2ServiceEvent};
-use lightning_liquidity::lsps2::msgs::RawOpeningFeeParams;
+use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
@@ -24,8 +25,7 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Network;
 
-use chrono::DateTime;
-
+use std::str::FromStr;
 use std::time::Duration;
 
 fn create_jit_invoice(
@@ -113,7 +113,7 @@ fn invoice_generation_flow() {
 
 	let get_info_event = service_node.liquidity_manager.next_event().unwrap();
 	match get_info_event {
-		Event::LSPS2Service(LSPS2ServiceEvent::GetInfo {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::GetInfo {
 			request_id,
 			counterparty_node_id,
 			token,
@@ -125,10 +125,10 @@ fn invoice_generation_flow() {
 		_ => panic!("Unexpected event"),
 	}
 
-	let raw_opening_params = RawOpeningFeeParams {
+	let raw_opening_params = LSPS2RawOpeningFeeParams {
 		min_fee_msat: 100,
 		proportional: 21,
-		valid_until: DateTime::parse_from_rfc3339("2035-05-20T08:30:45Z").unwrap().into(),
+		valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
 		min_lifetime: 144,
 		max_client_to_self_delay: 128,
 		min_payment_size_msat: 1,
@@ -151,7 +151,7 @@ fn invoice_generation_flow() {
 
 	let opening_params_event = client_node.liquidity_manager.next_event().unwrap();
 	let opening_fee_params = match opening_params_event {
-		Event::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
+		LiquidityEvent::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
 			request_id,
 			counterparty_node_id,
 			opening_fee_params_menu,
@@ -175,7 +175,7 @@ fn invoice_generation_flow() {
 
 	let buy_event = service_node.liquidity_manager.next_event().unwrap();
 	match buy_event {
-		Event::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::BuyRequest {
 			request_id,
 			counterparty_node_id,
 			opening_fee_params: ofp,
@@ -210,7 +210,7 @@ fn invoice_generation_flow() {
 
 	let invoice_params_event = client_node.liquidity_manager.next_event().unwrap();
 	match invoice_params_event {
-		Event::LSPS2Client(LSPS2ClientEvent::InvoiceParametersReady {
+		LiquidityEvent::LSPS2Client(LSPS2ClientEvent::InvoiceParametersReady {
 			request_id,
 			counterparty_node_id,
 			intercept_scid: iscid,

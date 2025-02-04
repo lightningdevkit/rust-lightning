@@ -8,8 +8,8 @@
 
 //! Contains the main bLIP-52 / LSPS2 client object, [`LSPS2ClientHandler`].
 
-use crate::events::{Event, EventQueue};
-use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
+use crate::events::EventQueue;
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet, String, ToString};
@@ -26,8 +26,8 @@ use core::default::Default;
 use core::ops::Deref;
 
 use crate::lsps2::msgs::{
-	BuyRequest, BuyResponse, GetInfoRequest, GetInfoResponse, LSPS2Message, LSPS2Request,
-	LSPS2Response, OpeningFeeParams,
+	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,
+	LSPS2OpeningFeeParams, LSPS2Request, LSPS2Response,
 };
 
 /// Client-side configuration options for JIT channels.
@@ -45,8 +45,8 @@ impl InboundJITChannel {
 }
 
 struct PeerState {
-	pending_get_info_requests: HashSet<RequestId>,
-	pending_buy_requests: HashMap<RequestId, InboundJITChannel>,
+	pending_get_info_requests: HashSet<LSPSRequestId>,
+	pending_buy_requests: HashMap<LSPSRequestId, InboundJITChannel>,
 }
 
 impl PeerState {
@@ -105,12 +105,12 @@ where
 	/// `token` is an optional `String` that will be provided to the LSP.
 	/// It can be used by the LSP as an API key, coupon code, or some other way to identify a user.
 	///
-	/// Returns the used [`RequestId`], which will be returned via [`OpeningParametersReady`].
+	/// Returns the used [`LSPSRequestId`], which will be returned via [`OpeningParametersReady`].
 	///
 	/// [`OpeningParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::OpeningParametersReady
 	pub fn request_opening_params(
 		&self, counterparty_node_id: PublicKey, token: Option<String>,
-	) -> RequestId {
+	) -> LSPSRequestId {
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		{
@@ -122,7 +122,7 @@ where
 			peer_state_lock.pending_get_info_requests.insert(request_id.clone());
 		}
 
-		let request = LSPS2Request::GetInfo(GetInfoRequest { token });
+		let request = LSPS2Request::GetInfo(LSPS2GetInfoRequest { token });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 
@@ -149,8 +149,8 @@ where
 	/// [`InvoiceParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::InvoiceParametersReady
 	pub fn select_opening_params(
 		&self, counterparty_node_id: PublicKey, payment_size_msat: Option<u64>,
-		opening_fee_params: OpeningFeeParams,
-	) -> Result<RequestId, APIError> {
+		opening_fee_params: LSPS2OpeningFeeParams,
+	) -> Result<LSPSRequestId, APIError> {
 		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		{
@@ -173,7 +173,7 @@ where
 			}
 		}
 
-		let request = LSPS2Request::Buy(BuyRequest { opening_fee_params, payment_size_msat });
+		let request = LSPS2Request::Buy(LSPS2BuyRequest { opening_fee_params, payment_size_msat });
 		let msg = LSPS2Message::Request(request_id.clone(), request).into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 
@@ -181,7 +181,8 @@ where
 	}
 
 	fn handle_get_info_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: GetInfoResponse,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		result: LSPS2GetInfoResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -198,13 +199,11 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(Event::LSPS2Client(
-					LSPS2ClientEvent::OpeningParametersReady {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						opening_fee_params_menu: result.opening_fee_params_menu,
-					},
-				));
+				self.pending_events.enqueue(LSPS2ClientEvent::OpeningParametersReady {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					opening_fee_params_menu: result.opening_fee_params_menu,
+				});
 			},
 			None => {
 				return Err(LightningError {
@@ -221,7 +220,8 @@ where
 	}
 
 	fn handle_get_info_error(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, _error: ResponseError,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		_error: LSPSResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -247,7 +247,8 @@ where
 	}
 
 	fn handle_buy_response(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, result: BuyResponse,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		result: LSPS2BuyResponse,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -264,15 +265,13 @@ where
 					})?;
 
 				if let Ok(intercept_scid) = result.jit_channel_scid.to_scid() {
-					self.pending_events.enqueue(Event::LSPS2Client(
-						LSPS2ClientEvent::InvoiceParametersReady {
-							request_id,
-							counterparty_node_id: *counterparty_node_id,
-							intercept_scid,
-							cltv_expiry_delta: result.lsp_cltv_expiry_delta,
-							payment_size_msat: jit_channel.payment_size_msat,
-						},
-					));
+					self.pending_events.enqueue(LSPS2ClientEvent::InvoiceParametersReady {
+						request_id,
+						counterparty_node_id: *counterparty_node_id,
+						intercept_scid,
+						cltv_expiry_delta: result.lsp_cltv_expiry_delta,
+						payment_size_msat: jit_channel.payment_size_msat,
+					});
 				} else {
 					return Err(LightningError {
 						err: format!(
@@ -297,7 +296,8 @@ where
 	}
 
 	fn handle_buy_error(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, _error: ResponseError,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		_error: LSPSResponseError,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -318,7 +318,7 @@ where
 	}
 }
 
-impl<ES: Deref> ProtocolMessageHandler for LSPS2ClientHandler<ES>
+impl<ES: Deref> LSPSProtocolMessageHandler for LSPS2ClientHandler<ES>
 where
 	ES::Target: EntropySource,
 {
