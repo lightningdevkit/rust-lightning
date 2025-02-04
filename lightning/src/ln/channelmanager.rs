@@ -1501,6 +1501,22 @@ struct PendingInboundPayment {
 	min_value_msat: Option<u64>,
 }
 
+/// If we are an async recipient, on startup we interactively build an offer and static invoice with
+/// an always-online node that will serve static invoices on our behalf. Once the offer is built and
+/// the static invoice is confirmed as persisted by the server, use this struct to cache the offer
+/// in `ChannelManager`.
+struct AsyncReceiveOffer {
+	offer: Option<Offer>,
+	/// Used to limit the number of times we request paths for our offer from the static invoice
+	/// server.
+	offer_paths_request_attempts: u8,
+}
+
+impl_writeable_tlv_based!(AsyncReceiveOffer, {
+	(0, offer, option),
+	(2, offer_paths_request_attempts, (static_value, 0)),
+});
+
 /// [`SimpleArcChannelManager`] is useful when you need a [`ChannelManager`] with a static lifetime, e.g.
 /// when you're using `lightning-net-tokio` (since `tokio::spawn` requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
@@ -2660,6 +2676,7 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
+	async_receive_offer_cache: Mutex<AsyncReceiveOffer>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -3614,6 +3631,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			async_receive_offer_cache: Mutex::new(AsyncReceiveOffer { offer: None, offer_paths_request_attempts: 0 }),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -13402,6 +13420,7 @@ where
 			(15, self.inbound_payment_id_secret, required),
 			(17, in_flight_monitor_updates, required),
 			(19, peer_storage_dir, optional_vec),
+			(21, *self.async_receive_offer_cache.lock().unwrap(), required),
 		});
 
 		Ok(())
@@ -13931,6 +13950,7 @@ where
 		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
+		let mut async_receive_offer_cache = AsyncReceiveOffer { offer: None, offer_paths_request_attempts: 0 };
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -13948,6 +13968,7 @@ where
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, required),
 			(19, peer_storage_dir, optional_vec),
+			(21, async_receive_offer_cache, (default_value, AsyncReceiveOffer { offer: None, offer_paths_request_attempts: 0 })),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -14643,6 +14664,7 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_async_payments_messages: Mutex::new(Vec::new()),
+			async_receive_offer_cache: Mutex::new(async_receive_offer_cache),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
@@ -15070,8 +15092,8 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-	
-		// Since we do not send peer storage, we manually simulate receiving a dummy 
+
+		// Since we do not send peer storage, we manually simulate receiving a dummy
 		// `PeerStorage` from the channel partner.
 		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
 
