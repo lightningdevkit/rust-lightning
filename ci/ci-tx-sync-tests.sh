@@ -27,6 +27,9 @@ cargo check --verbose --color always --features esplora-blocking
 cargo check --verbose --color always --features esplora-async
 cargo check --verbose --color always --features esplora-async-https
 cargo check --verbose --color always --features electrum
+cargo check --verbose --color always --features electrum-rustls
+cargo check --verbose --color always --features electrum-rustls-ring
+cargo check --verbose --color always --features electrum-openssl
 
 if [ -z "$CI_ENV" ] && [[ -z "$BITCOIND_EXE" || -z "$ELECTRS_EXE" ]]; then
 	echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
@@ -37,6 +40,9 @@ else
 	cargo test --verbose --color always --features esplora-async
 	cargo test --verbose --color always --features esplora-async-https
 	cargo test --verbose --color always --features electrum
+	cargo test --verbose --color always --features electrum-rustls
+	cargo test --verbose --color always --features electrum-rustls-ring
+	cargo test --verbose --color always --features electrum-openssl
 fi
 
 popd
