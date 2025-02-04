@@ -7,12 +7,12 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains LSPS0 event types
+//! Contains bLIP-50 / LSPS0 event types.
 
 use crate::prelude::Vec;
 use bitcoin::secp256k1::PublicKey;
 
-/// An event which an LSPS0 client may want to take some action in response to.
+/// An event which an bLIP-50 / LSPS0 client may want to take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS0ClientEvent {
 	/// Information from the LSP about the protocols they support.
