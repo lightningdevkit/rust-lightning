@@ -1820,6 +1820,18 @@ where
 {
 	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
+		macro_rules! extract_expected_context {
+			($context: expr, $expected_context_type: path) => {
+				match $context {
+					Some($expected_context_type(context)) => context,
+					Some(_) => {
+						debug_assert!(false, "Checked in peel_onion_message");
+						return;
+					},
+					None => return,
+				}
+			};
+		}
 		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, context, reply_path)) => {
 				log_trace!(
@@ -1850,14 +1862,8 @@ where
 					ParsedOnionMessageContents::AsyncPayments(
 						AsyncPaymentsMessage::HeldHtlcAvailable(msg),
 					) => {
-						let context = match context {
-							Some(MessageContext::AsyncPayments(context)) => context,
-							Some(_) => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-							None => return,
-						};
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
 						let response_instructions = self
 							.async_payments_handler
 							.handle_held_htlc_available(msg, context, responder);
@@ -1869,14 +1875,8 @@ where
 					ParsedOnionMessageContents::AsyncPayments(
 						AsyncPaymentsMessage::ReleaseHeldHtlc(msg),
 					) => {
-						let context = match context {
-							Some(MessageContext::AsyncPayments(context)) => context,
-							Some(_) => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-							None => return,
-						};
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
 						self.async_payments_handler.handle_release_held_htlc(msg, context);
 					},
 					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECQuery(
@@ -1891,10 +1891,8 @@ where
 					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECProof(
 						msg,
 					)) => {
-						let context = match context {
-							Some(MessageContext::DNSResolver(context)) => context,
-							_ => return,
-						};
+						let context =
+							extract_expected_context!(context, MessageContext::DNSResolver);
 						self.dns_resolver_handler.handle_dnssec_proof(msg, context);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
