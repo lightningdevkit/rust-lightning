@@ -124,7 +124,7 @@ impl EventQueue {
 // A guard type that will notify about new events when dropped.
 #[must_use]
 pub(crate) struct EventQueueNotifierGuard {
-	queue: Arc<Mutex<VecDeque<Event>>>,
+	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
 	condvar: Arc<crate::sync::Condvar>,
