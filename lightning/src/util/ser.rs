@@ -371,6 +371,13 @@ where
 	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
+impl<T: Readable> LengthReadable for T {
+	#[inline]
+	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<T, DecodeError> {
+		Readable::read(reader)
+	}
+}
+
 /// A trait that various LDK types implement allowing them to (maybe) be read in from a [`Read`].
 ///
 /// This is not exported to bindings users as we only export serialization to/from byte arrays instead
