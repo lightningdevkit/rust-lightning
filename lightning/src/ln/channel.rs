@@ -1522,6 +1522,12 @@ impl UnfundedChannelContext {
 	}
 }
 
+/// Information pertaining to an attempt at funding the channel. This is typically constructed
+/// during channel establishment and may be replaced during channel splicing or if the attempted
+/// funding transaction is replaced using tx_init_rbf.
+pub(super) struct FundingScope {
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -2166,6 +2172,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		match self.unfunded_context.holder_commitment_point {
 			Some(holder_commitment_point) => {
 				let funded_chan = FundedChannel {
+					funding: self.funding,
 					context: self.context,
 					interactive_tx_signing_session: Some(signing_session),
 					holder_commitment_point,
@@ -2203,7 +2210,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		msg_channel_reserve_satoshis: u64,
 		msg_push_msat: u64,
 		open_channel_fields: msgs::CommonOpenChannelFields,
-	) -> Result<ChannelContext<SP>, ChannelError>
+	) -> Result<(FundingScope, ChannelContext<SP>), ChannelError>
 		where
 			ES::Target: EntropySource,
 			F::Target: FeeEstimator,
@@ -2377,6 +2384,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
+		let funding = FundingScope {
+		};
 		let channel_context = ChannelContext {
 			user_id,
 
@@ -2521,7 +2530,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			next_funding_txid: None,
 		};
 
-		Ok(channel_context)
+		Ok((funding, channel_context))
 	}
 
 	fn new_for_outbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
@@ -2542,7 +2551,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
 		pubkeys: ChannelPublicKeys,
 		_logger: L,
-	) -> Result<ChannelContext<SP>, APIError>
+	) -> Result<(FundingScope, ChannelContext<SP>), APIError>
 		where
 			ES::Target: EntropySource,
 			F::Target: FeeEstimator,
@@ -2608,7 +2617,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
-		Ok(Self {
+		let funding = FundingScope {
+		};
+		let channel_context = Self {
 			user_id,
 
 			config: LegacyChannelConfig {
@@ -2746,7 +2757,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
 			next_funding_txid: None,
-		})
+		};
+
+		Ok((funding, channel_context))
 	}
 
 	pub(crate) fn get_value_to_self_msat(&self) -> u64 {self.value_to_self_msat}
@@ -4502,6 +4515,7 @@ pub(super) struct DualFundingChannelContext {
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
+	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -8518,6 +8532,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	/// We tried to send an `open_channel` message but our commitment point wasn't ready.
@@ -8549,7 +8564,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
-		let context = ChannelContext::new_for_outbound_channel(
+		let (funding, context) = ChannelContext::new_for_outbound_channel(
 			fee_estimator,
 			entropy_source,
 			signer_provider,
@@ -8575,7 +8590,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// We initialize `signer_pending_open_channel` to false, and leave setting the flag
 		// for when we try to generate the open_channel message.
-		let chan = Self { context, unfunded_context, signer_pending_open_channel: false };
+		let chan = Self { funding, context, unfunded_context, signer_pending_open_channel: false };
 		Ok(chan)
 	}
 
@@ -8775,6 +8790,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
 
 		let mut channel = FundedChannel {
+			funding: self.funding,
 			context: self.context,
 			interactive_tx_signing_session: None,
 			holder_commitment_point,
@@ -8815,6 +8831,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 /// A not-yet-funded inbound (from counterparty) channel using V1 channel establishment.
 pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	pub signer_pending_accept_channel: bool,
@@ -8883,7 +8900,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			htlc_basepoint: HtlcBasepoint::from(msg.common_fields.htlc_basepoint)
 		};
 
-		let context = ChannelContext::new_for_inbound_channel(
+		let (funding, context) = ChannelContext::new_for_inbound_channel(
 			fee_estimator,
 			entropy_source,
 			signer_provider,
@@ -8907,7 +8924,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
-		let chan = Self { context, unfunded_context, signer_pending_accept_channel: false };
+		let chan = Self { funding, context, unfunded_context, signer_pending_accept_channel: false };
 		Ok(chan)
 	}
 
@@ -9040,6 +9057,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// Promote the channel to a full-fledged one now that we have updated the state and have a
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
+			funding: self.funding,
 			context: self.context,
 			interactive_tx_signing_session: None,
 			holder_commitment_point,
@@ -9073,6 +9091,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 // A not-yet-funded channel using V2 channel establishment.
 pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	pub dual_funding_context: DualFundingChannelContext,
@@ -9109,7 +9128,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
 					current_chain_height) })?;
 
-		let context = ChannelContext::new_for_outbound_channel(
+		let (funding, context) = ChannelContext::new_for_outbound_channel(
 			fee_estimator,
 			entropy_source,
 			signer_provider,
@@ -9133,6 +9152,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 		let chan = Self {
+			funding,
 			context,
 			unfunded_context,
 			dual_funding_context: DualFundingChannelContext {
@@ -9255,7 +9275,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			htlc_basepoint: HtlcBasepoint(msg.common_fields.htlc_basepoint)
 		};
 
-		let mut context = ChannelContext::new_for_inbound_channel(
+		let (funding, mut context) = ChannelContext::new_for_inbound_channel(
 			fee_estimator,
 			entropy_source,
 			signer_provider,
@@ -9311,6 +9331,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 		Ok(Self {
+			funding,
 			context,
 			dual_funding_context,
 			interactive_tx_constructor,
@@ -10284,6 +10305,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		};
 
 		Ok(FundedChannel {
+			funding: FundingScope {
+			},
 			context: ChannelContext {
 				user_id,
 
