@@ -13,21 +13,6 @@
 //! [`Readable`]: crate::util::ser::Readable
 //! [`Writeable`]: crate::util::ser::Writeable
 
-// There are quite a few TLV serialization "types" which behave differently. We currently only
-// publicly document the `optional` and `required` types, not supporting anything else publicly and
-// changing them at will.
-//
-// Some of the other types include:
-//  * (default_value, $default) - reads optionally, reading $default if no TLV is present
-//  * (static_value, $value) - ignores any TLVs, always using $value
-//  * required_vec - reads into a Vec without a length prefix, failing if no TLV is present.
-//  * optional_vec - reads into an Option<Vec> without a length prefix, continuing if no TLV is
-//                   present. Writes from a Vec directly, only if any elements are present. Note
-//                   that the struct deserialization macros return a Vec, not an Option.
-//  * upgradable_option - reads via MaybeReadable.
-//  * upgradable_required - reads via MaybeReadable, requiring a TLV be present but may return None
-//                          if MaybeReadable::read() returns None.
-
 /// Implements serialization for a single TLV record.
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
@@ -944,16 +929,23 @@ macro_rules! _decode_and_build {
 	} }
 }
 
-/// Implements [`Readable`]/[`Writeable`] for a struct storing it as a set of TLVs
+/// Implements [`Readable`]/[`Writeable`] for a struct storing it as a set of TLVs. Each TLV is
+/// read/written in the order they appear and contains a type number, a field name, and a
+/// de/serialization method, from the following:
+///
 /// If `$fieldty` is `required`, then `$field` is a required field that is not an [`Option`] nor a [`Vec`].
 /// If `$fieldty` is `(default_value, $default)`, then `$field` will be set to `$default` if not present.
+/// If `$fieldty` is `(static_value, $static)`, then `$field` will be set to `$static`.
 /// If `$fieldty` is `option`, then `$field` is optional field.
+/// If `$fieldty` is `upgradable_option`, then `$field` is optional and read via [`MaybeReadable`].
+/// If `$fieldty` is `upgradable_required`, then `$field` is stored as an [`Option`] and read via
+///    [`MaybeReadable`], requiring the TLV to be present.
 /// If `$fieldty` is `optional_vec`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
 ///    Note that for `optional_vec` no bytes are written if the vec is empty
 /// If `$fieldty` is `(legacy, $ty, $write)` then, when writing, the function $write will be
 ///    called with the object being serialized and a returned `Option` and is written as a TLV if
 ///    `Some`. When reading, an optional field of type `$ty` is read (which can be used in later
-///    `default_value` or `static_value` fields).
+///    `default_value` or `static_value` fields by referring to the value by name).
 ///
 /// For example,
 /// ```
@@ -963,6 +955,7 @@ macro_rules! _decode_and_build {
 /// 	tlv_default_integer: u32,
 /// 	tlv_optional_integer: Option<u32>,
 /// 	tlv_vec_type_integer: Vec<u32>,
+///		tlv_upgraded_integer: u32,
 /// }
 ///
 /// impl_writeable_tlv_based!(LightningMessage, {
@@ -970,10 +963,13 @@ macro_rules! _decode_and_build {
 /// 	(1, tlv_default_integer, (default_value, 7)),
 /// 	(2, tlv_optional_integer, option),
 /// 	(3, tlv_vec_type_integer, optional_vec),
+/// 	(4, unwritten_type, (legacy, u32, |us: &LightningMessage| Some(us.tlv_integer))),
+/// 	(_unused, tlv_upgraded_integer, (static_value, unwritten_type.unwrap_or(0) * 2))
 /// });
 /// ```
 ///
 /// [`Readable`]: crate::util::ser::Readable
+/// [`MaybeReadable`]: crate::util::ser::MaybeReadable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`Vec`]: crate::prelude::Vec
 #[macro_export]
