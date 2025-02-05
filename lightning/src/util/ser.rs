@@ -368,7 +368,7 @@ where
 	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`LengthRead`].
-	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
 /// A trait that various LDK types implement allowing them to (maybe) be read in from a [`Read`].

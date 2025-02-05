@@ -901,7 +901,7 @@ fn spec_test_vector() {
 	let mut reader = io::Cursor::new(sender_to_alice_packet_bytes);
 	let mut packet_reader = FixedLengthReader::new(&mut reader, sender_to_alice_packet_bytes_len);
 	let sender_to_alice_packet: Packet =
-		<Packet as LengthReadable>::read(&mut packet_reader).unwrap();
+		<Packet as LengthReadable>::read_from_fixed_length_buffer(&mut packet_reader).unwrap();
 	let secp_ctx = Secp256k1::new();
 	let sender_to_alice_om = msgs::OnionMessage {
 		blinding_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("6363636363636363636363636363636363636363636363636363636363636363").unwrap()).unwrap()),
