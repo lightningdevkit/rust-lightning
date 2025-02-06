@@ -7309,7 +7309,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let preimage_update = ChannelMonitorUpdate {
 			update_id,
-			counterparty_node_id: Some(counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage,
 				payment_info,
@@ -13732,7 +13731,6 @@ where
 					&channel_id);
 				let monitor_update = ChannelMonitorUpdate {
 					update_id: monitor.get_latest_update_id().saturating_add(1),
-					counterparty_node_id: Some(counterparty_node_id),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 					channel_id: Some(monitor.channel_id()),
 				};
