@@ -1,6 +1,6 @@
 [package]
 name = "lightning-macros"
-version = "0.1.0"
+version = "0.2.0+git"
 authors = ["Elias Rohrer"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"

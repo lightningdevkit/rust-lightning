@@ -35,6 +35,7 @@ default = ["std", "grind_signatures"]
 [dependencies]
 lightning-types = { version = "0.3.0", path = "../lightning-types", default-features = false }
 lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default-features = false }
+lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bech32 = { version = "0.11.0", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }

@@ -413,6 +413,12 @@ impl<T> From<T> for RequiredWrapper<T> {
 		RequiredWrapper(Some(t))
 	}
 }
+impl<T: Clone> Clone for RequiredWrapper<T> {
+	fn clone(&self) -> Self {
+		Self(self.0.clone())
+	}
+}
+impl<T: Copy> Copy for RequiredWrapper<T> {}
 
 /// Wrapper to read a required (non-optional) TLV record that may have been upgraded without
 /// backwards compat.
