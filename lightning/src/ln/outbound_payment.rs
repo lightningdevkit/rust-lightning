@@ -1104,7 +1104,7 @@ impl OutboundPayments {
 						.as_ref()
 						.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 						.invoice_request;
-					if !invoice.from_same_offer(invreq) {
+					if !invoice.build_from_same_offer(invreq) {
 						return Err(Bolt12PaymentError::UnexpectedInvoice)
 					}
 					if invoice.invoice_features().requires_unknown_bits_from(&features) {
