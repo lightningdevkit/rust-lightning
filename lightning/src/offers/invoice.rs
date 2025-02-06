@@ -2851,9 +2851,6 @@ mod tests {
 		BigSize(32).write(&mut unknown_bytes).unwrap();
 		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
-		unsigned_invoice.bytes.reserve_exact(
-			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
-		);
 		unsigned_invoice.bytes.extend_from_slice(&unknown_bytes);
 		unsigned_invoice.tagged_hash =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice.bytes);
@@ -2888,9 +2885,6 @@ mod tests {
 		BigSize(32).write(&mut unknown_bytes).unwrap();
 		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
-		unsigned_invoice.bytes.reserve_exact(
-			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
-		);
 		unsigned_invoice.bytes.extend_from_slice(&unknown_bytes);
 		unsigned_invoice.tagged_hash =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice.bytes);
@@ -2953,9 +2947,6 @@ mod tests {
 		BigSize(32).write(&mut unknown_bytes).unwrap();
 		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
-		unsigned_invoice.bytes.reserve_exact(
-			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
-		);
 		unsigned_invoice.experimental_bytes.extend_from_slice(&unknown_bytes);
 
 		let tlv_stream = TlvStream::new(&unsigned_invoice.bytes)
@@ -2992,9 +2983,6 @@ mod tests {
 		BigSize(32).write(&mut unknown_bytes).unwrap();
 		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
-		unsigned_invoice.bytes.reserve_exact(
-			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
-		);
 		unsigned_invoice.experimental_bytes.extend_from_slice(&unknown_bytes);
 
 		let tlv_stream = TlvStream::new(&unsigned_invoice.bytes)
