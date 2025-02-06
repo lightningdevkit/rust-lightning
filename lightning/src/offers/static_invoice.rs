@@ -33,7 +33,7 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
-use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, Iterable, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::constants::ChainHash;
@@ -526,6 +526,13 @@ impl InvoiceContents {
 
 	fn signing_pubkey(&self) -> PublicKey {
 		self.signing_pubkey
+	}
+}
+
+impl Readable for StaticInvoice {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 
