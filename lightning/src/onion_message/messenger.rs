@@ -1860,6 +1860,47 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::OfferPathsRequest(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						let response_instructions = self
+							.async_payments_handler
+							.handle_offer_paths_request(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::OfferPaths(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						let response_instructions =
+							self.async_payments_handler.handle_offer_paths(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::ServeStaticInvoice(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						self.async_payments_handler.handle_serve_static_invoice(msg, context);
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::StaticInvoicePersisted(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						self.async_payments_handler.handle_static_invoice_persisted(msg, context);
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
 						AsyncPaymentsMessage::HeldHtlcAvailable(msg),
 					) => {
 						let context =
