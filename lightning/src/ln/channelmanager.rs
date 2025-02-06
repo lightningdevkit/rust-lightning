@@ -7666,7 +7666,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		(htlc_forwards, decode_update_add_htlcs)
 	}
 
-	fn channel_monitor_updated(&self, funding_txo: &OutPoint, channel_id: &ChannelId, highest_applied_update_id: u64, counterparty_node_id: &PublicKey) {
+	fn channel_monitor_updated(&self, channel_id: &ChannelId, highest_applied_update_id: u64, counterparty_node_id: &PublicKey) {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9471,8 +9471,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							}
 						}
 					},
-					MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id } => {
-						self.channel_monitor_updated(&funding_txo, &channel_id, monitor_update_id, &counterparty_node_id);
+					MonitorEvent::Completed { channel_id, monitor_update_id, .. } => {
+						self.channel_monitor_updated(&channel_id, monitor_update_id, &counterparty_node_id);
 					},
 				}
 			}
