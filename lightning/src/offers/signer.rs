@@ -55,6 +55,11 @@ const PAYMENT_TLVS_HMAC_INPUT: &[u8; 16] = &[8; 16];
 #[cfg(async_payments)]
 const ASYNC_PAYMENTS_HELD_HTLC_HMAC_INPUT: &[u8; 16] = &[9; 16];
 
+// HMAC input used in `AsyncPaymentsContext::OfferPaths` to authenticate inbound offer_paths onion
+// messages.
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_OFFER_PATHS_INPUT: &[u8; 16] = &[10; 16];
+
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
 #[derive(Clone)]
@@ -554,4 +559,17 @@ pub(crate) fn verify_held_htlc_available_context(
 	} else {
 		Err(())
 	}
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_offer_paths_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer Paths~";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_OFFER_PATHS_INPUT);
+
+	Hmac::from_engine(hmac)
 }

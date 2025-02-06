@@ -1515,6 +1515,19 @@ struct AsyncReceiveOffer {
 	offer_paths_request_attempts: u8,
 }
 
+impl AsyncReceiveOffer {
+	/// Removes the offer from our cache if it's expired.
+	#[cfg(async_payments)]
+	fn check_expire_offer(&mut self, duration_since_epoch: Duration) {
+		if let Some(ref mut offer) = self.offer {
+			if offer.is_expired_no_std(duration_since_epoch) {
+				self.offer.take();
+				self.offer_paths_request_attempts = 0;
+			}
+		}
+	}
+}
+
 impl_writeable_tlv_based!(AsyncReceiveOffer, {
 	(0, offer, option),
 	(2, offer_paths_request_attempts, (static_value, 0)),
@@ -2428,6 +2441,8 @@ where
 // `pending_offers_messages`
 //
 // `pending_async_payments_messages`
+//
+// `async_receive_offer_cache`
 //
 // `total_consistency_lock`
 //  |
@@ -4850,6 +4865,60 @@ where
 	}
 
 	#[cfg(async_payments)]
+	fn check_refresh_async_receive_offer(&self) {
+		if self.default_configuration.paths_to_static_invoice_server.is_empty() { return }
+
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let duration_since_epoch = self.duration_since_epoch();
+
+		{
+			let mut offer_cache = self.async_receive_offer_cache.lock().unwrap();
+			offer_cache.check_expire_offer(duration_since_epoch);
+
+			if let Some(ref offer) = offer_cache.offer {
+				// If we have more than three hours before our offer expires, don't bother requesting new
+				// paths.
+				const PATHS_EXPIRY_BUFFER: Duration = Duration::from_secs(60 * 60 * 3);
+				let  offer_expiry = offer.absolute_expiry().unwrap_or(Duration::MAX);
+				if offer_expiry > duration_since_epoch.saturating_add(PATHS_EXPIRY_BUFFER) {
+					return
+				}
+			}
+
+			const MAX_ATTEMPTS: u8 = 3;
+			if offer_cache.offer_paths_request_attempts > MAX_ATTEMPTS { return }
+		}
+
+		let reply_paths = {
+			// We expect the static invoice server to respond quickly to our request for offer paths, but
+			// add some buffer for no-std users that rely on block timestamps.
+			const REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60);
+			let nonce = Nonce::from_entropy_source(entropy);
+			let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
+				nonce,
+				hmac: signer::hmac_for_offer_paths_context(nonce, expanded_key),
+				path_absolute_expiry: duration_since_epoch.saturating_add(REPLY_PATH_RELATIVE_EXPIRY),
+			});
+			match self.create_blinded_paths(context) {
+				Ok(paths) => paths,
+				Err(()) => {
+					log_error!(self.logger, "Failed to create blinded paths when requesting async receive offer paths");
+					return
+				}
+			}
+		};
+
+
+		self.async_receive_offer_cache.lock().unwrap().offer_paths_request_attempts += 1;
+		let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
+		queue_onion_message_with_reply_paths(
+			message, &self.default_configuration.paths_to_static_invoice_server[..], reply_paths,
+			&mut self.pending_async_payments_messages.lock().unwrap()
+		);
+	}
+
+	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
@@ -6797,6 +6866,9 @@ where
 			self.pending_outbound_payments.remove_stale_payments(
 				duration_since_epoch, &self.pending_events
 			);
+
+			#[cfg(async_payments)]
+			self.check_refresh_async_receive_offer();
 
 			// Technically we don't need to do this here, but if we have holding cell entries in a
 			// channel that need freeing, it's better to do that here and block a background task
@@ -12082,6 +12154,9 @@ where
 			return NotifyOption::SkipPersistHandleEvents;
 			//TODO: Also re-broadcast announcement_signatures
 		});
+
+		#[cfg(async_payments)]
+		self.check_refresh_async_receive_offer();
 		res
 	}
 
