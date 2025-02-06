@@ -3457,6 +3457,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			!matches!(self.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH))
 	}
 
+	fn unset_funding_info(&mut self, funding: &mut FundingScope) {
+		debug_assert!(
+			matches!(self.channel_state, ChannelState::FundingNegotiated)
+				|| matches!(self.channel_state, ChannelState::AwaitingChannelReady(_))
+		);
+		funding.channel_transaction_parameters.funding_outpoint = None;
+		self.channel_id = self.temporary_channel_id.expect(
+			"temporary_channel_id should be set since unset_funding_info is only called on funded \
+			 channels that were unfunded immediately beforehand"
+		);
+	}
+
 	fn validate_commitment_signed<L: Deref>(
 		&self, funding: &FundingScope, holder_commitment_point: &HolderCommitmentPoint,
 		msg: &msgs::CommitmentSigned, logger: &L,
@@ -5310,14 +5322,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// Further, the channel must be immediately shut down after this with a call to
 	/// [`ChannelContext::force_shutdown`].
 	pub fn unset_funding_info(&mut self) {
-		debug_assert!(matches!(
-			self.context.channel_state, ChannelState::AwaitingChannelReady(_)
-		));
-		self.funding.channel_transaction_parameters.funding_outpoint = None;
-		self.context.channel_id = self.context.temporary_channel_id.expect(
-			"temporary_channel_id should be set since unset_funding_info is only called on funded \
-			 channels that were unfunded immediately beforehand"
-		);
+		self.context.unset_funding_info(&mut self.funding);
 	}
 
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
@@ -9314,6 +9319,14 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.get_funding_created_msg(logger)
 		} else { None };
 		(open_channel, funding_created)
+	}
+
+	/// Unsets the existing funding information.
+	///
+	/// The channel must be immediately shut down after this with a call to
+	/// [`ChannelContext::force_shutdown`].
+	pub fn unset_funding_info(&mut self) {
+		self.context.unset_funding_info(&mut self.funding);
 	}
 }
 
