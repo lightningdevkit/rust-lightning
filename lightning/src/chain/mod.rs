@@ -304,7 +304,7 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

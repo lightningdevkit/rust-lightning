@@ -1020,7 +1020,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	best_block: BestBlock,
 
 	/// The node_id of our counterparty
-	counterparty_node_id: Option<PublicKey>,
+	counterparty_node_id: PublicKey,
 
 	/// Initial counterparty commmitment data needed to recreate the commitment tx
 	/// in the persistence pipeline for third-party watchtowers. This will only be present on
@@ -1242,7 +1242,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(3, self.htlcs_resolved_on_chain, required_vec),
 			(5, pending_monitor_events, required_vec),
 			(7, self.funding_spend_seen, required),
-			(9, self.counterparty_node_id, option),
+			(9, self.counterparty_node_id, required),
 			(11, self.confirmed_commitment_tx_counterparty_output, option),
 			(13, self.spendable_txids_confirmed, required_vec),
 			(15, self.counterparty_fulfilled_htlcs, required),
@@ -1338,7 +1338,7 @@ impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
 	}
 
 	pub(crate) fn from_impl<S: EcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>, payment_hash: Option<PaymentHash>) -> Self {
-		let peer_id = monitor_impl.counterparty_node_id;
+		let peer_id = Some(monitor_impl.counterparty_node_id);
 		let channel_id = Some(monitor_impl.channel_id());
 		WithChannelMonitor {
 			logger, peer_id, channel_id, payment_hash,
@@ -1462,7 +1462,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			spendable_txids_confirmed: Vec::new(),
 
 			best_block,
-			counterparty_node_id: Some(counterparty_node_id),
+			counterparty_node_id: counterparty_node_id,
 			initial_counterparty_commitment_info: None,
 			balances_empty_height: None,
 
@@ -1788,10 +1788,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Gets the `node_id` of the counterparty for this channel.
-	///
-	/// Will be `None` for channels constructed on LDK versions prior to 0.0.110 and always `Some`
-	/// otherwise.
-	pub fn get_counterparty_node_id(&self) -> Option<PublicKey> {
+	pub fn get_counterparty_node_id(&self) -> PublicKey {
 		self.inner.lock().unwrap().counterparty_node_id
 	}
 
@@ -3200,12 +3197,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
 		}
 
-		if updates.counterparty_node_id.is_some() {
-			if self.counterparty_node_id.is_none() {
-				self.counterparty_node_id = updates.counterparty_node_id;
-			} else {
-				debug_assert_eq!(self.counterparty_node_id, updates.counterparty_node_id);
-			}
+		if let Some(counterparty_node_id) = &updates.counterparty_node_id {
+			debug_assert_eq!(self.counterparty_node_id, *counterparty_node_id);
 		}
 
 		// ChannelMonitor updates may be applied after force close if we receive a preimage for a
@@ -3376,10 +3369,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_output_idx,
 				} => {
 					let channel_id = self.channel_id;
-					// unwrap safety: `ClaimEvent`s are only available for Anchor channels,
-					// introduced with v0.0.116. counterparty_node_id is guaranteed to be `Some`
-					// since v0.0.110.
-					let counterparty_node_id = self.counterparty_node_id.unwrap();
+					let counterparty_node_id = self.counterparty_node_id;
 					let commitment_txid = commitment_tx.compute_txid();
 					debug_assert_eq!(self.current_holder_commitment_tx.txid, commitment_txid);
 					let pending_htlcs = self.current_holder_commitment_tx.non_dust_htlcs();
@@ -3410,10 +3400,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					target_feerate_sat_per_1000_weight, htlcs, tx_lock_time,
 				} => {
 					let channel_id = self.channel_id;
-					// unwrap safety: `ClaimEvent`s are only available for Anchor channels,
-					// introduced with v0.0.116. counterparty_node_id is guaranteed to be `Some`
-					// since v0.0.110.
-					let counterparty_node_id = self.counterparty_node_id.unwrap();
+					let counterparty_node_id = self.counterparty_node_id;
 					let mut htlc_descriptors = Vec::with_capacity(htlcs.len());
 					for htlc in htlcs {
 						htlc_descriptors.push(HTLCDescriptor {
@@ -5129,6 +5116,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_p2wsh();
 		}
 
+		let channel_id = channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint));
+		if counterparty_node_id.is_none() {
+			panic!("Found monitor for channel {} with no updates since v0.0.118.\
+				These monitors are no longer supported.\
+				To continue, run a v0.1 release, send/route a payment over the channel or close it.", channel_id);
+		}
+
 		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
@@ -5140,7 +5134,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			channel_keys_id,
 			holder_revocation_basepoint,
-			channel_id: channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint)),
+			channel_id,
 			funding_info,
 			first_confirmed_funding_txo: first_confirmed_funding_txo.0.unwrap(),
 			current_counterparty_commitment_txid,
@@ -5184,7 +5178,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
 
 			best_block,
-			counterparty_node_id,
+			counterparty_node_id: counterparty_node_id.unwrap(),
 			initial_counterparty_commitment_info,
 			balances_empty_height,
 			failed_back_htlc_ids: new_hash_set(),

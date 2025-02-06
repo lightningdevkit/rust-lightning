@@ -7702,24 +7702,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		(htlc_forwards, decode_update_add_htlcs)
 	}
 
-	fn channel_monitor_updated(&self, funding_txo: &OutPoint, channel_id: &ChannelId, highest_applied_update_id: u64, counterparty_node_id: Option<&PublicKey>) {
+	fn channel_monitor_updated(&self, funding_txo: &OutPoint, channel_id: &ChannelId, highest_applied_update_id: u64, counterparty_node_id: &PublicKey) {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
-		let counterparty_node_id = match counterparty_node_id {
-			Some(cp_id) => cp_id.clone(),
-			None => {
-				// TODO: Once we can rely on the counterparty_node_id from the
-				// monitor event, this and the outpoint_to_peer map should be removed.
-				let outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
-				match outpoint_to_peer.get(funding_txo) {
-					Some(cp_id) => cp_id.clone(),
-					None => return,
-				}
-			}
-		};
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let mut peer_state_lock;
-		let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 		if peer_state_mutex_opt.is_none() { return }
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -7730,7 +7718,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				pending.len()
 			} else { 0 };
 
-		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(*channel_id), None);
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(*channel_id), None);
 		log_trace!(logger, "ChannelMonitor updated to {}. {} pending in-flight updates.",
 			highest_applied_update_id, remaining_in_flight);
 
@@ -9482,67 +9470,56 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			for monitor_event in monitor_events.drain(..) {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
-						let logger = WithContext::from(&self.logger, counterparty_node_id, Some(channel_id), Some(htlc_update.payment_hash));
+						let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), Some(htlc_update.payment_hash));
 						if let Some(preimage) = htlc_update.payment_preimage {
 							log_trace!(logger, "Claiming HTLC with preimage {} from our monitor", preimage);
 							self.claim_funds_internal(htlc_update.source, preimage,
 								htlc_update.htlc_value_satoshis.map(|v| v * 1000), None, true,
-								false, counterparty_node_id, funding_outpoint, channel_id, None);
+								false, Some(counterparty_node_id), funding_outpoint, channel_id, None);
 						} else {
 							log_trace!(logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
-							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id };
+							let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 							let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
 						}
 					},
 					MonitorEvent::HolderForceClosed(_) | MonitorEvent::HolderForceClosedWithInfo { .. } => {
-						let counterparty_node_id_opt = match counterparty_node_id {
-							Some(cp_id) => Some(cp_id),
-							None => {
-								// TODO: Once we can rely on the counterparty_node_id from the
-								// monitor event, this and the outpoint_to_peer map should be removed.
-								let outpoint_to_peer = self.outpoint_to_peer.lock().unwrap();
-								outpoint_to_peer.get(&funding_outpoint).cloned()
-							}
-						};
-						if let Some(counterparty_node_id) = counterparty_node_id_opt {
-							let per_peer_state = self.per_peer_state.read().unwrap();
-							if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-								let peer_state = &mut *peer_state_lock;
-								let pending_msg_events = &mut peer_state.pending_msg_events;
-								if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id) {
-									let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
-										reason
-									} else {
-										ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
-									};
-									let mut shutdown_res = chan_entry.get_mut().force_shutdown(false, reason.clone());
-									let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
-									failed_channels.push(shutdown_res);
-									if let Some(funded_chan) = chan.as_funded() {
-										if let Ok(update) = self.get_channel_update_for_broadcast(funded_chan) {
-											let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-											pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-												msg: update
-											});
-										}
-										pending_msg_events.push(MessageSendEvent::HandleError {
-											node_id: funded_chan.context.get_counterparty_node_id(),
-											action: msgs::ErrorAction::DisconnectPeer {
-												msg: Some(msgs::ErrorMessage {
-													channel_id: funded_chan.context.channel_id(),
-													data: reason.to_string()
-												})
-											},
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							let pending_msg_events = &mut peer_state.pending_msg_events;
+							if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id) {
+								let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
+									reason
+								} else {
+									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
+								};
+								let mut shutdown_res = chan_entry.get_mut().force_shutdown(false, reason.clone());
+								let chan = remove_channel_entry!(self, peer_state, chan_entry, shutdown_res);
+								failed_channels.push(shutdown_res);
+								if let Some(funded_chan) = chan.as_funded() {
+									if let Ok(update) = self.get_channel_update_for_broadcast(funded_chan) {
+										let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
+										pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
+											msg: update
 										});
 									}
+									pending_msg_events.push(MessageSendEvent::HandleError {
+										node_id: counterparty_node_id,
+										action: msgs::ErrorAction::DisconnectPeer {
+											msg: Some(msgs::ErrorMessage {
+												channel_id: funded_chan.context.channel_id(),
+												data: reason.to_string()
+											})
+										},
+									});
 								}
 							}
 						}
 					},
 					MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id } => {
-						self.channel_monitor_updated(&funding_txo, &channel_id, monitor_update_id, counterparty_node_id.as_ref());
+						self.channel_monitor_updated(&funding_txo, &channel_id, monitor_update_id, &counterparty_node_id);
 					},
 				}
 			}
@@ -13772,26 +13749,26 @@ where
 		for (channel_id, monitor) in args.channel_monitors.iter() {
 			if !channel_id_set.contains(channel_id) {
 				let mut should_queue_fc_update = false;
-				if let Some(counterparty_node_id) = monitor.get_counterparty_node_id() {
-					// If the ChannelMonitor had any updates, we may need to update it further and
-					// thus track it in `closed_channel_monitor_update_ids`. If the channel never
-					// had any updates at all, there can't be any HTLCs pending which we need to
-					// claim.
-					// Note that a `ChannelMonitor` is created with `update_id` 0 and after we
-					// provide it with a closure update its `update_id` will be at 1.
-					if !monitor.no_further_updates_allowed() || monitor.get_latest_update_id() > 1 {
-						should_queue_fc_update = !monitor.no_further_updates_allowed();
-						let mut latest_update_id = monitor.get_latest_update_id();
-						if should_queue_fc_update {
-							latest_update_id += 1;
-						}
-						per_peer_state.entry(counterparty_node_id)
-							.or_insert_with(|| Mutex::new(empty_peer_state()))
-							.lock().unwrap()
-							.closed_channel_monitor_update_ids.entry(monitor.channel_id())
-								.and_modify(|v| *v = cmp::max(latest_update_id, *v))
-								.or_insert(latest_update_id);
+				let counterparty_node_id = monitor.get_counterparty_node_id();
+
+				// If the ChannelMonitor had any updates, we may need to update it further and
+				// thus track it in `closed_channel_monitor_update_ids`. If the channel never
+				// had any updates at all, there can't be any HTLCs pending which we need to
+				// claim.
+				// Note that a `ChannelMonitor` is created with `update_id` 0 and after we
+				// provide it with a closure update its `update_id` will be at 1.
+				if !monitor.no_further_updates_allowed() || monitor.get_latest_update_id() > 1 {
+					should_queue_fc_update = !monitor.no_further_updates_allowed();
+					let mut latest_update_id = monitor.get_latest_update_id();
+					if should_queue_fc_update {
+						latest_update_id += 1;
 					}
+					per_peer_state.entry(counterparty_node_id)
+						.or_insert_with(|| Mutex::new(empty_peer_state()))
+						.lock().unwrap()
+						.closed_channel_monitor_update_ids.entry(monitor.channel_id())
+							.and_modify(|v| *v = cmp::max(latest_update_id, *v))
+							.or_insert(latest_update_id);
 				}
 
 				if !should_queue_fc_update {
@@ -13802,31 +13779,20 @@ where
 				let channel_id = monitor.channel_id();
 				log_info!(logger, "Queueing monitor update to ensure missing channel {} is force closed",
 					&channel_id);
-				let mut monitor_update = ChannelMonitorUpdate {
+				let monitor_update = ChannelMonitorUpdate {
 					update_id: monitor.get_latest_update_id().saturating_add(1),
-					counterparty_node_id: None,
+					counterparty_node_id: Some(counterparty_node_id),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 					channel_id: Some(monitor.channel_id()),
 				};
 				let funding_txo = monitor.get_funding_txo();
-				if let Some(counterparty_node_id) = monitor.get_counterparty_node_id() {
-					let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-						counterparty_node_id,
-						funding_txo,
-						channel_id,
-						update: monitor_update,
-					};
-					close_background_events.push(update);
-				} else {
-					// This is a fairly old `ChannelMonitor` that hasn't seen an update to its
-					// off-chain state since LDK 0.0.118 (as in LDK 0.0.119 any off-chain
-					// `ChannelMonitorUpdate` will set the counterparty ID).
-					// Thus, we assume that it has no pending HTLCs and we will not need to
-					// generate a `ChannelMonitorUpdate` for it aside from this
-					// `ChannelForceClosed` one.
-					monitor_update.update_id = u64::MAX;
-					close_background_events.push(BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((funding_txo, channel_id, monitor_update)));
-				}
+				let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+					counterparty_node_id,
+					funding_txo,
+					channel_id,
+					update: monitor_update,
+				};
+				close_background_events.push(update);
 			}
 		}
 
@@ -14385,7 +14351,7 @@ where
 									// downstream chan is closed (because we don't have a
 									// channel_id -> peer map entry).
 									counterparty_opt.is_none(),
-									counterparty_opt.cloned().or(monitor.get_counterparty_node_id()),
+									Some(monitor.get_counterparty_node_id()),
 									monitor.get_funding_txo(), monitor.channel_id()))
 							} else { None }
 						} else {
@@ -15070,8 +15036,8 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-	
-		// Since we do not send peer storage, we manually simulate receiving a dummy 
+
+		// Since we do not send peer storage, we manually simulate receiving a dummy
 		// `PeerStorage` from the channel partner.
 		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
 
