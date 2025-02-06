@@ -1938,6 +1938,28 @@ where
 				log_receive!(message, reply_path.is_some());
 				let responder = reply_path.map(Responder::new);
 				match message {
+					AsyncPaymentsMessage::OfferPathsRequest(msg) => {
+						let response_instructions = self
+							.async_payments_handler
+							.handle_offer_paths_request(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					AsyncPaymentsMessage::OfferPaths(msg) => {
+						let response_instructions =
+							self.async_payments_handler.handle_offer_paths(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					AsyncPaymentsMessage::ServeStaticInvoice(msg) => {
+						self.async_payments_handler
+							.handle_serve_static_invoice(msg, context, responder);
+					},
+					AsyncPaymentsMessage::StaticInvoicePersisted(msg) => {
+						self.async_payments_handler.handle_static_invoice_persisted(msg, context);
+					},
 					AsyncPaymentsMessage::HeldHtlcAvailable(msg) => {
 						let response_instructions = self
 							.async_payments_handler
