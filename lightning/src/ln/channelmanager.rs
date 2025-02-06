@@ -7335,16 +7335,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
-		startup_replay: bool, next_channel_counterparty_node_id: Option<PublicKey>,
+		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 	) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
 				debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire),
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
-				if let Some(pubkey) = next_channel_counterparty_node_id {
-					debug_assert_eq!(pubkey, path.hops[0].pubkey);
-				}
+				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
 				let ev_completion_action = EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 					channel_funding_outpoint: next_channel_outpoint, channel_id: next_channel_id,
 					counterparty_node_id: path.hops[0].pubkey,
@@ -7360,22 +7358,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 				self.claim_funds_from_hop(hop_data, payment_preimage, None,
 					|htlc_claim_value_msat, definitely_duplicate| {
-						let chan_to_release =
-							if let Some(node_id) = next_channel_counterparty_node_id {
-								Some(EventUnblockedChannel {
-									counterparty_node_id: node_id,
-									funding_txo: next_channel_outpoint,
-									channel_id: next_channel_id,
-									blocking_action: completed_blocker
-								})
-							} else {
-								// We can only get `None` here if we are processing a
-								// `ChannelMonitor`-originated event, in which case we
-								// don't care about ensuring we wake the downstream
-								// channel's monitor updating - the channel is already
-								// closed.
-								None
-							};
+						let chan_to_release = Some(EventUnblockedChannel {
+							counterparty_node_id: next_channel_counterparty_node_id,
+							funding_txo: next_channel_outpoint,
+							channel_id: next_channel_id,
+							blocking_action: completed_blocker
+						});
 
 						if definitely_duplicate && startup_replay {
 							// On startup we may get redundant claims which are related to
@@ -7407,7 +7395,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									prev_user_channel_id,
 									next_user_channel_id,
 									prev_node_id,
-									next_node_id: next_channel_counterparty_node_id,
+									next_node_id: Some(next_channel_counterparty_node_id),
 									total_fee_earned_msat,
 									skimmed_fee_msat,
 									claim_from_onchain_tx: from_onchain,
@@ -8816,7 +8804,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		};
 		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(),
-			Some(forwarded_htlc_value), skimmed_fee_msat, false, false, Some(*counterparty_node_id),
+			Some(forwarded_htlc_value), skimmed_fee_msat, false, false, *counterparty_node_id,
 			funding_txo, msg.channel_id, Some(next_user_channel_id),
 		);
 
@@ -9408,9 +9396,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), Some(htlc_update.payment_hash));
 						if let Some(preimage) = htlc_update.payment_preimage {
 							log_trace!(logger, "Claiming HTLC with preimage {} from our monitor", preimage);
-							self.claim_funds_internal(htlc_update.source, preimage,
+							self.claim_funds_internal(
+								htlc_update.source, preimage,
 								htlc_update.htlc_value_satoshis.map(|v| v * 1000), None, true,
-								false, Some(counterparty_node_id), funding_outpoint, channel_id, None);
+								false, counterparty_node_id, funding_outpoint, channel_id, None,
+							);
 						} else {
 							log_trace!(logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
 							let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
@@ -14285,7 +14275,7 @@ where
 								}
 
 								Some((htlc_source, payment_preimage, htlc.amount_msat,
-									is_channel_closed, Some(monitor.get_counterparty_node_id()),
+									is_channel_closed, monitor.get_counterparty_node_id(),
 									monitor.get_funding_txo(), monitor.channel_id()))
 							} else { None }
 						} else {
