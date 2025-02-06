@@ -586,6 +586,11 @@ where
 		}
 	}
 
+	/// Returns a reference to the used config.
+	pub fn config(&self) -> &LSPS2ServiceConfig {
+		&self.config
+	}
+
 	/// Used by LSP to inform a client requesting a JIT Channel the token they used is invalid.
 	///
 	/// Should be called in response to receiving a [`LSPS2ServiceEvent::GetInfo`] event.

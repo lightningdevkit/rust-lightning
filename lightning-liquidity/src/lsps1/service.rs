@@ -166,6 +166,11 @@ where
 		}
 	}
 
+	/// Returns a reference to the used config.
+	pub fn config(&self) -> &LSPS1ServiceConfig {
+		&self.config
+	}
+
 	fn handle_get_info_request(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {

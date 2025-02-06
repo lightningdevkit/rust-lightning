@@ -54,7 +54,7 @@ where
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
-	_config: LSPS1ClientConfig,
+	config: LSPS1ClientConfig,
 }
 
 impl<ES: Deref> LSPS1ClientHandler<ES>
@@ -71,8 +71,13 @@ where
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(new_hash_map()),
-			_config: config,
+			config,
 		}
+	}
+
+	/// Returns a reference to the used config.
+	pub fn config(&self) -> &LSPS1ClientConfig {
+		&self.config
 	}
 
 	/// Request the supported options from the LSP.

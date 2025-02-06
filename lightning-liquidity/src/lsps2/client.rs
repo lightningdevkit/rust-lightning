@@ -72,7 +72,7 @@ where
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
-	_config: LSPS2ClientConfig,
+	config: LSPS2ClientConfig,
 }
 
 impl<ES: Deref> LSPS2ClientHandler<ES>
@@ -82,15 +82,20 @@ where
 	/// Constructs an `LSPS2ClientHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
-		_config: LSPS2ClientConfig,
+		config: LSPS2ClientConfig,
 	) -> Self {
 		Self {
 			entropy_source,
 			pending_messages,
 			pending_events,
 			per_peer_state: RwLock::new(new_hash_map()),
-			_config,
+			config,
 		}
+	}
+
+	/// Returns a reference to the used config.
+	pub fn config(&self) -> &LSPS2ClientConfig {
+		&self.config
 	}
 
 	/// Request the channel opening parameters from the LSP.
