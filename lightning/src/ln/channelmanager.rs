@@ -4755,7 +4755,7 @@ where
 	}
 
 	#[cfg(async_payments)]
-	fn initiate_async_payment(
+	fn handle_static_invoice_received(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
 		let mut res = Ok(());
@@ -4777,41 +4777,49 @@ where
 					return NotifyOption::DoPersist
 				}
 			};
-
-			let nonce = Nonce::from_entropy_source(&*self.entropy_source);
-			let hmac = payment_id.hmac_for_async_payment(nonce, &self.inbound_payment_key);
-			let reply_paths = match self.create_blinded_paths(
-				MessageContext::AsyncPayments(
-					AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
-				)
-			) {
-				Ok(paths) => paths,
-				Err(()) => {
-					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
-					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
-					return NotifyOption::DoPersist
-				}
-			};
-
-			let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
-			const HTLC_AVAILABLE_LIMIT: usize = 10;
-			reply_paths
-				.iter()
-				.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
-				.take(HTLC_AVAILABLE_LIMIT)
-				.for_each(|(invoice_path, reply_path)| {
-					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-						destination: Destination::BlindedPath(invoice_path.clone()),
-						reply_path: reply_path.clone(),
-					};
-					let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
-					pending_async_payments_messages.push((message, instructions));
-				});
-
 			NotifyOption::DoPersist
 		});
 
 		res
+	}
+
+	#[cfg(async_payments)]
+	fn initiate_async_payment(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+
+		self.handle_static_invoice_received(invoice, payment_id)?;
+
+		let nonce = Nonce::from_entropy_source(&*self.entropy_source);
+		let hmac = payment_id.hmac_for_async_payment(nonce, &self.inbound_payment_key);
+		let reply_paths = match self.create_blinded_paths(
+			MessageContext::AsyncPayments(
+				AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
+			)
+		) {
+			Ok(paths) => paths,
+			Err(()) => {
+				self.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
+				return Err(Bolt12PaymentError::BlindedPathCreationFailed);
+			}
+		};
+
+		let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
+		const HTLC_AVAILABLE_LIMIT: usize = 10;
+		reply_paths
+			.iter()
+			.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
+			.take(HTLC_AVAILABLE_LIMIT)
+			.for_each(|(invoice_path, reply_path)| {
+				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+					destination: Destination::BlindedPath(invoice_path.clone()),
+					reply_path: reply_path.clone(),
+				};
+				let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
+				pending_async_payments_messages.push((message, instructions));
+			});
+
+		Ok(())
 	}
 
 	#[cfg(async_payments)]
