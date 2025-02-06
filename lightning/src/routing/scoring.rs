@@ -59,7 +59,7 @@ use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
 use crate::prelude::*;
 use crate::prelude::hash_map::Entry;
-use core::{cmp, fmt};
+use core::{cmp, fmt, mem};
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use crate::io::{self, Read};
@@ -1143,6 +1143,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 		}
 		None
 	}
+
+	/// Overwrite the scorer state with the given external scores.
+	pub fn set_scores(&mut self, external_scores: ChannelLiquidities) {
+		_ = mem::replace(&mut self.channel_liquidities, external_scores);
+	}
 }
 
 impl ChannelLiquidity {
@@ -1745,6 +1750,11 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref + Clone> CombinedScore
 			}
 			self.scorer.channel_liquidities.insert(scid, liquidity);
 		}
+	}
+
+	/// Overwrite the scorer state with the given external scores.
+	pub fn set_scores(&mut self, external_scores: ChannelLiquidities) {
+		self.scorer.set_scores(external_scores);
 	}
 }
 
@@ -3962,6 +3972,19 @@ mod tests {
 			},
 		};
 
+		let logger_rc = Rc::new(&logger);
+
+		let mut external_liquidity = ChannelLiquidity::new(Duration::ZERO);
+		external_liquidity.as_directed_mut(&source_node_id(), &target_node_id(), 1_000).successful(
+			1000,
+			Duration::ZERO,
+			format_args!("test channel"),
+			logger_rc.as_ref(),
+		);
+
+		let mut external_scores = ChannelLiquidities::new();
+		external_scores.insert(42, external_liquidity);
+
 		{
 			let network_graph = network_graph.read_only();
 			let channel = network_graph.channel(42).unwrap();
@@ -3971,16 +3994,7 @@ mod tests {
 
 			let penalty = combined_scorer.channel_penalty_msat(&candidate, usage, &params);
 
-			let mut external_liquidity = ChannelLiquidity::new(Duration::ZERO);
-			let logger_rc = Rc::new(&logger); // Why necessary and not above for the network graph?
-			external_liquidity
-				.as_directed_mut(&source_node_id(), &target_node_id(), 1_000)
-				.successful(1000, Duration::ZERO, format_args!("test channel"), logger_rc.as_ref());
-
-			let mut external_scores = ChannelLiquidities::new();
-
-			external_scores.insert(42, external_liquidity);
-			combined_scorer.merge(external_scores, Duration::ZERO);
+			combined_scorer.merge(external_scores.clone(), Duration::ZERO);
 
 			let penalty_after_merge =
 				combined_scorer.channel_penalty_msat(&candidate, usage, &params);
@@ -3993,6 +4007,13 @@ mod tests {
 		let liquidity_range =
 			combined_scorer.scorer.estimated_channel_liquidity_range(42, &target_node_id());
 		assert_eq!(liquidity_range.unwrap(), (0, 300));
+
+		// Now set (overwrite) the scorer state with the external data which should lead to an even greater liquidity
+		// range. Just the success from the external source is now considered.
+		combined_scorer.set_scores(external_scores);
+		let liquidity_range =
+			combined_scorer.scorer.estimated_channel_liquidity_range(42, &target_node_id());
+		assert_eq!(liquidity_range.unwrap(), (0, 0));
 	}
 }
 
