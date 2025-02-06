@@ -29,6 +29,12 @@ const INVOICE_PERSISTED_TLV_TYPE: u64 = 65544;
 const HELD_HTLC_AVAILABLE_TLV_TYPE: u64 = 72;
 const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 74;
 
+// Used to expire reply paths used in exchanging static invoice server onion messages. We expect
+// these onion messages to be exchanged quickly, but add some buffer for no-std users who rely on
+// block timestamps.
+#[cfg(async_payments)]
+pub(crate) const REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(2 * 60 * 60);
+
 /// A handler for an [`OnionMessage`] containing an async payments message as its payload.
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
