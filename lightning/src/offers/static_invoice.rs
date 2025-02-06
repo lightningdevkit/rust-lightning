@@ -379,6 +379,7 @@ impl StaticInvoice {
 		self.signature
 	}
 
+	#[allow(unused)] // TODO: remove this once we remove the `async_payments` cfg flag
 	pub(crate) fn from_same_offer(&self, invreq: &InvoiceRequest) -> bool {
 		let invoice_offer_tlv_stream =
 			Offer::tlv_stream_iter(&self.bytes).map(|tlv_record| tlv_record.record_bytes);
