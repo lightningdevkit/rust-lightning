@@ -22,6 +22,7 @@ use crate::offers::invoice::{
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
+#[cfg(async_payments)]
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
@@ -379,6 +380,7 @@ impl StaticInvoice {
 		self.signature
 	}
 
+	#[cfg(async_payments)]
 	pub(crate) fn from_same_offer(&self, invreq: &InvoiceRequest) -> bool {
 		let invoice_offer_tlv_stream =
 			Offer::tlv_stream_iter(&self.bytes).map(|tlv_record| tlv_record.record_bytes);
