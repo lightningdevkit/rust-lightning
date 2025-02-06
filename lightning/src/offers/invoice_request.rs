@@ -858,7 +858,7 @@ impl InvoiceRequest {
 	);
 	invoice_request_verify_method!(self, Self);
 
-	#[cfg(async_payments)]
+	#[allow(unused)] // TODO: remove this once we remove the `async_payments` cfg flag
 	pub(super) fn bytes(&self) -> &Vec<u8> {
 		&self.bytes
 	}
