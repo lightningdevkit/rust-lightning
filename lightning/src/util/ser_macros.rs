@@ -382,7 +382,7 @@ macro_rules! _decode_tlv {
 	($outer_reader: expr, $reader: expr, $field: ident, (static_value, $value: expr)) => {{
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, required) => {{
-		$field = $crate::util::ser::Readable::read(&mut $reader)?;
+		$field = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = $trait::read(&mut $reader $(, $read_arg)*)?;
@@ -392,7 +392,7 @@ macro_rules! _decode_tlv {
 		$field = f.0;
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, option) => {{
-		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
+		$field = Some($crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?);
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
 		let _field: &Option<$fieldty> = &$field;
@@ -453,7 +453,7 @@ macro_rules! _decode_tlv {
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
 		$field = {
-			let field: $encoding<$fieldty> = ser::Readable::read(&mut $reader)?;
+			let field: $encoding<$fieldty> = ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
 			Some(field.0)
 		};
 	}};

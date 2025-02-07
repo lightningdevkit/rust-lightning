@@ -344,8 +344,8 @@ where
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A [`std::io::Read`] that also provides the total bytes available to be read.
-pub(crate) trait LengthRead: Read {
+/// A [`io::Read`] that also provides the total bytes available to be read.
+pub trait LengthRead: Read {
 	/// The total number of bytes available to be read.
 	fn total_bytes(&self) -> u64;
 }
@@ -361,14 +361,24 @@ where
 	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A trait that various higher-level LDK types implement allowing them to be read in
-/// from a [`Read`], requiring the implementer to provide the total length of the read.
-pub(crate) trait LengthReadable
+/// A trait that allows the implementer to be read in from a [`LengthRead`], requiring
+/// the reader to provide the total length of the read.
+///
+/// Any type that implements [`Readable`] also automatically has a [`LengthReadable`]
+/// implementation, but some types, most notably onion packets, only implement [`LengthReadable`].
+pub trait LengthReadable
 where
 	Self: Sized,
 {
 	/// Reads a `Self` in from the given [`LengthRead`].
-	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+}
+
+impl<T: Readable> LengthReadable for T {
+	#[inline]
+	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<T, DecodeError> {
+		Readable::read(reader)
+	}
 }
 
 /// A trait that various LDK types implement allowing them to (maybe) be read in from a [`Read`].

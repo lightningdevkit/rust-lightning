@@ -84,7 +84,7 @@ impl Writeable for Packet {
 }
 
 impl LengthReadable for Packet {
-	fn read<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
 		const READ_BUFFER_SIZE: usize = 4096;
 
 		let version = Readable::read(r)?;

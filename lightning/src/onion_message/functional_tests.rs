@@ -971,7 +971,7 @@ fn spec_test_vector() {
 	let mut reader = io::Cursor::new(sender_to_alice_packet_bytes);
 	let mut packet_reader = FixedLengthReader::new(&mut reader, sender_to_alice_packet_bytes_len);
 	let sender_to_alice_packet: Packet =
-		<Packet as LengthReadable>::read(&mut packet_reader).unwrap();
+		<Packet as LengthReadable>::read_from_fixed_length_buffer(&mut packet_reader).unwrap();
 	let secp_ctx = Secp256k1::new();
 
 	let blinding_key_hex = "6363636363636363636363636363636363636363636363636363636363636363";

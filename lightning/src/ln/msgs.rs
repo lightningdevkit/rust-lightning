@@ -1958,7 +1958,7 @@ impl Writeable for TrampolineOnionPacket {
 }
 
 impl LengthReadable for TrampolineOnionPacket {
-	fn read<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let version = Readable::read(r)?;
 		let public_key = Readable::read(r)?;
 
@@ -2684,7 +2684,7 @@ impl Readable for OnionMessage {
 		let len: u16 = Readable::read(r)?;
 		let mut packet_reader = FixedLengthReader::new(r, len as u64);
 		let onion_routing_packet: onion_message::packet::Packet =
-			<onion_message::packet::Packet as LengthReadable>::read(&mut packet_reader)?;
+			<onion_message::packet::Packet as LengthReadable>::read_from_fixed_length_buffer(&mut packet_reader)?;
 		Ok(Self {
 			blinding_point,
 			onion_routing_packet,
@@ -4708,7 +4708,7 @@ mod tests {
 		{ // verify that a codec round trip works
 			let mut reader = Cursor::new(&encoded_trampoline_packet);
 			let mut trampoline_packet_reader = FixedLengthReader::new(&mut reader, encoded_trampoline_packet.len() as u64);
-			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read(&mut trampoline_packet_reader).unwrap();
+			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read_from_fixed_length_buffer(&mut trampoline_packet_reader).unwrap();
 			assert_eq!(decoded_trampoline_packet.encode(), encoded_trampoline_packet);
 		}
 
