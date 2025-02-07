@@ -43,7 +43,6 @@ use lightning::chain::{
 	chainmonitor, channelmonitor, BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
 use lightning::events;
-use lightning::events::MessageSendEventsProvider;
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
@@ -53,7 +52,8 @@ use lightning::ln::channelmanager::{
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
-	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
+	self, BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init,
+	UpdateAddHTLC,
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
