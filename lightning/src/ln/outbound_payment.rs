@@ -1967,6 +1967,7 @@ impl OutboundPayments {
 					payment_hash,
 					amount_msat,
 					fee_paid_msat,
+					bolt12_invoice: payment.get().bolt12_invoice().cloned(),
 				}, Some(ev_completion_action.clone())));
 				payment.get_mut().mark_fulfilled();
 			}
