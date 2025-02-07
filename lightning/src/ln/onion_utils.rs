@@ -340,10 +340,16 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 ) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 	let mut res = Vec::with_capacity(path.hops.len());
 
+	let blinded_tail = path.blinded_tail.as_ref().and_then(|t| {
+		if !t.trampoline_hops.is_empty() {
+			return None;
+		}
+		Some(t)
+	});
 	construct_onion_keys_generic_callback(
 		secp_ctx,
 		&path.hops,
-		path.blinded_tail.as_ref(),
+		blinded_tail,
 		session_priv,
 		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
 			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
@@ -698,6 +704,8 @@ pub(super) fn construct_onion_packet(
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
+	debug_assert_eq!(payloads.len(), onion_keys.len(), "Payloads and keys must have equal lengths");
+
 	let packet = FixedSizeOnionPacket(packet_data);
 	construct_onion_packet_with_init_noise::<_, _>(
 		payloads,
@@ -707,7 +715,6 @@ pub(super) fn construct_onion_packet(
 	)
 }
 
-#[allow(unused)]
 pub(super) fn construct_trampoline_onion_packet(
 	payloads: Vec<msgs::OutboundTrampolinePayload>, onion_keys: Vec<OnionKeys>,
 	prng_seed: [u8; 32], associated_data: &PaymentHash, length: Option<u16>,
@@ -1476,22 +1483,95 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
 	prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
-		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
-	})?;
-	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
-		&path,
+	create_payment_onion_internal(
+		secp_ctx,
+		path,
+		session_priv,
 		total_msat,
 		recipient_onion,
 		cur_block_height,
+		payment_hash,
 		keysend_preimage,
 		invoice_request,
-		None
+		prng_seed,
+		None,
+		None,
+	)
+}
+
+/// Build a payment onion, returning the first hop msat and cltv values as well.
+/// `cur_block_height` should be set to the best known block height + 1.
+pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
+	recipient_onion: &RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
+	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
+	prng_seed: [u8; 32], secondary_session_priv: Option<SecretKey>,
+	secondary_prng_seed: Option<[u8; 32]>,
+) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
+	let mut outer_total_msat = total_msat;
+	let mut outer_starting_htlc_offset = cur_block_height;
+	let mut outer_session_priv_override = None;
+	let mut trampoline_packet_option = None;
+
+	if let Some(blinded_tail) = &path.blinded_tail {
+		if !blinded_tail.trampoline_hops.is_empty() {
+			let trampoline_payloads;
+			(trampoline_payloads, outer_total_msat, outer_starting_htlc_offset) =
+				build_trampoline_onion_payloads(
+					&blinded_tail,
+					total_msat,
+					recipient_onion,
+					cur_block_height,
+					keysend_preimage,
+				)?;
+
+			let onion_keys =
+				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &session_priv).map_err(
+					|_| APIError::InvalidRoute {
+						err: "Pubkey along hop was maliciously selected".to_owned(),
+					},
+				)?;
+			let trampoline_packet = construct_trampoline_onion_packet(
+				trampoline_payloads,
+				onion_keys,
+				prng_seed,
+				payment_hash,
+				// TODO: specify a fixed size for privacy in future spec upgrade
+				None,
+			)
+			.map_err(|_| APIError::InvalidRoute {
+				err: "Route size too large considering onion data".to_owned(),
+			})?;
+
+			trampoline_packet_option = Some(trampoline_packet);
+
+			outer_session_priv_override = Some(secondary_session_priv.unwrap_or_else(|| {
+				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
+				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
+			}));
+		}
+	}
+
+	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
+		&path,
+		outer_total_msat,
+		recipient_onion,
+		outer_starting_htlc_offset,
+		keysend_preimage,
+		invoice_request,
+		trampoline_packet_option,
 	)?;
-	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
-		.map_err(|_| APIError::InvalidRoute {
-			err: "Route size too large considering onion data".to_owned(),
-		})?;
+
+	let outer_session_priv = outer_session_priv_override.as_ref().unwrap_or(session_priv);
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, outer_session_priv).map_err(|_| {
+		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
+	})?;
+	let outer_onion_prng_seed = secondary_prng_seed.unwrap_or(prng_seed);
+	let onion_packet =
+		construct_onion_packet(onion_payloads, onion_keys, outer_onion_prng_seed, payment_hash)
+			.map_err(|_| APIError::InvalidRoute {
+				err: "Route size too large considering onion data".to_owned(),
+			})?;
 	Ok((onion_packet, htlc_msat, htlc_cltv))
 }
 

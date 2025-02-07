@@ -8,6 +8,7 @@
 // licenses.
 
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
@@ -30,12 +31,14 @@ use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::nonce::Nonce;
 use crate::prelude::*;
-use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters};
+use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters, TrampolineHop};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::config::UserConfig;
-use crate::util::ser::WithoutLength;
+use crate::util::ser::{WithoutLength, Writeable};
 use crate::util::test_utils;
 use lightning_invoice::RawBolt11Invoice;
+use types::features::Features;
+use crate::blinded_path::BlindedHop;
 
 pub fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
@@ -362,15 +365,17 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 				ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
 					let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 					let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-					let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 					let cur_height = nodes[0].best_block_info().1;
 					let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
 						&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
 					// Remove the receive payload so the blinded forward payload is encoded as a final payload
 					// (i.e. next_hop_hmac == [0; 32])
 					onion_payloads.pop();
+					onion_keys.pop();
 					if $target_node_idx + 1 < nodes.len() {
 						onion_payloads.pop();
+						onion_keys.pop();
 					}
 					$update_add.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 				},
@@ -1654,4 +1659,87 @@ fn route_blinding_spec_test_vector() {
 		Err(HTLCFailureMsg::Malformed(msg)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
 		_ => panic!("Unexpected error")
 	}
+}
+
+#[test]
+fn test_combined_trampoline_onion_creation_vectors() {
+	// As per https://github.com/lightning/bolts/blob/fa0594ac2af3531d734f1d707a146d6e13679451/bolt04/trampoline-to-blinded-path-payment-onion-test.json#L251
+
+	let mut secp_ctx = Secp256k1::new();
+	let session_priv = secret_from_hex("a64feb81abd58e473df290e9e1c07dc3e56114495cadf33191f44ba5448ebe99");
+
+	let path = Path {
+		hops: vec![
+			// Bob
+			RouteHop {
+				pubkey: pubkey_from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 3_000,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+
+			// Carol
+			RouteHop {
+				pubkey: pubkey_from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007"),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 153_000,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+		],
+		blinded_tail: Some(BlindedTail {
+			trampoline_hops: vec![
+				// Carol's pubkey
+				TrampolineHop {
+					pubkey: pubkey_from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007"),
+					node_features: Features::empty(),
+					fee_msat: 2_500,
+					cltv_expiry_delta: 24,
+				},
+				// Dave's pubkey (the intro node needs to be duplicated)
+				TrampolineHop {
+					pubkey: pubkey_from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"),
+					node_features: Features::empty(),
+					fee_msat: 150_500, // incorporate both base and proportional fee
+					cltv_expiry_delta: 36,
+				}
+			],
+			hops: vec![
+				// Dave's blinded node id
+				BlindedHop {
+					blinded_node_id: pubkey_from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be"),
+					encrypted_payload: bytes_from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a"),
+				},
+				// Eve's blinded node id
+				BlindedHop {
+					blinded_node_id: pubkey_from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22"),
+					encrypted_payload: bytes_from_hex("bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c"),
+				}
+			],
+			blinding_point: pubkey_from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e"),
+			excess_final_cltv_expiry_delta: 0,
+			final_value_msat: 150_000_000
+		}),
+	};
+
+	let associated_data_slice = secret_from_hex("e89bc505e84aaca09613833fc58c9069078fb43bfbea0488f34eec9db99b5f82");
+	let associated_data = PaymentHash(associated_data_slice.secret_bytes());
+	let payment_secret = PaymentSecret(secret_from_hex("7494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da").secret_bytes());
+	let outer_session_key = secret_from_hex("4f777e8dac16e6dfe333066d9efb014f7a51d11762ff76eca4d3a95ada99ba3e");
+	let outer_onion_prng_seed = onion_utils::gen_pad_from_shared_secret(&outer_session_key.secret_bytes());
+
+	let amt_msat = 150_000_000;
+	let cur_height = 800_000;
+	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let (bob_onion, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion_internal(&secp_ctx, &path, &session_priv, amt_msat, &recipient_onion_fields, cur_height, &associated_data, &None, None, [0; 32], Some(outer_session_key), Some(outer_onion_prng_seed)).unwrap();
+
+	let outer_onion_packet_hex = bob_onion.encode().to_lower_hex_string();
+	assert_eq!(outer_onion_packet_hex, "00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af");
+	assert_eq!(htlc_msat, 150_156_000);
+	assert_eq!(htlc_cltv, 800_060);
 }

@@ -1802,7 +1802,6 @@ mod fuzzy_internal_msgs {
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
 		},
-		#[allow(unused)]
 		TrampolineEntrypoint {
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,

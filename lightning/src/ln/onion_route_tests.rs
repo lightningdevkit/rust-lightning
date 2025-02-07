@@ -1148,6 +1148,21 @@ fn test_trampoline_onion_payload_assembly_values() {
 	} else {
 		panic!("Bob payload must be Forward");
 	}
+
+	let (_, total_msat_combined, total_htlc_offset_combined) = onion_utils::create_payment_onion(
+		&Secp256k1::new(),
+		&path,
+		&session_priv,
+		amt_msat,
+		&recipient_onion_fields,
+		cur_height,
+		&payment_hash,
+		&None,
+		None,
+		prng_seed,
+	).unwrap();
+	assert_eq!(total_msat_combined, total_msat);
+	assert_eq!(total_htlc_offset_combined, total_htlc_offset);
 }
 
 #[test]
