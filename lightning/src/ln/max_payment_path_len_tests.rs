@@ -281,7 +281,8 @@ fn blinded_path_with_custom_tlv() {
 	let reserved_packet_bytes_without_custom_tlv: usize = onion_utils::build_onion_payloads(
 		&route.paths[0], MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		&RecipientOnionFields::spontaneous_empty(),
-		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &None, None
+		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &None,
+		None, None
 	)
 		.unwrap()
 		.0

@@ -399,13 +399,13 @@ pub struct RouteHop {
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
 	/// If this is the last hop in [`Path::hops`]:
 	/// * if we're sending to a [`BlindedPaymentPath`], this is the fee paid for use of the entire
-	///   blinded path
+	///   blinded path (including any Trampoline hops)
 	/// * otherwise, this is the full value of this [`Path`]'s part of the payment
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop.
 	/// If this is the last hop in [`Path::hops`]:
 	/// * if we're sending to a [`BlindedPaymentPath`], this is the CLTV delta for the entire blinded
-	///   path
+	///   path (including any Trampoline hops)
 	/// * otherwise, this is the CLTV delta expected at the destination
 	pub cltv_expiry_delta: u32,
 	/// Indicates whether this hop is possibly announced in the public network graph.
@@ -429,12 +429,43 @@ impl_writeable_tlv_based!(RouteHop, {
 	(10, cltv_expiry_delta, required),
 });
 
+/// A Trampoline hop in a route, and additional metadata about it. "Hop" is defined as a node.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct TrampolineHop {
+	/// The node_id of the node at this hop.
+	pub pubkey: PublicKey,
+	/// The node_announcement features of the node at this hop.
+	pub node_features: NodeFeatures,
+	/// The fee this hop should use to pay for routing towards the next Trampoline hop, or to the
+	/// recipient if this is the last Trampoline hop.
+	/// If this is the last Trampoline hop within [`BlindedTail`], this is the fee paid for the use of
+	/// the entire blinded path.
+	pub fee_msat: u64,
+	/// The CLTV delta added for this hop.
+	/// If this is the last Trampoline hop within [`BlindedTail`], this is the CLTV delta for the entire
+	/// blinded path.
+	pub cltv_expiry_delta: u32,
+}
+
+impl_writeable_tlv_based!(TrampolineHop, {
+	(0, pubkey, required),
+	(2, node_features, required),
+	(4, fee_msat, required),
+	(6, cltv_expiry_delta, required),
+});
+
 /// The blinded portion of a [`Path`], if we're routing to a recipient who provided blinded paths in
 /// their [`Bolt12Invoice`].
 ///
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedTail {
+	/// The list of unblinded Trampoline hops. When using Trampoline, must contain at least one hop.
+	///
+	/// Note that the first [`TrampolineHop`] node must also be present as the last [`RouteHop`] node,
+	/// where the [`RouteHop`]'s fee_msat is the fee paid for use of the entire blinded path, including
+	/// any Trampoline hops.
+	pub trampoline_hops: Vec<TrampolineHop>,
 	/// The hops of the [`BlindedPaymentPath`] provided by the recipient.
 	pub hops: Vec<BlindedHop>,
 	/// The blinding point of the [`BlindedPaymentPath`] provided by the recipient.
@@ -451,6 +482,7 @@ impl_writeable_tlv_based!(BlindedTail, {
 	(2, blinding_point, required),
 	(4, excess_final_cltv_expiry_delta, required),
 	(6, final_value_msat, required),
+	(8, trampoline_hops, optional_vec),
 });
 
 /// A path in a [`Route`] to the payment recipient. Must always be at least length one.
@@ -3379,6 +3411,8 @@ where L::Target: Logger {
 			if let Some(blinded_path) = h.candidate.blinded_path() {
 				final_cltv_delta = h.candidate.cltv_expiry_delta();
 				Some(BlindedTail {
+					// TODO: fill correctly
+					trampoline_hops: vec![],
 					hops: blinded_path.blinded_hops().to_vec(),
 					blinding_point: blinded_path.blinding_point(),
 					excess_final_cltv_expiry_delta: 0,
@@ -7725,6 +7759,7 @@ mod tests {
 				maybe_announced_channel: true,
 			}],
 			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![],
 				hops: vec![
 					BlindedHop { blinded_node_id: ln_test_utils::pubkey(44), encrypted_payload: Vec::new() },
 					BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() }
@@ -7751,6 +7786,7 @@ mod tests {
 
 		// (De)serialize a Route with two paths, each containing a blinded tail.
 		route.paths[1].blinded_tail = Some(BlindedTail {
+			trampoline_hops: vec![],
 			hops: vec![
 				BlindedHop { blinded_node_id: ln_test_utils::pubkey(48), encrypted_payload: Vec::new() },
 				BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }
@@ -7790,6 +7826,7 @@ mod tests {
 				maybe_announced_channel: false,
 			}],
 			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![],
 				hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }],
 				blinding_point: ln_test_utils::pubkey(48),
 				excess_final_cltv_expiry_delta: 0,
@@ -7825,6 +7862,7 @@ mod tests {
 			}
 			],
 			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![],
 				hops: vec![
 					BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() },
 					BlindedHop { blinded_node_id: ln_test_utils::pubkey(46), encrypted_payload: Vec::new() }

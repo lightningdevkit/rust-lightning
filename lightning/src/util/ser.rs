@@ -1060,6 +1060,7 @@ impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
+impl_for_vec!(crate::routing::router::TrampolineHop);
 impl_for_vec_with_element_length_prefix!(crate::ln::msgs::UpdateAddHTLC);
 impl_writeable_for_vec_with_element_length_prefix!(&crate::ln::msgs::UpdateAddHTLC);
 
