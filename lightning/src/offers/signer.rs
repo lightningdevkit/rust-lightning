@@ -69,6 +69,16 @@ const ASYNC_PAYMENTS_STATIC_INV_PERSISTED_INPUT: &[u8; 16] = &[11; 16];
 #[cfg(async_payments)]
 const ASYNC_PAYMENTS_OFFER_PATHS_REQUEST_INPUT: &[u8; 16] = &[12; 16];
 
+/// HMAC input used in `OffersContext::StaticInvoiceRequested` to authenticate inbound invoice
+/// requests that are being serviced on behalf of async recipients.
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_INVREQ: &[u8; 16] = &[13; 16];
+
+/// HMAC input used in `AsyncPaymentsContext::ServeStaticInvoice` to authenticate inbound
+/// serve_static_invoice onion messages.
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_SERVE_STATIC_INVOICE_INPUT: &[u8; 16] = &[14; 16];
+
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
 #[derive(Clone)]
@@ -599,6 +609,17 @@ pub(crate) fn hmac_for_offer_paths_request_context(
 }
 
 #[cfg(async_payments)]
+pub(crate) fn verify_offer_paths_request_context(
+	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_offer_paths_request_context(nonce, expanded_key) == hmac {
+		Ok(())
+	} else {
+		Err(())
+	}
+}
+
+#[cfg(async_payments)]
 pub(crate) fn hmac_for_offer_paths_context(
 	nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Hmac<Sha256> {
@@ -623,6 +644,19 @@ pub(crate) fn verify_offer_paths_context(
 }
 
 #[cfg(async_payments)]
+pub(crate) fn hmac_for_serve_static_invoice_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Serve Inv~~~";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_SERVE_STATIC_INVOICE_INPUT);
+
+	Hmac::from_engine(hmac)
+}
+
+#[cfg(async_payments)]
 pub(crate) fn hmac_for_static_invoice_persisted_context(
 	nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Hmac<Sha256> {
@@ -644,4 +678,17 @@ pub(crate) fn verify_static_invoice_persisted_context(
 	} else {
 		Err(())
 	}
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_async_recipient_invreq_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Async Invreq";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_INVREQ);
+
+	Hmac::from_engine(hmac)
 }
