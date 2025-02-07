@@ -47,7 +47,7 @@ use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::{MessageContext, OffersContext};
-use crate::events::{ClosureReason, Event, HTLCDestination, PaymentFailureReason, PaymentPurpose};
+use crate::events::{ClosureReason, Event, HTLCDestination, PaidInvoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
@@ -188,7 +188,11 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 		},
 		_ => panic!("Unexpected payment purpose: {:?}", payment_purpose),
 	}
-	claim_payment(node, path, payment_preimage);
+	if let Some(inv) = claim_payment(node, path, payment_preimage) {
+		assert_eq!(inv, PaidInvoice::Bolt12Invoice(invoice.to_owned()));
+	} else {
+		panic!("Expected PaidInvoice::Bolt12Invoice");
+	};
 }
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {

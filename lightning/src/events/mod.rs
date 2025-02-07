@@ -949,6 +949,13 @@ pub enum Event {
 		///
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
+		/// The BOLT 12 invoice that was paid. `None` if the payment was a non BOLT 12 payment.
+		///
+		/// The BOLT 12 invoice is useful for proof of payment because it contains the
+		/// payment hash. A third party can verify that the payment was made by
+		/// showing the invoice and confirming that the payment hash matches
+		/// the hash of the payment preimage.
+		bolt12_invoice: Option<PaidInvoice>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
