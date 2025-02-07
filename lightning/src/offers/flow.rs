@@ -1303,6 +1303,79 @@ where
 		Ok(())
 	}
 
+	/// Handles an incoming [`OfferPathsRequest`] onion message from an often-offline recipient who
+	/// wants us to serve [`StaticInvoice`]s to payers on their behalf. Sends out [`OfferPaths`] onion
+	/// messages in response.
+	#[cfg(async_payments)]
+	pub(crate) fn handle_offer_paths_request<ES: Deref>(
+		&self, context: AsyncPaymentsContext, peers: Vec<MessageForwardNode>, entropy: ES,
+	) -> Option<(OfferPaths, MessageContext)>
+	where
+		ES::Target: EntropySource,
+	{
+		let expanded_key = &self.inbound_payment_key;
+		let duration_since_epoch = self.duration_since_epoch();
+
+		let recipient_id_nonce = match context {
+			AsyncPaymentsContext::OfferPathsRequest {
+				recipient_id_nonce,
+				hmac,
+				path_absolute_expiry,
+			} => {
+				if let Err(()) = signer::verify_offer_paths_request_context(
+					recipient_id_nonce,
+					hmac,
+					expanded_key,
+				) {
+					return None;
+				}
+				if duration_since_epoch > path_absolute_expiry {
+					return None;
+				}
+				recipient_id_nonce
+			},
+			_ => return None,
+		};
+
+		// Default to offers and the paths used to update them lasting 1 year.
+		const OFFER_PATH_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+		let (offer_paths, paths_expiry) = {
+			let path_absolute_expiry = duration_since_epoch.saturating_add(OFFER_PATH_EXPIRY);
+			let nonce = Nonce::from_entropy_source(&*entropy);
+			let hmac = signer::hmac_for_async_recipient_invreq_context(nonce, expanded_key);
+			let context = OffersContext::StaticInvoiceRequested {
+				recipient_id_nonce,
+				nonce,
+				hmac,
+				path_absolute_expiry,
+			};
+			match self.create_blinded_paths_using_absolute_expiry(
+				context,
+				Some(path_absolute_expiry),
+				peers,
+			) {
+				Ok(paths) => (paths, path_absolute_expiry),
+				Err(()) => return None,
+			}
+		};
+
+		let reply_path_context = {
+			let nonce = Nonce::from_entropy_source(entropy);
+			let path_absolute_expiry = duration_since_epoch.saturating_add(OFFER_PATH_EXPIRY);
+			let hmac = signer::hmac_for_serve_static_invoice_context(nonce, expanded_key);
+			MessageContext::AsyncPayments(AsyncPaymentsContext::ServeStaticInvoice {
+				nonce,
+				recipient_id_nonce,
+				hmac,
+				path_absolute_expiry,
+			})
+		};
+
+		let offer_paths_om =
+			OfferPaths { paths: offer_paths, paths_absolute_expiry: Some(paths_expiry) };
+		return Some((offer_paths_om, reply_path_context));
+	}
+
 	/// Handles an incoming [`OfferPaths`] message from the static invoice server, sending out
 	/// [`ServeStaticInvoice`] onion messages in response if we want to use the paths we've received
 	/// to build and cache an async receive offer.
