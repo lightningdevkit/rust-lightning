@@ -911,12 +911,12 @@ where
 ///	 txid: Txid::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
 ///	 index: 1,
 /// };
-/// let monitor_name = MonitorName::from(outpoint);
+/// let monitor_name = MonitorName::V1Channel(outpoint);
 /// assert_eq!(&monitor_name.to_string(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1");
 ///
 /// // v2 channel
 /// let channel_id = ChannelId(<[u8; 32]>::from_hex("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap());
-/// let monitor_name = MonitorName::from(channel_id);
+/// let monitor_name = MonitorName::V2Channel(channel_id);
 /// assert_eq!(&monitor_name.to_string(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 ///
 /// // Using MonitorName to generate a storage key
@@ -956,26 +956,6 @@ impl MonitorName {
 			})?;
 			Ok(MonitorName::V2Channel(ChannelId(bytes)))
 		}
-	}
-}
-
-impl From<OutPoint> for MonitorName {
-	/// Creates a `MonitorName` from an `OutPoint`.
-	///
-	/// This is typically used when you need to generate a storage key or identifier
-	/// for a new or existing channel monitor for a v1 channel.
-	fn from(outpoint: OutPoint) -> Self {
-		MonitorName::V1Channel(outpoint)
-	}
-}
-
-impl From<ChannelId> for MonitorName {
-	/// Creates a `MonitorName` from a `ChannelId`.
-	///
-	/// This is typically used when you need to generate a storage key or identifier
-	/// for a new or existing channel monitor for a v2 channel.
-	fn from(channel_id: ChannelId) -> Self {
-		MonitorName::V2Channel(channel_id)
 	}
 }
 
@@ -1108,7 +1088,7 @@ mod tests {
 
 	#[test]
 	fn creates_monitor_from_outpoint() {
-		let monitor_name = MonitorName::from(OutPoint {
+		let monitor_name = MonitorName::V1Channel(OutPoint {
 			txid: Txid::from_str(
 				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 			)
@@ -1119,9 +1099,8 @@ mod tests {
 			&monitor_name.to_string(),
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1"
 		);
-		assert!(matches!(monitor_name, MonitorName::V1Channel(_)));
 
-		let monitor_name = MonitorName::from(OutPoint {
+		let monitor_name = MonitorName::V1Channel(OutPoint {
 			txid: Txid::from_str(
 				"f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef",
 			)
@@ -1132,12 +1111,11 @@ mod tests {
 			&monitor_name.to_string(),
 			"f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef_65535"
 		);
-		assert!(matches!(monitor_name, MonitorName::V1Channel(_)));
 	}
 
 	#[test]
 	fn creates_monitor_from_channel_id() {
-		let monitor_name = MonitorName::from(ChannelId(
+		let monitor_name = MonitorName::V2Channel(ChannelId(
 			<[u8; 32]>::from_hex(
 				"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 			)
@@ -1147,7 +1125,6 @@ mod tests {
 			&monitor_name.to_string(),
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 		);
-		assert!(matches!(monitor_name, MonitorName::V2Channel(_)));
 	}
 
 	#[test]
@@ -1234,7 +1211,7 @@ mod tests {
 					// check that when we read it, we got the right update id
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 
-					let monitor_name = MonitorName::from(mon.get_funding_txo());
+					let monitor_name = mon.persistence_key();
 					assert_eq!(
 						persister_0
 							.kv_store
@@ -1253,7 +1230,7 @@ mod tests {
 				assert_eq!(persisted_chan_data_1.len(), 1);
 				for (_, mon) in persisted_chan_data_1.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
-					let monitor_name = MonitorName::from(mon.get_funding_txo());
+					let monitor_name = mon.persistence_key();
 					assert_eq!(
 						persister_1
 							.kv_store
@@ -1449,7 +1426,7 @@ mod tests {
 		// Get the monitor and make a fake stale update at update_id=1 (lowest height of an update possible)
 		let persisted_chan_data = persister_0.read_all_channel_monitors_with_updates().unwrap();
 		let (_, monitor) = &persisted_chan_data[0];
-		let monitor_name = MonitorName::from(monitor.get_funding_txo());
+		let monitor_name = monitor.persistence_key();
 		persister_0
 			.kv_store
 			.write(

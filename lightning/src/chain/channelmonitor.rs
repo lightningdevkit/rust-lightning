@@ -1480,9 +1480,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let funding_outpoint = inner.first_confirmed_funding_txo;
 		let channel_id = inner.channel_id;
 		if ChannelId::v1_from_funding_outpoint(funding_outpoint) == channel_id {
-			MonitorName::from(funding_outpoint)
+			MonitorName::V1Channel(funding_outpoint)
 		} else {
-			MonitorName::from(channel_id)
+			MonitorName::V2Channel(channel_id)
 		}
 	}
 
