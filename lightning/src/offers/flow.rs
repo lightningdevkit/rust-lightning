@@ -246,6 +246,10 @@ const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 #[cfg(async_payments)]
 const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
+// Default to async receive offers and the paths used to update them lasting one year.
+#[cfg(async_payments)]
+const DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
 impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
@@ -1313,6 +1317,69 @@ where
 				&mut self.pending_async_payments_messages.lock().unwrap(),
 			);
 		}
+	}
+
+	/// Handles an incoming [`OfferPathsRequest`] onion message from an often-offline recipient who
+	/// wants us (the static invoice server) to serve [`StaticInvoice`]s to payers on their behalf.
+	/// Sends out [`OfferPaths`] onion messages in response.
+	#[cfg(async_payments)]
+	pub(crate) fn handle_offer_paths_request<ES: Deref>(
+		&self, context: AsyncPaymentsContext, peers: Vec<MessageForwardNode>, entropy_source: ES,
+	) -> Option<(OfferPaths, MessageContext)>
+	where
+		ES::Target: EntropySource,
+	{
+		let duration_since_epoch = self.duration_since_epoch();
+
+		let recipient_id = match context {
+			AsyncPaymentsContext::OfferPathsRequest { recipient_id, path_absolute_expiry } => {
+				if duration_since_epoch > path_absolute_expiry.unwrap_or(Duration::MAX) {
+					return None;
+				}
+				recipient_id
+			},
+			_ => return None,
+		};
+
+		let mut random_bytes = [0u8; 16];
+		random_bytes.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
+		let invoice_id = u128::from_be_bytes(random_bytes);
+
+		// Create the blinded paths that will be included in the async recipient's offer.
+		let (offer_paths, paths_expiry) = {
+			let path_absolute_expiry =
+				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
+			let context = OffersContext::StaticInvoiceRequested {
+				recipient_id: recipient_id.clone(),
+				path_absolute_expiry,
+				invoice_id,
+			};
+			match self.create_blinded_paths_using_absolute_expiry(
+				context,
+				Some(path_absolute_expiry),
+				peers,
+			) {
+				Ok(paths) => (paths, path_absolute_expiry),
+				Err(()) => return None,
+			}
+		};
+
+		// Create a reply path so that the recipient can respond to our offer_paths message with the
+		// static invoice that they create. This path will also be used by the recipient to update said
+		// invoice.
+		let reply_path_context = {
+			let path_absolute_expiry =
+				duration_since_epoch.saturating_add(DEFAULT_ASYNC_RECEIVE_OFFER_EXPIRY);
+			MessageContext::AsyncPayments(AsyncPaymentsContext::ServeStaticInvoice {
+				recipient_id,
+				invoice_id,
+				path_absolute_expiry,
+			})
+		};
+
+		let offer_paths_om =
+			OfferPaths { paths: offer_paths, paths_absolute_expiry: Some(paths_expiry.as_secs()) };
+		return Some((offer_paths_om, reply_path_context));
 	}
 
 	/// Handles an incoming [`OfferPaths`] message from the static invoice server, sending out
