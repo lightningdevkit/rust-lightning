@@ -11,7 +11,7 @@ use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::payment::PaymentContext;
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::events::{Event, HTLCDestination, PaymentFailureReason};
+use crate::events::{Event, HTLCDestination, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::functional_test_utils::*;
@@ -420,7 +420,7 @@ fn async_receive_flow_success() {
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), params)
 		.unwrap();
 	let release_held_htlc_om =
-		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[2]).1;
+		pass_async_payments_oms(static_invoice.clone(), &nodes[0], &nodes[1], &nodes[2]).1;
 	nodes[0]
 		.onion_messenger
 		.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
@@ -441,7 +441,10 @@ fn async_receive_flow_success() {
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(keysend_preimage);
 	do_pass_along_path(args);
-	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	let res =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	assert!(res.is_some());
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
 #[cfg_attr(feature = "std", ignore)]
