@@ -13482,6 +13482,19 @@ where
 		&self, _message: OfferPathsRequest, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
 	) -> Option<(OfferPaths, ResponseInstruction)> {
+		#[cfg(async_payments)]
+		{
+			let peers = self.get_peers_for_blinded_path();
+			let entropy = &*self.entropy_source;
+			let (message, reply_path_context) =
+				match self.flow.handle_offer_paths_request(_context, peers, entropy) {
+					Some(msg) => msg,
+					None => return None,
+				};
+			_responder.map(|resp| (message, resp.respond_with_reply_path(reply_path_context)))
+		}
+
+		#[cfg(not(async_payments))]
 		None
 	}
 
