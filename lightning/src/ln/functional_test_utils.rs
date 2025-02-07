@@ -35,6 +35,7 @@ use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
+use crate::offers::invoice::Bolt12Invoice;
 
 use bitcoin::{Weight, WPubkeyHash};
 use bitcoin::amount::Amount;

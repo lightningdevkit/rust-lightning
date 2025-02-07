@@ -1563,7 +1563,7 @@ impl Writeable for Event {
 					(13, payment_id, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
+			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat, ref bolt12_invoice } => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
@@ -1571,6 +1571,7 @@ impl Writeable for Event {
 					(3, payment_id, option),
 					(5, fee_paid_msat, option),
 					(7, amount_msat, option),
+					(9, bolt12_invoice, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -1905,12 +1906,14 @@ impl MaybeReadable for Event {
 					let mut payment_id = None;
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
+					let mut bolt12_invoice = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
 						(3, payment_id, option),
 						(5, fee_paid_msat, option),
 						(7, amount_msat, option),
+						(9, bolt12_invoice, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
@@ -1921,6 +1924,7 @@ impl MaybeReadable for Event {
 						payment_hash: payment_hash.unwrap(),
 						amount_msat,
 						fee_paid_msat,
+						bolt12_invoice,
 					}))
 				};
 				f()
@@ -2445,3 +2449,19 @@ impl<T: EventHandler> EventHandler for Arc<T> {
 		self.deref().handle_event(event)
 	}
 }
+
+/// Wrapper time to move the bolt12 invoice and the static
+/// invoice across the same event as a unique type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaidInvoice {
+	/// Bolt12 invoice
+	Bolt12Invoice(crate::offers::invoice::Bolt12Invoice),
+	/// Static invoice
+	StaticInvoice(crate::offers::static_invoice::StaticInvoice),
+ }
+
+impl_writeable_tlv_based_enum_legacy!(PaidInvoice,
+	;
+	(0, Bolt12Invoice),
+	(2, StaticInvoice)
+);
