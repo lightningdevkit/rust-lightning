@@ -36,6 +36,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
+use crate::util::persist::MonitorName;
 use crate::util::wakers::{Future, Notifier};
 use crate::ln::channel_state::ChannelDetails;
 
@@ -102,11 +103,13 @@ use bitcoin::secp256k1::PublicKey;
 /// [`TrustedCommitmentTransaction::build_to_local_justice_tx`]: crate::ln::chan_utils::TrustedCommitmentTransaction::build_to_local_justice_tx
 pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// Persist a new channel's data in response to a [`chain::Watch::watch_channel`] call. This is
-	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup.
+	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup,
+	/// with the `monitor_name` returned by [`ChannelMonitor::persistence_key`].
 	///
-	/// The data can be stored any way you want, but the identifier provided by LDK is the
-	/// channel's outpoint (and it is up to you to maintain a correct mapping between the outpoint
-	/// and the stored channel data). Note that you **must** persist every new monitor to disk.
+	/// The data can be stored any way you want, so long as `monitor_name` is used to maintain a
+	/// correct mapping with the stored channel data (i.e., calls to `update_persisted_channel` with
+	/// the same `monitor_name` must be applied to or overwrite this data). Note that you **must**
+	/// persist every new monitor to disk.
 	///
 	/// The [`ChannelMonitor::get_latest_update_id`] uniquely links this call to [`ChainMonitor::channel_monitor_updated`].
 	/// For [`Persist::persist_new_channel`], it is only necessary to call [`ChainMonitor::channel_monitor_updated`]
@@ -117,7 +120,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
-	fn persist_new_channel(&self, channel_funding_outpoint: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
+	fn persist_new_channel(&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
 
 	/// Update one channel's data. The provided [`ChannelMonitor`] has already applied the given
 	/// update.
@@ -156,7 +159,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus`] for requirements when returning errors.
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
-	fn update_persisted_channel(&self, channel_funding_outpoint: OutPoint, monitor_update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
+	fn update_persisted_channel(&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
 	/// Prevents the channel monitor from being loaded on startup.
 	///
 	/// Archiving the data in a backup location (rather than deleting it fully) is useful for
@@ -168,7 +171,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// the archive process. Additionally, because the archive operation could be retried on
 	/// restart, this method must in that case be idempotent, ensuring it can handle scenarios where
 	/// the monitor already exists in the archive.
-	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
+	fn archive_persisted_channel(&self, monitor_name: MonitorName);
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
@@ -342,8 +345,7 @@ where C::Target: chain::Filter,
 			// `ChannelMonitorUpdate` after a channel persist for a channel with the same
 			// `latest_update_id`.
 			let _pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-			let funding_txo = monitor.get_funding_txo();
-			match self.persister.update_persisted_channel(funding_txo, None, monitor) {
+			match self.persister.update_persisted_channel(monitor.persistence_key(), None, monitor) {
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(logger, "Finished syncing Channel Monitor for channel {} for block-data",
 						log_funding_info!(monitor)
@@ -642,7 +644,7 @@ where C::Target: chain::Filter,
 				have_monitors_to_prune = true;
 			}
 			if needs_persistence {
-				self.persister.update_persisted_channel(monitor_holder.monitor.get_funding_txo(), None, &monitor_holder.monitor);
+				self.persister.update_persisted_channel(monitor_holder.monitor.persistence_key(), None, &monitor_holder.monitor);
 			}
 		}
 		if have_monitors_to_prune {
@@ -655,7 +657,7 @@ where C::Target: chain::Filter,
 						"Archiving fully resolved ChannelMonitor for channel ID {}",
 						channel_id
 					);
-					self.persister.archive_persisted_channel(monitor_holder.monitor.get_funding_txo());
+					self.persister.archive_persisted_channel(monitor_holder.monitor.persistence_key());
 					false
 				} else {
 					true
@@ -769,7 +771,7 @@ where C::Target: chain::Filter,
 		log_trace!(logger, "Got new ChannelMonitor for channel {}", log_funding_info!(monitor));
 		let update_id = monitor.get_latest_update_id();
 		let mut pending_monitor_updates = Vec::new();
-		let persist_res = self.persister.persist_new_channel(monitor.get_funding_txo(), &monitor);
+		let persist_res = self.persister.persist_new_channel(monitor.persistence_key(), &monitor);
 		match persist_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_info!(logger, "Persistence of new ChannelMonitor for channel {} in progress", log_funding_info!(monitor));
@@ -825,7 +827,6 @@ where C::Target: chain::Filter,
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
 				let update_id = update.update_id;
-				let funding_txo = monitor.get_funding_txo();
 				let persist_res = if update_res.is_err() {
 					// Even if updating the monitor returns an error, the monitor's state will
 					// still be changed. Therefore, we should persist the updated monitor despite the error.
@@ -833,9 +834,9 @@ where C::Target: chain::Filter,
 					// while reading `channel_monitor` with updates from storage. Instead, we should persist
 					// the entire `channel_monitor` here.
 					log_warn!(logger, "Failed to update ChannelMonitor for channel {}. Going ahead and persisting the entire ChannelMonitor", log_funding_info!(monitor));
-					self.persister.update_persisted_channel(funding_txo, None, monitor)
+					self.persister.update_persisted_channel(monitor.persistence_key(), None, monitor)
 				} else {
-					self.persister.update_persisted_channel(funding_txo, Some(update), monitor)
+					self.persister.update_persisted_channel(monitor.persistence_key(), Some(update), monitor)
 				};
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {

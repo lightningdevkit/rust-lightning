@@ -48,6 +48,7 @@ use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
+use crate::util::persist::MonitorName;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
@@ -879,6 +880,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	holder_revocation_basepoint: RevocationBasepoint,
 	channel_id: ChannelId,
 	funding_info: (OutPoint, ScriptBuf),
+	first_confirmed_funding_txo: OutPoint,
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
 
@@ -1246,6 +1248,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(21, self.balances_empty_height, option),
 			(23, self.holder_pays_commitment_tx_fee, option),
 			(25, self.payment_preimages, required),
+			(27, self.first_confirmed_funding_txo, required),
 		});
 
 		Ok(())
@@ -1398,6 +1401,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut outputs_to_watch = new_hash_map();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
 
+		let first_confirmed_funding_txo = funding_info.0;
+
 		Self::from_impl(ChannelMonitorImpl {
 			latest_update_id: 0,
 			commitment_transaction_number_obscure_factor,
@@ -1411,6 +1416,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			holder_revocation_basepoint,
 			channel_id,
 			funding_info,
+			first_confirmed_funding_txo,
 			current_counterparty_commitment_txid: None,
 			prev_counterparty_commitment_txid: None,
 
@@ -1458,6 +1464,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			failed_back_htlc_ids: new_hash_set(),
 		})
+	}
+
+	/// Returns a unique id for persisting the [`ChannelMonitor`], which is used as a key in a
+	/// key-value store.
+	///
+	/// Note: Previously, the funding outpoint was used in the [`Persist`] trait. However, since the
+	/// outpoint may change during splicing, this method is used to obtain a unique key instead. For
+	/// v1 channels, the funding outpoint is still used for backwards compatibility, whereas v2
+	/// channels use the channel id since it is fixed.
+	///
+	/// [`Persist`]: crate::chain::chainmonitor::Persist
+	pub fn persistence_key(&self) -> MonitorName {
+		let inner = self.inner.lock().unwrap();
+		let funding_outpoint = inner.first_confirmed_funding_txo;
+		let channel_id = inner.channel_id;
+		if ChannelId::v1_from_funding_outpoint(funding_outpoint) == channel_id {
+			MonitorName::V1Channel(funding_outpoint)
+		} else {
+			MonitorName::V2Channel(channel_id)
+		}
 	}
 
 	#[cfg(test)]
@@ -5047,6 +5073,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut channel_id = None;
 		let mut holder_pays_commitment_tx_fee = None;
 		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
+		let mut first_confirmed_funding_txo = RequiredWrapper(None);
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -5061,6 +5088,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(21, balances_empty_height, option),
 			(23, holder_pays_commitment_tx_fee, option),
 			(25, payment_preimages_with_info, option),
+			(27, first_confirmed_funding_txo, (default_value, funding_info.0)),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -5113,6 +5141,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			holder_revocation_basepoint,
 			channel_id: channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint)),
 			funding_info,
+			first_confirmed_funding_txo: first_confirmed_funding_txo.0.unwrap(),
 			current_counterparty_commitment_txid,
 			prev_counterparty_commitment_txid,
 

@@ -2771,8 +2771,7 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let funding_txo = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	if !broadcast_initial_commitment {
 		// Send a payment to move the channel forward
@@ -2788,7 +2787,7 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	// Send another payment, now revoking the previous commitment tx
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000);
 
-	let justice_tx = persisters[1].justice_tx(funding_txo, &revoked_commitment_tx.compute_txid()).unwrap();
+	let justice_tx = persisters[1].justice_tx(channel_id, &revoked_commitment_tx.compute_txid()).unwrap();
 	check_spends!(justice_tx, revoked_commitment_tx);
 
 	mine_transactions(&nodes[1], &[revoked_commitment_tx, &justice_tx]);

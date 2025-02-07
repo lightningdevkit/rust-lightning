@@ -51,7 +51,7 @@ use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::config::UserConfig;
 use crate::util::logger::{Logger, Record};
-use crate::util::persist::KVStore;
+use crate::util::persist::{KVStore, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
@@ -533,10 +533,10 @@ pub(crate) struct WatchtowerPersister {
 	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the justice tx
 	/// amount, and commitment number so we can build the justice tx after our counterparty
 	/// revokes it.
-	unsigned_justice_tx_data: Mutex<HashMap<OutPoint, VecDeque<JusticeTxData>>>,
+	unsigned_justice_tx_data: Mutex<HashMap<ChannelId, VecDeque<JusticeTxData>>>,
 	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
 	/// tx which would be used to provide a watchtower with the data it needs.
-	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
+	watchtower_state: Mutex<HashMap<ChannelId, HashMap<Txid, Transaction>>>,
 	destination_script: ScriptBuf,
 }
 
@@ -556,12 +556,12 @@ impl WatchtowerPersister {
 
 	#[cfg(test)]
 	pub(crate) fn justice_tx(
-		&self, funding_txo: OutPoint, commitment_txid: &Txid,
+		&self, channel_id: ChannelId, commitment_txid: &Txid,
 	) -> Option<Transaction> {
 		self.watchtower_state
 			.lock()
 			.unwrap()
-			.get(&funding_txo)
+			.get(&channel_id)
 			.unwrap()
 			.get(commitment_txid)
 			.cloned()
@@ -588,21 +588,21 @@ impl WatchtowerPersister {
 #[cfg(test)]
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
-		&self, funding_txo: OutPoint, data: &ChannelMonitor<Signer>,
+		&self, monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = self.persister.persist_new_channel(funding_txo, data);
+		let res = self.persister.persist_new_channel(monitor_name, data);
 
 		assert!(self
 			.unsigned_justice_tx_data
 			.lock()
 			.unwrap()
-			.insert(funding_txo, VecDeque::new())
+			.insert(data.channel_id(), VecDeque::new())
 			.is_none());
 		assert!(self
 			.watchtower_state
 			.lock()
 			.unwrap()
-			.insert(funding_txo, new_hash_map())
+			.insert(data.channel_id(), new_hash_map())
 			.is_none());
 
 		let initial_counterparty_commitment_tx =
@@ -613,7 +613,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 			self.unsigned_justice_tx_data
 				.lock()
 				.unwrap()
-				.get_mut(&funding_txo)
+				.get_mut(&data.channel_id())
 				.unwrap()
 				.push_back(justice_data);
 		}
@@ -621,10 +621,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = self.persister.update_persisted_channel(funding_txo, update, data);
+		let res = self.persister.update_persisted_channel(monitor_name, update, data);
 
 		if let Some(update) = update {
 			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
@@ -632,7 +632,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 				.into_iter()
 				.filter_map(|commitment_tx| self.form_justice_data_from_commitment(&commitment_tx));
 			let mut channels_justice_txs = self.unsigned_justice_tx_data.lock().unwrap();
-			let channel_state = channels_justice_txs.get_mut(&funding_txo).unwrap();
+			let channel_state = channels_justice_txs.get_mut(&data.channel_id()).unwrap();
 			channel_state.extend(justice_datas);
 
 			while let Some(JusticeTxData { justice_tx, value, commitment_number }) =
@@ -651,7 +651,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 							.watchtower_state
 							.lock()
 							.unwrap()
-							.get_mut(&funding_txo)
+							.get_mut(&data.channel_id())
 							.unwrap()
 							.insert(commitment_txid, signed_justice_tx);
 						assert!(dup.is_none());
@@ -664,10 +664,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 		res
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		<TestPersister as Persist<TestChannelSigner>>::archive_persisted_channel(
 			&self.persister,
-			funding_txo,
+			monitor_name,
 		);
 	}
 }
@@ -678,10 +678,10 @@ pub struct TestPersister {
 	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
 	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
 	/// [`ChannelMonitor::get_latest_update_id`] here.
-	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<u64>>>,
+	pub offchain_monitor_updates: Mutex<HashMap<MonitorName, HashSet<u64>>>,
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// monitor's funding outpoint here.
-	pub chain_sync_monitor_persistences: Mutex<VecDeque<OutPoint>>,
+	pub chain_sync_monitor_persistences: Mutex<VecDeque<MonitorName>>,
 }
 impl TestPersister {
 	pub fn new() -> Self {
@@ -698,7 +698,7 @@ impl TestPersister {
 }
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
 	fn persist_new_channel(
-		&self, _funding_txo: OutPoint, _data: &ChannelMonitor<Signer>,
+		&self, _monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret;
@@ -707,7 +707,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 	}
 
 	fn update_persisted_channel(
-		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
+		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		_data: &ChannelMonitor<Signer>,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
@@ -719,19 +719,19 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister 
 			self.offchain_monitor_updates
 				.lock()
 				.unwrap()
-				.entry(funding_txo)
+				.entry(monitor_name)
 				.or_insert(new_hash_set())
 				.insert(update.update_id);
 		} else {
-			self.chain_sync_monitor_persistences.lock().unwrap().push_back(funding_txo);
+			self.chain_sync_monitor_persistences.lock().unwrap().push_back(monitor_name);
 		}
 		ret
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		// remove the channel from the offchain_monitor_updates and chain_sync_monitor_persistences.
-		self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo);
-		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &funding_txo);
+		self.offchain_monitor_updates.lock().unwrap().remove(&monitor_name);
+		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &monitor_name);
 	}
 }
 

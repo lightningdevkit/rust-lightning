@@ -229,14 +229,17 @@ fn do_test_v2_channel_establishment(
 		chanmon_cfgs[1]
 			.persister
 			.set_update_ret(crate::chain::ChannelMonitorUpdateStatus::Completed);
-		let (outpoint, latest_update, _) = *nodes[1]
+		let (latest_update, _) = *nodes[1]
 			.chain_monitor
 			.latest_monitor_update_id
 			.lock()
 			.unwrap()
 			.get(&channel_id)
 			.unwrap();
-		nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+		nodes[1]
+			.chain_monitor
+			.chain_monitor
+			.force_channel_monitor_updated(channel_id, latest_update);
 	}
 
 	let events = nodes[1].node.get_and_clear_pending_events();

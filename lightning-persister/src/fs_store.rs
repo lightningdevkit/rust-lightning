@@ -498,17 +498,13 @@ mod tests {
 		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
 	};
 
-	use bitcoin::Txid;
-
 	use lightning::chain::chainmonitor::Persist;
-	use lightning::chain::transaction::OutPoint;
 	use lightning::chain::ChannelMonitorUpdateStatus;
 	use lightning::check_closed_event;
 	use lightning::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::util::persist::read_channel_monitors;
 	use lightning::util::test_utils;
-	use std::str::FromStr;
 
 	impl Drop for FilesystemStore {
 		fn drop(&mut self) {
@@ -622,14 +618,8 @@ mod tests {
 		perms.set_readonly(true);
 		fs::set_permissions(path, perms).unwrap();
 
-		let test_txo = OutPoint {
-			txid: Txid::from_str(
-				"8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be",
-			)
-			.unwrap(),
-			index: 0,
-		};
-		match store.persist_new_channel(test_txo, &added_monitors[0].1) {
+		let monitor_name = added_monitors[0].1.persistence_key();
+		match store.persist_new_channel(monitor_name, &added_monitors[0].1) {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel"),
 		}
@@ -676,14 +666,8 @@ mod tests {
 		// handle, hence why the test is Windows-only.
 		let store = FilesystemStore::new(":<>/".into());
 
-		let test_txo = OutPoint {
-			txid: Txid::from_str(
-				"8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be",
-			)
-			.unwrap(),
-			index: 0,
-		};
-		match store.persist_new_channel(test_txo, &added_monitors[0].1) {
+		let monitor_name = added_monitors[0].1.persistence_key();
+		match store.persist_new_channel(monitor_name, &added_monitors[0].1) {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel"),
 		}
