@@ -11,6 +11,7 @@
 
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::blinded_path::utils;
@@ -193,17 +194,11 @@ impl BlindedPaymentPath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		let control_tlvs_ss =
-			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
-		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-		let encrypted_control_tlvs =
-			&self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
-		let mut s = Cursor::new(encrypted_control_tlvs);
-		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-			Ok(ChaChaPolyReadAdapter {
-				readable: BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
-			}) => {
+		match self.decrypt_intro_payload::<NS>(node_signer) {
+			Ok((
+				BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
+				control_tlvs_ss,
+			)) => {
 				let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
 					Some(node_id) => node_id,
 					None => return Err(()),
@@ -219,6 +214,25 @@ impl BlindedPaymentPath {
 				self.inner_path.blinded_hops.remove(0);
 				Ok(())
 			},
+			_ => Err(()),
+		}
+	}
+
+	pub(crate) fn decrypt_intro_payload<NS: Deref>(
+		&self, node_signer: &NS,
+	) -> Result<(BlindedPaymentTlvs, SharedSecret), ()>
+	where
+		NS::Target: NodeSigner,
+	{
+		let control_tlvs_ss =
+			node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
+		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
+		let encrypted_control_tlvs =
+			&self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
+		let mut s = Cursor::new(encrypted_control_tlvs);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
+		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
+			Ok(ChaChaPolyReadAdapter { readable, .. }) => Ok((readable, control_tlvs_ss)),
 			_ => Err(()),
 		}
 	}

@@ -36,7 +36,7 @@ use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -87,7 +87,6 @@ use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
-	crate::blinded_path::payment::AsyncBolt12OfferContext,
 	crate::offers::offer::Amount,
 	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
 };
@@ -240,6 +239,8 @@ pub enum PendingHTLCRouting {
 		/// [`PaymentSecret`] and should verify it using our
 		/// [`NodeSigner::get_inbound_payment_key`].
 		has_recipient_created_payment_secret: bool,
+		/// The [`InvoiceRequest`] associated with the [`Offer`] corresponding to this payment.
+		invoice_request: Option<InvoiceRequest>,
 		/// The context of the payment included by the recipient in a blinded path, or `None` if a
 		/// blinded path was not used.
 		///
@@ -4693,6 +4694,17 @@ where
 		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, recipient_onion, payment_id, route, None, &self.entropy_source, best_block_height)
 	}
 
+	#[cfg(all(test, async_payments))]
+	pub(crate) fn test_modify_pending_payment<Fn>(
+		&self, payment_id: &PaymentId, mut callback: Fn
+	) where Fn: FnMut(&mut PendingOutboundPayment) {
+		let mut outbounds = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
+		match outbounds.get_mut(payment_id) {
+			Some(outb) => callback(outb),
+			_ => panic!()
+		}
+	}
+
 	#[cfg(test)]
 	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
@@ -6046,7 +6058,7 @@ where
 								let blinded_failure = routing.blinded_failure();
 								let (
 									cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret,
-									mut onion_fields, has_recipient_created_payment_secret
+									mut onion_fields, has_recipient_created_payment_secret, invoice_request_opt
 								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
@@ -6058,12 +6070,12 @@ where
 												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
-											true)
+											true, None)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
 										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _,
-										has_recipient_created_payment_secret, payment_context,
+										has_recipient_created_payment_secret, payment_context, invoice_request,
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
@@ -6072,7 +6084,7 @@ where
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
 											payment_data, payment_context, None, onion_fields,
-											has_recipient_created_payment_secret)
+											has_recipient_created_payment_secret, invoice_request)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -6270,14 +6282,54 @@ where
 										};
 										check_total_value!(purpose);
 									},
-									OnionPayload::Spontaneous(preimage) => {
-										if payment_context.is_some() {
-											if !matches!(payment_context, Some(PaymentContext::AsyncBolt12Offer(_))) {
-												log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
+									OnionPayload::Spontaneous(keysend_preimage) => {
+										let purpose = if let Some(PaymentContext::AsyncBolt12Offer(
+											AsyncBolt12OfferContext { offer_nonce }
+										)) = payment_context {
+											let payment_data = match payment_data {
+												Some(data) => data,
+												None => {
+													debug_assert!(false, "We checked that payment_data is Some above");
+													fail_htlc!(claimable_htlc, payment_hash);
+												},
+											};
+
+											let verified_invreq = match invoice_request_opt
+												.and_then(|invreq| invreq.verify_using_recipient_data(
+													offer_nonce, &self.inbound_payment_key, &self.secp_ctx
+												).ok())
+											{
+												Some(verified_invreq) => {
+													if let Some(invreq_amt_msat) = verified_invreq.amount_msats() {
+														if payment_data.total_msat < invreq_amt_msat {
+															fail_htlc!(claimable_htlc, payment_hash);
+														}
+													}
+													verified_invreq
+												},
+												None => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											};
+											let payment_purpose_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+												offer_id: verified_invreq.offer_id,
+												invoice_request: verified_invreq.fields(),
+											});
+											match events::PaymentPurpose::from_parts(
+												Some(keysend_preimage), payment_data.payment_secret,
+												Some(payment_purpose_context),
+											) {
+												Ok(purpose) => purpose,
+												Err(()) => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
 											}
+										} else if payment_context.is_some() {
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
 											fail_htlc!(claimable_htlc, payment_hash);
-										}
-										let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+										} else {
+											events::PaymentPurpose::SpontaneousPayment(keysend_preimage)
+										};
 										check_total_value!(purpose);
 									}
 								}
@@ -9959,8 +10011,11 @@ where
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let hmac = signer::hmac_for_held_htlc_available_context(nonce, expanded_key);
+		let path_absolute_expiry = Duration::from_secs(
+			inbound_payment::calculate_absolute_expiry(created_at.as_secs(), relative_expiry_secs)
+		);
 		let context = MessageContext::AsyncPayments(
-			AsyncPaymentsContext::InboundPayment { nonce, hmac }
+			AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry }
 		);
 		let async_receive_message_paths = self.create_blinded_paths(context)
 			.map_err(|()| Bolt12SemanticError::MissingPaths)?;
@@ -10507,6 +10562,16 @@ where
 
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
+		)
+	}
+
+	#[cfg(all(test, async_payments))]
+	pub(super) fn test_create_blinded_payment_paths(
+		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
+		relative_expiry_seconds: u32
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		self.create_blinded_payment_paths(
+			amount_msats, payment_secret, payment_context, relative_expiry_seconds
 		)
 	}
 
@@ -12186,7 +12251,20 @@ where
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
-		None
+		#[cfg(async_payments)] {
+			match _context {
+				AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry } => {
+					if let Err(()) = signer::verify_held_htlc_available_context(
+						nonce, hmac, &self.inbound_payment_key
+					) { return None }
+					if self.duration_since_epoch() > path_absolute_expiry { return None }
+				},
+				_ => return None
+			}
+			return _responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()))
+		}
+		#[cfg(not(async_payments))]
+		return None
 	}
 
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
@@ -12396,6 +12474,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(5, custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
 		(9, payment_context, option),
+		(11, invoice_request, option),
 	},
 );
 
