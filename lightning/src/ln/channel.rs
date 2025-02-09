@@ -6280,10 +6280,8 @@ impl<SP: Deref> FundedChannel<SP> where
 																		 fee, fee_range.min_fee_satoshis, fee_range.max_fee_satoshis, logger);
 						let signed_tx = if let (Some(ClosingSigned { signature, .. }), Some(counterparty_sig)) =
 							(closing_signed.as_ref(), self.context.last_received_closing_sig) {
-							let funding_redeemscript = self.context.get_funding_redeemscript();
-							let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
-							debug_assert!(self.context.secp_ctx.verify_ecdsa(&sighash, &counterparty_sig,
-																			 &self.context.get_counterparty_pubkeys().funding_pubkey).is_ok());
+							// TODO (taproot)
+							debug_assert!(self.context.holder_signer.as_ref().validate_closing_signature(&closing_tx, &counterparty_sig, &self.context.secp_ctx).is_ok());
 							Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
 						} else { None };
 						let shutdown_result = signed_tx.as_ref().map(|_| self.shutdown_result_coop_close());
@@ -6986,23 +6984,25 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Ok((None, None, None));
 		}
 
-		let funding_redeemscript = self.context.get_funding_redeemscript();
 		let mut skip_remote_output = false;
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?;
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
-		let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
 
-		match self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.get_counterparty_pubkeys().funding_pubkey) {
+		// TODO (taproot)
+		match self.context.holder_signer.as_ref().validate_closing_signature(&closing_tx, &msg.signature, &self.context.secp_ctx) {
 			Ok(_) => {},
 			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				skip_remote_output = true;
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?.0;
-				let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
-				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.context.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
+				// TODO (taproot)
+				secp_check!(
+					self.context.holder_signer.as_ref().validate_closing_signature(&closing_tx, &msg.signature, &self.context.secp_ctx),
+					"Invalid closing tx signature from peer".to_owned()
+				);
 			},
 		};
 

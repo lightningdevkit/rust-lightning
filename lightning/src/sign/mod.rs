@@ -1291,6 +1291,22 @@ pub trait ChannelSigner {
 			sorted_htlcs,
 		)
 	}
+
+	/// Validate a counterparty signature on a closing transaction
+	fn validate_closing_signature(
+		&self, closing_tx: &ClosingTransaction, sig: &Signature,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<(), ()> {
+		let params = self.get_channel_parameters().unwrap();
+		let holder_pubkey = params.holder_pubkeys.funding_pubkey;
+		let counterparty_pubkey =
+			params.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey;
+		let funding_redeemscript = make_funding_redeemscript(&holder_pubkey, &counterparty_pubkey);
+		let channel_value_satoshis = self.get_channel_value_satoshis();
+		let sighash =
+			closing_tx.trust().get_sighash_all(&funding_redeemscript, channel_value_satoshis);
+		secp_ctx.verify_ecdsa(&sighash, sig, &counterparty_pubkey).map_err(|_| ())
+	}
 }
 
 /// Specifies the recipient of an invoice.
