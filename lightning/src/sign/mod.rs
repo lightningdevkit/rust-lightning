@@ -18,7 +18,7 @@ use bitcoin::ecdsa::Signature as EcdsaSignature;
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::opcodes;
-use bitcoin::script::{Builder, ScriptBuf};
+use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
@@ -1307,6 +1307,86 @@ pub trait ChannelSigner {
 			closing_tx.trust().get_sighash_all(&funding_redeemscript, channel_value_satoshis);
 		secp_ctx.verify_ecdsa(&sighash, sig, &counterparty_pubkey).map_err(|_| ())
 	}
+
+	/// Create a signature for a (proposed) closing transaction.
+	///
+	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
+	/// chosen to forgo their output as dust.
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelManager::signer_unblocked`] must be called.
+	///
+	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
+	fn sign_closing_transaction(
+		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()>;
+
+	/// Create the closing transaction
+	fn build_signed_closing_transaction(
+		&self, closing_tx: &ClosingTransaction, counterparty_sig: &Signature,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Transaction, ()> {
+		self.validate_closing_signature(closing_tx, counterparty_sig, secp_ctx)?;
+		let sig = self.sign_closing_transaction(closing_tx, secp_ctx)?;
+
+		let params = self.get_channel_parameters().unwrap();
+		let holder_pubkey = params.holder_pubkeys.funding_pubkey;
+		let counterparty_pubkey =
+			params.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey;
+
+		let mut witness = Witness::new();
+		witness.push(Vec::new()); // First is the multisig dummy
+		if holder_pubkey < counterparty_pubkey {
+			witness.push_ecdsa_signature(&EcdsaSignature::sighash_all(sig));
+			witness.push_ecdsa_signature(&EcdsaSignature::sighash_all(*counterparty_sig));
+		} else {
+			witness.push_ecdsa_signature(&EcdsaSignature::sighash_all(*counterparty_sig));
+			witness.push_ecdsa_signature(&EcdsaSignature::sighash_all(sig));
+		}
+		let funding_redeemscript = make_funding_redeemscript(&holder_pubkey, &counterparty_pubkey);
+		witness.push(funding_redeemscript.into_bytes());
+
+		let mut tx = closing_tx.trust().built_transaction().clone();
+		tx.input[0].witness = witness;
+		Ok(tx)
+	}
+
+	/// Get the expected weight of a closing transaction
+	fn get_closing_transaction_weight(
+		&self, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>,
+	) -> u64 {
+		let params = self.get_channel_parameters().unwrap();
+		let holder_pubkey = params.holder_pubkeys.funding_pubkey;
+		let counterparty_pubkey =
+			params.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey;
+		let funding_redeemscript = make_funding_redeemscript(&holder_pubkey, &counterparty_pubkey);
+
+		let mut ret = (4 +                                                   // version
+		 1 +                                                   // input count
+		 36 +                                                  // prevout
+		 1 +                                                   // script length (0)
+		 4 +                                                   // sequence
+		 1 +                                                   // output count
+		 4                                                     // lock time
+		 )*4 +                                                 // * 4 for non-witness parts
+		2 +                                                    // witness marker and flag
+		1 +                                                    // witness element count
+		4 +                                                    // 4 element lengths (2 sigs, multisig dummy, and witness script)
+		funding_redeemscript.len() as u64 + // funding witness script
+		2*(1 + 71); // two signatures + sighash type flags
+		if let Some(spk) = a_scriptpubkey {
+			ret += ((8+1) +                                    // output values and script length
+				spk.len() as u64)
+				* 4; // scriptpubkey and witness multiplier
+		}
+		if let Some(spk) = b_scriptpubkey {
+			ret += ((8+1) +                                    // output values and script length
+				spk.len() as u64)
+				* 4; // scriptpubkey and witness multiplier
+		}
+		ret
+	}
 }
 
 /// Specifies the recipient of an invoice.
@@ -2105,6 +2185,22 @@ impl ChannelSigner for InMemorySigner {
 	fn get_channel_value_satoshis(&self) -> u64 {
 		self.channel_value_satoshis
 	}
+
+	fn sign_closing_transaction(
+		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let counterparty_funding_key =
+			&self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+		let channel_funding_redeemscript =
+			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
+		Ok(closing_tx.trust().sign(
+			&self.funding_key,
+			&channel_funding_redeemscript,
+			self.channel_value_satoshis,
+			secp_ctx,
+		))
+	}
 }
 
 const MISSING_PARAMS_ERR: &'static str =
@@ -2175,22 +2271,6 @@ impl EcdsaChannelSigner for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
-	}
-
-	fn sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()> {
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let counterparty_funding_key =
-			&self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
-		let channel_funding_redeemscript =
-			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
-		Ok(closing_tx.trust().sign(
-			&self.funding_key,
-			&channel_funding_redeemscript,
-			self.channel_value_satoshis,
-			secp_ctx,
-		))
 	}
 
 	fn sign_channel_announcement_with_funding_key(

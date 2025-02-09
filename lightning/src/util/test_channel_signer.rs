@@ -335,6 +335,16 @@ impl ChannelSigner for TestChannelSigner {
 	fn get_channel_value_satoshis(&self) -> u64 {
 		self.inner.get_channel_value_satoshis()
 	}
+
+	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::SignClosingTransaction) {
+			return Err(());
+		}
+		closing_tx.verify(self.inner.funding_outpoint().unwrap().into_bitcoin_outpoint())
+			.expect("derived different closing transaction");
+		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
+	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {
@@ -359,16 +369,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
-	}
-
-	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		#[cfg(test)]
-		if !self.is_signer_available(SignerOp::SignClosingTransaction) {
-			return Err(());
-		}
-		closing_tx.verify(self.inner.funding_outpoint().unwrap().into_bitcoin_outpoint())
-			.expect("derived different closing transaction");
-		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_channel_announcement_with_funding_key(

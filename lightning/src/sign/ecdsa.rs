@@ -6,7 +6,7 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::Secp256k1;
 
-use crate::ln::chan_utils::{ClosingTransaction, CommitmentTransaction};
+use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::types::payment::PaymentPreimage;
 
@@ -54,19 +54,6 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
-	/// Create a signature for a (proposed) closing transaction.
-	///
-	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
-	/// chosen to forgo their output as dust.
-	///
-	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
-	/// signature and should be retried later. Once the signer is ready to provide a signature after
-	/// previously returning an `Err`, [`ChannelManager::signer_unblocked`] must be called.
-	///
-	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
-	fn sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
 	/// Signs a channel announcement message with our funding key proving it comes from one of the
 	/// channel participants.
 	///

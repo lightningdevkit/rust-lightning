@@ -9,9 +9,8 @@
 
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
-use bitcoin::script::{Script, ScriptBuf, Builder, WScriptHash};
+use bitcoin::script::{ScriptBuf, Builder, WScriptHash};
 use bitcoin::transaction::{Transaction, TxIn};
-use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
 use bitcoin::Weight;
@@ -35,7 +34,7 @@ use crate::ln::interactivetxs::{
 	TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
-use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
+use crate::ln::msgs::{ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
@@ -4489,33 +4488,6 @@ impl<SP: Deref> FundedChannel<SP> where
 	}
 
 	#[inline]
-	fn get_closing_transaction_weight(&self, a_scriptpubkey: Option<&Script>, b_scriptpubkey: Option<&Script>) -> u64 {
-		let mut ret =
-		(4 +                                                   // version
-		 1 +                                                   // input count
-		 36 +                                                  // prevout
-		 1 +                                                   // script length (0)
-		 4 +                                                   // sequence
-		 1 +                                                   // output count
-		 4                                                     // lock time
-		 )*4 +                                                 // * 4 for non-witness parts
-		2 +                                                    // witness marker and flag
-		1 +                                                    // witness element count
-		4 +                                                    // 4 element lengths (2 sigs, multisig dummy, and witness script)
-		self.context.get_funding_redeemscript().len() as u64 + // funding witness script
-		2*(1 + 71);                                            // two signatures + sighash type flags
-		if let Some(spk) = a_scriptpubkey {
-			ret += ((8+1) +                                    // output values and script length
-				spk.len() as u64) * 4;                         // scriptpubkey and witness multiplier
-		}
-		if let Some(spk) = b_scriptpubkey {
-			ret += ((8+1) +                                    // output values and script length
-				spk.len() as u64) * 4;                         // scriptpubkey and witness multiplier
-		}
-		ret
-	}
-
-	#[inline]
 	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> Result<(ClosingTransaction, u64), ChannelError> {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
 		assert!(self.context.pending_outbound_htlcs.is_empty());
@@ -6278,11 +6250,11 @@ impl<SP: Deref> FundedChannel<SP> where
 					Ok((closing_tx, fee)) => {
 						let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output,
 																		 fee, fee_range.min_fee_satoshis, fee_range.max_fee_satoshis, logger);
-						let signed_tx = if let (Some(ClosingSigned { signature, .. }), Some(counterparty_sig)) =
+						let signed_tx = if let (Some(_closing_signed), Some(counterparty_sig)) =
 							(closing_signed.as_ref(), self.context.last_received_closing_sig) {
 							// TODO (taproot)
 							debug_assert!(self.context.holder_signer.as_ref().validate_closing_signature(&closing_tx, &counterparty_sig, &self.context.secp_ctx).is_ok());
-							Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
+							Some(self.context.holder_signer.as_ref().build_signed_closing_transaction(&closing_tx, &counterparty_sig, &self.context.secp_ctx).unwrap())
 						} else { None };
 						let shutdown_result = signed_tx.as_ref().map(|_| self.shutdown_result_coop_close());
 						(closing_signed, signed_tx, shutdown_result)
@@ -6685,7 +6657,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// come to consensus with our counterparty on appropriate fees, however it should be a
 		// relatively rare case. We can revisit this later, though note that in order to determine
 		// if the funders' output is dust we have to know the absolute fee we're going to use.
-		let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
+		let tx_weight = self.context.holder_signer.as_ref().get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
 		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
 		let proposed_max_total_fee_satoshis = if self.context.is_outbound() {
 				// We always add force_close_avoidance_max_fee_satoshis to our normal
@@ -6881,29 +6853,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
 	}
 
-	fn build_signed_closing_transaction(&self, closing_tx: &ClosingTransaction, counterparty_sig: &Signature, sig: &Signature) -> Transaction {
-		let mut tx = closing_tx.trust().built_transaction().clone();
-
-		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
-
-		let funding_key = self.context.get_holder_pubkeys().funding_pubkey.serialize();
-		let counterparty_funding_key = self.context.counterparty_funding_pubkey().serialize();
-		let mut holder_sig = sig.serialize_der().to_vec();
-		holder_sig.push(EcdsaSighashType::All as u8);
-		let mut cp_sig = counterparty_sig.serialize_der().to_vec();
-		cp_sig.push(EcdsaSighashType::All as u8);
-		if funding_key[..] < counterparty_funding_key[..] {
-			tx.input[0].witness.push(holder_sig);
-			tx.input[0].witness.push(cp_sig);
-		} else {
-			tx.input[0].witness.push(cp_sig);
-			tx.input[0].witness.push(holder_sig);
-		}
-
-		tx.input[0].witness.push(self.context.get_funding_redeemscript().into_bytes());
-		tx
-	}
-
 	fn get_closing_signed_msg<L: Deref>(
 		&mut self, closing_tx: &ClosingTransaction, skip_remote_output: bool,
 		fee_satoshis: u64, min_fee_satoshis: u64, max_fee_satoshis: u64, logger: &L
@@ -7013,10 +6962,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
+		if let Some((last_fee, _, _, Some(_sig))) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = self.shutdown_result_coop_close();
-				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
+				let tx = self.context.holder_signer.as_ref().build_signed_closing_transaction(&mut closing_tx, &msg.signature, &self.context.secp_ctx).unwrap();
 				self.context.channel_state = ChannelState::ShutdownComplete;
 				self.context.update_time_counter += 1;
 				return Ok((None, Some(tx), Some(shutdown_result)));
@@ -7043,8 +6992,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					}
 					self.context.update_time_counter += 1;
 					self.context.last_received_closing_sig = Some(msg.signature.clone());
-					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }|
-						self.build_signed_closing_transaction(&closing_tx, &msg.signature, signature));
+					let tx = closing_signed.as_ref().map(|_closing_signed|
+						self.context.holder_signer.as_ref().build_signed_closing_transaction(&closing_tx, &msg.signature, &self.context.secp_ctx).unwrap());
 					(tx, shutdown_result)
 				} else {
 					(None, None)
