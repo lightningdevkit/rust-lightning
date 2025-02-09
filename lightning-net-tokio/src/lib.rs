@@ -689,6 +689,7 @@ mod tests {
 		) -> Result<(), ()> {
 			Ok(())
 		}
+		fn peer_disconnected(&self, _their_node_id: PublicKey) {}
 		fn handle_reply_channel_range(
 			&self, _their_node_id: PublicKey, _msg: ReplyChannelRange,
 		) -> Result<(), LightningError> {

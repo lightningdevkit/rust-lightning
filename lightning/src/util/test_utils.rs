@@ -887,10 +887,45 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	}
 }
 
+pub struct ConnectionTracker {
+	pub had_peers: AtomicBool,
+	pub connected_peers: Mutex<Vec<PublicKey>>,
+	pub fail_connections: AtomicBool,
+}
+
+impl ConnectionTracker {
+	pub fn new() -> Self {
+		Self {
+			had_peers: AtomicBool::new(false),
+			connected_peers: Mutex::new(Vec::new()),
+			fail_connections: AtomicBool::new(false),
+		}
+	}
+
+	pub fn peer_connected(&self, their_node_id: PublicKey) -> Result<(), ()> {
+		self.had_peers.store(true, Ordering::Release);
+		let mut connected_peers = self.connected_peers.lock().unwrap();
+		assert!(!connected_peers.contains(&their_node_id));
+		if self.fail_connections.load(Ordering::Acquire) {
+			Err(())
+		} else {
+			connected_peers.push(their_node_id);
+			Ok(())
+		}
+	}
+
+	pub fn peer_disconnected(&self, their_node_id: PublicKey) {
+		assert!(self.had_peers.load(Ordering::Acquire));
+		let mut connected_peers = self.connected_peers.lock().unwrap();
+		assert!(connected_peers.contains(&their_node_id));
+		connected_peers.retain(|id| *id != their_node_id);
+	}
+}
+
 pub struct TestChannelMessageHandler {
 	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
-	connected_peers: Mutex<HashSet<PublicKey>>,
+	pub conn_tracker: ConnectionTracker,
 	chain_hash: ChainHash,
 }
 
@@ -905,7 +940,7 @@ impl TestChannelMessageHandler {
 		TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
-			connected_peers: Mutex::new(new_hash_set()),
+			conn_tracker: ConnectionTracker::new(),
 			chain_hash,
 		}
 	}
@@ -1017,15 +1052,14 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
 	fn peer_disconnected(&self, their_node_id: PublicKey) {
-		assert!(self.connected_peers.lock().unwrap().remove(&their_node_id));
+		self.conn_tracker.peer_disconnected(their_node_id)
 	}
 	fn peer_connected(
 		&self, their_node_id: PublicKey, _msg: &msgs::Init, _inbound: bool,
 	) -> Result<(), ()> {
-		assert!(self.connected_peers.lock().unwrap().insert(their_node_id.clone()));
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
-		Ok(())
+		self.conn_tracker.peer_connected(their_node_id)
 	}
 	fn handle_error(&self, _their_node_id: PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
@@ -1155,6 +1189,7 @@ pub struct TestRoutingMessageHandler {
 	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	pub request_full_sync: AtomicBool,
 	pub announcement_available_for_sync: AtomicBool,
+	pub conn_tracker: ConnectionTracker,
 }
 
 impl TestRoutingMessageHandler {
@@ -1166,6 +1201,7 @@ impl TestRoutingMessageHandler {
 			pending_events,
 			request_full_sync: AtomicBool::new(false),
 			announcement_available_for_sync: AtomicBool::new(false),
+			conn_tracker: ConnectionTracker::new(),
 		}
 	}
 }
@@ -1240,7 +1276,12 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 				timestamp_range: u32::max_value(),
 			},
 		});
-		Ok(())
+
+		self.conn_tracker.peer_connected(their_node_id)
+	}
+
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		self.conn_tracker.peer_disconnected(their_node_id);
 	}
 
 	fn handle_reply_channel_range(

@@ -88,6 +88,8 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
+	///
+	/// [`Self::peer_disconnected`] will not be called if `Err(())` is returned.
 	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
 
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
@@ -119,6 +121,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
 	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> { None }
 	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
+	fn peer_disconnected(&self, _their_node_id: PublicKey) { }
 	fn handle_reply_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
@@ -1714,14 +1717,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if let Err(()) = self.message_handler.chan_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
+				self.message_handler.chan_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.custom_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
 				log_debug!(logger, "Custom Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				self.message_handler.route_handler.peer_disconnected(their_node_id);
+				self.message_handler.chan_handler.peer_disconnected(their_node_id);
+				self.message_handler.onion_message_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
 
@@ -2533,6 +2542,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		debug_assert!(peer.their_node_id.is_some());
 		if let Some((node_id, _)) = peer.their_node_id {
 			log_trace!(WithContext::from(&self.logger, Some(node_id), None, None), "Disconnecting peer with id {} due to {}", node_id, reason);
+			self.message_handler.route_handler.peer_disconnected(node_id);
 			self.message_handler.chan_handler.peer_disconnected(node_id);
 			self.message_handler.onion_message_handler.peer_disconnected(node_id);
 			self.message_handler.custom_message_handler.peer_disconnected(node_id);
@@ -2557,6 +2567,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					let removed = self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 					debug_assert!(removed.is_some(), "descriptor maps should be consistent");
 					if !peer.handshake_complete() { return; }
+					self.message_handler.route_handler.peer_disconnected(node_id);
 					self.message_handler.chan_handler.peer_disconnected(node_id);
 					self.message_handler.onion_message_handler.peer_disconnected(node_id);
 					self.message_handler.custom_message_handler.peer_disconnected(node_id);
@@ -2856,6 +2867,16 @@ mod tests {
 
 	struct TestCustomMessageHandler {
 		features: InitFeatures,
+		conn_tracker: test_utils::ConnectionTracker,
+	}
+
+	impl TestCustomMessageHandler {
+		fn new(features: InitFeatures) -> Self {
+			Self {
+				features,
+				conn_tracker: test_utils::ConnectionTracker::new(),
+			}
+		}
 	}
 
 	impl wire::CustomMessageReader for TestCustomMessageHandler {
@@ -2872,10 +2893,13 @@ mod tests {
 
 		fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> { Vec::new() }
 
+		fn peer_disconnected(&self, their_node_id: PublicKey) {
+			self.conn_tracker.peer_disconnected(their_node_id);
+		}
 
-		fn peer_disconnected(&self, _their_node_id: PublicKey) {}
-
-		fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
+		fn peer_connected(&self, their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+			self.conn_tracker.peer_connected(their_node_id)
+		}
 
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 
@@ -2898,7 +2922,7 @@ mod tests {
 					chan_handler: test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet)),
 					logger: test_utils::TestLogger::with_id(i.to_string()),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
-					custom_handler: TestCustomMessageHandler { features },
+					custom_handler: TestCustomMessageHandler::new(features),
 					node_signer: test_utils::TestNodeSigner::new(node_secret),
 				}
 			);
@@ -2921,7 +2945,7 @@ mod tests {
 					chan_handler: test_utils::TestChannelMessageHandler::new(ChainHash::using_genesis_block(Network::Testnet)),
 					logger: test_utils::TestLogger::new(),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
-					custom_handler: TestCustomMessageHandler { features },
+					custom_handler: TestCustomMessageHandler::new(features),
 					node_signer: test_utils::TestNodeSigner::new(node_secret),
 				}
 			);
@@ -2941,7 +2965,7 @@ mod tests {
 					chan_handler: test_utils::TestChannelMessageHandler::new(network),
 					logger: test_utils::TestLogger::new(),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
-					custom_handler: TestCustomMessageHandler { features },
+					custom_handler: TestCustomMessageHandler::new(features),
 					node_signer: test_utils::TestNodeSigner::new(node_secret),
 				}
 			);
@@ -2965,19 +2989,16 @@ mod tests {
 		peers
 	}
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+	fn try_establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor, Result<bool, PeerHandleError>, Result<bool, PeerHandleError>) {
+		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
+		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
+
 		static FD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 		let fd = FD_COUNTER.fetch_add(1, Ordering::Relaxed) as u16;
 
 		let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor::new(fd);
-		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
-
-		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
-		let features_a = peer_a.init_features(id_b);
-		let features_b = peer_b.init_features(id_a);
 		let mut fd_b = FileDescriptor::new(fd);
-		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
 
 		let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
@@ -2989,11 +3010,30 @@ mod tests {
 
 		peer_b.process_events();
 		let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
-		assert_eq!(peer_a.read_event(&mut fd_a, &b_data).unwrap(), false);
+		let a_refused = peer_a.read_event(&mut fd_a, &b_data);
 
 		peer_a.process_events();
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+		let b_refused = peer_b.read_event(&mut fd_b, &a_data);
+
+		(fd_a, fd_b, a_refused, b_refused)
+	}
+
+
+	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
+		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
+
+		let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
+		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
+
+		let features_a = peer_a.init_features(id_b);
+		let features_b = peer_b.init_features(id_a);
+
+		let (fd_a, fd_b, a_refused, b_refused) = try_establish_connection(peer_a, peer_b);
+
+		assert_eq!(a_refused.unwrap(), false);
+		assert_eq!(b_refused.unwrap(), false);
 
 		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().counterparty_node_id, id_b);
 		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().socket_address, Some(addr_b));
@@ -3244,6 +3284,50 @@ mod tests {
 		peers[0].timer_tick_occurred();
 		peers[0].process_events();
 		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
+	}
+
+	fn do_test_peer_connected_error_disconnects(handler: usize) {
+		// Test that if a message handler fails a connection in `peer_connected` we reliably
+		// produce `peer_disconnected` events for all other message handlers (that saw a
+		// corresponding `peer_connected`).
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+
+		match handler & !1 {
+			0 => {
+				peers[handler & 1].message_handler.chan_handler.conn_tracker.fail_connections.store(true, Ordering::Release);
+			}
+			2 => {
+				peers[handler & 1].message_handler.route_handler.conn_tracker.fail_connections.store(true, Ordering::Release);
+			}
+			4 => {
+				peers[handler & 1].message_handler.custom_message_handler.conn_tracker.fail_connections.store(true, Ordering::Release);
+			}
+			_ => panic!(),
+		}
+		let (_sd1, _sd2, a_refused, b_refused) = try_establish_connection(&peers[0], &peers[1]);
+		if handler & 1 == 0 {
+			assert!(a_refused.is_err());
+			assert!(peers[0].list_peers().is_empty());
+		} else {
+			assert!(b_refused.is_err());
+			assert!(peers[1].list_peers().is_empty());
+		}
+		// At least one message handler should have seen the connection.
+		assert!(peers[handler & 1].message_handler.chan_handler.conn_tracker.had_peers.load(Ordering::Acquire) ||
+			peers[handler & 1].message_handler.route_handler.conn_tracker.had_peers.load(Ordering::Acquire) ||
+			peers[handler & 1].message_handler.custom_message_handler.conn_tracker.had_peers.load(Ordering::Acquire));
+		// And both message handlers doing tracking should see the disconnection
+		assert!(peers[handler & 1].message_handler.chan_handler.conn_tracker.connected_peers.lock().unwrap().is_empty());
+		assert!(peers[handler & 1].message_handler.route_handler.conn_tracker.connected_peers.lock().unwrap().is_empty());
+		assert!(peers[handler & 1].message_handler.custom_message_handler.conn_tracker.connected_peers.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn test_peer_connected_error_disconnects() {
+		for i in 0..6 {
+			do_test_peer_connected_error_disconnects(i);
+		}
 	}
 
 	#[test]
