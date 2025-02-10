@@ -485,7 +485,7 @@ impl ChannelDetails {
 	{
 		let balance = context.get_available_balances(funding, fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
-			context.get_holder_counterparty_selected_channel_reserve_satoshis();
+			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
 		ChannelDetails {
 			channel_id: context.channel_id(),

@@ -1186,6 +1186,17 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	#[cfg(test)]
+	pub fn funding_mut(&mut self) -> &mut FundingScope {
+		match &mut self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => &mut chan.funding,
+			ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.funding,
+			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.funding,
+			ChannelPhase::UnfundedV2(chan) => &mut chan.funding,
+		}
+	}
+
 	pub fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
@@ -1553,6 +1564,14 @@ impl UnfundedChannelContext {
 pub(super) struct FundingScope {
 	channel_value_satoshis: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
+
+	/// minimum channel reserve for self to maintain - set by them.
+	counterparty_selected_channel_reserve_satoshis: Option<u64>,
+
+	#[cfg(test)]
+	pub(super) holder_selected_channel_reserve_satoshis: u64,
+	#[cfg(not(test))]
+	holder_selected_channel_reserve_satoshis: u64,
 }
 
 impl FundingScope {
@@ -1562,6 +1581,20 @@ impl FundingScope {
 
 	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
 		self.value_to_self_msat
+	}
+
+	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
+		(self.holder_selected_channel_reserve_satoshis, self.counterparty_selected_channel_reserve_satoshis)
+	}
+
+	fn get_htlc_maximum_msat(&self, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
+		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
+			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
+			cmp::min(
+				(self.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
+				party_max_htlc_value_in_flight_msat
+			)
+		})
 	}
 }
 
@@ -1748,14 +1781,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	pub(super) holder_max_htlc_value_in_flight_msat: u64,
 	#[cfg(not(test))]
 	holder_max_htlc_value_in_flight_msat: u64,
-
-	/// minimum channel reserve for self to maintain - set by them.
-	counterparty_selected_channel_reserve_satoshis: Option<u64>,
-
-	#[cfg(test)]
-	pub(super) holder_selected_channel_reserve_satoshis: u64,
-	#[cfg(not(test))]
-	holder_selected_channel_reserve_satoshis: u64,
 
 	counterparty_htlc_minimum_msat: u64,
 	holder_htlc_minimum_msat: u64,
@@ -2438,6 +2463,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let funding = FundingScope {
 			channel_value_satoshis,
 			value_to_self_msat,
+			counterparty_selected_channel_reserve_satoshis: Some(msg_channel_reserve_satoshis),
+			holder_selected_channel_reserve_satoshis,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -2517,8 +2544,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(open_channel_fields.max_htlc_value_in_flight_msat, channel_value_satoshis * 1000),
 			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
-			counterparty_selected_channel_reserve_satoshis: Some(msg_channel_reserve_satoshis),
-			holder_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: open_channel_fields.htlc_minimum_msat,
 			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: open_channel_fields.max_accepted_htlcs,
@@ -2672,6 +2697,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			// We'll add our counterparty's `funding_satoshis` when we receive `accept_channel2`.
 			channel_value_satoshis,
 			value_to_self_msat,
+			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
+			holder_selected_channel_reserve_satoshis,
 		};
 		let channel_context = Self {
 			user_id,
@@ -2752,8 +2779,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			// We'll adjust this to include our counterparty's `funding_satoshis` when we
 			// receive `accept_channel2`.
 			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
-			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
-			holder_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: 0,
 			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
@@ -2975,7 +3000,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Performs checks against necessary constraints after receiving either an `accept_channel` or
 	/// `accept_channel2` message.
 	pub fn do_accept_channel_checks(
-		&mut self, funding: &FundingScope, default_limits: &ChannelHandshakeLimits,
+		&mut self, funding: &mut FundingScope, default_limits: &ChannelHandshakeLimits,
 		their_features: &InitFeatures, common_fields: &msgs::CommonAcceptChannelFields,
 		channel_reserve_satoshis: u64,
 	) -> Result<(), ChannelError> {
@@ -2994,12 +3019,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if channel_reserve_satoshis > funding.channel_value_satoshis {
 			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", channel_reserve_satoshis, funding.channel_value_satoshis)));
 		}
-		if common_fields.dust_limit_satoshis > self.holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::close(format!("Dust limit ({}) is bigger than our channel reserve ({})", common_fields.dust_limit_satoshis, self.holder_selected_channel_reserve_satoshis)));
+		if common_fields.dust_limit_satoshis > funding.holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::close(format!("Dust limit ({}) is bigger than our channel reserve ({})", common_fields.dust_limit_satoshis, funding.holder_selected_channel_reserve_satoshis)));
 		}
-		if channel_reserve_satoshis > funding.channel_value_satoshis - self.holder_selected_channel_reserve_satoshis {
+		if channel_reserve_satoshis > funding.channel_value_satoshis - funding.holder_selected_channel_reserve_satoshis {
 			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
-				channel_reserve_satoshis, funding.channel_value_satoshis - self.holder_selected_channel_reserve_satoshis)));
+				channel_reserve_satoshis, funding.channel_value_satoshis - funding.holder_selected_channel_reserve_satoshis)));
 		}
 		let full_channel_value_msat = (funding.channel_value_satoshis - channel_reserve_satoshis) * 1000;
 		if common_fields.htlc_minimum_msat >= full_channel_value_msat {
@@ -3076,7 +3101,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		self.counterparty_dust_limit_satoshis = common_fields.dust_limit_satoshis;
 		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(common_fields.max_htlc_value_in_flight_msat, funding.channel_value_satoshis * 1000);
-		self.counterparty_selected_channel_reserve_satoshis = Some(channel_reserve_satoshis);
+		funding.counterparty_selected_channel_reserve_satoshis = Some(channel_reserve_satoshis);
 		self.counterparty_htlc_minimum_msat = common_fields.htlc_minimum_msat;
 		self.counterparty_max_accepted_htlcs = common_fields.max_accepted_htlcs;
 
@@ -3154,7 +3179,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
 	pub fn get_holder_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
-		self.get_htlc_maximum_msat(funding, self.holder_max_htlc_value_in_flight_msat)
+		funding.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -3164,17 +3189,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
 	pub fn get_counterparty_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
-		self.get_htlc_maximum_msat(funding, self.counterparty_max_htlc_value_in_flight_msat)
-	}
-
-	fn get_htlc_maximum_msat(&self, funding: &FundingScope, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
-		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
-			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
-			cmp::min(
-				(funding.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
-				party_max_htlc_value_in_flight_msat
-			)
-		})
+		funding.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
@@ -3479,9 +3494,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			} else {
 				self.counterparty_max_commitment_tx_output.lock().unwrap()
 			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.counterparty_selected_channel_reserve_satoshis.unwrap() as i64);
+			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap() as i64);
 			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat as u64);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= self.holder_selected_channel_reserve_satoshis as i64);
+			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis as i64);
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
@@ -3831,7 +3846,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let outbound_capacity_msat = funding.value_to_self_msat
 				.saturating_sub(htlc_stats.pending_outbound_htlcs_value_msat)
 				.saturating_sub(
-					context.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
+					funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
 
 		let mut available_capacity_msat = outbound_capacity_msat;
 
@@ -3887,7 +3902,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_success_sat * 1000, HTLCInitiator::LocalOffered);
 			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(Some(htlc_above_dust), None);
 
-			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
+			let holder_selected_chan_reserve_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
 			let remote_balance_msat = (funding.channel_value_satoshis * 1000 - funding.value_to_self_msat)
 				.saturating_sub(htlc_stats.pending_inbound_htlcs_value_msat);
 
@@ -3964,17 +3979,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			inbound_capacity_msat: cmp::max(funding.channel_value_satoshis as i64 * 1000
 					- funding.value_to_self_msat as i64
 					- htlc_stats.pending_inbound_htlcs_value_msat as i64
-					- context.holder_selected_channel_reserve_satoshis as i64 * 1000,
+					- funding.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: available_capacity_msat,
 			next_outbound_htlc_minimum_msat,
 		}
-	}
-
-	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
-		let context = &self;
-		(context.holder_selected_channel_reserve_satoshis, context.counterparty_selected_channel_reserve_satoshis)
 	}
 
 	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
@@ -5200,7 +5210,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(anchor_outputs_value_msat) < remote_commit_tx_fee_msat {
 				return Err(ChannelError::close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
 			};
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < self.context.holder_selected_channel_reserve_satoshis * 1000 {
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < self.funding.holder_selected_channel_reserve_satoshis * 1000 {
 				return Err(ChannelError::close("Remote HTLC add would put them under remote reserve value".to_owned()));
 			}
 		}
@@ -5214,7 +5224,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
-			if self.funding.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
+			if self.funding.value_to_self_msat < self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
 				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
@@ -5383,7 +5393,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		} else { false };
 		if update_fee {
 			debug_assert!(!self.context.is_outbound());
-			let counterparty_reserve_we_require_msat = self.context.holder_selected_channel_reserve_satoshis * 1000;
+			let counterparty_reserve_we_require_msat = self.funding.holder_selected_channel_reserve_satoshis * 1000;
 			if commitment_stats.remote_balance_msat < commitment_stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
 				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
 			}
@@ -6114,7 +6124,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &keys, true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
-		if holder_balance_msat < buffer_fee_msat  + self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
 			return None;
@@ -7406,7 +7416,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
-			if pending_remote_value_msat.saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+			if pending_remote_value_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
 				return Err(("Fee spike buffer violation", 0x1000|7));
 			}
@@ -7437,7 +7447,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		ChannelValueStat {
 			value_to_self_msat: self.funding.value_to_self_msat,
 			channel_value_msat: self.funding.channel_value_satoshis * 1000,
-			channel_reserve_msat: self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000,
+			channel_reserve_msat: self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000,
 			pending_outbound_htlcs_amount_msat: self.context.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
 			pending_inbound_htlcs_amount_msat: self.context.pending_inbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
 			holding_cell_outbound_amount_msat: {
@@ -8794,7 +8804,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				channel_type: Some(self.context.channel_type.clone()),
 			},
 			push_msat: self.funding.channel_value_satoshis * 1000 - self.funding.value_to_self_msat,
-			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
+			channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis,
 		})
 	}
 
@@ -8804,7 +8814,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		their_features: &InitFeatures
 	) -> Result<(), ChannelError> {
 		self.context.do_accept_channel_checks(
-			&self.funding, default_limits, their_features, &msg.common_fields,
+			&mut self.funding, default_limits, their_features, &msg.common_fields,
 			msg.channel_reserve_satoshis,
 		)
 	}
@@ -9044,7 +9054,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				}),
 				channel_type: Some(self.context.channel_type.clone()),
 			},
-			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
+			channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis,
 			#[cfg(taproot)]
 			next_local_nonce: None,
 		})
@@ -9770,7 +9780,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 		self.context.counterparty_max_htlc_value_in_flight_msat.write(writer)?;
 
 		// Note that this field is ignored by 0.0.99+ as the TLV Optional variant is used instead.
-		self.context.counterparty_selected_channel_reserve_satoshis.unwrap_or(0).write(writer)?;
+		self.funding.counterparty_selected_channel_reserve_satoshis.unwrap_or(0).write(writer)?;
 
 		self.context.counterparty_htlc_minimum_msat.write(writer)?;
 		self.context.holder_htlc_minimum_msat.write(writer)?;
@@ -9814,8 +9824,8 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 		// a different percentage of the channel value then 10%, which older versions of LDK used
 		// to set it to before the percentage was made configurable.
 		let serialized_holder_selected_reserve =
-			if self.context.holder_selected_channel_reserve_satoshis != get_legacy_default_holder_selected_channel_reserve_satoshis(self.funding.channel_value_satoshis)
-			{ Some(self.context.holder_selected_channel_reserve_satoshis) } else { None };
+			if self.funding.holder_selected_channel_reserve_satoshis != get_legacy_default_holder_selected_channel_reserve_satoshis(self.funding.channel_value_satoshis)
+			{ Some(self.funding.holder_selected_channel_reserve_satoshis) } else { None };
 
 		let mut old_max_in_flight_percent_config = UserConfig::default().channel_handshake_config;
 		old_max_in_flight_percent_config.max_inbound_htlc_value_in_flight_percent_of_channel = MAX_IN_FLIGHT_PERCENT_LEGACY;
@@ -9854,7 +9864,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			// override that.
 			(1, self.context.minimum_depth, option),
 			(2, chan_type, option),
-			(3, self.context.counterparty_selected_channel_reserve_satoshis, option),
+			(3, self.funding.counterparty_selected_channel_reserve_satoshis, option),
 			(4, serialized_holder_selected_reserve, option),
 			(5, self.context.config, required),
 			(6, serialized_holder_htlc_max_in_flight, option),
@@ -10359,6 +10369,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			funding: FundingScope {
 				channel_value_satoshis,
 				value_to_self_msat,
+				counterparty_selected_channel_reserve_satoshis,
+				holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.unwrap(),
 			},
 			context: ChannelContext {
 				user_id,
@@ -10435,8 +10447,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				holder_dust_limit_satoshis,
 				counterparty_max_htlc_value_in_flight_msat,
 				holder_max_htlc_value_in_flight_msat: holder_max_htlc_value_in_flight_msat.unwrap(),
-				counterparty_selected_channel_reserve_satoshis,
-				holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.unwrap(),
 				counterparty_htlc_minimum_msat,
 				holder_htlc_minimum_msat,
 				counterparty_max_accepted_htlcs,
@@ -10964,7 +10974,7 @@ mod tests {
 		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None, &logger).unwrap();
 
 		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.channel_value_satoshis as f64 * outbound_selected_channel_reserve_perc) as u64);
-		assert_eq!(chan.context.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
+		assert_eq!(chan.funding.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
 
 		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		let mut inbound_node_config = UserConfig::default();
@@ -10975,8 +10985,8 @@ mod tests {
 
 			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.channel_value_satoshis as f64 * inbound_selected_channel_reserve_perc) as u64);
 
-			assert_eq!(chan_inbound_node.context.holder_selected_channel_reserve_satoshis, expected_inbound_selected_chan_reserve);
-			assert_eq!(chan_inbound_node.context.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
+			assert_eq!(chan_inbound_node.funding.holder_selected_channel_reserve_satoshis, expected_inbound_selected_chan_reserve);
+			assert_eq!(chan_inbound_node.funding.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
 		} else {
 			// Channel Negotiations failed
 			let result = InboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, /*is_0conf=*/false);
@@ -11233,7 +11243,7 @@ mod tests {
 		config.channel_handshake_config.announce_for_forwarding = false;
 		let mut chan = OutboundV1Channel::<&Keys>::new(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42, None, &*logger).unwrap(); // Nothing uses their network key in this test
 		chan.context.holder_dust_limit_satoshis = 546;
-		chan.context.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
+		chan.funding.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
 		let funding_info = OutPoint{ txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 
