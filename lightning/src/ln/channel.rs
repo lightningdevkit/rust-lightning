@@ -1573,6 +1573,7 @@ impl UnfundedChannelContext {
 /// funding transaction is replaced using tx_init_rbf.
 pub(super) struct FundingScope {
 	channel_value_satoshis: u64,
+	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
 }
 
 impl FundingScope {
@@ -1626,7 +1627,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// cost of others, but should really just be changed.
 
 	cur_counterparty_commitment_transaction_number: u64,
-	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
@@ -2454,6 +2454,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let funding = FundingScope {
 			channel_value_satoshis,
+			value_to_self_msat,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -2483,7 +2484,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			destination_script,
 
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-			value_to_self_msat,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -2688,6 +2688,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let funding = FundingScope {
 			// We'll add our counterparty's `funding_satoshis` when we receive `accept_channel2`.
 			channel_value_satoshis,
+			value_to_self_msat,
 		};
 		let channel_context = Self {
 			user_id,
@@ -2715,7 +2716,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			destination_script,
 
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-			value_to_self_msat,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -2829,9 +2829,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		Ok((funding, channel_context))
 	}
+}
 
-	pub(crate) fn get_value_to_self_msat(&self) -> u64 {self.value_to_self_msat}
+impl FundingScope {
+	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
+		self.value_to_self_msat
+	}
+}
 
+impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Allowed in any state (including after shutdown)
 	pub fn get_update_time_counter(&self) -> u32 {
 		self.update_time_counter
@@ -3480,13 +3486,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		let value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+		let value_to_self_msat: i64 = (funding.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
 		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
 		// "violate" their reserve value by couting those against it. Thus, we have to convert
 		// everything to i64 before subtracting as otherwise we can overflow.
-		let value_to_remote_msat: i64 = (funding.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
+		let value_to_remote_msat: i64 = (funding.channel_value_satoshis * 1000) as i64 - (funding.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
 		assert!(value_to_remote_msat >= 0);
 
 		#[cfg(debug_assertions)]
@@ -3847,7 +3853,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = context.get_pending_htlc_stats(None, dust_exposure_limiting_feerate);
 
-		let outbound_capacity_msat = context.value_to_self_msat
+		let outbound_capacity_msat = funding.value_to_self_msat
 				.saturating_sub(htlc_stats.pending_outbound_htlcs_value_msat)
 				.saturating_sub(
 					context.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
@@ -3907,7 +3913,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			let max_reserved_commit_tx_fee_msat = context.next_remote_commit_tx_fee_msat(Some(htlc_above_dust), None);
 
 			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
-			let remote_balance_msat = (funding.channel_value_satoshis * 1000 - context.value_to_self_msat)
+			let remote_balance_msat = (funding.channel_value_satoshis * 1000 - funding.value_to_self_msat)
 				.saturating_sub(htlc_stats.pending_inbound_htlcs_value_msat);
 
 			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat + anchor_outputs_value_msat {
@@ -3981,7 +3987,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(funding.channel_value_satoshis as i64 * 1000
-					- context.value_to_self_msat as i64
+					- funding.value_to_self_msat as i64
 					- htlc_stats.pending_inbound_htlcs_value_msat as i64
 					- context.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
@@ -4296,7 +4302,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			unbroadcasted_funding_tx,
 			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: self.get_funding_txo(),
-			last_local_balance_msat: self.value_to_self_msat,
+			last_local_balance_msat: funding.value_to_self_msat,
 		}
 	}
 
@@ -4730,8 +4736,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		assert!(self.context.pending_update_fee.is_none());
 
 		let mut total_fee_satoshis = proposed_total_fee_satoshis;
-		let mut value_to_holder: i64 = (self.context.value_to_self_msat as i64) / 1000 - if self.context.is_outbound() { total_fee_satoshis as i64 } else { 0 };
-		let mut value_to_counterparty: i64 = ((self.funding.channel_value_satoshis * 1000 - self.context.value_to_self_msat) as i64 / 1000) - if self.context.is_outbound() { 0 } else { total_fee_satoshis as i64 };
+		let mut value_to_holder: i64 = (self.funding.value_to_self_msat as i64) / 1000 - if self.context.is_outbound() { total_fee_satoshis as i64 } else { 0 };
+		let mut value_to_counterparty: i64 = ((self.funding.channel_value_satoshis * 1000 - self.funding.value_to_self_msat) as i64 / 1000) - if self.context.is_outbound() { 0 } else { total_fee_satoshis as i64 };
 
 		if value_to_holder < 0 {
 			assert!(self.context.is_outbound());
@@ -5210,7 +5216,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.context.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
 			self.funding.channel_value_satoshis * 1000 - pending_value_to_self_msat;
 		if pending_remote_value_msat < msg.amount_msat {
@@ -5246,7 +5252,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
-			if self.context.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
+			if self.funding.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
 				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
@@ -5939,7 +5945,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 			}
 		}
-		self.context.value_to_self_msat = (self.context.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+		self.funding.value_to_self_msat = (self.funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
 			match update_state {
@@ -6904,7 +6910,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.context.config.options.force_close_avoidance_max_fee_satoshis,
 					proposed_max_feerate as u64 * tx_weight / 1000)
 			} else {
-				self.funding.channel_value_satoshis - (self.context.value_to_self_msat + 999) / 1000
+				self.funding.channel_value_satoshis - (self.funding.value_to_self_msat + 999) / 1000
 			};
 
 		self.context.closing_fee_limits = Some((proposed_total_fee_satoshis, proposed_max_total_fee_satoshis));
@@ -7160,7 +7166,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.context.get_funding_txo(),
-			last_local_balance_msat: self.context.value_to_self_msat,
+			last_local_balance_msat: self.funding.value_to_self_msat,
 		}
 	}
 
@@ -7275,7 +7281,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if !self.context.is_outbound() {
 				// They have to pay, so pick the highest fee in the overlapping range.
 				// We should never set an upper bound aside from their full balance
-				debug_assert_eq!(our_max_fee, self.funding.channel_value_satoshis - (self.context.value_to_self_msat + 999) / 1000);
+				debug_assert_eq!(our_max_fee, self.funding.channel_value_satoshis - (self.funding.value_to_self_msat + 999) / 1000);
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {
 				if msg.fee_satoshis < our_min_fee || msg.fee_satoshis > our_max_fee {
@@ -7422,7 +7428,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.context.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
 			self.funding.channel_value_satoshis * 1000 - pending_value_to_self_msat;
 
@@ -7467,7 +7473,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	#[cfg(test)]
 	pub fn get_value_stat(&self) -> ChannelValueStat {
 		ChannelValueStat {
-			value_to_self_msat: self.context.value_to_self_msat,
+			value_to_self_msat: self.funding.value_to_self_msat,
 			channel_value_msat: self.funding.channel_value_satoshis * 1000,
 			channel_reserve_msat: self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000,
 			pending_outbound_htlcs_amount_msat: self.context.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
@@ -8825,7 +8831,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				}),
 				channel_type: Some(self.context.channel_type.clone()),
 			},
-			push_msat: self.funding.channel_value_satoshis * 1000 - self.context.value_to_self_msat,
+			push_msat: self.funding.channel_value_satoshis * 1000 - self.funding.value_to_self_msat,
 			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
 		})
 	}
@@ -9625,7 +9631,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 
 		self.holder_commitment_point.transaction_number().write(writer)?;
 		self.context.cur_counterparty_commitment_transaction_number.write(writer)?;
-		self.context.value_to_self_msat.write(writer)?;
+		self.funding.value_to_self_msat.write(writer)?;
 
 		let mut dropped_inbound_htlcs = 0;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
@@ -10394,6 +10400,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		Ok(FundedChannel {
 			funding: FundingScope {
 				channel_value_satoshis,
+				value_to_self_msat,
 			},
 			context: ChannelContext {
 				user_id,
@@ -10419,7 +10426,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				destination_script,
 
 				cur_counterparty_commitment_transaction_number,
-				value_to_self_msat,
 
 				holder_max_accepted_htlcs,
 				pending_inbound_htlcs,
@@ -11428,7 +11434,7 @@ mod tests {
 						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f10529800000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400473044022007cf6b405e9c9b4f527b0ecad9d8bb661fabb8b12abf7d1c0b3ad1855db3ed490220616d5c1eeadccc63bd775a131149455d62d95a42c2a1b01cc7821fc42dce7778014730440220655bf909fb6fa81d086f1336ac72c97906dce29d1b166e305c99152d810e26e1022051f577faa46412c46707aaac46b65d50053550a66334e00a44af2706f27a865801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// simple commitment tx with no HTLCs
-		chan.context.value_to_self_msat = 7000000000;
+		chan.funding.value_to_self_msat = 7000000000;
 
 		test_commitment!("3045022100c3127b33dcc741dd6b05b1e63cbd1a9a7d816f37af9b6756fa2376b056f032370220408b96279808fe57eb7e463710804cdf4f108388bc5cf722d8c848d2c7f9f3b0",
 						 "30440220616210b2cc4d3afb601013c373bbd8aac54febd9f15400379a8cb65ce7deca60022034236c010991beb7ff770510561ae8dc885b8d38d1947248c38f2ae055647142",
@@ -11502,7 +11508,7 @@ mod tests {
 		});
 
 		// commitment tx with all five HTLCs untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 0;
 
 		test_commitment!("3044022009b048187705a8cbc9ad73adbe5af148c3d012e1f067961486c822c7af08158c022006d66f3704cfab3eb2dc49dae24e4aa22a6910fc9b424007583204e3621af2e5",
@@ -11536,7 +11542,7 @@ mod tests {
 		} );
 
 		// commitment tx with seven outputs untrimmed (maximum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 647;
 
 		test_commitment!("3045022100a135f9e8a5ed25f7277446c67956b00ce6f610ead2bdec2c2f686155b7814772022059f1f6e1a8b336a68efcc1af3fe4d422d4827332b5b067501b099c47b7b5b5ee",
@@ -11570,7 +11576,7 @@ mod tests {
 		} );
 
 		// commitment tx with six outputs untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 648;
 
 		test_commitment!("304402203948f900a5506b8de36a4d8502f94f21dd84fd9c2314ab427d52feaa7a0a19f2022059b6a37a4adaa2c5419dc8aea63c6e2a2ec4c4bde46207f6dc1fcd22152fc6e5",
@@ -11599,7 +11605,7 @@ mod tests {
 		} );
 
 		// anchors: commitment tx with six outputs untrimmed (minimum dust limit)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 645;
 		chan.context.holder_dust_limit_satoshis = 1001;
 
@@ -11629,7 +11635,7 @@ mod tests {
 		} );
 
 		// commitment tx with six outputs untrimmed (maximum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 2069;
 		chan.context.holder_dust_limit_satoshis = 546;
 
@@ -11659,7 +11665,7 @@ mod tests {
 		} );
 
 		// commitment tx with five outputs untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 2070;
 
 		test_commitment!("304402204ca1ba260dee913d318271d86e10ca0f5883026fb5653155cff600fb40895223022037b145204b7054a40e08bb1fefbd826f827b40838d3e501423bcc57924bcb50c",
@@ -11683,7 +11689,7 @@ mod tests {
 		} );
 
 		// commitment tx with five outputs untrimmed (maximum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 2194;
 
 		test_commitment!("304402204bb3d6e279d71d9da414c82de42f1f954267c762b2e2eb8b76bc3be4ea07d4b0022014febc009c5edc8c3fc5d94015de163200f780046f1c293bfed8568f08b70fb3",
@@ -11707,7 +11713,7 @@ mod tests {
 		} );
 
 		// commitment tx with four outputs untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 2195;
 
 		test_commitment!("304402201a8c1b1f9671cd9e46c7323a104d7047cc48d3ee80d40d4512e0c72b8dc65666022066d7f9a2ce18c9eb22d2739ffcce05721c767f9b607622a31b6ea5793ddce403",
@@ -11726,7 +11732,7 @@ mod tests {
 		} );
 
 		// anchors: commitment tx with four outputs untrimmed (minimum dust limit)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 2185;
 		chan.context.holder_dust_limit_satoshis = 2001;
 		let cached_channel_type = chan.context.channel_type;
@@ -11748,7 +11754,7 @@ mod tests {
 		} );
 
 		// commitment tx with four outputs untrimmed (maximum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3702;
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.channel_type = cached_channel_type.clone();
@@ -11769,7 +11775,7 @@ mod tests {
 		} );
 
 		// commitment tx with three outputs untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3703;
 
 		test_commitment!("3045022100b495d239772a237ff2cf354b1b11be152fd852704cb184e7356d13f2fb1e5e430220723db5cdb9cbd6ead7bfd3deb419cf41053a932418cbb22a67b581f40bc1f13e",
@@ -11783,7 +11789,7 @@ mod tests {
 		} );
 
 		// anchors: commitment tx with three outputs untrimmed (minimum dust limit)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 3687;
 		chan.context.holder_dust_limit_satoshis = 3001;
 		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
@@ -11799,7 +11805,7 @@ mod tests {
 		} );
 
 		// commitment tx with three outputs untrimmed (maximum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4914;
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.channel_type = cached_channel_type.clone();
@@ -11815,7 +11821,7 @@ mod tests {
 		} );
 
 		// commitment tx with two outputs untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4915;
 		chan.context.holder_dust_limit_satoshis = 546;
 
@@ -11824,7 +11830,7 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484fa926a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf50147304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a72001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// anchors: commitment tx with two outputs untrimmed (minimum dust limit)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 4894;
 		chan.context.holder_dust_limit_satoshis = 4001;
 		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
@@ -11834,7 +11840,7 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994ad0886a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd01483045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b9501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// commitment tx with two outputs untrimmed (maximum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651180;
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.channel_type = cached_channel_type.clone();
@@ -11844,7 +11850,7 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b800222020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80ec0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e4840400483045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de0147304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// commitment tx with one output untrimmed (minimum feerate)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651181;
 
 		test_commitment!("304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
@@ -11852,7 +11858,7 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// anchors: commitment tx with one output untrimmed (minimum dust limit)
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 6216010;
 		chan.context.holder_dust_limit_satoshis = 4001;
 		chan.context.channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
@@ -11862,7 +11868,7 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80024a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a04004830450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1014830450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// commitment tx with fee greater than funder amount
-		chan.context.value_to_self_msat = 6993000000; // 7000000000 - 7000000
+		chan.funding.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.context.feerate_per_kw = 9651936;
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.channel_type = cached_channel_type;
@@ -11872,7 +11878,7 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		// commitment tx with 3 htlc outputs, 2 offered having the same amount and preimage
-		chan.context.value_to_self_msat = 7_000_000_000 - 2_000_000;
+		chan.funding.value_to_self_msat = 7_000_000_000 - 2_000_000;
 		chan.context.feerate_per_kw = 253;
 		chan.context.pending_inbound_htlcs.clear();
 		chan.context.pending_inbound_htlcs.push({
