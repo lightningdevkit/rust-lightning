@@ -28,7 +28,6 @@ use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
-use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
@@ -139,7 +138,7 @@ pub struct TestRouter<'a> {
 		TestScorer,
 	>,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
-	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, LightningError>>)>>,
+	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, &'static str>>)>>,
 	pub next_blinded_payment_paths: Mutex<Vec<BlindedPaymentPath>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
@@ -167,7 +166,7 @@ impl<'a> TestRouter<'a> {
 		}
 	}
 
-	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, LightningError>) {
+	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, &'static str>) {
 		let mut expected_routes = self.next_routes.lock().unwrap();
 		expected_routes.push_back((query, Some(result)));
 	}
@@ -187,7 +186,7 @@ impl<'a> Router for TestRouter<'a> {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
 		inflight_htlcs: InFlightHtlcs,
-	) -> Result<Route, msgs::LightningError> {
+	) -> Result<Route, &'static str> {
 		let route_res;
 		let next_route_opt = self.next_routes.lock().unwrap().pop_front();
 		if let Some((find_route_query, find_route_res)) = next_route_opt {

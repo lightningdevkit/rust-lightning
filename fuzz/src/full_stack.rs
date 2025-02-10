@@ -44,7 +44,7 @@ use lightning::ln::channelmanager::{
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::{self, DecodeError};
+use lightning::ln::msgs::DecodeError;
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
@@ -151,11 +151,8 @@ impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters,
 		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
-	) -> Result<Route, msgs::LightningError> {
-		Err(msgs::LightningError {
-			err: String::from("Not implemented"),
-			action: msgs::ErrorAction::IgnoreError,
-		})
+	) -> Result<Route, &'static str> {
+		Err("Not implemented")
 	}
 
 	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(

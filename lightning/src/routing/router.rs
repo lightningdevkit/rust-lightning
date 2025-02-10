@@ -17,7 +17,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
 use crate::types::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
-use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
@@ -27,7 +27,7 @@ use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
 use crate::sync::Mutex;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
-use crate::util::logger::{Level, Logger};
+use crate::util::logger::Logger;
 use crate::crypto::chacha20::ChaCha20;
 
 use crate::io;
@@ -82,7 +82,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 		params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>,
 		inflight_htlcs: InFlightHtlcs
-	) -> Result<Route, LightningError> {
+	) -> Result<Route, &'static str> {
 		let random_seed_bytes = self.entropy_source.get_secure_random_bytes();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &*self.logger,
@@ -204,13 +204,8 @@ impl Router for FixedRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _route_params: &RouteParameters,
 		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
-	) -> Result<Route, LightningError> {
-		self.route.lock().unwrap().take().ok_or_else(|| {
-			LightningError {
-				err: "Can't use this router to return multiple routes".to_owned(),
-				action: ErrorAction::IgnoreError,
-			}
-		})
+	) -> Result<Route, &'static str> {
+		self.route.lock().unwrap().take().ok_or("Can't use this router to return multiple routes")
 	}
 
 	fn create_blinded_payment_paths<
@@ -234,7 +229,7 @@ pub trait Router {
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
-	) -> Result<Route, LightningError>;
+	) -> Result<Route, &'static str>;
 
 	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
 	///
@@ -247,7 +242,7 @@ pub trait Router {
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
 		_payment_hash: PaymentHash, _payment_id: PaymentId
-	) -> Result<Route, LightningError> {
+	) -> Result<Route, &'static str> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
 	}
 
@@ -1675,7 +1670,7 @@ fn calculate_blinded_path_intro_points<'a, L: Deref>(
 	payment_params: &PaymentParameters, node_counters: &'a NodeCounters,
 	network_graph: &ReadOnlyNetworkGraph, logger: &L, our_node_id: NodeId,
 	first_hop_targets: &HashMap<NodeId, (Vec<&ChannelDetails>, u32)>,
-) -> Result<Vec<Option<(&'a NodeId, u32)>>, LightningError>
+) -> Result<Vec<Option<(&'a NodeId, u32)>>, &'static str>
 where L::Target: Logger {
 	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
 		.map(|path| {
@@ -1705,21 +1700,18 @@ where L::Target: Logger {
 			for route in route_hints.iter() {
 				for hop in &route.0 {
 					if hop.src_node_id == *node_id {
-						return Err(LightningError {
-							err: "Route hint cannot have the payee as the source.".to_owned(),
-							action: ErrorAction::IgnoreError
-						});
+						return Err("Route hint cannot have the payee as the source.");
 					}
 				}
 			}
 		},
 		Payee::Blinded { route_hints, .. } => {
 			if introduction_node_id_cache.iter().all(|info_opt| info_opt.map(|(a, _)| a) == Some(&our_node_id)) {
-				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
+				return Err("Cannot generate a route to blinded paths if we are the introduction node to all of them");
 			}
 			for (blinded_path, info_opt) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
 				if blinded_path.blinded_hops().len() == 0 {
-					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
+					return Err("0-hop blinded path provided");
 				}
 				let introduction_node_id = match info_opt {
 					None => continue,
@@ -1733,7 +1725,7 @@ where L::Target: Logger {
 						.filter(|(p, _)| p.blinded_hops().len() == 1)
 						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
 				{
-					return Err(LightningError{err: "1-hop blinded paths must all have matching introduction node ids".to_string(), action: ErrorAction::IgnoreError});
+					return Err("1-hop blinded paths must all have matching introduction node ids");
 				}
 			}
 		}
@@ -2112,7 +2104,7 @@ pub fn find_route<L: Deref, GL: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
 	scorer: &S, score_params: &S::ScoreParams, random_seed_bytes: &[u8; 32]
-) -> Result<Route, LightningError>
+) -> Result<Route, &'static str>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
 	let mut route = get_route(our_node_pubkey, &route_params, &graph_lock, first_hops, logger,
@@ -2125,7 +2117,7 @@ pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network_graph: &ReadOnlyNetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &S::ScoreParams,
 	_random_seed_bytes: &[u8; 32]
-) -> Result<Route, LightningError>
+) -> Result<Route, &'static str>
 where L::Target: Logger {
 
 	let payment_params = &route_params.payment_params;
@@ -2141,23 +2133,23 @@ where L::Target: Logger {
 	let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
 
 	if payee_node_id_opt.map_or(false, |payee| payee == our_node_id) {
-		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Cannot generate a route to ourselves");
 	}
 	if our_node_id == maybe_dummy_payee_node_id {
-		return Err(LightningError{err: "Invalid origin node id provided, use a different one".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Invalid origin node id provided, use a different one");
 	}
 
 	if final_value_msat > MAX_VALUE_MSAT {
-		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Cannot generate a route of more value than all existing satoshis");
 	}
 
 	if final_value_msat == 0 {
-		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Cannot send a payment of 0 msat");
 	}
 
 	let final_cltv_expiry_delta = payment_params.payee.final_cltv_expiry_delta().unwrap_or(0);
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
-		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.");
 	}
 
 	// The general routing idea is the following:
@@ -2220,7 +2212,7 @@ where L::Target: Logger {
 	let network_nodes = network_graph.nodes();
 
 	if payment_params.max_path_count == 0 {
-		return Err(LightningError{err: "Can't find a route with no paths allowed.".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Can't find a route with no paths allowed.");
 	}
 
 	// Allow MPP only if we have a features set from somewhere that indicates the payee supports
@@ -2285,7 +2277,7 @@ where L::Target: Logger {
 				panic!("first_hops should be filled in with usable channels, not pending ones");
 			}
 			if chan.counterparty.node_id == *our_node_pubkey {
-				return Err(LightningError{err: "First hop cannot have our_node_pubkey as a destination.".to_owned(), action: ErrorAction::IgnoreError});
+				return Err("First hop cannot have our_node_pubkey as a destination.");
 			}
 			let counterparty_id = NodeId::from_pubkey(&chan.counterparty.node_id);
 			first_hop_targets
@@ -2298,7 +2290,7 @@ where L::Target: Logger {
 				.0.push(chan);
 		}
 		if first_hop_targets.is_empty() {
-			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
+			return Err("Cannot route when there are no outbound routes away from us");
 		}
 	}
 
@@ -2322,13 +2314,13 @@ where L::Target: Logger {
 				node_counters.private_node_counter_from_pubkey(&prev_hop_id)
 					.ok_or_else(|| {
 						debug_assert!(false);
-						LightningError { err: "We should always have private target node counters available".to_owned(), action: ErrorAction::IgnoreError }
+						"We should always have private target node counters available"
 					})?;
 			let (_src_id, private_source_node_counter) =
 				node_counters.private_node_counter_from_pubkey(&hop.src_node_id)
 					.ok_or_else(|| {
 						debug_assert!(false);
-						LightningError { err: "We should always have private source node counters available".to_owned(), action: ErrorAction::IgnoreError }
+						"We should always have private source node counters available"
 					})?;
 
 			if let Some((first_channels, _)) = first_hop_targets.get(target) {
@@ -3236,11 +3228,11 @@ where L::Target: Logger {
 
 	// Step (5).
 	if payment_paths.len() == 0 {
-		return Err(LightningError{err: "Failed to find a path to the given destination".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Failed to find a path to the given destination");
 	}
 
 	if already_collected_value_msat < final_value_msat {
-		return Err(LightningError{err: "Failed to find a sufficient route to the given destination".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Failed to find a sufficient route to the given destination");
 	}
 
 	// Step (6).
@@ -3339,7 +3331,7 @@ where L::Target: Logger {
 			};
 
 			hops.push(RouteHop {
-				pubkey: PublicKey::from_slice(target.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &target), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
+				pubkey: PublicKey::from_slice(target.as_slice()).map_err(|_| "A PublicKey in NetworkGraph is invalid!")?,
 				node_features: node_features.clone(),
 				short_channel_id: hop.candidate.short_channel_id().unwrap(),
 				channel_features: hop.candidate.features(),
@@ -3382,8 +3374,7 @@ where L::Target: Logger {
 	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
 	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
 		if route.get_total_fees() > max_total_routing_fee_msat {
-			return Err(LightningError{err: format!("Failed to find route that adheres to the maximum total fee limit of {}msat",
-				max_total_routing_fee_msat), action: ErrorAction::IgnoreError});
+			return Err("Failed to find route that adheres to the maximum total fee limit");
 		}
 	}
 
@@ -3488,7 +3479,7 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 pub fn build_route_from_hops<L: Deref, GL: Deref>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, logger: L, random_seed_bytes: &[u8; 32]
-) -> Result<Route, LightningError>
+) -> Result<Route, &'static str>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
 	let mut route = build_route_from_hops_internal(our_node_pubkey, hops, &route_params,
@@ -3500,7 +3491,7 @@ where L::Target: Logger, GL::Target: Logger {
 fn build_route_from_hops_internal<L: Deref>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &ReadOnlyNetworkGraph, logger: L, random_seed_bytes: &[u8; 32],
-) -> Result<Route, LightningError> where L::Target: Logger {
+) -> Result<Route, &'static str> where L::Target: Logger {
 
 	struct HopScorer {
 		our_node_id: NodeId,
@@ -3535,7 +3526,7 @@ fn build_route_from_hops_internal<L: Deref>(
 	}
 
 	if hops.len() > MAX_PATH_LENGTH_ESTIMATE.into() {
-		return Err(LightningError{err: "Cannot build a route exceeding the maximum path length.".to_owned(), action: ErrorAction::IgnoreError});
+		return Err("Cannot build a route exceeding the maximum path length.");
 	}
 
 	let our_node_id = NodeId::from_pubkey(our_node_pubkey);
@@ -3564,7 +3555,7 @@ mod tests {
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 	use crate::ln::types::ChannelId;
 	use crate::types::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
@@ -3661,7 +3652,7 @@ mod tests {
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 0);
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Cannot send a payment of 0 msat");
@@ -3705,7 +3696,7 @@ mod tests {
 		let our_chans = vec![get_channel_details(Some(2), our_id, InitFeatures::from_le_bytes(vec![0b11]), 100000)];
 
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()),
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "First hop cannot have our_node_pubkey as a destination.");
@@ -3828,7 +3819,7 @@ mod tests {
 		// Not possible to send 199_999_999, because the minimum on channel=2 is 200_000_000.
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 199_999_999);
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -4058,10 +4049,10 @@ mod tests {
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 5_000);
 		route_params.max_total_routing_fee_msat = Some(9_999);
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
-				assert_eq!(err, "Failed to find route that adheres to the maximum total fee limit of 9999msat");
+				assert_eq!(err, "Failed to find route that adheres to the maximum total fee limit");
 		} else { panic!(); }
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(
@@ -4110,7 +4101,7 @@ mod tests {
 
 		// If all the channels require some features we don't understand, route should fail
 		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -4157,7 +4148,7 @@ mod tests {
 
 		// If all nodes require some features we don't understand, route should fail
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -4356,7 +4347,7 @@ mod tests {
 			let payment_params = PaymentParameters::from_node_id(nodes[6], 42)
 				.with_route_hints(invalid_last_hops).unwrap();
 			let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+			if let Err(err) = get_route(&our_id,
 				&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 				&Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Route hint cannot have the payee as the source.");
@@ -4877,7 +4868,7 @@ mod tests {
 		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
-	fn do_unannounced_path_test(last_hop_htlc_max: Option<u64>, last_hop_fee_prop: u32, outbound_capacity_msat: u64, route_val: u64) -> Result<Route, LightningError> {
+	fn do_unannounced_path_test(last_hop_htlc_max: Option<u64>, last_hop_fee_prop: u32, outbound_capacity_msat: u64, route_val: u64) -> Result<Route, &'static str> {
 		let source_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02}", 41).repeat(32)).unwrap()[..]).unwrap());
 		let middle_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02}", 42).repeat(32)).unwrap()[..]).unwrap());
 		let target_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
@@ -5031,7 +5022,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 250_000_001);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None,
 					Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5074,7 +5065,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 200_000_001);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(),
 					Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
 					&Default::default(), &random_seed_bytes) {
@@ -5131,7 +5122,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 15_001);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5211,7 +5202,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 15_001);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5250,7 +5241,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 10_001);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5375,7 +5366,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 60_000);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5616,7 +5607,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 300_000);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5628,7 +5619,7 @@ mod tests {
 			let zero_payment_params = payment_params.clone().with_max_path_count(0);
 			let route_params = RouteParameters::from_payment_params_and_value(
 				zero_payment_params, 100);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Can't find a route with no paths allowed.");
@@ -5642,7 +5633,7 @@ mod tests {
 			let fail_payment_params = payment_params.clone().with_max_path_count(3);
 			let route_params = RouteParameters::from_payment_params_and_value(
 				fail_payment_params, 250_000);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -5747,7 +5738,7 @@ mod tests {
 		assert!(do_mpp_route_tests(300_001).is_err());
 	}
 
-	fn do_mpp_route_tests(amt: u64) -> Result<Route, LightningError> {
+	fn do_mpp_route_tests(amt: u64) -> Result<Route, &'static str> {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
@@ -6092,7 +6083,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 210_000);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -6103,7 +6094,7 @@ mod tests {
 			// Attempt to route while setting max_total_routing_fee_msat to 149_999 results in a failure.
 			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
 				max_total_routing_fee_msat: Some(149_999) };
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 				&scorer, &Default::default(), &random_seed_bytes) {
 					assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -6349,7 +6340,7 @@ mod tests {
 			// Attempt to route more than available results in a failure.
 			let route_params = RouteParameters::from_payment_params_and_value(
 				payment_params.clone(), 150_000);
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+			if let Err(err) = get_route(
 					&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 					&scorer, &Default::default(), &random_seed_bytes) {
 						assert_eq!(err, "Failed to find a sufficient route to the given destination");
@@ -6887,7 +6878,7 @@ mod tests {
 		let scorer = BadNodeScorer { node_id: NodeId::from_pubkey(&nodes[2]) };
 		match get_route( &our_id, &route_params, &network_graph, None, Arc::clone(&logger),
 			&scorer, &Default::default(), &random_seed_bytes) {
-				Err(LightningError { err, .. } ) => {
+				Err(err) => {
 					assert_eq!(err, "Failed to find a path to the given destination");
 				},
 				Ok(_) => panic!("Expected error"),
@@ -6994,7 +6985,7 @@ mod tests {
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes)
 		{
-			Err(LightningError { err, .. } ) => {
+			Err(err) => {
 				assert_eq!(err, "Failed to find a path to the given destination");
 			},
 			Ok(_) => panic!("Expected error"),
@@ -7061,7 +7052,7 @@ mod tests {
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes)
 		{
-			Err(LightningError { err, .. } ) => {
+			Err(err) => {
 				assert_eq!(err, "Failed to find a path to the given destination");
 			},
 			Ok(_) => panic!("Expected error"),
@@ -7388,7 +7379,7 @@ mod tests {
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, max_htlc_msat + 1);
 		route_params.max_total_routing_fee_msat = None;
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
+		if let Err(err) = get_route(&our_id,
 			&route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(),
 			&random_seed_bytes)
 		{
@@ -7733,7 +7724,7 @@ mod tests {
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
 			&scorer, &Default::default(), &random_seed_bytes)
 		{
-			Err(LightningError { err, .. }) => {
+			Err(err) => {
 				assert_eq!(err, "1-hop blinded paths must all have matching introduction node ids");
 			},
 			_ => panic!("Expected error")
@@ -7745,7 +7736,7 @@ mod tests {
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes)
 		{
-			Err(LightningError { err, .. }) => {
+			Err(err) => {
 				assert_eq!(err, "Cannot generate a route to blinded paths if we are the introduction node to all of them");
 			},
 			_ => panic!("Expected error")
@@ -7758,7 +7749,7 @@ mod tests {
 		match get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes)
 		{
-			Err(LightningError { err, .. }) => {
+			Err(err) => {
 				assert_eq!(err, "0-hop blinded path provided");
 			},
 			_ => panic!("Expected error")
@@ -7887,7 +7878,7 @@ mod tests {
 		let netgraph = network_graph.read_only();
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), amt_msat);
-		if let Err(LightningError { err, .. }) = get_route(&nodes[0], &route_params, &netgraph,
+		if let Err(err) = get_route(&nodes[0], &route_params, &netgraph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -7996,7 +7987,7 @@ mod tests {
 		let netgraph = network_graph.read_only();
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
-		if let Err(LightningError { err, .. }) = get_route(
+		if let Err(err) = get_route(
 			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
@@ -8043,7 +8034,7 @@ mod tests {
 		let netgraph = network_graph.read_only();
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
-		if let Err(LightningError { err, .. }) = get_route(
+		if let Err(err) = get_route(
 			&our_id, &route_params, &netgraph, None, Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
 			assert_eq!(err, "Failed to find a path to the given destination");
@@ -8112,7 +8103,7 @@ mod tests {
 		let netgraph = network_graph.read_only();
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amt_msat);
-		if let Err(LightningError { err, .. }) = get_route(
+		if let Err(err) = get_route(
 			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes
 		) {
@@ -8254,7 +8245,7 @@ mod tests {
 			payment_params, amt_msat);
 		let netgraph = network_graph.read_only();
 
-		if let Err(LightningError { err, .. }) = get_route(
+		if let Err(err) = get_route(
 			&our_id, &route_params, &netgraph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			Arc::clone(&logger), &scorer, &ProbabilisticScoringFeeParameters::default(),
 			&random_seed_bytes
