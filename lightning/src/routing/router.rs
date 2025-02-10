@@ -2320,10 +2320,16 @@ where L::Target: Logger {
 		for (hop, prev_hop_id) in hop_iter.zip(prev_hop_iter) {
 			let (target, private_target_node_counter) =
 				node_counters.private_node_counter_from_pubkey(&prev_hop_id)
-					.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys above, so is always Some here");
+					.ok_or_else(|| {
+						debug_assert!(false);
+						LightningError { err: "We should always have private target node counters available".to_owned(), action: ErrorAction::IgnoreError }
+					})?;
 			let (_src_id, private_source_node_counter) =
 				node_counters.private_node_counter_from_pubkey(&hop.src_node_id)
-					.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys above, so is always Some here");
+					.ok_or_else(|| {
+						debug_assert!(false);
+						LightningError { err: "We should always have private source node counters available".to_owned(), action: ErrorAction::IgnoreError }
+					})?;
 
 			if let Some((first_channels, _)) = first_hop_targets.get(target) {
 				if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
