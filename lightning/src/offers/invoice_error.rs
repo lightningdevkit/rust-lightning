@@ -53,10 +53,7 @@ pub struct ErroneousField {
 impl InvoiceError {
 	/// Creates an [`InvoiceError`] with the given message.
 	pub fn from_string(s: String) -> Self {
-		Self {
-			erroneous_field: None,
-			message: UntrustedString(s),
-		}
+		Self { erroneous_field: None, message: UntrustedString(s) }
 	}
 }
 
@@ -107,10 +104,7 @@ impl Readable for InvoiceError {
 
 impl From<Bolt12SemanticError> for InvoiceError {
 	fn from(error: Bolt12SemanticError) -> Self {
-		InvoiceError {
-			erroneous_field: None,
-			message: UntrustedString(format!("{:?}", error)),
-		}
+		InvoiceError { erroneous_field: None, message: UntrustedString(format!("{:?}", error)) }
 	}
 }
 
@@ -120,10 +114,7 @@ impl From<SignError> for InvoiceError {
 			SignError::Signing => "Failed signing invoice",
 			SignError::Verification(_) => "Failed invoice signature verification",
 		};
-		InvoiceError {
-			erroneous_field: None,
-			message: UntrustedString(message.to_string()),
-		}
+		InvoiceError { erroneous_field: None, message: UntrustedString(message.to_string()) }
 	}
 }
 
@@ -132,7 +123,9 @@ mod tests {
 	use super::{ErroneousField, InvoiceError};
 
 	use crate::ln::msgs::DecodeError;
-	use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, VecWriter, WithoutLength, Writeable};
+	use crate::util::ser::{
+		HighZeroBytesDroppedBigSize, Readable, VecWriter, WithoutLength, Writeable,
+	};
 	use crate::util::string::UntrustedString;
 
 	#[test]
@@ -149,7 +142,7 @@ mod tests {
 			Ok(invoice_error) => {
 				assert_eq!(invoice_error.message, UntrustedString("Invalid value".to_string()));
 				assert_eq!(invoice_error.erroneous_field, None);
-			}
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
@@ -174,7 +167,7 @@ mod tests {
 					invoice_error.erroneous_field,
 					Some(ErroneousField { tlv_fieldnum: 42, suggested_value: Some(vec![42; 32]) }),
 				);
-			}
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
@@ -183,10 +176,7 @@ mod tests {
 	fn parses_invoice_error_without_suggested_value() {
 		let mut writer = VecWriter(Vec::new());
 		let invoice_error = InvoiceError {
-			erroneous_field: Some(ErroneousField {
-				tlv_fieldnum: 42,
-				suggested_value: None,
-			}),
+			erroneous_field: Some(ErroneousField { tlv_fieldnum: 42, suggested_value: None }),
 			message: UntrustedString("Invalid value".to_string()),
 		};
 		invoice_error.write(&mut writer).unwrap();
@@ -199,7 +189,7 @@ mod tests {
 					invoice_error.erroneous_field,
 					Some(ErroneousField { tlv_fieldnum: 42, suggested_value: None }),
 				);
-			}
+			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
 	}
