@@ -16,7 +16,7 @@ use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWA
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
+use crate::ln::onion_utils::{HTLCFailReason, InboundTrampolineHop, INVALID_ONION_BLINDING};
 use crate::routing::gossip::NodeId;
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
@@ -432,7 +432,7 @@ where
 
 	let next_hop = match onion_utils::decode_next_payment_hop(
 		shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
-		msg.payment_hash, msg.blinding_point, node_signer
+		msg.payment_hash, msg.blinding_point, &(*node_signer)
 	) {
 		Ok(res) => res,
 		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
@@ -482,8 +482,42 @@ where
 		} => {
 			return_err!("TrampolineEntrypoint data provided in intermediary node", 0x4000 | 22, &[0; 0]);
 		},
-		onion_utils::Hop::Receive(msgs::InboundOnionPayload::TrampolineEntrypoint { .. }) => {
-			todo!()
+		onion_utils::Hop::Receive(msgs::InboundOnionPayload::TrampolineEntrypoint { ref trampoline_packet, .. }) => {
+			{
+				let trampoline_shared_secret = node_signer.ecdh(
+					Recipient::Node, &trampoline_packet.public_key, blinded_node_id_tweak.as_ref(),
+				).unwrap().secret_bytes();
+				let next_trampoline_hop = match onion_utils::decode_next_trampoline_hop(
+					trampoline_shared_secret, &trampoline_packet.hop_data[..], trampoline_packet.hmac,
+					msg.payment_hash, msg.blinding_point, node_signer,
+				) {
+					Ok(res) => res,
+					Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+						return_malformed_err!(err_msg, err_code);
+					}
+					Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+						return_err!(err_msg, err_code, &[0; 0]);
+					}
+				};
+				match next_trampoline_hop {
+					InboundTrampolineHop::Forward { next_hop_data: msgs::InboundTrampolinePayload::Forward { amt_to_forward, outgoing_cltv_value, outgoing_node_id }, .. } => {
+						let next_packet_pubkey = onion_utils::next_hop_pubkey(&secp_ctx,
+							msg.onion_routing_packet.public_key.unwrap(), &trampoline_shared_secret);
+						NextPacketDetails {
+							next_packet_pubkey,
+							outgoing_connector: HopConnector::Trampoline{
+								shared_secret: trampoline_shared_secret,
+								node_id: NodeId::from_pubkey(&outgoing_node_id),
+							},
+							outgoing_amt_msat: amt_to_forward,
+							outgoing_cltv_value,
+						}
+					}
+					_ => {
+						todo!();
+					}
+				}
+			}
 		}
 		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
