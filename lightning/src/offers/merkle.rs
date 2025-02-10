@@ -308,20 +308,25 @@ mod tests {
 	#[test]
 	fn calculates_merkle_root_hash() {
 		// BOLT 12 test vectors
-		macro_rules! tlv1 { () => { "010203e8" } }
-		macro_rules! tlv2 { () => { "02080000010000020003" } }
-		macro_rules! tlv3 { () => { "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002" } }
+		const HEX_1: &'static str = "010203e8";
+		let bytes_1 = <Vec<u8>>::from_hex("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93").unwrap();
 		assert_eq!(
-			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(tlv1!()).unwrap())),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93").unwrap()).unwrap(),
+			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(HEX_1).unwrap())),
+			sha256::Hash::from_slice(&bytes_1).unwrap(),
 		);
+
+		const HEX_2: &'static str = concat!("010203e8","02080000010000020003");
+		let bytes_2 = <Vec<u8>>::from_hex("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1").unwrap();
 		assert_eq!(
-			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!())).unwrap())),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1").unwrap()).unwrap(),
+			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(HEX_2).unwrap())),
+			sha256::Hash::from_slice(&bytes_2).unwrap(),
 		);
+
+		const HEX_3: &'static str = concat!("010203e8","02080000010000020003", "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002");
+		let bytes_3 = <Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap();
 		assert_eq!(
-			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!(), tlv3!())).unwrap())),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap()).unwrap(),
+			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(HEX_3).unwrap())),
+			sha256::Hash::from_slice(&bytes_3).unwrap(),
 		);
 	}
 
@@ -333,11 +338,13 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let recipient_pubkey = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
+			let secret_bytes = <Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap();
+			let secret_key = SecretKey::from_slice(&secret_bytes).unwrap();
 			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
+			let secret_bytes = <Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap();
+			let secret_key = SecretKey::from_slice(&secret_bytes).unwrap();
 			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
@@ -359,13 +366,17 @@ mod tests {
 			invoice_request.to_string(),
 			"lnr1qqyqqqqqqqqqqqqqqcp4256ypqqkgzshgysy6ct5dpjk6ct5d93kzmpq23ex2ct5d9ek293pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpjkppqvjx204vgdzgsqpvcp4mldl3plscny0rt707gvpdh6ndydfacz43euzqhrurageg3n7kafgsek6gz3e9w52parv8gs2hlxzk95tzeswywffxlkeyhml0hh46kndmwf4m6xma3tkq2lu04qz3slje2rfthc89vss",
 		);
+
+		let bytes = <Vec<u8>>::from_hex("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap();
 		assert_eq!(
 			super::root_hash(TlvStream::new(&invoice_request.bytes[..])),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+			sha256::Hash::from_slice(&bytes).unwrap(),
 		);
+
+		let bytes = <Vec<u8>>::from_hex("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap();
 		assert_eq!(
 			invoice_request.signature(),
-			Signature::from_slice(&<Vec<u8>>::from_hex("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap()).unwrap(),
+			Signature::from_slice(&bytes).unwrap(),
 		);
 	}
 
