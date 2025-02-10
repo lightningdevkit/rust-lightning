@@ -15,7 +15,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
-use crate::ln::channel::ChannelContext;
+use crate::ln::channel::{ChannelContext, FundingScope};
 use crate::ln::types::ChannelId;
 use crate::sign::SignerProvider;
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
@@ -476,14 +476,14 @@ impl ChannelDetails {
 	}
 
 	pub(super) fn from_channel_context<SP: Deref, F: Deref>(
-		context: &ChannelContext<SP>, best_block_height: u32, latest_features: InitFeatures,
-		fee_estimator: &LowerBoundedFeeEstimator<F>,
+		context: &ChannelContext<SP>, funding: &FundingScope, best_block_height: u32,
+		latest_features: InitFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
 		F::Target: FeeEstimator,
 	{
-		let balance = context.get_available_balances(fee_estimator);
+		let balance = context.get_available_balances(funding, fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			context.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
@@ -504,7 +504,7 @@ impl ChannelDetails {
 				} else {
 					None
 				},
-				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(),
+				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(funding),
 			},
 			funding_txo: context.get_funding_txo(),
 			// Note that accept_channel (or open_channel) is always the first message, so
@@ -521,7 +521,7 @@ impl ChannelDetails {
 				None
 			},
 			inbound_scid_alias: context.latest_inbound_scid_alias(),
-			channel_value_satoshis: context.get_value_satoshis(),
+			channel_value_satoshis: funding.get_value_satoshis(),
 			feerate_sat_per_1000_weight: Some(context.get_feerate_sat_per_1000_weight()),
 			unspendable_punishment_reserve: to_self_reserve_satoshis,
 			inbound_capacity_msat: balance.inbound_capacity_msat,
@@ -537,7 +537,7 @@ impl ChannelDetails {
 			is_usable: context.is_live(),
 			is_announced: context.should_announce(),
 			inbound_htlc_minimum_msat: Some(context.get_holder_htlc_minimum_msat()),
-			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(),
+			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(funding),
 			config: Some(context.config()),
 			channel_shutdown_state: Some(context.shutdown_state()),
 			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(),

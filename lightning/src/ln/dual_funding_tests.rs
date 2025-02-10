@@ -199,6 +199,7 @@ fn do_test_v2_channel_establishment(
 		signature: channel
 			.context
 			.get_initial_counterparty_commitment_signature_for_test(
+				&channel.funding,
 				&&logger_a,
 				channel_transaction_parameters,
 				accept_channel_v2_msg.common_fields.first_per_commitment_point,
