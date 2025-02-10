@@ -99,6 +99,9 @@ pub(super) fn create_fwd_pending_htlc_info(
 			(short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
 			 next_blinding_override)
 		},
+		msgs::InboundOnionPayload::TrampolineEntrypoint {..} => {
+			todo!()
+		},
 		msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
@@ -166,6 +169,9 @@ pub(super) fn create_recv_pending_htlc_info(
 			 sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
 			 intro_node_blinding_point.is_none(), true, invoice_request)
 		}
+		msgs::InboundOnionPayload::TrampolineEntrypoint { .. } => {
+			todo!()
+		},
 		msgs::InboundOnionPayload::Forward { .. } => {
 			return Err(InboundHTLCErr {
 				err_code: 0x4000|22,
@@ -471,6 +477,14 @@ where
 				outgoing_cltv_value
 			}
 		},
+		onion_utils::Hop::Forward {
+			next_hop_data: msgs::InboundOnionPayload::TrampolineEntrypoint { .. }, ..
+		} => {
+			return_err!("TrampolineEntrypoint data provided in intermediary node", 0x4000 | 22, &[0; 0]);
+		},
+		onion_utils::Hop::Receive(msgs::InboundOnionPayload::TrampolineEntrypoint { .. }) => {
+			todo!()
+		}
 		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
 		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
 			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
