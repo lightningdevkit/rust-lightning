@@ -1148,6 +1148,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	pub fn set_scores(&mut self, external_scores: ChannelLiquidities) {
 		_ = mem::replace(&mut self.channel_liquidities, external_scores);
 	}
+
+	/// Returns the current scores.
+	pub fn scores(&self) -> &ChannelLiquidities {
+		&self.channel_liquidities
+	}
 }
 
 impl ChannelLiquidity {
@@ -3941,6 +3946,37 @@ mod tests {
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
 			Some(0.0));
+	}
+
+	#[test]
+	fn get_scores() {
+		let logger = TestLogger::new();
+		let network_graph = network_graph(&logger);
+		let params = ProbabilisticScoringFeeParameters {
+			liquidity_penalty_multiplier_msat: 1_000,
+			..ProbabilisticScoringFeeParameters::zero_penalty()
+		};
+		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
+		let source = source_node_id();
+		let usage = ChannelUsage {
+			amount_msat: 500,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
+		};
+		let successful_path = payment_path_for_amount(200);
+		let channel = &network_graph.read_only().channel(42).unwrap().to_owned();
+		let (info, _) = channel.as_directed_from(&source).unwrap();
+		let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
+			info,
+			short_channel_id: 41,
+		});
+
+		scorer.payment_path_successful(&successful_path, Duration::ZERO);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 301);
+
+		// Get the scores and assert that both channels are present in the returned struct.
+		let scores = scorer.scores();
+		assert_eq!(scores.iter().count(), 2);
 	}
 
 	#[test]
