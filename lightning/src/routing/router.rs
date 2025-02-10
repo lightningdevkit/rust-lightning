@@ -2332,7 +2332,9 @@ where L::Target: Logger {
 					})?;
 
 			if let Some((first_channels, _)) = first_hop_targets.get(target) {
-				if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
+				let matches_an_scid = |d: &&ChannelDetails|
+					d.outbound_scid_alias == Some(hop.short_channel_id) || d.short_channel_id == Some(hop.short_channel_id);
+				if first_channels.iter().any(matches_an_scid) {
 					log_trace!(logger, "Ignoring route hint with SCID {} (and any previous) due to it being a direct channel of ours.",
 						hop.short_channel_id);
 					break;
