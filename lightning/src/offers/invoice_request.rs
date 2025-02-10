@@ -771,6 +771,7 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	#[rustfmt::skip]
 	pub fn verify_using_metadata<
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
@@ -800,6 +801,7 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	#[rustfmt::skip]
 	pub fn verify_using_recipient_data<
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
