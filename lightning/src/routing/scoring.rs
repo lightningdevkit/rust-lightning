@@ -4080,13 +4080,12 @@ mod tests {
 pub mod benches {
 	use super::*;
 	use criterion::Criterion;
-	use crate::routing::router::{bench_utils, RouteHop};
+	use crate::routing::router::bench_utils;
 	use crate::util::test_utils::TestLogger;
-	use crate::types::features::{ChannelFeatures, NodeFeatures};
 
 	pub fn decay_100k_channel_bounds(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let (network_graph, mut scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
+		let (_, mut scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut cur_time = Duration::ZERO;
 			cur_time += Duration::from_millis(1);
 			scorer.time_passed(cur_time);

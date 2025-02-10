@@ -16335,7 +16335,7 @@ pub mod bench {
 	use bitcoin::{Transaction, TxOut};
 	use bitcoin::transaction::Version;
 
-	use crate::sync::{Arc, Mutex, RwLock};
+	use crate::sync::{Arc, RwLock};
 
 	use criterion::Criterion;
 
