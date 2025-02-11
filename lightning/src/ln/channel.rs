@@ -8235,9 +8235,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			)});
 		}
 
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
+		if !self.context.is_live() {
 			return Err(APIError::APIMisuseError { err: format!(
-				"Channel {} cannot be spliced, as channel is not Ready",
+				"Channel {} cannot be spliced, as channel is not live",
 				self.context.channel_id()
 			)});
 		}
@@ -8307,8 +8307,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not Ready")));
+		if !self.context.is_live() {
+			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not live")));
 		}
 
 		// - If it has received shutdown:
