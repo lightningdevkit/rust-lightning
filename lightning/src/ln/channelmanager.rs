@@ -4307,12 +4307,7 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let locktime = locktime.unwrap_or(self.current_best_block().height);
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)
-						.map_err(|err| APIError::APIMisuseError {
-							err: format!(
-								"Cannot initiate Splicing, {}, channel ID {}", err, channel_id
-							)
-						})?;
+					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)?;
 
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
 						node_id: *counterparty_node_id,
