@@ -943,6 +943,21 @@ impl PaymentParameters {
 		}
 	}
 
+	/// Updates the parameters with the given route parameters configuration.
+	///
+	/// Note:
+	/// We *do not* apply `max_total_routing_fee_msat` here, as it is unique to each route.
+	/// Instead, we apply only the parameters that are common across multiple route-finding sessions
+	/// for a payment across retries.
+	pub(crate) fn with_user_config_ignoring_fee_limit(self, params_config: RouteParametersConfig) -> Self {
+		Self {
+			max_total_cltv_expiry_delta: params_config.max_total_cltv_expiry_delta,
+			max_path_count: params_config.max_path_count,
+			max_channel_saturation_power_of_half: params_config.max_channel_saturation_power_of_half,
+			..self
+		}
+	}
+
 	/// Includes the payee's features. Errors if the parameters were not initialized with
 	/// [`PaymentParameters::from_bolt12_invoice`].
 	///

@@ -863,7 +863,7 @@ impl OutboundPayments {
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		let payment_hash = invoice.payment_hash();
-		let max_total_routing_fee_msat;
+		let params_config;
 		let retry_strategy;
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
@@ -871,7 +871,7 @@ impl OutboundPayments {
 					retry_strategy: retry, route_params_config, ..
 				} => {
 					retry_strategy = *retry;
-					max_total_routing_fee_msat = route_params_config.max_total_routing_fee_msat;
+					params_config = *route_params_config;
 					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
 						payment_hash,
 						retry_strategy: *retry,
@@ -891,9 +891,10 @@ impl OutboundPayments {
 		}
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_bolt12_invoice(&invoice), invoice.amount_msats()
+			PaymentParameters::from_bolt12_invoice(&invoice)
+				.with_user_config_ignoring_fee_limit(params_config), invoice.amount_msats()
 		);
-		if let Some(max_fee_msat) = max_total_routing_fee_msat {
+		if let Some(max_fee_msat) = params_config.max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
 		self.send_payment_for_bolt12_invoice_internal(
@@ -1066,7 +1067,8 @@ impl OutboundPayments {
 					};
 					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
 					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
-					let pay_params = PaymentParameters::from_static_invoice(invoice);
+					let pay_params = PaymentParameters::from_static_invoice(invoice)
+						.with_user_config_ignoring_fee_limit(*route_params_config);
 					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
 					route_params.max_total_routing_fee_msat = route_params_config.max_total_routing_fee_msat;
 
