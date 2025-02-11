@@ -4271,46 +4271,64 @@ where
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut res = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
-
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-
-		// Look for the channel
-		match peer_state.channel_by_id.entry(*channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let locktime = locktime.unwrap_or(self.current_best_block().height);
-				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime)?;
-
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
-						node_id: *counterparty_node_id,
-						msg,
-					});
-
-					Ok(())
-				} else {
-					Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} is not funded, cannot splice it",
-							channel_id
-						)
-					})
+			let peer_state_mutex = match per_peer_state.get(counterparty_node_id)
+				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) }) {
+				Ok(p) => p,
+				Err(e) => {
+					res = Err(e);
+					return NotifyOption::SkipPersistNoEvents;
 				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				return Err(APIError::ChannelUnavailable {
-					err: format!(
-						"Channel with id {} not found for the passed counterparty node_id {}",
-						channel_id, counterparty_node_id,
-					)
-				});
-			},
-		}
+			};
+
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+
+			// Look for the channel
+			match peer_state.channel_by_id.entry(*channel_id) {
+				hash_map::Entry::Occupied(mut chan_phase_entry) => {
+					let locktime = locktime.unwrap_or(self.current_best_block().height);
+					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+						let msg = match chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs.clone(), funding_feerate_per_kw, locktime) {
+							Ok(m) => m,
+							Err(e) => {
+								res = Err(e);
+								return NotifyOption::SkipPersistNoEvents;
+							}
+						};
+
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
+							node_id: *counterparty_node_id,
+							msg,
+						});
+
+						res = Ok(());
+						NotifyOption::SkipPersistHandleEvents
+					} else {
+						res = Err(APIError::ChannelUnavailable {
+							err: format!(
+								"Channel with id {} is not funded, cannot splice it",
+								channel_id
+							)
+						});
+						NotifyOption::SkipPersistNoEvents
+					}
+				},
+				hash_map::Entry::Vacant(_) => {
+					res = Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} not found for the passed counterparty node_id {}",
+							channel_id, counterparty_node_id,
+						)
+					});
+					NotifyOption::SkipPersistNoEvents
+				},
+			}
+		});
+		res
 	}
 
 	fn can_forward_htlc_to_outgoing_channel(
