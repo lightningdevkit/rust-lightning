@@ -170,6 +170,7 @@ mod test {
 	use lightning::onion_message::messenger::{
 		AOnionMessenger, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
 	};
+	use lightning::routing::router::RouteParametersConfig;
 	use lightning::sign::{KeysManager, NodeSigner, Recipient};
 	use lightning::types::features::InitFeatures;
 	use lightning::types::payment::PaymentHash;
@@ -405,7 +406,14 @@ mod test {
 		let amt = 42_000;
 		nodes[0]
 			.node
-			.pay_for_offer_from_human_readable_name(name, amt, payment_id, retry, None, resolvers)
+			.pay_for_offer_from_human_readable_name(
+				name,
+				amt,
+				payment_id,
+				retry,
+				RouteParametersConfig::default(),
+				resolvers,
+			)
 			.unwrap();
 
 		let query = nodes[0].onion_messenger.next_onion_message_for_peer(resolver_id).unwrap();
