@@ -8464,26 +8464,30 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: u32,
-	) -> Result<msgs::SpliceInit, ChannelError> {
+	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
 		if let Some(splice_info) = &self.pending_splice_pre {
-			return Err(ChannelError::Warn(format!(
-				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution
-			)));
+			return Err(APIError::APIMisuseError { err: format!(
+				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
+				self.context.channel_id(), splice_info.our_funding_contribution
+			)});
 		}
 
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Warn(format!("Cannot initiate splicing, as channel is not Ready")));
+			return Err(APIError::APIMisuseError { err: format!(
+				"Channel {} cannot be spliced, as channel is not Ready",
+				self.context.channel_id()
+			)});
 		}
 
 		// TODO(splicing): check for quiescence
 
 		if our_funding_contribution_satoshis < 0 {
-			return Err(ChannelError::Warn(format!(
-				"TODO(splicing): Splice-out not supported, only splice in, contribution {}",
-				our_funding_contribution_satoshis,
-			)));
+			return Err(APIError::APIMisuseError { err: format!(
+				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
+				self.context.channel_id(), our_funding_contribution_satoshis,
+			)});
 		}
 
 		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
@@ -8495,7 +8499,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Check that inputs are sufficient to cover our contribution.
 		// Extra common weight is the weight for spending the old funding
 		let extra_input_weight = Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
-		let _fee = check_v2_funding_inputs_sufficient(our_funding_contribution_satoshis, &our_funding_inputs, true, Some(extra_input_weight), funding_feerate_per_kw)?;
+		let _fee = check_v2_funding_inputs_sufficient(our_funding_contribution_satoshis, &our_funding_inputs, true, Some(extra_input_weight), funding_feerate_per_kw)
+			.map_err(|err| APIError::APIMisuseError { err: format!(
+				"Insufficient inputs for splicing; channel ID {}, err {}",
+				self.context.channel_id(), err,
+			)})?;
 
 		self.pending_splice_pre = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
