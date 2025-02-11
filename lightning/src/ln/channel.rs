@@ -1572,6 +1572,13 @@ pub(super) struct FundingScope {
 	pub(super) holder_selected_channel_reserve_satoshis: u64,
 	#[cfg(not(test))]
 	holder_selected_channel_reserve_satoshis: u64,
+
+	#[cfg(debug_assertions)]
+	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
+	holder_max_commitment_tx_output: Mutex<(u64, u64)>,
+	#[cfg(debug_assertions)]
+	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
+	counterparty_max_commitment_tx_output: Mutex<(u64, u64)>,
 }
 
 impl FundingScope {
@@ -1718,13 +1725,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// new block is received, ensuring it's always at least moderately close to the current real
 	/// time.
 	update_time_counter: u32,
-
-	#[cfg(debug_assertions)]
-	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
-	holder_max_commitment_tx_output: Mutex<(u64, u64)>,
-	#[cfg(debug_assertions)]
-	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
-	counterparty_max_commitment_tx_output: Mutex<(u64, u64)>,
 
 	// (fee_sats, skip_remote_output, fee_range, holder_sig)
 	last_sent_closing_fee: Option<(u64, bool, ClosingSignedFeeRange, Option<Signature>)>,
@@ -2465,6 +2465,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			value_to_self_msat,
 			counterparty_selected_channel_reserve_satoshis: Some(msg_channel_reserve_satoshis),
 			holder_selected_channel_reserve_satoshis,
+
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -2520,12 +2525,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			signer_pending_funding: false,
 			signer_pending_closing: false,
 			signer_pending_channel_ready: false,
-
-
-			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
-			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
 
 			last_sent_closing_fee: None,
 			last_received_closing_sig: None,
@@ -2699,6 +2698,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			value_to_self_msat,
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			holder_selected_channel_reserve_satoshis,
+
+			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
+			// when we receive `accept_channel2`.
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 		};
 		let channel_context = Self {
 			user_id,
@@ -2752,13 +2758,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			signer_pending_funding: false,
 			signer_pending_closing: false,
 			signer_pending_channel_ready: false,
-
-			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
-			// when we receive `accept_channel2`.
-			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
-			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 
 			last_sent_closing_fee: None,
 			last_received_closing_sig: None,
@@ -3490,9 +3489,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			// Make sure that the to_self/to_remote is always either past the appropriate
 			// channel_reserve *or* it is making progress towards it.
 			let mut broadcaster_max_commitment_tx_output = if generated_by_local {
-				self.holder_max_commitment_tx_output.lock().unwrap()
+				funding.holder_max_commitment_tx_output.lock().unwrap()
 			} else {
-				self.counterparty_max_commitment_tx_output.lock().unwrap()
+				funding.counterparty_max_commitment_tx_output.lock().unwrap()
 			};
 			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap() as i64);
 			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat as u64);
@@ -10371,6 +10370,11 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				value_to_self_msat,
 				counterparty_selected_channel_reserve_satoshis,
 				holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.unwrap(),
+
+				#[cfg(debug_assertions)]
+				holder_max_commitment_tx_output: Mutex::new((0, 0)),
+				#[cfg(debug_assertions)]
+				counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 			},
 			context: ChannelContext {
 				user_id,
@@ -10425,11 +10429,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				next_counterparty_htlc_id,
 				update_time_counter,
 				feerate_per_kw,
-
-				#[cfg(debug_assertions)]
-				holder_max_commitment_tx_output: Mutex::new((0, 0)),
-				#[cfg(debug_assertions)]
-				counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 
 				last_sent_closing_fee: None,
 				last_received_closing_sig: None,
