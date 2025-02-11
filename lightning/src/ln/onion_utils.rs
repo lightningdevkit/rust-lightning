@@ -1444,6 +1444,23 @@ impl Hop {
 	}
 }
 
+/// Data decrypted from a payment's Trampoline onion payload.
+#[allow(unused)]
+pub(crate) enum InboundTrampolineHop {
+	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
+	/// verifying the incoming payment.
+	Receive(msgs::InboundTrampolinePayload),
+	/// This onion payload needs to be forwarded to a next-hop.
+	Forward {
+		/// Onion payload data used in forwarding the payment.
+		next_hop_data: msgs::InboundTrampolinePayload,
+		/// HMAC of the next hop's onion packet.
+		next_hop_hmac: [u8; 32],
+		/// Bytes of the onion packet we're forwarding.
+		new_packet_bytes: [u8; ONION_DATA_LEN],
+	},
+}
+
 /// Error returned when we fail to decode the onion packet.
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
@@ -1470,6 +1487,28 @@ where
 		Ok((next_hop_data, None)) => Ok(Hop::Receive(next_hop_data)),
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
 			Ok(Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes })
+		},
+		Err(e) => Err(e),
+	}
+}
+
+pub(crate) fn decode_next_trampoline_hop<NS: Deref>(
+	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash,
+	blinding_point: Option<PublicKey>, node_signer: NS,
+) -> Result<InboundTrampolineHop, OnionDecodeErr>
+where
+	NS::Target: NodeSigner,
+{
+	match decode_next_hop(
+		shared_secret,
+		hop_data,
+		hmac_bytes,
+		Some(payment_hash),
+		(blinding_point, node_signer),
+	) {
+		Ok((next_hop_data, None)) => Ok(InboundTrampolineHop::Receive(next_hop_data)),
+		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
+			Ok(InboundTrampolineHop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes })
 		},
 		Err(e) => Err(e),
 	}

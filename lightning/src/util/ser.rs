@@ -403,10 +403,10 @@ impl<T: Readable> MaybeReadable for T {
 ///
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct RequiredWrapper<T>(pub Option<T>);
-impl<T: Readable> Readable for RequiredWrapper<T> {
+impl<T: LengthReadable> LengthReadable for RequiredWrapper<T> {
 	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		Ok(Self(Some(Readable::read(reader)?)))
+	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Some(LengthReadable::read_from_fixed_length_buffer(reader)?)))
 	}
 }
 impl<A, T: ReadableArgs<A>> ReadableArgs<A> for RequiredWrapper<T> {
