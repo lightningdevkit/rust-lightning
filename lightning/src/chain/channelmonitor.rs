@@ -2743,35 +2743,47 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn closure_conf_target(&self) -> ConfirmationTarget {
 		// Treat the sweep as urgent as long as there is at least one HTLC which is pending on a
 		// valid commitment transaction.
+		let mut minimum_expiry = None;
+		let update_minimum_expiry = |local_minimum: Option<u32>, global_minimum: &mut Option<u32>| {
+			if let Some(expiry) = local_minimum {
+				*global_minimum = Some(global_minimum.map_or(expiry, |m| cmp::min(expiry, m)));
+			}
+		};
+
 		if !self.current_holder_commitment_tx.htlc_outputs.is_empty() {
-			let minimum_expiry = self.current_holder_commitment_tx.htlc_outputs
+			let local_minimum_expiry = self.current_holder_commitment_tx.htlc_outputs
 				.iter()
 				.map(|o| o.0.cltv_expiry)
 				.min();
-			return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
+			update_minimum_expiry(local_minimum_expiry, &mut minimum_expiry);
 		}
 		if self.prev_holder_signed_commitment_tx.as_ref().map(|t| !t.htlc_outputs.is_empty()).unwrap_or(false) {
-			let minimum_expiry = self.prev_holder_signed_commitment_tx.as_ref().map(|t| t.htlc_outputs
+			let local_minimum_expiry = self.prev_holder_signed_commitment_tx.as_ref().map(|t| t.htlc_outputs
 				.iter()
 				.map(|o| o.0.cltv_expiry)
 				.min()
 			).flatten();
-			return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
+			update_minimum_expiry(local_minimum_expiry, &mut minimum_expiry);
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
 			let claimable_outpoints = self.counterparty_claimable_outpoints.get(&txid).unwrap();
 			if !claimable_outpoints.is_empty() {
-				let minimum_expiry = claimable_outpoints.iter().map(|o|o.0.cltv_expiry).min();
-				return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
+				let local_minimum_expiry = claimable_outpoints.iter().map(|o|o.0.cltv_expiry).min();
+				update_minimum_expiry(local_minimum_expiry, &mut minimum_expiry);
 			}
 		}
 		if let Some(txid) = self.prev_counterparty_commitment_txid {
 			let claimable_outpoints = self.counterparty_claimable_outpoints.get(&txid).unwrap();
 			if !claimable_outpoints.is_empty() {
-				let minimum_expiry = claimable_outpoints.iter().map(|o|o.0.cltv_expiry).min();
-				return ConfirmationTarget::UrgentOnChainSweep(minimum_expiry);
+				let local_minimum_expiry = claimable_outpoints.iter().map(|o|o.0.cltv_expiry).min();
+				update_minimum_expiry(local_minimum_expiry, &mut minimum_expiry);
 			}
 		}
+
+		if let Some(global_minimum) = minimum_expiry {
+			return ConfirmationTarget::UrgentOnChainSweep(Some(global_minimum))
+		}
+
 		ConfirmationTarget::OutputSpendingFee
 	}
 
