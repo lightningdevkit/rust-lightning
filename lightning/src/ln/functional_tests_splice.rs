@@ -7,10 +7,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Tests that test standing up a network of ChannelManagers, creating channels, sending
-//! payments/messages between them, and often checking the resulting ChannelMonitors are able to
-//! claim outputs on-chain.
-
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
