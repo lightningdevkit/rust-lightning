@@ -700,14 +700,17 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///	let background_scorer = Arc::clone(&node.scorer);
 ///
 ///	// Setup the sleeper.
-///	let (stop_sender, stop_receiver) = tokio::sync::watch::channel(());
-///
+#[cfg_attr(
+	feature = "std",
+	doc = "	let (stop_sender, stop_receiver) = tokio::sync::watch::channel(());"
+)]
+#[cfg_attr(feature = "std", doc = "")]
 ///	let sleeper = move |d| {
-///		let mut receiver = stop_receiver.clone();
+#[cfg_attr(feature = "std", doc = "		let mut receiver = stop_receiver.clone();")]
 ///		Box::pin(async move {
 ///			tokio::select!{
 ///				_ = tokio::time::sleep(d) => false,
-///				_ = receiver.changed() => true,
+#[cfg_attr(feature = "std", doc = "				_ = receiver.changed() => true,")]
 ///			}
 ///		})
 ///	};
@@ -740,7 +743,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///	});
 ///
 ///	// Stop the background processing.
-///	stop_sender.send(()).unwrap();
+#[cfg_attr(feature = "std", doc = "	stop_sender.send(()).unwrap();")]
 #[cfg_attr(feature = "std", doc = "	handle.await.unwrap()")]
 ///	# }
 ///```
