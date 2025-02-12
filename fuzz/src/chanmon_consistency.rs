@@ -809,6 +809,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								temporary_channel_id,
 								counterparty_node_id,
 								user_channel_id,
+								None,
 							)
 							.unwrap();
 					} else {

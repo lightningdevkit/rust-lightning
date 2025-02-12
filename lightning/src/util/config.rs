@@ -913,3 +913,84 @@ impl Readable for UserConfig {
 		})
 	}
 }
+
+/// Config structure for overriding channel parameters.
+#[derive(Default)]
+pub struct ChannelConfigOverrides {
+	/// Overrides for channel handshake parameters.
+	pub handshake_overrides: Option<ChannelHandshakeConfigUpdate>,
+
+	/// Overrides for channel update parameters.
+	pub update_overrides: Option<ChannelConfigUpdate>,
+}
+
+impl UserConfig {
+	/// Applies given channel config overrides to the user config.
+	pub fn apply(&mut self, config: &ChannelConfigOverrides) {
+		if let Some(handshake_overrides) = &config.handshake_overrides {
+			self.channel_handshake_config.apply(&handshake_overrides);
+		}
+
+		if let Some(update_overrides) = &config.update_overrides {
+			self.channel_config.apply(&update_overrides);
+		}
+	}
+}
+
+/// Config structure for overriding channel handshake parameters.
+#[derive(Default)]
+pub struct ChannelHandshakeConfigUpdate {
+	/// Overrides the percentage of the channel value we will cap the total value of outstanding inbound HTLCs to. See
+	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`].
+	pub max_inbound_htlc_value_in_flight_percent_of_channel: Option<u8>,
+
+	/// Overrides the smallest value HTLC we will accept to process. See [`ChannelHandshakeConfig::our_htlc_minimum_msat`].
+	pub htlc_minimum_msat: Option<u64>,
+
+	/// Overrides confirmations we will wait for before considering the channel locked in. See
+	/// [`ChannelHandshakeConfig::minimum_depth`].
+	pub minimum_depth: Option<u32>,
+
+	/// Overrides the number of blocks we require our counterparty to wait to claim their money. See
+	/// [`ChannelHandshakeConfig::our_to_self_delay`].
+	pub to_self_delay: Option<u16>,
+
+	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time. See
+	/// [`ChannelHandshakeConfig::our_max_accepted_htlcs`].
+	pub max_accepted_htlcs: Option<u16>,
+
+	/// The Proportion of the channel value to configure as counterparty's channel reserve. See
+	/// [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`].
+	pub channel_reserve_proportional_millionths: Option<u32>,
+}
+
+impl ChannelHandshakeConfig {
+	/// Applies the provided handshake config update.
+	pub fn apply(&mut self, config: &ChannelHandshakeConfigUpdate) {
+		if let Some(max_in_flight_percent) =
+			config.max_inbound_htlc_value_in_flight_percent_of_channel
+		{
+			self.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;
+		}
+
+		if let Some(htlc_minimum_msat) = config.htlc_minimum_msat {
+			self.our_htlc_minimum_msat = htlc_minimum_msat;
+		}
+
+		if let Some(minimum_depth) = config.minimum_depth {
+			self.minimum_depth = minimum_depth;
+		}
+
+		if let Some(to_self_delay) = config.to_self_delay {
+			self.our_to_self_delay = to_self_delay;
+		}
+
+		if let Some(max_accepted_htlcs) = config.max_accepted_htlcs {
+			self.our_max_accepted_htlcs = max_accepted_htlcs;
+		}
+
+		if let Some(channel_reserve) = config.channel_reserve_proportional_millionths {
+			self.their_channel_reserve_proportional_millionths = channel_reserve;
+		}
+	}
+}
