@@ -64,6 +64,7 @@ use lightning::routing::router::{
 };
 use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::util::config::InboundChannelConfigOverrides;
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
@@ -809,6 +810,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								temporary_channel_id,
 								counterparty_node_id,
 								user_channel_id,
+								None,
 							)
 							.unwrap();
 					} else {

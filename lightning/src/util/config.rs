@@ -893,3 +893,157 @@ impl Readable for UserConfig {
 		})
 	}
 }
+
+/// Config structure for overriding incoming channel parameters.
+#[derive(Default)]
+pub struct InboundChannelConfigOverrides {
+	/// Overrides for incoming channel handshake parameters.
+	pub handshake_overrides: Option<InboundChannelHandshakeConfigOverrides>,
+
+	/// Overrides for incoming channel update parameters.
+	pub update_overrides: Option<InboundChannelUpdateOverrides>,
+}
+
+/// Config structure for overriding incoming channel handshake parameters.
+#[derive(Default)]
+pub struct InboundChannelHandshakeConfigOverrides {
+	/// Overrides the percentage of the channel value we will cap the total value of outstanding inbound HTLCs to. See
+	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`].
+	pub max_inbound_htlc_value_in_flight_percent_of_channel: Option<u8>,
+
+	/// Overrides the smallest value HTLC we will accept to process. See [`ChannelHandshakeConfig::our_htlc_minimum_msat`].
+	pub htlc_minimum_msat: Option<u64>,
+
+	/// Overrides confirmations we will wait for before considering the channel locked in. See
+	/// [`ChannelHandshakeConfig::minimum_depth`].
+	pub minimum_depth: Option<u32>,
+
+	/// Overrides the number of blocks we require our counterparty to wait to claim their money. See
+	/// [`ChannelHandshakeConfig::our_to_self_delay`].
+	pub to_self_delay: Option<u16>,
+
+	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time. See
+	/// [`ChannelHandshakeConfig::our_max_accepted_htlcs`].
+	pub max_accepted_htlcs: Option<u16>,
+
+	/// The Proportion of the channel value to configure as counterparty's channel reserve. See
+	/// [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`].
+	pub channel_reserve_proportional_millionths: Option<u32>,
+}
+
+/// Config structure for overriding incoming channel configuration parameters.
+#[derive(Default)]
+pub struct InboundChannelUpdateOverrides {
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound over the channel. See
+	/// [`ChannelConfig::forwarding_fee_proportional_millionths`].
+	pub forwarding_fee_proportional_millionths: Option<u32>,
+
+	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel. See
+	/// [`ChannelConfig::forwarding_fee_base_msat`].
+	pub forwarding_fee_base_msat: Option<u32>,
+
+	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over the channel this
+	/// config applies to. See [`ChannelConfig::cltv_expiry_delta`].
+	pub cltv_expiry_delta: Option<u16>,
+
+	/// The total exposure we are willing to allow to dust HTLCs. See [`ChannelConfig::max_dust_htlc_exposure`].
+	pub max_dust_htlc_exposure: Option<MaxDustHTLCExposure>,
+
+	/// The additional fee we're willing to pay to avoid waiting for the counterparty's `to_self_delay` to reclaim
+	/// funds. See [`ChannelConfig::force_close_avoidance_max_fee_satoshis`].
+	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
+
+	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound HTLCs. See
+	/// [`ChannelConfig::accept_underpaying_htlcs`].
+	pub accept_underpaying_htlcs: Option<bool>,
+}
+
+impl InboundChannelConfigOverrides {
+	/// Applies the set channel overrides to the given config object.
+	pub fn apply(&self, config: &UserConfig) -> UserConfig {
+		let mut config = config.clone();
+
+		if let Some(handshake_overrides) = &self.handshake_overrides {
+			config.channel_handshake_config =
+				handshake_overrides.apply(&config.channel_handshake_config);
+		}
+
+		if let Some(update_overrides) = &self.update_overrides {
+			config.channel_config = update_overrides.apply(&config.channel_config);
+		}
+
+		config
+	}
+}
+
+impl InboundChannelHandshakeConfigOverrides {
+	/// Applies the set handshake config overrides to the given object.
+	pub fn apply(&self, config: &ChannelHandshakeConfig) -> ChannelHandshakeConfig {
+		let mut config = config.clone();
+
+		if let Some(max_in_flight_percent) =
+			self.max_inbound_htlc_value_in_flight_percent_of_channel
+		{
+			config.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;
+		}
+
+		if let Some(htlc_minimum_msat) = self.htlc_minimum_msat {
+			config.our_htlc_minimum_msat = htlc_minimum_msat;
+		}
+
+		if let Some(minimum_depth) = self.minimum_depth {
+			config.minimum_depth = minimum_depth;
+		}
+
+		if let Some(to_self_delay) = self.to_self_delay {
+			config.our_to_self_delay = to_self_delay;
+		}
+
+		if let Some(max_accepted_htlcs) = self.max_accepted_htlcs {
+			config.our_max_accepted_htlcs = max_accepted_htlcs;
+		}
+
+		if let Some(channel_reserve) = self.channel_reserve_proportional_millionths {
+			config.their_channel_reserve_proportional_millionths = channel_reserve;
+		}
+
+		config
+	}
+}
+
+impl InboundChannelUpdateOverrides {
+	/// Applies the set config overrides to the given object.
+	pub fn apply(&self, config: &ChannelConfig) -> ChannelConfig {
+		let mut config = config.clone();
+
+		if let Some(forwarding_fee_proportional_millionths) =
+			self.forwarding_fee_proportional_millionths
+		{
+			config.forwarding_fee_proportional_millionths = forwarding_fee_proportional_millionths;
+		}
+
+		if let Some(forwarding_fee_base_msat) = self.forwarding_fee_base_msat {
+			config.forwarding_fee_base_msat = forwarding_fee_base_msat;
+		}
+
+		if let Some(cltv_expiry_delta) = self.cltv_expiry_delta {
+			config.cltv_expiry_delta = cltv_expiry_delta;
+		}
+
+		if let Some(max_dust_htlc_exposure) = self.max_dust_htlc_exposure {
+			config.max_dust_htlc_exposure = max_dust_htlc_exposure;
+		}
+
+		if let Some(force_close_avoidance_max_fee_satoshis) =
+			self.force_close_avoidance_max_fee_satoshis
+		{
+			config.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
+		}
+
+		if let Some(accept_underpaying_htlcs) = self.accept_underpaying_htlcs {
+			config.accept_underpaying_htlcs = accept_underpaying_htlcs;
+		}
+
+		config
+	}
+}
