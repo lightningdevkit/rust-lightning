@@ -139,7 +139,6 @@ impl OutboundJITChannelState {
 		&mut self, opening_fee_params: &LSPS2OpeningFeeParams, payment_size_msat: &Option<u64>,
 		htlc: InterceptedHTLC,
 	) -> Result<Option<HTLCInterceptedAction>, ChannelStateError> {
-		let new_state;
 		let res = match self {
 			OutboundJITChannelState::PendingInitialPayment { payment_queue } => {
 				let (total_expected_outbound_amount_msat, num_htlcs) = payment_queue.add_htlc(htlc);
@@ -190,7 +189,7 @@ impl OutboundJITChannelState {
 				if total_expected_outbound_amount_msat >= expected_payment_size_msat
 					&& amt_to_forward_msat > 0
 				{
-					new_state = OutboundJITChannelState::PendingChannelOpen {
+					*self = OutboundJITChannelState::PendingChannelOpen {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat,
 					};
@@ -201,7 +200,7 @@ impl OutboundJITChannelState {
 					Ok(Some(open_channel))
 				} else {
 					if mpp_mode {
-						new_state = OutboundJITChannelState::PendingInitialPayment {
+						*self = OutboundJITChannelState::PendingInitialPayment {
 							payment_queue: core::mem::take(payment_queue),
 						};
 						Ok(None)
@@ -215,7 +214,7 @@ impl OutboundJITChannelState {
 			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
-				new_state = OutboundJITChannelState::PendingChannelOpen {
+				*self = OutboundJITChannelState::PendingChannelOpen {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
 				};
@@ -228,7 +227,7 @@ impl OutboundJITChannelState {
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
-				new_state = OutboundJITChannelState::PendingPaymentForward {
+				*self = OutboundJITChannelState::PendingPaymentForward {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
@@ -245,18 +244,18 @@ impl OutboundJITChannelState {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
-					new_state = OutboundJITChannelState::PendingPaymentForward {
-						payment_queue,
-						opening_fee_msat: *opening_fee_msat,
-						channel_id: *channel_id,
-					};
 					let forward_payment = HTLCInterceptedAction::ForwardPayment(
 						*channel_id,
 						FeePayment { htlcs, opening_fee_msat: *opening_fee_msat },
 					);
+					*self = OutboundJITChannelState::PendingPaymentForward {
+						payment_queue,
+						opening_fee_msat: *opening_fee_msat,
+						channel_id: *channel_id,
+					};
 					Ok(Some(forward_payment))
 				} else {
-					new_state = OutboundJITChannelState::PendingPayment {
+					*self = OutboundJITChannelState::PendingPayment {
 						payment_queue: payment_queue.clone(),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
@@ -265,33 +264,31 @@ impl OutboundJITChannelState {
 				}
 			},
 			OutboundJITChannelState::PaymentForwarded { channel_id } => {
-				new_state = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				let forward = HTLCInterceptedAction::ForwardHTLC(*channel_id);
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(Some(forward))
 			},
 		};
-		*self = new_state;
 		res
 	}
 
 	fn channel_ready(
 		&mut self, channel_id: ChannelId,
 	) -> Result<ForwardPaymentAction, ChannelStateError> {
-		let new_state;
 		let res = match self {
 			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
-					new_state = OutboundJITChannelState::PendingPaymentForward {
-						payment_queue: core::mem::take(payment_queue),
-						opening_fee_msat: *opening_fee_msat,
-						channel_id,
-					};
 					let forward_payment = ForwardPaymentAction(
 						channel_id,
 						FeePayment { opening_fee_msat: *opening_fee_msat, htlcs },
 					);
+					*self = OutboundJITChannelState::PendingPaymentForward {
+						payment_queue: core::mem::take(payment_queue),
+						opening_fee_msat: *opening_fee_msat,
+						channel_id,
+					};
 					Ok(forward_payment)
 				} else {
 					return Err(ChannelStateError(
@@ -307,12 +304,10 @@ impl OutboundJITChannelState {
 				)))
 			},
 		};
-		*self = new_state;
 		res
 	}
 
 	fn htlc_handling_failed(&mut self) -> Result<Option<ForwardPaymentAction>, ChannelStateError> {
-		let new_state;
 		let res = match self {
 			OutboundJITChannelState::PendingPaymentForward {
 				payment_queue,
@@ -322,18 +317,18 @@ impl OutboundJITChannelState {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
-					new_state = OutboundJITChannelState::PendingPaymentForward {
-						payment_queue: core::mem::take(payment_queue),
-						opening_fee_msat: *opening_fee_msat,
-						channel_id: *channel_id,
-					};
 					let forward_payment = ForwardPaymentAction(
 						*channel_id,
 						FeePayment { htlcs, opening_fee_msat: *opening_fee_msat },
 					);
+					*self = OutboundJITChannelState::PendingPaymentForward {
+						payment_queue: core::mem::take(payment_queue),
+						opening_fee_msat: *opening_fee_msat,
+						channel_id: *channel_id,
+					};
 					Ok(Some(forward_payment))
 				} else {
-					new_state = OutboundJITChannelState::PendingPayment {
+					*self = OutboundJITChannelState::PendingPayment {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
@@ -346,7 +341,7 @@ impl OutboundJITChannelState {
 				opening_fee_msat,
 				channel_id,
 			} => {
-				new_state = OutboundJITChannelState::PendingPayment {
+				*self = OutboundJITChannelState::PendingPayment {
 					payment_queue: core::mem::take(payment_queue),
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
@@ -354,7 +349,7 @@ impl OutboundJITChannelState {
 				Ok(None)
 			},
 			OutboundJITChannelState::PaymentForwarded { channel_id } => {
-				new_state = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(None)
 			},
 			state => {
@@ -364,23 +359,21 @@ impl OutboundJITChannelState {
 				)))
 			},
 		};
-		*self = new_state;
 		res
 	}
 
 	fn payment_forwarded(&mut self) -> Result<Option<ForwardHTLCsAction>, ChannelStateError> {
-		let new_state;
 		let res = match self {
 			OutboundJITChannelState::PendingPaymentForward {
 				payment_queue, channel_id, ..
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
-				new_state = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				let forward_htlcs = ForwardHTLCsAction(*channel_id, payment_queue.clear());
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(Some(forward_htlcs))
 			},
 			OutboundJITChannelState::PaymentForwarded { channel_id } => {
-				new_state = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
+				*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
 				Ok(None)
 			},
 			state => {
@@ -390,7 +383,6 @@ impl OutboundJITChannelState {
 				)))
 			},
 		};
-		*self = new_state;
 		res
 	}
 }
