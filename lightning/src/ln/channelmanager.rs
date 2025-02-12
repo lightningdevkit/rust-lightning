@@ -9226,6 +9226,58 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	fn internal_stfu(&self, counterparty_node_id: &PublicKey, msg: &msgs::Stfu) -> Result<bool, MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::send_err_msg_no_close(
+				format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+				msg.channel_id
+			)
+		})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		if !self.init_features().supports_quiescence() {
+			return Err(MsgHandleErrInternal::from_chan_no_close(
+				ChannelError::Warn("Quiescense not supported".to_string()), msg.channel_id
+			));
+		}
+
+		let mut sent_stfu = false;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					let logger = WithContext::from(
+						&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), None
+					);
+
+					if let Some(stfu) = try_channel_entry!(
+						self, peer_state, chan.stfu(&msg, &&logger), chan_entry
+					) {
+						sent_stfu = true;
+						peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
+							node_id: *counterparty_node_id,
+							msg: stfu,
+						});
+					}
+				} else {
+					let msg = "Peer sent `stfu` for an unfunded channel";
+					let err = Err(ChannelError::Close(
+						(msg.into(), ClosureReason::ProcessingError { err: msg.into() })
+					));
+					return try_channel_entry!(self, peer_state, err, chan_entry);
+				}
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(
+				format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id),
+				msg.channel_id
+			))
+		}
+
+		Ok(sent_stfu)
+	}
+
 	fn internal_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -9749,6 +9801,118 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		has_update
+	}
+
+	fn maybe_send_stfu(&self) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			let pending_msg_events = &mut peer_state.pending_msg_events;
+			for (channel_id, chan) in &mut peer_state.channel_by_id {
+				if let Some(funded_chan) = chan.as_funded_mut() {
+					let logger = WithContext::from(
+						&self.logger, Some(*counterparty_node_id), Some(*channel_id), None
+					);
+					match funded_chan.try_send_stfu(&&logger) {
+						Ok(None) => {},
+						Ok(Some(stfu)) => {
+							pending_msg_events.push(events::MessageSendEvent::SendStfu {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg: stfu,
+							});
+						},
+						Err(e) => {
+							log_debug!(logger, "Could not advance quiescence handshake: {}", e);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	#[cfg(any(test, fuzzing))]
+	pub fn maybe_propose_quiescence(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) -> Result<(), APIError> {
+		let mut result = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let mut notify = NotifyOption::SkipPersistNoEvents;
+
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if peer_state_mutex_opt.is_none() {
+				result = Err(APIError::ChannelUnavailable {
+					err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id)
+				});
+				return notify;
+			}
+
+			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+			if !peer_state.latest_features.supports_quiescence() {
+				result = Err(APIError::ChannelUnavailable { err: "Peer does not support quiescence".to_owned() });
+				return notify;
+			}
+
+			match peer_state.channel_by_id.entry(channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+						let logger = WithContext::from(
+							&self.logger, Some(*counterparty_node_id), Some(*channel_id), None
+						);
+
+						match chan.propose_quiescence(&&logger) {
+							Ok(None) => {},
+							Ok(Some(stfu)) => {
+								peer_state.pending_msg_events.push(MessageSendEvent::SendStfu {
+									node_id: *counterparty_node_id, msg: stfu
+								});
+								notify = NotifyOption::SkipPersistHandleEvents;
+							},
+							Err(msg) => log_trace!(logger, "{}", msg),
+						}
+					} else {
+						result = Err(APIError::APIMisuseError {
+							err: format!("Unfunded channel {} cannot be quiescent", channel_id),
+						});
+					}
+				},
+				hash_map::Entry::Vacant(_) => {
+					result = Err(APIError::ChannelUnavailable {
+						err: format!("Channel with id {} not found for the passed counterparty node_id {}",
+							channel_id, counterparty_node_id),
+					});
+				},
+			}
+
+			notify
+		});
+
+		result
+	}
+
+	#[cfg(any(test, fuzzing))]
+	pub fn exit_quiescence(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) -> Result<bool, APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable {
+				err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id)
+			})?;
+		let mut peer_state = peer_state_mutex.lock().unwrap();
+		let initiator = match peer_state.channel_by_id.entry(*channel_id) {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					chan.exit_quiescence()
+				} else {
+					return Err(APIError::APIMisuseError {
+						err: format!("Unfunded channel {} cannot be quiescent", channel_id),
+					})
+				}
+			},
+			hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable {
+				err: format!("Channel with id {} not found for the passed counterparty node_id {}",
+					channel_id, counterparty_node_id),
+			}),
+		};
+		Ok(initiator)
 	}
 
 	/// Utility for creating a BOLT11 invoice that can be verified by [`ChannelManager`] without
@@ -10939,6 +11103,9 @@ where
 				result = NotifyOption::DoPersist;
 			}
 
+			// Quiescence is an in-memory protocol, so we don't have to persist because of it.
+			self.maybe_send_stfu();
+
 			let mut is_any_peer_connected = false;
 			let mut pending_events = Vec::new();
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -11559,9 +11726,20 @@ where
 	}
 
 	fn handle_stfu(&self, counterparty_node_id: PublicKey, msg: &msgs::Stfu) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Quiescence not supported".to_owned(),
-			msg.channel_id.clone())), counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_stfu(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(sent_stfu) => if *sent_stfu {
+					NotifyOption::SkipPersistHandleEvents
+				} else {
+					NotifyOption::SkipPersistNoEvents
+				},
+			};
+			let _ = handle_error!(self, res, counterparty_node_id);
+			persist
+		});
 	}
 
 	#[cfg(splicing)]
@@ -12570,6 +12748,10 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	}
 	#[cfg(dual_funding)]
 	features.set_dual_fund_optional();
+	// Only signal quiescence support in tests for now, as we don't yet support any
+	// quiescent-dependent protocols (e.g., splicing).
+	#[cfg(any(test, fuzzing))]
+	features.set_quiescence_optional();
 	features
 }
 

@@ -74,6 +74,8 @@
 //!     (see [bLIP 32](https://github.com/lightning/blips/blob/master/blip-0032.md) for more information).
 //! - `ProvideStorage` - Indicates that we offer the capability to store data of our peers
 //! 	(see https://github.com/lightning/bolts/pull/1110 for more info).
+//! - `Quiescence` - protocol to quiesce a channel by indicating that "SomeThing Fundamental is Underway"
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -152,7 +154,7 @@ mod sealed {
 			// Byte 3
 			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
 			// Byte 4
-			OnionMessages,
+			Quiescence | OnionMessages,
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -173,7 +175,7 @@ mod sealed {
 			// Byte 3
 			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
 			// Byte 4
-			OnionMessages,
+			Quiescence | OnionMessages,
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -535,6 +537,16 @@ mod sealed {
 		set_taproot_required,
 		supports_taproot,
 		requires_taproot
+	);
+	define_feature!(
+		35,
+		Quiescence,
+		[InitContext, NodeContext],
+		"Feature flags for `option_quiesce`.",
+		set_quiescence_optional,
+		set_quiescence_required,
+		supports_quiescence,
+		requires_quiescence
 	);
 	define_feature!(
 		39,
@@ -1195,6 +1207,7 @@ mod tests {
 		init_features.set_channel_type_optional();
 		init_features.set_scid_privacy_optional();
 		init_features.set_zero_conf_optional();
+		init_features.set_quiescence_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -1215,7 +1228,7 @@ mod tests {
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b10001010);
 			assert_eq!(node_features.flags[3], 0b00001010);
-			assert_eq!(node_features.flags[4], 0b10000000);
+			assert_eq!(node_features.flags[4], 0b10001000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
 		}
