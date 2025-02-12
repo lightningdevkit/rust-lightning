@@ -713,6 +713,7 @@ pub const MIN_THEIR_CHAN_RESERVE_SATOSHIS: u64 = 1000;
 pub(super) enum ChannelError {
 	Ignore(String),
 	Warn(String),
+	WarnAndDisconnect(String),
 	Close((String, ClosureReason)),
 	SendError(String),
 }
@@ -720,10 +721,11 @@ pub(super) enum ChannelError {
 impl fmt::Debug for ChannelError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
-			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
-			&ChannelError::Close((ref e, _)) => write!(f, "Close : {}", e),
-			&ChannelError::SendError(ref e) => write!(f, "Not Found : {}", e),
+			&ChannelError::Ignore(ref e) => write!(f, "Ignore: {}", e),
+			&ChannelError::Warn(ref e) => write!(f, "Warn: {}", e),
+			&ChannelError::WarnAndDisconnect(ref e) => write!(f, "Disconnecting with warning: {}", e),
+			&ChannelError::Close((ref e, _)) => write!(f, "Close: {}", e),
+			&ChannelError::SendError(ref e) => write!(f, "Not Found: {}", e),
 		}
 	}
 }
@@ -733,6 +735,7 @@ impl fmt::Display for ChannelError {
 		match self {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
+			&ChannelError::WarnAndDisconnect(ref e) => write!(f, "{}", e),
 			&ChannelError::Close((ref e, _)) => write!(f, "{}", e),
 			&ChannelError::SendError(ref e) => write!(f, "{}", e),
 		}

@@ -840,6 +840,15 @@ impl MsgHandleErrInternal {
 						log_level: Level::Warn,
 					},
 				},
+				ChannelError::WarnAndDisconnect(msg) =>  LightningError {
+					err: msg.clone(),
+					action: msgs::ErrorAction::DisconnectPeerWithWarning {
+						msg: msgs::WarningMessage {
+							channel_id,
+							data: msg
+						},
+					},
+				},
 				ChannelError::Ignore(msg) => LightningError {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
@@ -3068,6 +3077,9 @@ macro_rules! convert_channel_err {
 		match $err {
 			ChannelError::Warn(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), *$channel_id))
+			},
+			ChannelError::WarnAndDisconnect(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::WarnAndDisconnect(msg), *$channel_id))
 			},
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), *$channel_id))
