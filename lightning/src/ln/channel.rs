@@ -1580,6 +1580,10 @@ impl FundingScope {
 	pub fn get_value_satoshis(&self) -> u64 {
 		self.channel_value_satoshis
 	}
+
+	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
+		self.value_to_self_msat
+	}
 }
 
 /// Contains everything about the channel including state, and various flags.
@@ -2829,15 +2833,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		Ok((funding, channel_context))
 	}
-}
 
-impl FundingScope {
-	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
-		self.value_to_self_msat
-	}
-}
-
-impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Allowed in any state (including after shutdown)
 	pub fn get_update_time_counter(&self) -> u32 {
 		self.update_time_counter
