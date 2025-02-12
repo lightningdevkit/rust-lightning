@@ -7093,6 +7093,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		} else if
 			// Cleared upon receiving `channel_reestablish`.
 			self.context.channel_state.is_peer_disconnected()
+			// Cleared upon receiving `stfu`.
+			|| self.context.channel_state.is_local_stfu_sent()
+			// Cleared upon receiving a message that triggers the end of quiescence.
+			|| self.context.channel_state.is_quiescent()
 			// Cleared upon receiving `revoke_and_ack`.
 			|| self.context.has_pending_channel_update()
 		{
@@ -8871,6 +8875,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		let is_holder_quiescence_initiator = !msg.initiator || self.context.is_outbound();
 		self.context.is_holder_quiescence_initiator = Some(is_holder_quiescence_initiator);
 
+		// We were expecting to receive `stfu` because we already sent ours.
+		self.mark_response_received();
+
 		if self.context.has_pending_channel_update() {
 			// Since we've already sent `stfu`, it should not be possible for one of our updates to
 			// be pending, so anything pending currently must be from a counterparty update.
@@ -8928,6 +8935,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		debug_assert!(!self.context.channel_state.is_remote_stfu_sent());
 
 		if self.context.channel_state.is_quiescent() {
+			self.mark_response_received();
 			self.context.channel_state.clear_quiescent();
 			self.context.is_holder_quiescence_initiator.take().expect("Must always be set while quiescent")
 		} else {

@@ -3,9 +3,11 @@ use crate::events::Event;
 use crate::events::HTLCDestination;
 use crate::events::MessageSendEvent;
 use crate::events::MessageSendEventsProvider;
+use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::channelmanager::RecipientOnionFields;
 use crate::ln::functional_test_utils::*;
+use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ErrorAction};
 use crate::util::errors::APIError;
 use crate::util::test_channel_signer::SignerOp;
@@ -412,4 +414,88 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		expect_payment_claimed!(nodes[0], payment_hash1, payment_amount);
 		expect_payment_sent(&nodes[1], payment_preimage1, None, true, true);
 	}
+}
+
+#[test]
+fn test_quiescence_timeout() {
+	// Test that we'll disconnect if we remain quiescent for `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.maybe_propose_quiescence(&nodes[1].node.get_our_node_id(), &chan_id).unwrap();
+
+	let stfu_initiator = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_initiator);
+
+	let stfu_responder = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_responder);
+
+	assert!(stfu_initiator.initiator && !stfu_responder.initiator);
+
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	let f = |event| {
+		if let MessageSendEvent::HandleError { action, .. } = event {
+			if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
+				Some(())
+			} else {
+				None
+			}
+		} else {
+			None
+		}
+	};
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().into_iter().find_map(f).is_some());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().find_map(f).is_some());
+}
+
+#[test]
+fn test_quiescence_timeout_while_waiting_for_counterparty_stfu() {
+	// Test that we'll disconnect if the counterparty does not send their stfu within a reasonable
+	// time if we've already sent ours.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &chan_id).unwrap();
+	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Route a payment in between to ensure expecting to receive `revoke_and_ack` doesn't override
+	// the expectation of receiving `stfu` as well.
+	let _ = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	// nodes[0] hasn't received stfu from nodes[1], so it's not enforcing any timeouts.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// nodes[1] didn't receive nodes[0]'s stfu within the timeout so it'll disconnect.
+	let f = |&ref event| {
+		if let MessageSendEvent::HandleError { action, .. } = event {
+			if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
+				Some(())
+			} else {
+				None
+			}
+		} else {
+			None
+		}
+	};
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().iter().find_map(f).is_some());
 }
