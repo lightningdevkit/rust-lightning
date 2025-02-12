@@ -1,4 +1,5 @@
 use crate::chain::ChannelMonitorUpdateStatus;
+use crate::events::Event;
 use crate::events::HTLCDestination;
 use crate::events::MessageSendEvent;
 use crate::events::MessageSendEventsProvider;
@@ -283,4 +284,132 @@ fn test_quiescence_tracks_monitor_update_in_progress_and_waits_for_async_signer(
 	nodes[0].chain_monitor.complete_sole_pending_chan_update(&chan_id);
 	let _ = get_htlc_update_msgs!(&nodes[0], node_id_1);
 	check_added_monitors(&nodes[0], 1);
+}
+
+#[test]
+fn test_quiescence_updates_go_to_holding_cell() {
+	quiescence_updates_go_to_holding_cell(false);
+	quiescence_updates_go_to_holding_cell(true);
+}
+
+fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
+	// Test that any updates made to a channel while quiescent go to the holding cell.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	// Send enough to be able to pay from both directions.
+	let payment_amount = 1_000_000;
+	send_payment(&nodes[0], &[&nodes[1]], payment_amount * 4);
+
+	// Propose quiescence from nodes[1], and immediately try to send a payment. Since its `stfu` has
+	// already gone out first, the outbound HTLC will go into the holding cell.
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &chan_id).unwrap();
+	let stfu = get_event_msg!(&nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	let (route1, payment_hash1, payment_preimage1, payment_secret1) =
+		get_route_and_payment_hash!(&nodes[1], &nodes[0], payment_amount);
+	let onion1 = RecipientOnionFields::secret_only(payment_secret1);
+	let payment_id1 = PaymentId(payment_hash1.0);
+	nodes[1].node.send_payment_with_route(route1, payment_hash1, onion1, payment_id1).unwrap();
+	check_added_monitors!(&nodes[1], 0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Send a payment in the opposite direction. Since nodes[0] hasn't sent its own `stfu` yet, it's
+	// allowed to make updates.
+	let (route2, payment_hash2, payment_preimage2, payment_secret2) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
+	let onion2 = RecipientOnionFields::secret_only(payment_secret2);
+	let payment_id2 = PaymentId(payment_hash2.0);
+	nodes[0].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
+	check_added_monitors!(&nodes[0], 1);
+
+	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
+	commitment_signed_dance!(&nodes[1], &nodes[0], update_add.commitment_signed, false);
+	expect_pending_htlcs_forwardable!(&nodes[1]);
+	expect_payment_claimable!(nodes[1], payment_hash2, payment_secret2, payment_amount);
+
+	// Have nodes[1] attempt to fail/claim nodes[0]'s payment. Since nodes[1] already sent out
+	// `stfu`, the `update_fail/fulfill` will go into the holding cell.
+	if fail_htlc {
+		nodes[1].node.fail_htlc_backwards(&payment_hash2);
+		let failed_payment = HTLCDestination::FailedPayment { payment_hash: payment_hash2 };
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![failed_payment]);
+	} else {
+		nodes[1].node.claim_funds(payment_preimage2);
+		check_added_monitors(&nodes[1], 1);
+	}
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Finish the quiescence handshake.
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+
+	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
+	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+
+	// Now that quiescence is over, nodes are allowed to make updates again. nodes[1] will have its
+	// outbound HTLC finally go out, along with the fail/claim of nodes[0]'s payment.
+	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	check_added_monitors(&nodes[1], 1);
+	nodes[0].node.handle_update_add_htlc(node_id_1, &update.update_add_htlcs[0]);
+	if fail_htlc {
+		nodes[0].node.handle_update_fail_htlc(node_id_1, &update.update_fail_htlcs[0]);
+	} else {
+		nodes[0].node.handle_update_fulfill_htlc(node_id_1, &update.update_fulfill_htlcs[0]);
+	}
+	commitment_signed_dance!(&nodes[0], &nodes[1], update.commitment_signed, false);
+
+	if !fail_htlc {
+		expect_payment_claimed!(nodes[1], payment_hash2, payment_amount);
+	}
+
+	// The payment from nodes[0] should now be seen as failed/successful.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	assert!(events.iter().find(|e| matches!(e, Event::PendingHTLCsForwardable { .. })).is_some());
+	if fail_htlc {
+		assert!(events.iter().find(|e| matches!(e, Event::PaymentFailed { .. })).is_some());
+		assert!(events.iter().find(|e| matches!(e, Event::PaymentPathFailed { .. })).is_some());
+	} else {
+		assert!(events.iter().find(|e| matches!(e, Event::PaymentSent { .. })).is_some());
+		assert!(events.iter().find(|e| matches!(e, Event::PaymentPathSuccessful { .. })).is_some());
+		check_added_monitors(&nodes[0], 1);
+	}
+	nodes[0].node.process_pending_htlc_forwards();
+	expect_payment_claimable!(nodes[0], payment_hash1, payment_secret1, payment_amount);
+
+	// Have nodes[0] fail/claim nodes[1]'s payment.
+	if fail_htlc {
+		nodes[0].node.fail_htlc_backwards(&payment_hash1);
+		let failed_payment = HTLCDestination::FailedPayment { payment_hash: payment_hash1 };
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[0], vec![failed_payment]);
+	} else {
+		nodes[0].node.claim_funds(payment_preimage1);
+	}
+	check_added_monitors(&nodes[0], 1);
+
+	let update = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	if fail_htlc {
+		nodes[1].node.handle_update_fail_htlc(node_id_0, &update.update_fail_htlcs[0]);
+	} else {
+		nodes[1].node.handle_update_fulfill_htlc(node_id_0, &update.update_fulfill_htlcs[0]);
+	}
+	commitment_signed_dance!(&nodes[1], &nodes[0], update.commitment_signed, false);
+
+	// The payment from nodes[1] should now be seen as failed/successful.
+	if fail_htlc {
+		let conditions = PaymentFailedConditions::new();
+		expect_payment_failed_conditions(&nodes[1], payment_hash1, true, conditions);
+	} else {
+		expect_payment_claimed!(nodes[0], payment_hash1, payment_amount);
+		expect_payment_sent(&nodes[1], payment_preimage1, None, true, true);
+	}
 }
