@@ -2696,6 +2696,10 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		self.expected_preimage = Some(payment_preimage);
 		self
 	}
+	pub fn with_user_custom_data(mut self, custom_tlvs: Vec<u8>) -> Self {
+		self.user_custom_data = Some(custom_tlvs);
+		self
+	}
 	pub fn with_sender_custom_tlvs(mut self, sender_custom_tlvs: Vec<(u64, Vec<u8>)>) -> Self {
 		self.sender_custom_tlvs = sender_custom_tlvs;
 		self

@@ -1288,7 +1288,7 @@ fn conditionally_round_fwd_amt() {
 
 
 #[test]
-fn sender_custom_tlvs_to_blinded_path() {
+fn custom_tlvs_to_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1304,7 +1304,7 @@ fn sender_custom_tlvs_to_blinded_path() {
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
-		custom_data: None,
+		custom_data: Some(vec![43, 43]),
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[1].keys_manager.get_inbound_payment_key();
@@ -1321,6 +1321,7 @@ fn sender_custom_tlvs_to_blinded_path() {
 	);
 
 	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty()
+		.with_user_custom_data(vec![43, 43])
 		.with_sender_custom_tlvs(vec![((1 << 16) + 1, vec![42, 42])])
 		.unwrap();
 	nodes[0].node.send_payment(payment_hash, recipient_onion_fields.clone(),
@@ -1333,11 +1334,13 @@ fn sender_custom_tlvs_to_blinded_path() {
 
 	let path = &[&nodes[1]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, ev)
+		.with_user_custom_data(recipient_onion_fields.user_custom_data.clone().unwrap())
 		.with_payment_secret(payment_secret)
 		.with_sender_custom_tlvs(recipient_onion_fields.sender_custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+			.with_user_custom_data(recipient_onion_fields.user_custom_data.clone().unwrap())
 			.with_sender_custom_tlvs(recipient_onion_fields.sender_custom_tlvs.clone())
 	);
 }
