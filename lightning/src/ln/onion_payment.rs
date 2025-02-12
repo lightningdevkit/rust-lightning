@@ -16,7 +16,7 @@ use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWA
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
+use crate::ln::onion_utils::{Hop, HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
 
@@ -296,7 +296,13 @@ where
 		InboundHTLCErr { msg, err_code, err_data }
 	})?;
 	Ok(match hop {
-		onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+		onion_utils::Hop::Forward { next_hop_hmac, new_packet_bytes, .. } | onion_utils::Hop::BlindedForward { next_hop_hmac, new_packet_bytes, .. } => {
+			let inbound_onion_payload = match hop {
+				onion_utils::Hop::Forward { next_hop_data, .. } => msgs::InboundOnionPayload::Forward(next_hop_data),
+				onion_utils::Hop::BlindedForward { next_hop_data, .. } => msgs::InboundOnionPayload::BlindedForward(next_hop_data),
+				_ => unreachable!()
+			};
+
 			let NextPacketDetails {
 				next_packet_pubkey, outgoing_amt_msat: _, outgoing_scid: _, outgoing_cltv_value
 			} = match next_packet_details_opt {
@@ -310,7 +316,7 @@ where
 			};
 
 			if let Err((err_msg, code)) = check_incoming_htlc_cltv(
-				cur_height, outgoing_cltv_value, msg.cltv_expiry
+				cur_height, outgoing_cltv_value, msg.cltv_expiry,
 			) {
 				return Err(InboundHTLCErr {
 					msg: err_msg,
@@ -321,16 +327,21 @@ where
 
 			// TODO: If this is potentially a phantom payment we should decode the phantom payment
 			// onion here and check it.
-
 			create_fwd_pending_htlc_info(
-				msg, next_hop_data, next_hop_hmac, new_packet_bytes, shared_secret,
-				Some(next_packet_pubkey)
+				msg, inbound_onion_payload, next_hop_hmac, new_packet_bytes, shared_secret,
+				Some(next_packet_pubkey),
 			)?
 		},
 		onion_utils::Hop::Receive(received_data) => {
 			create_recv_pending_htlc_info(
-				received_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
-				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height
+				msgs::InboundOnionPayload::Receive(received_data), shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
+				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height,
+			)?
+		},
+		onion_utils::Hop::BlindedReceive(received_data) => {
+			create_recv_pending_htlc_info(
+				msgs::InboundOnionPayload::BlindedReceive(received_data), shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
+				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height,
 			)?
 		}
 	})
@@ -424,23 +435,15 @@ where
 	};
 
 	let next_packet_details = match next_hop {
-		onion_utils::Hop::Forward {
-			next_hop_data: msgs::InboundOnionPayload::Forward(msgs::InboundOnionForwardPayload {
-				short_channel_id, amt_to_forward, outgoing_cltv_value
-			}), ..
-		} => {
+		Hop::Forward { next_hop_data: msgs::InboundOnionForwardPayload { short_channel_id, amt_to_forward, outgoing_cltv_value }, .. } => {
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-			NextPacketDetails {
+			Some(NextPacketDetails {
 				next_packet_pubkey, outgoing_scid: short_channel_id,
 				outgoing_amt_msat: amt_to_forward, outgoing_cltv_value
-			}
-		},
-		onion_utils::Hop::Forward {
-			next_hop_data: msgs::InboundOnionPayload::BlindedForward (msgs::InboundOnionBlindedForwardPayload{
-				short_channel_id, ref payment_relay, ref payment_constraints, ref features, ..
-			}), ..
-		} => {
+			})
+		}
+		Hop::BlindedForward { next_hop_data: msgs::InboundOnionBlindedForwardPayload { short_channel_id, ref payment_relay, ref payment_constraints, ref features, .. }, .. } => {
 			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
 				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
 			) {
@@ -452,20 +455,15 @@ where
 			};
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(&secp_ctx,
 				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
-			NextPacketDetails {
+			Some(NextPacketDetails {
 				next_packet_pubkey, outgoing_scid: short_channel_id, outgoing_amt_msat: amt_to_forward,
 				outgoing_cltv_value
-			}
-		},
-		onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
-		onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } |
-			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::BlindedReceive { .. }, .. } =>
-		{
-			return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
+			})
 		}
+		_ => None
 	};
 
-	Ok((next_hop, shared_secret, Some(next_packet_details)))
+	Ok((next_hop, shared_secret, next_packet_details))
 }
 
 pub(super) fn check_incoming_htlc_cltv(
