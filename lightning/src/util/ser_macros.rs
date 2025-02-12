@@ -40,7 +40,7 @@ macro_rules! _encode_tlv {
 		}
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => {
-		$crate::_encode_tlv!($stream, $optional_type, $write($($self)?), option);
+		$crate::_encode_tlv!($stream, $optional_type, { let value: Option<$fieldty> = $write($($self)?); value }, option);
 	};
 	($stream: expr, $type: expr, $field: expr, optional_vec $(, $self: ident)?) => {
 		if !$field.is_empty() {
