@@ -1575,6 +1575,12 @@ pub(super) struct FundingScope {
 	channel_value_satoshis: u64,
 }
 
+impl FundingScope {
+	pub fn get_value_satoshis(&self) -> u64 {
+		self.channel_value_satoshis
+	}
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -3169,27 +3175,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	pub fn get_holder_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
 		self.get_htlc_maximum_msat(funding, self.holder_max_htlc_value_in_flight_msat)
 	}
-}
 
-impl<SP: Deref> FundedChannel<SP>
-where
-	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner,
-{
-	/// Allowed in any state (including after shutdown)
-	pub fn get_announced_htlc_max_msat(&self) -> u64 {
-		return cmp::min(
-			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
-			// to use full capacity. This is an effort to reduce routing failures, because in many cases
-			// channel might have been used to route very small values (either by honest users or as DoS).
-			self.funding.channel_value_satoshis * 1000 * 9 / 10,
-
-			self.context.counterparty_max_htlc_value_in_flight_msat
-		);
-	}
-}
-
-impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Allowed in any state (including after shutdown)
 	pub fn get_counterparty_htlc_minimum_msat(&self) -> u64 {
 		self.counterparty_htlc_minimum_msat
@@ -3209,15 +3195,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			)
 		})
 	}
-}
 
-impl FundingScope {
-	pub fn get_value_satoshis(&self) -> u64 {
-		self.channel_value_satoshis
-	}
-}
-
-impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
 		self.config.options.forwarding_fee_proportional_millionths
 	}
@@ -8607,6 +8585,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
 	}
 
+	// Miscellaneous utilities
+
 	pub fn inflight_htlc_sources(&self) -> impl Iterator<Item=(&HTLCSource, &PaymentHash)> {
 		self.context.holding_cell_htlc_updates.iter()
 			.flat_map(|htlc_update| {
@@ -8617,6 +8597,17 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 			})
 			.chain(self.context.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
+	}
+
+	pub fn get_announced_htlc_max_msat(&self) -> u64 {
+		return cmp::min(
+			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
+			// to use full capacity. This is an effort to reduce routing failures, because in many cases
+			// channel might have been used to route very small values (either by honest users or as DoS).
+			self.funding.channel_value_satoshis * 1000 * 9 / 10,
+
+			self.context.counterparty_max_htlc_value_in_flight_msat
+		);
 	}
 }
 
