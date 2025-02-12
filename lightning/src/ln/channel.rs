@@ -1585,7 +1585,7 @@ impl UnfundedChannelContext {
 pub(super) struct FundingScope {
 	channel_value_satoshis: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
-							 //
+
 	/// minimum channel reserve for self to maintain - set by them.
 	counterparty_selected_channel_reserve_satoshis: Option<u64>,
 
