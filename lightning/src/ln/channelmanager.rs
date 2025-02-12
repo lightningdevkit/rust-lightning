@@ -6632,19 +6632,21 @@ where
 
 								funded_chan.context.maybe_expire_prev_config();
 
-								if funded_chan.should_disconnect_peer_awaiting_response() {
-									let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
-									log_debug!(logger, "Disconnecting peer {} due to not making any progress on channel {}",
-											counterparty_node_id, chan_id);
-									pending_msg_events.push(MessageSendEvent::HandleError {
-										node_id: counterparty_node_id,
-										action: msgs::ErrorAction::DisconnectPeerWithWarning {
-											msg: msgs::WarningMessage {
-												channel_id: *chan_id,
-												data: "Disconnecting due to timeout awaiting response".to_owned(),
+								if peer_state.is_connected {
+									if funded_chan.should_disconnect_peer_awaiting_response() {
+										let logger = WithChannelContext::from(&self.logger, &funded_chan.context, None);
+										log_debug!(logger, "Disconnecting peer {} due to not making any progress on channel {}",
+												counterparty_node_id, chan_id);
+										pending_msg_events.push(MessageSendEvent::HandleError {
+											node_id: counterparty_node_id,
+											action: msgs::ErrorAction::DisconnectPeerWithWarning {
+												msg: msgs::WarningMessage {
+													channel_id: *chan_id,
+													data: "Disconnecting due to timeout awaiting response".to_owned(),
+												},
 											},
-										},
-									});
+										});
+									}
 								}
 
 								true

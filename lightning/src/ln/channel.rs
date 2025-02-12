@@ -1144,9 +1144,8 @@ pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 ///   * `EXPIRE_PREV_CONFIG_TICKS` = convergence_delay / tick_interval
 pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
 
-/// The number of ticks that may elapse while we're waiting for a response to a
-/// [`msgs::RevokeAndACK`] or [`msgs::ChannelReestablish`] message before we attempt to disconnect
-/// them.
+/// The number of ticks that may elapse while we're waiting for a response before we attempt to
+/// disconnect them.
 ///
 /// See [`ChannelContext::sent_message_awaiting_response`] for more information.
 pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2;
@@ -1874,16 +1873,14 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	pub workaround_lnd_bug_4006: Option<msgs::ChannelReady>,
 
 	/// An option set when we wish to track how many ticks have elapsed while waiting for a response
-	/// from our counterparty after sending a message. If the peer has yet to respond after reaching
-	/// `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`, a reconnection should be attempted to try to
-	/// unblock the state machine.
+	/// from our counterparty after entering specific states. If the peer has yet to respond after
+	/// reaching `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`, a reconnection should be attempted to
+	/// try to unblock the state machine.
 	///
-	/// This behavior is mostly motivated by a lnd bug in which we don't receive a message we expect
-	/// to in a timely manner, which may lead to channels becoming unusable and/or force-closed. An
-	/// example of such can be found at <https://github.com/lightningnetwork/lnd/issues/7682>.
-	///
-	/// This is currently only used when waiting for a [`msgs::ChannelReestablish`] or
-	/// [`msgs::RevokeAndACK`] message from the counterparty.
+	/// This behavior was initially motivated by a lnd bug in which we don't receive a message we
+	/// expect to in a timely manner, which may lead to channels becoming unusable and/or
+	/// force-closed. An example of such can be found at
+	/// <https://github.com/lightningnetwork/lnd/issues/7682>.
 	sent_message_awaiting_response: Option<usize>,
 
 	/// This channel's type, as negotiated during channel open
@@ -5929,7 +5926,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// OK, we step the channel here and *then* if the new generation fails we can fail the
 		// channel based on that, but stepping stuff here should be safe either way.
 		self.context.channel_state.clear_awaiting_remote_revoke();
-		self.context.sent_message_awaiting_response = None;
+		self.mark_response_received();
 		self.context.counterparty_prev_commitment_point = self.context.counterparty_cur_commitment_point;
 		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
@@ -6295,6 +6292,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(())
 		}
 
+		// We only clear `peer_disconnected` if we were able to reestablish the channel. We always
+ 		// reset our awaiting response in case we failed reestablishment and are disconnecting.
+		self.context.sent_message_awaiting_response = None;
+
 		if self.context.channel_state.is_peer_disconnected() {
 			// While the below code should be idempotent, it's simpler to just return early, as
 			// redundant disconnect events can fire, though they should be rare.
@@ -6354,8 +6355,6 @@ impl<SP: Deref> FundedChannel<SP> where
 				htlc.state = OutboundHTLCState::Committed;
 			}
 		}
-
-		self.context.sent_message_awaiting_response = None;
 
 		// Reset any quiescence-related state as it is implicitly terminated once disconnected.
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
@@ -6479,10 +6478,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			&& self.context.signer_pending_revoke_and_ack && commitment_update.is_some() {
 			self.context.signer_pending_commitment_update = true;
 			commitment_update = None;
-		}
-
-		if commitment_update.is_some() {
-			self.mark_awaiting_response();
 		}
 
 		self.context.monitor_pending_revoke_and_ack = false;
@@ -6841,7 +6836,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.context.channel_state.clear_peer_disconnected();
-		self.context.sent_message_awaiting_response = None;
+		self.mark_response_received();
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
@@ -6897,9 +6892,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		// AwaitingRemoteRevoke set, which indicates we sent a commitment_signed but haven't gotten
 		// the corresponding revoke_and_ack back yet.
 		let is_awaiting_remote_revoke = self.context.channel_state.is_awaiting_remote_revoke();
-		if is_awaiting_remote_revoke && !self.is_awaiting_monitor_update() {
-			self.mark_awaiting_response();
-		}
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number + if is_awaiting_remote_revoke { 1 } else { 0 };
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number() == 1 {
@@ -7084,26 +7076,34 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok((closing_signed, None, None))
 	}
 
-	// Marks a channel as waiting for a response from the counterparty. If it's not received
-	// [`DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`] after sending our own to them, then we'll attempt
-	// a reconnection.
-	fn mark_awaiting_response(&mut self) {
-		self.context.sent_message_awaiting_response = Some(0);
+	fn mark_response_received(&mut self) {
+		self.context.sent_message_awaiting_response = None;
 	}
 
 	/// Determines whether we should disconnect the counterparty due to not receiving a response
 	/// within our expected timeframe.
 	///
-	/// This should be called on every [`super::channelmanager::ChannelManager::timer_tick_occurred`].
+	/// This should be called for peers with an active socket on every
+	/// [`super::channelmanager::ChannelManager::timer_tick_occurred`].
+	#[allow(clippy::assertions_on_constants)]
 	pub fn should_disconnect_peer_awaiting_response(&mut self) -> bool {
-		let ticks_elapsed = if let Some(ticks_elapsed) = self.context.sent_message_awaiting_response.as_mut() {
-			ticks_elapsed
+		if let Some(ticks_elapsed) = self.context.sent_message_awaiting_response.as_mut() {
+			*ticks_elapsed += 1;
+			*ticks_elapsed >= DISCONNECT_PEER_AWAITING_RESPONSE_TICKS
+		} else if
+			// Cleared upon receiving `channel_reestablish`.
+			self.context.channel_state.is_peer_disconnected()
+			// Cleared upon receiving `revoke_and_ack`.
+			|| self.context.has_pending_channel_update()
+		{
+			// This is the first tick we've seen after expecting to make forward progress.
+			self.context.sent_message_awaiting_response = Some(1);
+			debug_assert!(DISCONNECT_PEER_AWAITING_RESPONSE_TICKS > 1);
+			false
 		} else {
 			// Don't disconnect when we're not waiting on a response.
-			return false;
-		};
-		*ticks_elapsed += 1;
-		*ticks_elapsed >= DISCONNECT_PEER_AWAITING_RESPONSE_TICKS
+			false
+		}
 	}
 
 	pub fn shutdown(
@@ -8266,7 +8266,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			log_info!(logger, "Sending a data_loss_protect with no previous remote per_commitment_secret for channel {}", &self.context.channel_id());
 			[0;32]
 		};
-		self.mark_awaiting_response();
 		msgs::ChannelReestablish {
 			channel_id: self.context.channel_id(),
 			// The protocol has two different commitment number concepts - the "commitment
