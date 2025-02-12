@@ -103,6 +103,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 			htlc_minimum_msat: 1,
 		},
 		payment_context,
+		custom_data: None,
 	};
 	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
 	let intermediate_nodes = [PaymentForwardNode {

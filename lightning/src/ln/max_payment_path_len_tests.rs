@@ -168,6 +168,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		custom_data: None,
 	};
 	let nonce = Nonce([42u8; 16]);
 	let expanded_key = chanmon_cfgs[2].keys_manager.get_inbound_payment_key();

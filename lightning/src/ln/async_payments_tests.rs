@@ -773,6 +773,7 @@ fn reject_bad_payment_secret() {
 							// We don't reach the point of checking the invreq nonce due to the invalid payment secret
 							offer_nonce: Nonce([i; Nonce::LENGTH]),
 						}),
+						None,
 						u32::MAX,
 					)
 					.unwrap();

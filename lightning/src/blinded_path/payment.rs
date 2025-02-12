@@ -325,6 +325,15 @@ pub struct UnauthenticatedReceiveTlvs {
 	pub payment_constraints: PaymentConstraints,
 	/// Context for the receiver of this payment.
 	pub payment_context: PaymentContext,
+	/// Custom data set by the user. And is returned back when the blinded path is used.
+	///
+	/// ## Note on Forward Compatibility:
+	/// Users can encode any kind of data into the `Vec<u8>` bytes here. However, they should ensure
+	/// that the data is structured in a forward-compatible manner. This is especially important as
+	/// `ReceiveTlvs` created in one version of the software may still appear in payments received
+	/// shortly after a software upgrade. Proper forward compatibility helps prevent data loss or
+	/// misinterpretation in future versions.
+	pub custom_data: Option<Vec<u8>>,
 }
 
 impl UnauthenticatedReceiveTlvs {
@@ -490,6 +499,7 @@ impl Writeable for ReceiveTlvs {
 			(65536, self.tlvs.payment_secret, required),
 			(65537, self.tlvs.payment_context, required),
 			(65539, self.authentication, required),
+			(65541, self.tlvs.custom_data, required)
 		});
 		Ok(())
 	}
@@ -501,6 +511,7 @@ impl Writeable for UnauthenticatedReceiveTlvs {
 			(12, self.payment_constraints, required),
 			(65536, self.payment_secret, required),
 			(65537, self.payment_context, required),
+			(65541, self.custom_data, (default_value, Vec::new())),
 		});
 		Ok(())
 	}
@@ -529,6 +540,7 @@ impl Readable for BlindedPaymentTlvs {
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
 			(65539, authentication, option),
+			(65541, custom_data, option)
 		});
 		let _padding: Option<utils::Padding> = _padding;
 
@@ -552,6 +564,7 @@ impl Readable for BlindedPaymentTlvs {
 					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 					payment_constraints: payment_constraints.0.unwrap(),
 					payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
+					custom_data: custom_data.ok_or(DecodeError::InvalidValue)?,
 				},
 				authentication: authentication.ok_or(DecodeError::InvalidValue)?,
 			}))
@@ -794,6 +807,7 @@ mod tests {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			custom_data: None,
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo =
@@ -812,6 +826,7 @@ mod tests {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			custom_data: None,
 		};
 		let blinded_payinfo =
 			super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
@@ -869,6 +884,7 @@ mod tests {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 3 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			custom_data: None,
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(
@@ -928,6 +944,7 @@ mod tests {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			custom_data: None,
 		};
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(
@@ -997,6 +1014,7 @@ mod tests {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+			custom_data: None,
 		};
 
 		let blinded_payinfo = super::compute_payinfo(
