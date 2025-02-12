@@ -141,8 +141,7 @@ impl OutboundJITChannelState {
 	) -> Result<Option<HTLCInterceptedAction>, ChannelStateError> {
 		let new_state;
 		let res = match self {
-			OutboundJITChannelState::PendingInitialPayment { payment_queue: old_payment_queue } => {
-				let mut payment_queue = core::mem::take(old_payment_queue);
+			OutboundJITChannelState::PendingInitialPayment { payment_queue } => {
 				let (total_expected_outbound_amount_msat, num_htlcs) = payment_queue.add_htlc(htlc);
 
 				let (expected_payment_size_msat, mpp_mode) =
@@ -151,8 +150,6 @@ impl OutboundJITChannelState {
 					} else {
 						debug_assert_eq!(num_htlcs, 1);
 						if num_htlcs != 1 {
-							// Revert the queue before error'ing
-							core::mem::swap(old_payment_queue, &mut payment_queue);
 							return Err(ChannelStateError(
 								"Paying via multiple HTLCs is disallowed in \"no-MPP+var-invoice\" mode.".to_string()
 							));
@@ -163,8 +160,6 @@ impl OutboundJITChannelState {
 				if expected_payment_size_msat < opening_fee_params.min_payment_size_msat
 					|| expected_payment_size_msat > opening_fee_params.max_payment_size_msat
 				{
-					// Revert the queue before error'ing
-					core::mem::swap(old_payment_queue, &mut payment_queue);
 					return Err(ChannelStateError(
 							format!("Payment size violates our limits: expected_payment_size_msat = {}, min_payment_size_msat = {}, max_payment_size_msat = {}",
 									expected_payment_size_msat,
@@ -180,8 +175,6 @@ impl OutboundJITChannelState {
 				) {
 					opening_fee
 				} else {
-					// Revert the queue before error'ing
-					core::mem::swap(old_payment_queue, &mut payment_queue);
 					return Err(ChannelStateError(
 							format!("Could not compute valid opening fee with min_fee_msat = {}, proportional = {}, and expected_payment_size_msat = {}",
 									opening_fee_params.min_fee_msat,
@@ -198,7 +191,7 @@ impl OutboundJITChannelState {
 					&& amt_to_forward_msat > 0
 				{
 					new_state = OutboundJITChannelState::PendingChannelOpen {
-						payment_queue,
+						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat,
 					};
 					let open_channel = HTLCInterceptedAction::OpenChannel(OpenChannelParams {
@@ -208,12 +201,11 @@ impl OutboundJITChannelState {
 					Ok(Some(open_channel))
 				} else {
 					if mpp_mode {
-						new_state =
-							OutboundJITChannelState::PendingInitialPayment { payment_queue };
+						new_state = OutboundJITChannelState::PendingInitialPayment {
+							payment_queue: core::mem::take(payment_queue),
+						};
 						Ok(None)
 					} else {
-						// Revert the queue before error'ing
-						core::mem::swap(old_payment_queue, &mut payment_queue);
 						return Err(ChannelStateError(
 							"Intercepted HTLC is too small to pay opening fee".to_string(),
 						));
@@ -287,16 +279,12 @@ impl OutboundJITChannelState {
 	) -> Result<ForwardPaymentAction, ChannelStateError> {
 		let new_state;
 		let res = match self {
-			OutboundJITChannelState::PendingChannelOpen {
-				payment_queue: old_payment_queue,
-				opening_fee_msat,
-			} => {
-				let mut payment_queue = core::mem::take(old_payment_queue);
+			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
 					new_state = OutboundJITChannelState::PendingPaymentForward {
-						payment_queue,
+						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id,
 					};
@@ -306,8 +294,6 @@ impl OutboundJITChannelState {
 					);
 					Ok(forward_payment)
 				} else {
-					// Revert the queue before error'ing
-					core::mem::swap(old_payment_queue, &mut payment_queue);
 					return Err(ChannelStateError(
 						"No forwardable payment available when moving to channel ready."
 							.to_string(),
@@ -333,12 +319,11 @@ impl OutboundJITChannelState {
 				opening_fee_msat,
 				channel_id,
 			} => {
-				let mut payment_queue = core::mem::take(payment_queue);
 				if let Some((_payment_hash, htlcs)) =
 					payment_queue.pop_greater_than_msat(*opening_fee_msat)
 				{
 					new_state = OutboundJITChannelState::PendingPaymentForward {
-						payment_queue: payment_queue.clone(),
+						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
 					};
@@ -349,7 +334,7 @@ impl OutboundJITChannelState {
 					Ok(Some(forward_payment))
 				} else {
 					new_state = OutboundJITChannelState::PendingPayment {
-						payment_queue: payment_queue.clone(),
+						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
 					};
@@ -362,7 +347,7 @@ impl OutboundJITChannelState {
 				channel_id,
 			} => {
 				new_state = OutboundJITChannelState::PendingPayment {
-					payment_queue: payment_queue.clone(),
+					payment_queue: core::mem::take(payment_queue),
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
 				};
