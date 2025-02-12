@@ -3186,7 +3186,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
 	pub fn get_holder_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
-		self.get_htlc_maximum_msat(funding, self.holder_max_htlc_value_in_flight_msat)
+		funding.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -3196,19 +3196,23 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
 	pub fn get_counterparty_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
-		self.get_htlc_maximum_msat(funding, self.counterparty_max_htlc_value_in_flight_msat)
+		funding.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
 	}
+}
 
-	fn get_htlc_maximum_msat(&self, funding: &FundingScope, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
-		funding.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
-			let holder_reserve = funding.holder_selected_channel_reserve_satoshis;
+impl FundingScope {
+	fn get_htlc_maximum_msat(&self, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
+		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
+			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
 			cmp::min(
-				(funding.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
+				(self.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
 				party_max_htlc_value_in_flight_msat
 			)
 		})
 	}
+}
 
+impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
 		self.config.options.forwarding_fee_proportional_millionths
 	}
