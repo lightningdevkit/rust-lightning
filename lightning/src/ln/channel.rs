@@ -1603,6 +1603,20 @@ impl FundingScope {
 	pub(crate) fn get_value_to_self_msat(&self) -> u64 {
 		self.value_to_self_msat
 	}
+
+	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
+		(self.holder_selected_channel_reserve_satoshis, self.counterparty_selected_channel_reserve_satoshis)
+	}
+
+	fn get_htlc_maximum_msat(&self, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
+		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
+			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
+			cmp::min(
+				(self.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
+				party_max_htlc_value_in_flight_msat
+			)
+		})
+	}
 }
 
 /// Contains everything about the channel including state, and various flags.
@@ -3198,21 +3212,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	pub fn get_counterparty_htlc_maximum_msat(&self, funding: &FundingScope) -> Option<u64> {
 		funding.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
 	}
-}
 
-impl FundingScope {
-	fn get_htlc_maximum_msat(&self, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
-		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
-			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
-			cmp::min(
-				(self.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
-				party_max_htlc_value_in_flight_msat
-			)
-		})
-	}
-}
-
-impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
 		self.config.options.forwarding_fee_proportional_millionths
 	}
@@ -4007,15 +4007,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			next_outbound_htlc_minimum_msat,
 		}
 	}
-}
 
-impl FundingScope {
-	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
-		(self.holder_selected_channel_reserve_satoshis, self.counterparty_selected_channel_reserve_satoshis)
-	}
-}
-
-impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
 	/// number of pending HTLCs that are on track to be in our next commitment tx.
 	///
