@@ -78,12 +78,12 @@ pub(super) fn create_fwd_pending_htlc_info(
 		short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
 		next_blinding_override
 	) = match hop_data {
-		msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
+		msgs::InboundOnionPayload::Forward(msgs::InboundOnionForwardPayload { short_channel_id, amt_to_forward, outgoing_cltv_value }) =>
 			(short_channel_id, amt_to_forward, outgoing_cltv_value, None, None),
-		msgs::InboundOnionPayload::BlindedForward {
+		msgs::InboundOnionPayload::BlindedForward(msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, intro_node_blinding_point, features,
 			next_blinding_override,
-		} => {
+		}) => {
 			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
 				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
 			).map_err(|()| {
@@ -139,17 +139,17 @@ pub(super) fn create_recv_pending_htlc_info(
 		payment_metadata, payment_context, requires_blinded_error, has_recipient_created_payment_secret,
 		invoice_request
 	) = match hop_data {
-		msgs::InboundOnionPayload::Receive {
+		msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
 			payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
 			cltv_expiry_height, payment_metadata, ..
-		} =>
+		}) =>
 			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
 			 cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None),
-		msgs::InboundOnionPayload::BlindedReceive {
+		msgs::InboundOnionPayload::BlindedReceive(msgs::InboundOnionBlindedReceivePayload {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
 			custom_tlvs, invoice_request
-		} => {
+		}) => {
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
 			)
@@ -425,9 +425,9 @@ where
 
 	let next_packet_details = match next_hop {
 		onion_utils::Hop::Forward {
-			next_hop_data: msgs::InboundOnionPayload::Forward {
+			next_hop_data: msgs::InboundOnionPayload::Forward(msgs::InboundOnionForwardPayload {
 				short_channel_id, amt_to_forward, outgoing_cltv_value
-			}, ..
+			}), ..
 		} => {
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
@@ -437,9 +437,9 @@ where
 			}
 		},
 		onion_utils::Hop::Forward {
-			next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+			next_hop_data: msgs::InboundOnionPayload::BlindedForward (msgs::InboundOnionBlindedForwardPayload{
 				short_channel_id, ref payment_relay, ref payment_constraints, ref features, ..
-			}, ..
+			}), ..
 		} => {
 			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
 				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features

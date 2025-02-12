@@ -1561,9 +1561,9 @@ fn route_blinding_spec_test_vector() {
 			_ => panic!("Unexpected error")
 		};
 	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::Forward {
-		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+		next_hop_data: msgs::InboundOnionPayload::BlindedForward(msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
-		}, next_hop_hmac, new_packet_bytes
+		}), next_hop_hmac, new_packet_bytes
 	} = bob_peeled_onion {
 		assert_eq!(short_channel_id, 1729);
 		assert!(next_blinding_override.is_none());
@@ -1595,9 +1595,9 @@ fn route_blinding_spec_test_vector() {
 			_ => panic!("Unexpected error")
 		};
 	let (dave_packet_bytes, dave_hmac) = if let onion_utils::Hop::Forward {
-		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+		next_hop_data: msgs::InboundOnionPayload::BlindedForward(msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
-		}, next_hop_hmac, new_packet_bytes
+		}), next_hop_hmac, new_packet_bytes
 	} = carol_peeled_onion {
 		assert_eq!(short_channel_id, 1105);
 		assert_eq!(next_blinding_override, Some(pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f")));
@@ -1629,9 +1629,9 @@ fn route_blinding_spec_test_vector() {
 			_ => panic!("Unexpected error")
 		};
 	let (eve_packet_bytes, eve_hmac) = if let onion_utils::Hop::Forward {
-		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+		next_hop_data: msgs::InboundOnionPayload::BlindedForward(msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
-		}, next_hop_hmac, new_packet_bytes
+		}), next_hop_hmac, new_packet_bytes
 	} = dave_peeled_onion {
 		assert_eq!(short_channel_id, 561);
 		assert!(next_blinding_override.is_none());

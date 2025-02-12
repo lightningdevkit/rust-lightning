@@ -1768,41 +1768,47 @@ mod fuzzy_internal_msgs {
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 
+	pub struct InboundOnionForwardPayload {
+		pub short_channel_id: u64,
+		/// The value, in msat, of the payment after this hop's fee is deducted.
+		pub amt_to_forward: u64,
+		pub outgoing_cltv_value: u32,
+	}
+
+	pub struct InboundOnionReceivePayload {
+		pub payment_data: Option<FinalOnionHopData>,
+		pub payment_metadata: Option<Vec<u8>>,
+		pub keysend_preimage: Option<PaymentPreimage>,
+		pub custom_tlvs: Vec<(u64, Vec<u8>)>,
+		pub sender_intended_htlc_amt_msat: u64,
+		pub cltv_expiry_height: u32,
+	}
+	pub struct InboundOnionBlindedForwardPayload {
+		pub short_channel_id: u64,
+		pub payment_relay: PaymentRelay,
+		pub payment_constraints: PaymentConstraints,
+		pub features: BlindedHopFeatures,
+		pub intro_node_blinding_point: Option<PublicKey>,
+		pub next_blinding_override: Option<PublicKey>,
+	}
+	pub struct InboundOnionBlindedReceivePayload {
+		pub sender_intended_htlc_amt_msat: u64,
+		pub total_msat: u64,
+		pub cltv_expiry_height: u32,
+		pub payment_secret: PaymentSecret,
+		pub payment_constraints: PaymentConstraints,
+		pub payment_context: PaymentContext,
+		pub intro_node_blinding_point: Option<PublicKey>,
+		pub keysend_preimage: Option<PaymentPreimage>,
+		pub invoice_request: Option<InvoiceRequest>,
+		pub custom_tlvs: Vec<(u64, Vec<u8>)>,
+	}
+
 	pub enum InboundOnionPayload {
-		Forward {
-			short_channel_id: u64,
-			/// The value, in msat, of the payment after this hop's fee is deducted.
-			amt_to_forward: u64,
-			outgoing_cltv_value: u32,
-		},
-		Receive {
-			payment_data: Option<FinalOnionHopData>,
-			payment_metadata: Option<Vec<u8>>,
-			keysend_preimage: Option<PaymentPreimage>,
-			custom_tlvs: Vec<(u64, Vec<u8>)>,
-			sender_intended_htlc_amt_msat: u64,
-			cltv_expiry_height: u32,
-		},
-		BlindedForward {
-			short_channel_id: u64,
-			payment_relay: PaymentRelay,
-			payment_constraints: PaymentConstraints,
-			features: BlindedHopFeatures,
-			intro_node_blinding_point: Option<PublicKey>,
-			next_blinding_override: Option<PublicKey>,
-		},
-		BlindedReceive {
-			sender_intended_htlc_amt_msat: u64,
-			total_msat: u64,
-			cltv_expiry_height: u32,
-			payment_secret: PaymentSecret,
-			payment_constraints: PaymentConstraints,
-			payment_context: PaymentContext,
-			intro_node_blinding_point: Option<PublicKey>,
-			keysend_preimage: Option<PaymentPreimage>,
-			invoice_request: Option<InvoiceRequest>,
-			custom_tlvs: Vec<(u64, Vec<u8>)>,
-		}
+		Forward(InboundOnionForwardPayload),
+		Receive(InboundOnionReceivePayload),
+		BlindedForward(InboundOnionBlindedForwardPayload),
+		BlindedReceive(InboundOnionBlindedReceivePayload),
 	}
 
 	pub(crate) enum OutboundOnionPayload<'a> {
@@ -2907,14 +2913,14 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 					{
 						return Err(DecodeError::InvalidValue)
 					}
-					Ok(Self::BlindedForward {
+					Ok(Self::BlindedForward(InboundOnionBlindedForwardPayload {
 						short_channel_id,
 						payment_relay,
 						payment_constraints,
 						features,
 						intro_node_blinding_point,
 						next_blinding_override,
-					})
+					}))
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(receive_tlvs) } => {
 					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
@@ -2927,7 +2933,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						payment_secret, payment_constraints, payment_context,
 					} = tlvs;
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
-					Ok(Self::BlindedReceive {
+					Ok(Self::BlindedReceive(InboundOnionBlindedReceivePayload {
 						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
 						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
@@ -2938,18 +2944,18 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 						keysend_preimage,
 						invoice_request,
 						custom_tlvs,
-					})
+					}))
 				},
 			}
 		} else if let Some(short_channel_id) = short_id {
 			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
 				total_msat.is_some() || invoice_request.is_some()
 			{ return Err(DecodeError::InvalidValue) }
-			Ok(Self::Forward {
+			Ok(Self::Forward(InboundOnionForwardPayload {
 				short_channel_id,
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
-			})
+			}))
 		} else {
 			if encrypted_tlvs_opt.is_some() || total_msat.is_some() || invoice_request.is_some() {
 				return Err(DecodeError::InvalidValue)
@@ -2959,14 +2965,14 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 					return Err(DecodeError::InvalidValue);
 				}
 			}
-			Ok(Self::Receive {
+			Ok(Self::Receive(InboundOnionReceivePayload {
 				payment_data,
 				payment_metadata: payment_metadata.map(|w| w.0),
 				keysend_preimage,
 				sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 				cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				custom_tlvs,
-			})
+			}))
 		}
 	}
 }
@@ -3387,7 +3393,7 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket, InboundOnionForwardPayload, InboundOnionReceivePayload};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
@@ -4559,9 +4565,9 @@ mod tests {
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
-		if let msgs::InboundOnionPayload::Forward {
+		if let msgs::InboundOnionPayload::Forward(InboundOnionForwardPayload {
 			short_channel_id, amt_to_forward, outgoing_cltv_value
-		} = inbound_msg {
+		}) = inbound_msg {
 			assert_eq!(short_channel_id, 0xdeadbeef1bad1dea);
 			assert_eq!(amt_to_forward, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
@@ -4584,9 +4590,9 @@ mod tests {
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
-		if let msgs::InboundOnionPayload::Receive {
+		if let msgs::InboundOnionPayload::Receive(InboundOnionReceivePayload {
 			payment_data: None, sender_intended_htlc_amt_msat, cltv_expiry_height, ..
-		} = inbound_msg {
+		}) = inbound_msg {
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(cltv_expiry_height, 0xffffffff);
 		} else { panic!(); }
@@ -4612,7 +4618,7 @@ mod tests {
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
-		if let msgs::InboundOnionPayload::Receive {
+		if let msgs::InboundOnionPayload::Receive(InboundOnionReceivePayload {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
 				total_msat: 0x1badca1f
@@ -4621,7 +4627,7 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
-		} = inbound_msg  {
+		}) = inbound_msg  {
 			assert_eq!(payment_secret, expected_payment_secret);
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(cltv_expiry_height, 0xffffffff);
@@ -4658,7 +4664,7 @@ mod tests {
 		let encoded_value = msg.encode();
 		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &node_signer)).unwrap();
 		match inbound_msg {
-			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => assert!(custom_tlvs.is_empty()),
+			msgs::InboundOnionPayload::Receive(InboundOnionReceivePayload { custom_tlvs, .. }) => assert!(custom_tlvs.is_empty()),
 			_ => panic!(),
 		}
 	}
@@ -4682,7 +4688,7 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
 		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
-		if let msgs::InboundOnionPayload::Receive {
+		if let msgs::InboundOnionPayload::Receive(InboundOnionReceivePayload {
 			payment_data: None,
 			payment_metadata: None,
 			keysend_preimage: None,
@@ -4690,7 +4696,7 @@ mod tests {
 			sender_intended_htlc_amt_msat,
 			cltv_expiry_height: outgoing_cltv_value,
 			..
-		} = inbound_msg {
+		}) = inbound_msg {
 			assert_eq!(custom_tlvs, expected_custom_tlvs);
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);

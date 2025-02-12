@@ -1434,9 +1434,10 @@ impl Hop {
 		match self {
 			Self::Forward {
 				next_hop_data:
-					msgs::InboundOnionPayload::BlindedForward {
-						intro_node_blinding_point: Some(_), ..
-					},
+					msgs::InboundOnionPayload::BlindedForward(msgs::InboundOnionBlindedForwardPayload {
+						intro_node_blinding_point: Some(_),
+						..
+					}),
 				..
 			} => true,
 			_ => false,

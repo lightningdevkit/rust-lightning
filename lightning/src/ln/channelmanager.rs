@@ -15570,16 +15570,17 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 		let sender_intended_amt_msat = 100;
 		let extra_fee_msat = 10;
-		let hop_data = msgs::InboundOnionPayload::Receive {
+		let hop_data = msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
 			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 42,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: sender_intended_amt_msat,
 			}),
 			custom_tlvs: Vec::new(),
-		};
+		});
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
@@ -15592,16 +15593,17 @@ mod tests {
 		} else { panic!(); }
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
-		let hop_data = msgs::InboundOnionPayload::Receive { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
+		let hop_data = msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
 			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 42,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: sender_intended_amt_msat,
 			}),
 			custom_tlvs: Vec::new(),
-		};
+		});
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
@@ -15616,16 +15618,17 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
-		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive {
+		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
 			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 22,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]), total_msat: 100,
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: 100,
 			}),
 			custom_tlvs: Vec::new(),
-		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
+		}), [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334
