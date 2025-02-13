@@ -18,7 +18,7 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
 use bitcoin::block::Header;
-use bitcoin::transaction::{Transaction, TxIn};
+use bitcoin::transaction::Transaction;
 use bitcoin::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
@@ -30,7 +30,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{secp256k1, Sequence, Weight};
+use bitcoin::{secp256k1, Sequence};
 
 use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
@@ -83,7 +83,6 @@ use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
-use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
@@ -7700,7 +7699,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id, vec![], Weight::from_wu(0))
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id)
 	}
 
 	/// Accepts a request to open a channel after a [`events::Event::OpenChannelRequest`], treating
@@ -7722,13 +7721,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id, vec![], Weight::from_wu(0))
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id)
 	}
 
+	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128, _funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-		_total_witness_weight: Weight,
+		user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(*temporary_channel_id), None);
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -7778,7 +7777,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 							self.get_our_node_id(), *counterparty_node_id,
 							&self.channel_type_features(), &peer_state.latest_features,
-							&open_channel_msg, _funding_inputs, _total_witness_weight,
+							&open_channel_msg,
 							user_channel_id, &self.default_configuration, best_block_height,
 							&self.logger,
 						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
@@ -8064,7 +8063,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let channel = PendingV2Channel::new_inbound(
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
-					&peer_state.latest_features, msg, vec![], Weight::from_wu(0), user_channel_id,
+					&peer_state.latest_features, msg, user_channel_id,
 					&self.default_configuration, best_block_height, &self.logger,
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = events::MessageSendEvent::SendAcceptChannelV2 {

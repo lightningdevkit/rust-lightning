@@ -11,30 +11,28 @@
 
 #[cfg(dual_funding)]
 use {
-	crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator},
+	crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator},
 	crate::events::{Event, MessageSendEvent, MessageSendEventsProvider},
 	crate::ln::chan_utils::{
 		make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
 		CounterpartyChannelTransactionParameters,
 	},
-	crate::ln::channel::{
-		calculate_our_funding_satoshis, PendingV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS,
-	},
+	crate::ln::channel::PendingV2Channel,
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
 	crate::ln::functional_test_utils::*,
 	crate::ln::msgs::ChannelMessageHandler,
 	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete},
 	crate::ln::types::ChannelId,
 	crate::prelude::*,
-	crate::sign::{ChannelSigner as _, P2WPKH_WITNESS_WEIGHT},
+	crate::sign::ChannelSigner as _,
 	crate::util::ser::TransactionU16LenLimited,
 	crate::util::test_utils,
-	bitcoin::Weight,
 };
 
 #[cfg(dual_funding)]
 // Dual-funding: V2 Channel Establishment Tests
 struct V2ChannelEstablishmentTestSession {
+	funding_input_sats: u64,
 	initiator_input_value_satoshis: u64,
 }
 
@@ -60,17 +58,7 @@ fn do_test_v2_channel_establishment(
 	.collect();
 
 	// Alice creates a dual-funded channel as initiator.
-	let funding_feerate = node_cfgs[0]
-		.fee_estimator
-		.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-	let funding_satoshis = calculate_our_funding_satoshis(
-		true,
-		&initiator_funding_inputs[..],
-		Weight::from_wu(P2WPKH_WITNESS_WEIGHT),
-		funding_feerate,
-		MIN_CHAN_DUST_LIMIT_SATOSHIS,
-	)
-	.unwrap();
+	let funding_satoshis = session.funding_input_sats;
 	let mut channel = PendingV2Channel::new_outbound(
 		&LowerBoundedFeeEstimator(node_cfgs[0].fee_estimator),
 		&nodes[0].node.entropy_source,
@@ -263,12 +251,18 @@ fn do_test_v2_channel_establishment(
 fn test_v2_channel_establishment() {
 	// Only initiator contributes, no persist pending
 	do_test_v2_channel_establishment(
-		V2ChannelEstablishmentTestSession { initiator_input_value_satoshis: 100_000 },
+		V2ChannelEstablishmentTestSession {
+			funding_input_sats: 100_000,
+			initiator_input_value_satoshis: 150_000,
+		},
 		false,
 	);
 	// Only initiator contributes, persist pending
 	do_test_v2_channel_establishment(
-		V2ChannelEstablishmentTestSession { initiator_input_value_satoshis: 100_000 },
+		V2ChannelEstablishmentTestSession {
+			funding_input_sats: 100_000,
+			initiator_input_value_satoshis: 150_000,
+		},
 		true,
 	);
 }
