@@ -194,7 +194,7 @@ pub fn create_from_hash(keys: &ExpandedKey, min_value_msat: Option<u64>, payment
 }
 
 #[cfg(async_payments)]
-pub(super) fn create_for_spontaneous_payment(
+pub(crate) fn create_for_spontaneous_payment(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	current_time: u64, min_final_cltv_expiry_delta: Option<u16>
 ) -> Result<PaymentSecret, ()> {
@@ -213,7 +213,7 @@ pub(super) fn create_for_spontaneous_payment(
 	Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
 }
 
-pub(super) fn calculate_absolute_expiry(highest_seen_timestamp: u64, invoice_expiry_delta_secs: u32) -> u64 {
+pub(crate) fn calculate_absolute_expiry(highest_seen_timestamp: u64, invoice_expiry_delta_secs: u32) -> u64 {
 	// We assume that highest_seen_timestamp is pretty close to the current time - it's updated when
 	// we receive a new block with the maximum time we've seen in a header. It should never be more
 	// than two hours in the future.  Thus, we add two hours here as a buffer to ensure we

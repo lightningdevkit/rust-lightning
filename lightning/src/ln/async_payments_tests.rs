@@ -116,12 +116,12 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		)
 		.unwrap();
 	let (offer_builder, offer_nonce) = recipient
-		.node
+		.offers_handler
 		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let static_invoice = recipient
-		.node
+		.offers_handler
 		.create_static_invoice_builder(&offer, offer_nonce, relative_expiry)
 		.unwrap()
 		.build_and_sign(&secp_ctx)
@@ -222,12 +222,12 @@ fn static_invoice_unknown_required_features() {
 		)
 		.unwrap();
 	let (offer_builder, nonce) = nodes[2]
-		.node
+		.offers_handler
 		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
 	let static_invoice_unknown_req_features = nodes[2]
-		.node
+		.offers_handler
 		.create_static_invoice_builder(&offer, nonce, None)
 		.unwrap()
 		.features_unchecked(Bolt12InvoiceFeatures::unknown())
@@ -492,7 +492,7 @@ fn expired_static_invoice_fail() {
 	// Wait until the static invoice expires before providing it to the sender.
 	let block = create_dummy_block(
 		nodes[0].best_block_hash(),
-		nodes[0].node.duration_since_epoch().as_secs() as u32 + INVOICE_EXPIRY_SECS + 1,
+		nodes[0].offers_handler.duration_since_epoch().as_secs() as u32 + INVOICE_EXPIRY_SECS + 1,
 		Vec::new(),
 	);
 	connect_block(&nodes[0], &block);
@@ -823,7 +823,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		)
 		.unwrap();
 	let (offer_builder, offer_nonce) = nodes[2]
-		.node
+		.offers_handler
 		.create_async_receive_offer_builder(blinded_paths_to_always_online_node)
 		.unwrap();
 	let offer = offer_builder.build().unwrap();
@@ -835,7 +835,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let mut static_invoice_paths = Vec::new();
 	for _ in 0..3 {
 		let static_inv_for_path = nodes[2]
-			.node
+			.offers_handler
 			.create_static_invoice_builder(&offer, offer_nonce, None)
 			.unwrap()
 			.build_and_sign(&secp_ctx)
@@ -845,7 +845,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	nodes[2].router.expect_blinded_payment_paths(static_invoice_paths);
 
 	let static_invoice = nodes[2]
-		.node
+		.offers_handler
 		.create_static_invoice_builder(&offer, offer_nonce, None)
 		.unwrap()
 		.build_and_sign(&secp_ctx)
