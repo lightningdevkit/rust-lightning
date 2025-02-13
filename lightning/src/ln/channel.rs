@@ -31,9 +31,8 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
-	get_output_weight, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
-	InteractiveTxConstructorArgs, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
-	TX_COMMON_FIELDS_WEIGHT,
+	get_output_weight, HandleTxCompleteResult, InteractiveTxConstructor, InteractiveTxConstructorArgs,
+	InteractiveTxSigningSession, InteractiveTxMessageSendResult, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
@@ -931,6 +930,8 @@ pub(super) struct ReestablishResponses {
 	pub order: RAACommitmentOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
+	pub tx_signatures: Option<msgs::TxSignatures>,
+	pub tx_abort: Option<msgs::TxAbort>,
 }
 
 /// The first message we send to our peer after connection
@@ -1441,26 +1442,50 @@ impl<SP: Deref> Channel<SP> where
 	where
 		L::Target: Logger
 	{
-		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
-		let result = if let ChannelPhase::UnfundedV2(chan) = phase {
+		let result = if let ChannelPhase::UnfundedV2(chan) = &mut self.phase {
 			let logger = WithChannelContext::from(logger, &chan.context, None);
-			match chan.funding_tx_constructed(signing_session, &&logger) {
-				Ok((chan, commitment_signed, event)) => {
-					self.phase = ChannelPhase::Funded(chan);
-					Ok((commitment_signed, event))
-				},
-				Err((chan, e)) => {
-					self.phase = ChannelPhase::UnfundedV2(chan);
-					Err(e)
-				},
-			}
+			chan.funding_tx_constructed(signing_session, &&logger)
 		} else {
-			self.phase = phase;
 			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
 		};
 
-		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
 		result
+	}
+
+	pub fn commitment_signed<L: Deref>(
+		&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(Option<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>, Option<ChannelMonitorUpdate>), ChannelError>
+	where
+		L::Target: Logger
+	{
+		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
+		match phase {
+			ChannelPhase::UnfundedV2(chan) => {
+				let mut funded_channel = match chan.into_funded_channel() {
+					Ok(funded_channel) => funded_channel,
+					Err((pending_channel, err)) => {
+						self.phase = ChannelPhase::UnfundedV2(pending_channel);
+						return Err(err);
+					}
+				};
+				let res = match funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger) {
+					Ok(monitor) => {
+						Ok((Some(monitor), None))
+					},
+					Err(err) => {
+						Err(err)
+					}
+				};
+				self.phase = ChannelPhase::Funded(funded_channel);
+				res
+			},
+			ChannelPhase::Funded(mut funded_channel) => {
+				let res = funded_channel.commitment_signed(msg, logger).map(|monitor_update_opt| (None, monitor_update_opt));
+				self.phase = ChannelPhase::Funded(funded_channel);
+				res
+			},
+			_ => Err(ChannelError::close("Got a commitment_signed message for an unfunded V1 channel!".into())),
+		}
 	}
 }
 
@@ -1850,21 +1875,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
-	// The `next_funding_txid` field allows peers to finalize the signing steps of an interactive
-	// transaction construction, or safely abort that transaction if it was not signed by one of the
-	// peers, who has thus already removed it from its state.
-	//
-	// If we've sent `commtiment_signed` for an interactively constructed transaction
-	// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
-	// to the txid of that interactive transaction, else we MUST NOT set it.
-	//
-	// See the spec for further details on this:
-	//   * `channel_reestablish`-sending node: https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2466-L2470
-	//   * `channel_reestablish`-receiving node: https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2520-L2531
-	//
-	// TODO(dual_funding): Persist this when we actually contribute funding inputs. For now we always
-	// send an empty witnesses array in `tx_signatures` as a V2 channel acceptor
-	next_funding_txid: Option<Txid>,
 }
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
@@ -2095,16 +2105,12 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			}
 		};
 
-		if let HandleTxCompleteValue::SendTxComplete(_, ref signing_session) = tx_complete {
-			self.context.next_funding_txid = Some(signing_session.unsigned_tx.compute_txid());
-		};
-
 		HandleTxCompleteResult(Ok(tx_complete))
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(FundedChannel<SP>, msgs::CommitmentSigned, Option<Event>), (PendingV2Channel<SP>, ChannelError)>
+		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -2113,26 +2119,26 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let mut output_index = None;
 		let expected_spk = self.context.get_funding_redeemscript().to_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
+		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == self.context.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(ChannelError::Close(
 						(
 							"Multiple outputs matched the expected script and value".to_owned(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))).map_err(|e| (self, e));
+						)));
 				}
 				output_index = Some(idx as u16);
 			}
 		}
 		let outpoint = if let Some(output_index) = output_index {
-			OutPoint { txid: signing_session.unsigned_tx.compute_txid(), index: output_index }
+			OutPoint { txid: signing_session.unsigned_tx().compute_txid(), index: output_index }
 		} else {
 			return Err(ChannelError::Close(
 				(
 					"No output matched the funding script_pubkey".to_owned(),
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				))).map_err(|e| (self, e));
+				)));
 		};
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
@@ -2141,25 +2147,28 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let commitment_signed = self.context.get_initial_commitment_signed(logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
+				self.context.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
 				self.context.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
-					.map_err(|e| (self, e));
+				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
 			},
 		};
 
-		let funding_ready_for_sig_event = None;
-		if signing_session.local_inputs_count() == 0 {
+		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
 			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
 				debug_assert!(
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
 				);
+				return Err(ChannelError::Close((
+					"V2 channel rejected due to sender error".into(),
+					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+				)));
 			}
+			None
 		} else {
 			// TODO(dual_funding): Send event for signing if we've contributed funds.
 			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
@@ -2175,31 +2184,23 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
 			// confirmed.
 			// </div>
-		}
+			debug_assert!(
+				false,
+				"We don't support users providing inputs but somehow we had more than zero inputs",
+			);
+			return Err(ChannelError::Close((
+				"V2 channel rejected due to sender error".into(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+			)));
+		};
 
 		self.context.channel_state = ChannelState::FundingNegotiated;
 
 		// Clear the interactive transaction constructor
 		self.interactive_tx_constructor.take();
+		self.interactive_tx_signing_session = Some(signing_session);
 
-		match self.unfunded_context.holder_commitment_point {
-			Some(holder_commitment_point) => {
-				let funded_chan = FundedChannel {
-					context: self.context,
-					interactive_tx_signing_session: Some(signing_session),
-					holder_commitment_point,
-				};
-				Ok((funded_chan, commitment_signed, funding_ready_for_sig_event))
-			},
-			None => {
-				Err(ChannelError::close(
-					format!(
-						"Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
-						self.context.channel_id(),
-					)))
-					.map_err(|e| (self, e))
-			},
-		}
+		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
 }
 
@@ -2536,8 +2537,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			blocked_monitor_updates: Vec::new(),
 
 			is_manual_broadcast: false,
-
-			next_funding_txid: None,
 		};
 
 		Ok(channel_context)
@@ -2764,7 +2763,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
-			next_funding_txid: None,
 		})
 	}
 
@@ -4376,8 +4374,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	{
 		if !matches!(
 			self.channel_state, ChannelState::NegotiatingFunding(flags)
-			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)) {
-			panic!("Tried to get an initial commitment_signed messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
+			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+		) {
+			debug_assert!(false);
+			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
+				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
+			)));
 		}
 
 		let signature = match self.get_initial_counterparty_commitment_signature(logger) {
@@ -4537,6 +4540,9 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
+	/// Indicates whether this funded channel had been established with V2 channel
+	/// establishment (i.e. is a dual-funded channel).
+	is_v2_established: bool,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -5991,14 +5997,22 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError>
+	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<Option<msgs::TxSignatures>, ChannelError>
 		where L::Target: Logger
 	{
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
+		if !matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			return Err(ChannelError::close("Received tx_signatures in strange state!".to_owned()));
 		}
 
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+			if msg.tx_hash != signing_session.unsigned_tx().compute_txid() {
+				return Err(ChannelError::Close(
+					(
+						"The txid for the transaction does not match".to_string(),
+						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+					)));
+			}
+
 			if msg.witnesses.len() != signing_session.remote_inputs_count() {
 				return Err(ChannelError::Warn(
 					"Witness count did not match contributed input count".to_string()
@@ -6020,33 +6034,22 @@ impl<SP: Deref> FundedChannel<SP> where
 				// for spending. Doesn't seem to be anything in rust-bitcoin.
 			}
 
-			if msg.tx_hash != signing_session.unsigned_tx.compute_txid() {
-				return Err(ChannelError::Close(
-					(
-						"The txid for the transaction does not match".to_string(),
-						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-					)));
-			}
-
-			let (tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
+			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
 				.map_err(|_| ChannelError::Warn("Witness count did not match contributed input count".to_string()))?;
+			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
+				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
+				self.context.monitor_pending_tx_signatures = holder_tx_signatures_opt;
+				return Ok(None);
+			}
 			if funding_tx_opt.is_some() {
+				// We have a persisted channel monitor and and a finalized funding transaction, so we can move
+				// the channel state forward, set the funding transaction and reset the signing session fields.
+				self.context.funding_transaction = funding_tx_opt;
+				self.interactive_tx_signing_session = None;
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
-			self.context.funding_transaction = funding_tx_opt.clone();
 
-			self.context.next_funding_txid = None;
-
-			// Clear out the signing session
-			self.interactive_tx_signing_session = None;
-
-			if tx_signatures_opt.is_some() && self.context.channel_state.is_monitor_update_in_progress() {
-				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-				self.context.monitor_pending_tx_signatures = tx_signatures_opt;
-				return Ok((None, None));
-			}
-
-			Ok((tx_signatures_opt, funding_tx_opt))
+			Ok(holder_tx_signatures_opt)
 		} else {
 			Err(ChannelError::Close((
 				"Unexpected tx_signatures. No funding transaction awaiting signatures".to_string(),
@@ -6249,12 +6252,12 @@ impl<SP: Deref> FundedChannel<SP> where
 		assert!(self.context.channel_state.is_monitor_update_in_progress());
 		self.context.channel_state.clear_monitor_update_in_progress();
 
-		// If we're past (or at) the AwaitingChannelReady stage on an outbound channel, try to
-		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
+		// If we're past (or at) the AwaitingChannelReady stage on an outbound (or V2-established) channel,
+		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable = None;
 		if let Some(funding_transaction) = &self.context.funding_transaction {
-			if self.context.is_outbound() &&
+			if (self.context.is_outbound() || self.is_v2_established()) &&
 				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
@@ -6632,7 +6635,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-			msg.next_local_commitment_number == 0 {
+			msg.next_local_commitment_number == 0 && msg.next_funding_txid.is_none() {
 			return Err(ChannelError::close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
@@ -6696,6 +6699,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					raa: None, commitment_update: None,
 					order: RAACommitmentOrder::CommitmentFirst,
 					shutdown_msg, announcement_sigs,
+					tx_signatures: None,
+					tx_abort: None,
 				});
 			}
 
@@ -6705,6 +6710,8 @@ impl<SP: Deref> FundedChannel<SP> where
 				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
+				tx_signatures: None,
+				tx_abort: None,
 			});
 		}
 
@@ -6750,11 +6757,67 @@ impl<SP: Deref> FundedChannel<SP> where
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
 			}
 
+			// if next_funding_txid is set:
+			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
+				 if let Some(session) = &self.interactive_tx_signing_session {
+					// if next_funding_txid matches the latest interactive funding transaction:
+					if session.unsigned_tx().compute_txid() == next_funding_txid {
+						// if it has not received tx_signatures for that funding transaction:
+						if !session.counterparty_sent_tx_signatures() {
+							// if next_commitment_number is zero:
+							let commitment_update = if msg.next_local_commitment_number == 0 {
+								// MUST retransmit its commitment_signed for that funding transaction.
+								let commitment_signed = self.context.get_initial_commitment_signed(logger)?;
+								Some(msgs::CommitmentUpdate {
+									commitment_signed,
+									update_add_htlcs: vec![],
+									update_fulfill_htlcs: vec![],
+									update_fail_htlcs: vec![],
+									update_fail_malformed_htlcs: vec![],
+									update_fee: None,
+								})
+							} else { None };
+							// if it has already received commitment_signed and it should sign first, as specified in the tx_signatures requirements:
+							if session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first() {
+								// MUST send its tx_signatures for that funding transaction.
+								(commitment_update, session.holder_tx_signatures().clone(), None)
+							} else {
+								(commitment_update, None, None)
+							}
+						} else {
+							// if it has already received tx_signatures for that funding transaction:
+							// MUST send its tx_signatures for that funding transaction.
+							(None, session.holder_tx_signatures().clone(), None)
+						}
+					} else {
+						// MUST send tx_abort to let the sending node know that they can forget this funding transaction.
+						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
+					}
+				} else {
+					// Counterparty set `next_funding_txid` at incorrect state.
+					// TODO(dual_funding): Should probably error here (or send tx_abort) but not in spec.
+					(None, None, None)
+				}
+			} else {
+				// if `next_funding_txid` is not set, and `next_commitment_number` is zero:
+				if msg.next_local_commitment_number == 0 {
+					// MUST immediately fail the channel and broadcast any relevant latest commitment transaction.
+					return Err(ChannelError::close(format!(
+						"Peer attempted to reestablish channel expecting a future local commitment transaction: {} (received) vs {} (expected)",
+						msg.next_remote_commitment_number,
+						our_commitment_transaction
+					)));
+				}
+				(None, None, None)
+			};
+
 			Ok(ReestablishResponses {
 				channel_ready, shutdown_msg, announcement_sigs,
 				raa: required_revoke,
-				commitment_update: None,
+				commitment_update,
 				order: self.context.resend_order.clone(),
+				tx_signatures,
+				tx_abort,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
@@ -6769,6 +6832,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					channel_ready, shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
 					order: self.context.resend_order.clone(),
+					tx_signatures: None,
+					tx_abort: None,
 				})
 			} else {
 				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
@@ -6791,6 +6856,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					channel_ready, shutdown_msg, announcement_sigs,
 					raa, commitment_update,
 					order: self.context.resend_order.clone(),
+					tx_signatures: None,
+					tx_abort: None,
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
@@ -8062,6 +8129,25 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
+	fn maybe_get_next_funding_txid(&self) -> Option<Txid> {
+		// If we've sent `commtiment_signed` for an interactively constructed transaction
+		// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
+		// to the txid of that interactive transaction, else we MUST NOT set it.
+		if let Some(signing_session) = &self.interactive_tx_signing_session {
+			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
+			if !signing_session.counterparty_sent_tx_signatures() {
+				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
+				Some(self.funding_outpoint().txid)
+			} else {
+				// ...and we received a `tx_signatures` from the counterparty.
+				None
+			}
+		} else {
+			// We don't have an active signing session.
+			None
+		}
+	}
+
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
 	fn get_channel_reestablish<L: Deref>(&mut self, logger: &L) -> msgs::ChannelReestablish where L::Target: Logger {
@@ -8112,7 +8198,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
-			next_funding_txid: self.context.next_funding_txid,
+			next_funding_txid: self.maybe_get_next_funding_txid(),
 		}
 	}
 
@@ -8546,6 +8632,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			})
 			.chain(self.context.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
 	}
+
+	pub fn is_v2_established(&self) -> bool {
+		self.is_v2_established
+	}
 }
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
@@ -8809,6 +8899,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			is_v2_established: false,
 			holder_commitment_point,
 		};
 
@@ -9074,6 +9165,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = FundedChannel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			is_v2_established: false,
 			holder_commitment_point,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -9110,6 +9202,8 @@ pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	/// The signing session created after `tx_complete` handling
+	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
@@ -9174,6 +9268,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			interactive_tx_signing_session: None,
 		};
 		Ok(chan)
 	}
@@ -9350,6 +9445,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			context,
 			dual_funding_context,
 			interactive_tx_constructor,
+			interactive_tx_signing_session: None,
 			unfunded_context,
 		})
 	}
@@ -9426,6 +9522,24 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
+	}
+
+	pub fn into_funded_channel(self) -> Result<FundedChannel<SP>, (PendingV2Channel<SP>, ChannelError)> {
+		let holder_commitment_point = match self.unfunded_context.holder_commitment_point {
+			Some(point) => point,
+			None => {
+				let channel_id = self.context.channel_id();
+				return Err((self, ChannelError::close(
+					format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+						channel_id))));
+			}
+		};
+		Ok(FundedChannel {
+			context: self.context,
+			interactive_tx_signing_session: self.interactive_tx_signing_session,
+			holder_commitment_point,
+			is_v2_established: true,
+		})
 	}
 }
 
@@ -9532,7 +9646,14 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 		self.context.channel_id.write(writer)?;
 		{
 			let mut channel_state = self.context.channel_state;
-			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)) {
+			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_))
+			{
+				channel_state.set_peer_disconnected();
+			} else if matches!(channel_state, ChannelState::FundingNegotiated) &&
+				self.holder_commitment_point.transaction_number() == INITIAL_COMMITMENT_NUMBER - 1 {
+				// This is a V2 session which has an active signing session
+				// TODO(dual_funding): When we allow contributing funds to dual-funded channels,
+				// we will need to handle persisting appropriate signing session state.
 				channel_state.set_peer_disconnected();
 			} else {
 				debug_assert!(false, "Pre-funded/shutdown channels should not be written");
@@ -9882,7 +10003,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			let mut _val: u64 = Readable::read(reader)?;
 		}
 
-		let channel_id = Readable::read(reader)?;
+		let channel_id: ChannelId = Readable::read(reader)?;
 		let channel_state = ChannelState::from_u32(Readable::read(reader)?).map_err(|_| DecodeError::InvalidValue)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
@@ -10318,6 +10439,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				}
 			},
 		};
+		let is_v2_established = channel_id.is_v2_channel_id(
+			&channel_parameters.holder_pubkeys.revocation_basepoint,
+			&channel_parameters.counterparty_parameters.as_ref()
+				.expect("Persisted channel must have counterparty parameters").pubkeys.revocation_basepoint);
 
 		Ok(FundedChannel {
 			context: ChannelContext {
@@ -10446,15 +10571,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
-				// TODO(dual_funding): Instead of getting this from persisted value, figure it out based on the
-				// funding transaction and other channel state.
-				//
-				// If we've sent `commtiment_signed` for an interactively constructed transaction
-				// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
-				// to the txid of that interactive transaction, else we MUST NOT set it.
-				next_funding_txid: None,
 			},
 			interactive_tx_signing_session: None,
+			is_v2_established,
 			holder_commitment_point,
 		})
 	}
