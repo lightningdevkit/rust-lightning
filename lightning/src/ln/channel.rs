@@ -1996,7 +1996,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				)));
 		};
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
+		self.context.holder_signer.as_mut().provide_funding_outpoint(&self.context.channel_transaction_parameters);
 
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(logger);
@@ -2903,6 +2903,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			selected_contest_delay: common_fields.to_self_delay,
 			pubkeys: counterparty_pubkeys,
 		});
+		self.holder_signer.as_mut().provide_counterparty_parameters(&self.channel_transaction_parameters);
 
 		self.counterparty_cur_commitment_point = Some(common_fields.first_per_commitment_point);
 		self.counterparty_shutdown_scriptpubkey = counterparty_shutdown_scriptpubkey;
@@ -8457,7 +8458,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.assert_no_commitment_advancement(self.unfunded_context.transaction_number(), "funding_created");
 
 		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
+		self.context.holder_signer.as_mut().provide_funding_outpoint(&self.context.channel_transaction_parameters);
 
 		// Now that we're past error-generating stuff, update our local state:
 
