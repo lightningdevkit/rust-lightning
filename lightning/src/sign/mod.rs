@@ -811,6 +811,9 @@ pub trait ChannelSigner {
 	/// Provide counterparty parameters
 	fn provide_counterparty_parameters(&mut self, counterparty_keys: &ChannelTransactionParameters);
 
+	/// Provide funding outpoint
+	fn provide_funding_outpoint(&mut self, channel_parameters: &ChannelTransactionParameters);
+
 	/// Returns the parameters of this signer
 	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters>;
 
@@ -1983,6 +1986,19 @@ impl ChannelSigner for InMemorySigner {
 			return;
 		}
 		self.channel_parameters = Some(channel_parameters.clone());
+	}
+
+	fn provide_funding_outpoint(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		assert!(channel_parameters.is_populated());
+		assert!(self.channel_parameters.as_ref().unwrap().counterparty_parameters.is_some());
+		if self.channel_parameters.as_ref().unwrap().funding_outpoint.is_some() {
+			assert_eq!(self.channel_parameters.as_ref().unwrap(), channel_parameters);
+		} else {
+			self.channel_parameters.as_mut().unwrap().funding_outpoint =
+				channel_parameters.funding_outpoint;
+			// Check that no other fields changed
+			assert_eq!(self.channel_parameters.as_ref(), Some(channel_parameters));
+		}
 	}
 
 	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {

@@ -226,6 +226,10 @@ impl ChannelSigner for TestChannelSigner {
 		self.inner.get_channel_parameters()
 	}
 
+	fn provide_funding_outpoint(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		self.inner.provide_funding_outpoint(channel_parameters);
+	}
+
 	fn punish_revokeable_output(
 		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>, per_commitment_point: &PublicKey,
