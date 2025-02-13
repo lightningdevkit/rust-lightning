@@ -33,10 +33,9 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
-use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::message::MessageForwardNode;
+use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -49,6 +48,7 @@ use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::offers::flow::OffersMessageCommons;
 use crate::offers::invoice_request::InvoiceRequest;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 #[cfg(any(dual_funding, splicing))]
@@ -68,15 +68,11 @@ use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, Ligh
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
-use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
+use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::nonce::Nonce;
-use crate::offers::parse::Bolt12SemanticError;
-use crate::offers::refund::Refund;
 use crate::offers::signer;
-use crate::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions};
-use crate::onion_message::offers::OffersMessage;
+use crate::onion_message::messenger::MessageRouter;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -109,7 +105,7 @@ use core::{cmp, mem};
 use core::borrow::Borrow;
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -486,11 +482,15 @@ impl Ord for ClaimableHTLC {
 pub trait Verification {
 	/// Constructs an HMAC to include in [`OffersContext`] for the data along with the given
 	/// [`Nonce`].
+	///
+	/// [`OffersContext`]: crate::blinded_path::message::OffersContext
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256>;
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
+	///
+	/// [`OffersContext`]: crate::blinded_path::message::OffersContext
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
@@ -499,6 +499,8 @@ pub trait Verification {
 impl Verification for PaymentHash {
 	/// Constructs an HMAC to include in [`OffersContext::InboundPayment`] for the payment hash
 	/// along with the given [`Nonce`].
+	///
+	/// [`OffersContext::InboundPayment`]: crate::blinded_path::message::OffersContext::InboundPayment
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
@@ -507,6 +509,8 @@ impl Verification for PaymentHash {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::InboundPayment`].
+	///
+	/// [`OffersContext::InboundPayment`]: crate::blinded_path::message::OffersContext::InboundPayment
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
@@ -561,6 +565,8 @@ impl PaymentId {
 impl Verification for PaymentId {
 	/// Constructs an HMAC to include in [`OffersContext::OutboundPayment`] for the payment id
 	/// along with the given [`Nonce`].
+	///
+	/// [`OffersContext::OutboundPayment`]: crate::blinded_path::message::OffersContext::OutboundPayment
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
@@ -569,6 +575,8 @@ impl Verification for PaymentId {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
+	///
+	/// [`OffersContext::OutboundPayment`]: crate::blinded_path::message::OffersContext::OutboundPayment
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
@@ -2079,51 +2087,7 @@ where
 ///
 /// For more information on creating refunds, see [`create_refund_builder`].
 ///
-/// Use [`request_refund_payment`] to send a [`Bolt12Invoice`] for receiving the refund. Similar to
-/// *creating* an [`Offer`], this is stateless as it represents an inbound payment.
-///
-/// ```
-/// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
-/// # use lightning::ln::channelmanager::AChannelManager;
-/// # use lightning::offers::refund::Refund;
-/// #
-/// # fn example<T: AChannelManager>(channel_manager: T, refund: &Refund) {
-/// # let channel_manager = channel_manager.get_cm();
-/// let known_payment_hash = match channel_manager.request_refund_payment(refund) {
-///     Ok(invoice) => {
-///         let payment_hash = invoice.payment_hash();
-///         println!("Requesting refund payment {}", payment_hash);
-///         payment_hash
-///     },
-///     Err(e) => panic!("Unable to request payment for refund: {:?}", e),
-/// };
-///
-/// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| {
-///     match event {
-///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(payment_preimage), .. } => {
-///                 assert_eq!(payment_hash, known_payment_hash);
-///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
-///             },
-///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: None, .. } => {
-///                 println!("Unknown payment hash: {}", payment_hash);
-///             },
-///             // ...
-/// #           _ => {},
-///     },
-///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
-///         assert_eq!(payment_hash, known_payment_hash);
-///         println!("Claimed {} msats", amount_msat);
-///     },
-///     // ...
-/// #     _ => {},
-///     }
-///     Ok(())
-/// });
-/// # }
-/// ```
+/// For requesting refund payments, see [`request_refund_payment`].
 ///
 /// # Persistence
 ///
@@ -2207,7 +2171,7 @@ where
 /// [`create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`create_refund_builder`]: crate::offers::flow::OffersMessageFlow::create_refund_builder
-/// [`request_refund_payment`]: Self::request_refund_payment
+/// [`request_refund_payment`]: crate::offers::flow::OffersMessageFlow::request_refund_payment
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
@@ -2477,11 +2441,6 @@ where
 
 	event_persist_notifier: Notifier,
 	needs_persist_flag: AtomicBool,
-
-	#[cfg(not(any(test, feature = "_test_utils")))]
-	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -3402,7 +3361,6 @@ where
 			needs_persist_flag: AtomicBool::new(false),
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
-			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -9676,22 +9634,7 @@ where
 	fn send_payment_for_static_invoice(&self, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
 		self.send_payment_for_static_invoice(payment_id)
 	}
-
-	// ----Temporary Functions----
-	// Set of functions temporarily moved to OffersMessageCommons for easier
-	// transition of code from ChannelManager to OffersMessageFlow
-
-	fn get_pending_offers_messages(&self) -> MutexGuard<'_, Vec<(OffersMessage, MessageSendInstructions)>> {
-		self.pending_offers_messages.lock().expect("Mutex is locked by other thread.")
-	}
 }
-
-/// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
-/// along different paths.
-/// Sending multiple requests increases the chances of successful delivery in case some
-/// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
-/// even if multiple invoices are received.
-pub(crate) const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
@@ -9705,106 +9648,6 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	/// Creates a [`Bolt12Invoice`] for a [`Refund`] and enqueues it to be sent via an onion
-	/// message.
-	///
-	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
-	/// [`BlindedPaymentPath`] containing the [`PaymentSecret`] needed to reconstruct the
-	/// corresponding [`PaymentPreimage`]. It is returned purely for informational purposes.
-	///
-	/// # Limitations
-	///
-	/// Requires a direct connection to an introduction node in [`Refund::paths`] or to
-	/// [`Refund::payer_signing_pubkey`], if empty. This request is best effort; an invoice will be
-	/// sent to each node meeting the aforementioned criteria, but there's no guarantee that they
-	/// will be received and no retries will be made.
-	///
-	/// # Errors
-	///
-	/// Errors if:
-	/// - the refund is for an unsupported chain, or
-	/// - the parameterized [`Router`] is unable to create a blinded payment path or reply path for
-	///   the invoice.
-	///
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn request_refund_payment(
-		&self, refund: &Refund
-	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*self.entropy_source;
-		let secp_ctx = &self.secp_ctx;
-
-		let amount_msats = refund.amount_msats();
-		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
-
-		if refund.chain() != self.chain_hash {
-			return Err(Bolt12SemanticError::UnsupportedChain);
-		}
-
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-
-		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
-			Ok((payment_hash, payment_secret)) => {
-				let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
-				let payment_paths = self.create_blinded_payment_paths(
-					Some(amount_msats), payment_secret, payment_context, relative_expiry,
-				)
-					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-
-				#[cfg(feature = "std")]
-				let builder = refund.respond_using_derived_keys(
-					payment_paths, payment_hash, expanded_key, entropy
-				)?;
-				#[cfg(not(feature = "std"))]
-				let created_at = Duration::from_secs(
-					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
-				);
-				#[cfg(not(feature = "std"))]
-				let builder = refund.respond_using_derived_keys_no_std(
-					payment_paths, payment_hash, created_at, expanded_key, entropy
-				)?;
-				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
-				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
-
-				let nonce = Nonce::from_entropy_source(entropy);
-				let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-				let context = MessageContext::Offers(OffersContext::InboundPayment {
-					payment_hash: invoice.payment_hash(), nonce, hmac
-				});
-				let reply_paths = self.create_blinded_paths(context)
-					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-
-				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-				if refund.paths().is_empty() {
-					for reply_path in reply_paths {
-						let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-							destination: Destination::Node(refund.payer_signing_pubkey()),
-							reply_path,
-						};
-						let message = OffersMessage::Invoice(invoice.clone());
-						pending_offers_messages.push((message, instructions));
-					}
-				} else {
-					reply_paths
-						.iter()
-						.flat_map(|reply_path| refund.paths().iter().map(move |path| (path, reply_path)))
-						.take(OFFERS_MESSAGE_REQUEST_LIMIT)
-						.for_each(|(path, reply_path)| {
-							let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-								destination: Destination::BlindedPath(path.clone()),
-								reply_path: reply_path.clone(),
-							};
-							let message = OffersMessage::Invoice(invoice.clone());
-							pending_offers_messages.push((message, instructions));
-						});
-				}
-
-				Ok(invoice)
-			},
-			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
-		}
-	}
-
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
 	/// to pay us.
 	///
@@ -9901,27 +9744,6 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
-	}
-
-	/// Creates a collection of blinded paths by delegating to
-	/// [`MessageRouter::create_blinded_paths`].
-	///
-	/// Errors if the `MessageRouter` errors.
-	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
-		let recipient = self.get_our_node_id();
-		let secp_ctx = &self.secp_ctx;
-
-		let peers = self.per_peer_state.read().unwrap()
-			.iter()
-			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
-			.filter(|(_, peer)| peer.is_connected)
-			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, _)| *node_id)
-			.collect::<Vec<_>>();
-
-		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
-			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
 	#[cfg(async_payments)]
@@ -12229,7 +12051,9 @@ where
 	/// The [`MessageRouter`] used for constructing [`BlindedMessagePath`]s for [`Offer`]s,
 	/// [`Refund`]s, and any reply paths.
 	///
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Refund`]: crate::offers::refund::Refund
 	pub message_router: MR,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
@@ -13331,8 +13155,6 @@ where
 			needs_persist_flag: AtomicBool::new(false),
 
 			funding_batch_states: Mutex::new(BTreeMap::new()),
-
-			pending_offers_messages: Mutex::new(Vec::new()),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
