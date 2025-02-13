@@ -627,6 +627,26 @@ pub enum InboundChannelFunds {
 	DualFunded,
 }
 
+/// Used to describe the types of failures that may occur when handling HTLCs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HTLCHandlingFailure {
+	/// The HTLC was failed by the local node.
+	Local {
+		/// The BOLT 04 failure code providing a specific failure reason.
+		failure_code: u16
+	},
+	/// The HTLC was failed by the remote downstream node. The specific reason for failure is not
+	/// known because it is encrypted.
+	Remote,
+}
+
+impl_writeable_tlv_based_enum!(HTLCHandlingFailure,
+	(0, Local) => {
+		(0, failure_code, required)
+	},
+	(1, Remote) => {},
+);
+
 /// An Event which you should probably take some action in response to.
 ///
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
@@ -1441,6 +1461,10 @@ pub enum Event {
 		prev_channel_id: ChannelId,
 		/// Destination of the HTLC that failed to be processed.
 		failed_next_destination: HTLCDestination,
+		/// The cause of the processing failure.
+		///
+		/// This field will be `None` for objects serialized prior to LDK 0.1.1.
+		reason: Option<HTLCHandlingFailure>,
 	},
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
@@ -1743,10 +1767,11 @@ impl Writeable for Event {
 					(8, path.blinded_tail, option),
 				})
 			},
-			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
+			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination, ref reason} => {
 				25u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, prev_channel_id, required),
+					(1, reason, option),
 					(2, failed_next_destination, required),
 				})
 			},
@@ -2190,13 +2215,16 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					let mut prev_channel_id = ChannelId::new_zero();
 					let mut failed_next_destination_opt = UpgradableRequired(None);
+					let mut reason = None;
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
+						(1, reason, option),
 						(2, failed_next_destination_opt, upgradable_required),
 					});
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_id,
 						failed_next_destination: _init_tlv_based_struct_field!(failed_next_destination_opt, upgradable_required),
+						reason,
 					}))
 				};
 				f()

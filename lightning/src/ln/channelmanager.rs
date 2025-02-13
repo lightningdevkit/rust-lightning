@@ -32,7 +32,7 @@ use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
-use crate::events::FundingInfo;
+use crate::events::{FundingInfo, HTLCHandlingFailure};
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
@@ -357,6 +357,15 @@ pub struct PendingHTLCInfo {
 pub(super) enum HTLCFailureMsg {
 	Relay(msgs::UpdateFailHTLC),
 	Malformed(msgs::UpdateFailMalformedHTLC),
+}
+
+impl From<&HTLCFailureMsg> for HTLCHandlingFailure {
+    fn from(value: &HTLCFailureMsg) -> Self {
+        match value {
+			HTLCFailureMsg::Relay(_) => HTLCHandlingFailure::Remote,
+			HTLCFailureMsg::Malformed(msg) => HTLCHandlingFailure::Local{ failure_code: msg.failure_code },
+		}
+    }
 }
 
 /// Stores whether we can't forward an HTLC or relevant forwarding info
@@ -5743,6 +5752,7 @@ where
 			);
 			self.forward_htlcs_without_forward_event(&mut [pending_forwards]);
 			for (htlc_fail, htlc_destination) in htlc_fails.drain(..) {
+				let handling_fail = (&htlc_fail).into();
 				let failure = match htlc_fail {
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
 						htlc_id: fail_htlc.htlc_id,
@@ -5758,6 +5768,7 @@ where
 				self.pending_events.lock().unwrap().push_back((events::Event::HTLCHandlingFailed {
 					prev_channel_id: incoming_channel_id,
 					failed_next_destination: htlc_destination,
+					reason: Some(handling_fail),
 				}, None));
 			}
 		}
@@ -6949,6 +6960,7 @@ where
 				pending_events.push_back((events::Event::HTLCHandlingFailed {
 					prev_channel_id: *channel_id,
 					failed_next_destination: destination,
+					reason: Some(onion_error.into()),
 				}, None));
 			},
 		}
