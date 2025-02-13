@@ -1609,6 +1609,9 @@ pub(super) struct FundingScope {
 	next_local_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
 	#[cfg(any(test, fuzzing))]
 	next_remote_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
+
+	/// The late-bound funding outpoint
+	funding_outpoint: Option<OutPoint>,
 }
 
 impl FundingScope {
@@ -1632,6 +1635,12 @@ impl FundingScope {
 				party_max_htlc_value_in_flight_msat
 			)
 		})
+	}
+
+	/// Returns the `funding_txo` we either got from our peer, or were given by
+	/// [`OutboundV1Channel::get_funding_created`].
+	pub fn get_funding_txo(&self) -> Option<OutPoint> {
+		self.funding_outpoint
 	}
 }
 
@@ -1944,6 +1953,8 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 	fn funding(&self) -> &FundingScope;
 
+	fn funding_mut(&mut self) -> &mut FundingScope;
+
 	fn received_msg(&self) -> &'static str;
 
 	fn check_counterparty_commitment_signature<L: Deref>(
@@ -1978,6 +1989,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			Err(ChannelError::Close(e)) => {
 				// TODO(dual_funding): Update for V2 established channels.
 				if !self.context().is_outbound() {
+					self.funding_mut().funding_outpoint = None;
 					self.context_mut().channel_transaction_parameters.funding_outpoint = None;
 				}
 				return Err(ChannelError::Close(e));
@@ -2031,7 +2043,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 		let context = self.context();
 		let funding_redeemscript = context.get_funding_redeemscript();
-		let funding_txo = context.get_funding_txo().unwrap();
+		let funding_txo = self.funding().get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_point, &context.get_counterparty_pubkeys().payment_point, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
@@ -2074,6 +2086,10 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> wh
 		&self.funding
 	}
 
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.funding
+	}
+
 	fn received_msg(&self) -> &'static str {
 		"funding_signed"
 	}
@@ -2092,6 +2108,10 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> whe
 		&self.funding
 	}
 
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.funding
+	}
+
 	fn received_msg(&self) -> &'static str {
 		"funding_created"
 	}
@@ -2108,6 +2128,10 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 
 	fn funding(&self) -> &FundingScope {
 		&self.funding
+	}
+
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.funding
 	}
 
 	fn received_msg(&self) -> &'static str {
@@ -2218,6 +2242,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				))).map_err(|e| (self, e));
 		};
+		self.funding.funding_outpoint = Some(outpoint);
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
@@ -2229,6 +2254,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				commitment_signed
 			},
 			Err(err) => {
+				self.funding.funding_outpoint = None;
 				self.context.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
 					.map_err(|e| (self, e));
@@ -2496,6 +2522,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			funding_outpoint: None,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -2731,6 +2759,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			funding_outpoint: None,
 		};
 		let channel_context = Self {
 			user_id,
@@ -2999,12 +3029,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	pub fn set_outbound_scid_alias(&mut self, outbound_scid_alias: u64) {
 		debug_assert_eq!(self.outbound_scid_alias, 0);
 		self.outbound_scid_alias = outbound_scid_alias;
-	}
-
-	/// Returns the funding_txo we either got from our peer, or were given by
-	/// get_funding_created.
-	pub fn get_funding_txo(&self) -> Option<OutPoint> {
-		self.channel_transaction_parameters.funding_outpoint
 	}
 
 	/// Returns the height in which our funding transaction was confirmed.
@@ -4253,9 +4277,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Returns the transaction ID if there is a pending funding transaction that is yet to be
 	/// broadcast.
-	pub fn unbroadcasted_funding_txid(&self) -> Option<Txid> {
+	pub fn unbroadcasted_funding_txid(&self, funding: &FundingScope) -> Option<Txid> {
 		self.if_unbroadcasted_funding(||
-			self.channel_transaction_parameters.funding_outpoint.map(|txo| txo.txid)
+			funding.funding_outpoint.map(|txo| txo.txid)
 		)
 	}
 
@@ -4266,8 +4290,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Returns the transaction ID if there is a pending batch funding transaction that is yet to be
 	/// broadcast.
-	pub fn unbroadcasted_batch_funding_txid(&self) -> Option<Txid> {
-		self.unbroadcasted_funding_txid().filter(|_| self.is_batch_funding())
+	pub fn unbroadcasted_batch_funding_txid(&self, funding: &FundingScope) -> Option<Txid> {
+		self.unbroadcasted_funding_txid(funding).filter(|_| self.is_batch_funding())
 	}
 
 	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
@@ -4294,7 +4318,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				_ => {}
 			}
 		}
-		let monitor_update = if let Some(funding_txo) = self.get_funding_txo() {
+		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
 			// If we haven't yet exchanged funding signatures (ie channel_state < AwaitingChannelReady),
 			// returning a channel monitor update here would imply a channel monitor update before
 			// we even registered the channel monitor to begin with, which is invalid.
@@ -4312,7 +4336,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}))
 			} else { None }
 		} else { None };
-		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid();
+		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
 		let unbroadcasted_funding_tx = self.unbroadcasted_funding();
 
 		self.channel_state = ChannelState::ShutdownComplete;
@@ -4328,7 +4352,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			counterparty_node_id: self.counterparty_node_id,
 			unbroadcasted_funding_tx,
 			is_manual_broadcast: self.is_manual_broadcast,
-			channel_funding_txo: self.get_funding_txo(),
+			channel_funding_txo: funding.get_funding_txo(),
 			last_local_balance_msat: funding.value_to_self_msat,
 		}
 	}
@@ -4800,7 +4824,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	}
 
 	fn funding_outpoint(&self) -> OutPoint {
-		self.context.channel_transaction_parameters.funding_outpoint.unwrap()
+		self.funding.funding_outpoint.unwrap()
 	}
 
 	/// Claims an HTLC while we're disconnected from a peer, dropping the [`ChannelMonitorUpdate`]
@@ -5099,6 +5123,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		debug_assert!(matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(_)
 		));
+		self.funding.funding_outpoint = None;
 		self.context.channel_transaction_parameters.funding_outpoint = None;
 		self.context.channel_id = self.context.temporary_channel_id.expect(
 			"temporary_channel_id should be set since unset_funding_info is only called on funded \
@@ -7193,14 +7218,14 @@ impl<SP: Deref> FundedChannel<SP> where
 			closure_reason,
 			monitor_update: None,
 			dropped_outbound_htlcs: Vec::new(),
-			unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
+			unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(&self.funding),
 			channel_id: self.context.channel_id,
 			user_channel_id: self.context.user_id,
 			channel_capacity_satoshis: self.funding.channel_value_satoshis,
 			counterparty_node_id: self.context.counterparty_node_id,
 			unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 			is_manual_broadcast: self.context.is_manual_broadcast,
-			channel_funding_txo: self.context.get_funding_txo(),
+			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
 		}
 	}
@@ -7769,7 +7794,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		L::Target: Logger
 	{
 		let mut msgs = (None, None);
-		if let Some(funding_txo) = self.context.get_funding_txo() {
+		if let Some(funding_txo) = self.funding.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
 				// check that it pays the right amount to the right script.
@@ -8745,8 +8770,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		signature.map(|signature| msgs::FundingCreated {
 			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
-			funding_txid: self.context.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
-			funding_output_index: self.context.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
+			funding_txid: self.funding.funding_outpoint.as_ref().unwrap().txid,
+			funding_output_index: self.funding.funding_outpoint.as_ref().unwrap().index,
 			signature,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
@@ -8775,6 +8800,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 		self.context.assert_no_commitment_advancement(self.unfunded_context.transaction_number(), "funding_created");
 
+		self.funding.funding_outpoint = Some(funding_txo);
 		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
@@ -9163,6 +9189,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "funding_created");
 
 		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
+		self.funding.funding_outpoint = Some(funding_txo);
 		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
 		// check_funding_created_signature may fail.
@@ -10452,6 +10479,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 				#[cfg(any(test, fuzzing))]
 				next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+				funding_outpoint: channel_parameters.funding_outpoint,
 			},
 			context: ChannelContext {
 				user_id,
@@ -11331,6 +11360,7 @@ mod tests {
 				selected_contest_delay: 144
 			});
 		chan.context.channel_transaction_parameters.funding_outpoint = Some(funding_info);
+		chan.funding.funding_outpoint = Some(funding_info);
 		signer.provide_channel_parameters(&chan.context.channel_transaction_parameters);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],

@@ -150,9 +150,8 @@ fn do_test_v2_channel_establishment(
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let peer_state =
 			per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		let channel_context =
-			peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().context();
-		(channel_context.get_funding_txo(), channel_context.get_channel_type().clone())
+		let channel = peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap();
+		(channel.funding().get_funding_txo(), channel.context().get_channel_type().clone())
 	};
 
 	let channel_transaction_parameters = ChannelTransactionParameters {

@@ -506,7 +506,7 @@ impl ChannelDetails {
 				},
 				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(funding),
 			},
-			funding_txo: context.get_funding_txo(),
+			funding_txo: funding.get_funding_txo(),
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
 			channel_type: if context.have_received_message() {
