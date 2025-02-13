@@ -1393,6 +1393,15 @@ pub trait ChannelSigner {
 		}
 		ret
 	}
+
+	/// Get the script pubkey of the funding transaction
+	fn get_funding_spk(&self) -> ScriptBuf {
+		let params = self.get_channel_parameters().unwrap();
+		let holder_pubkey = params.holder_pubkeys.funding_pubkey;
+		let counterparty_pubkey =
+			params.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey;
+		make_funding_redeemscript(&holder_pubkey, &counterparty_pubkey).to_p2wsh()
+	}
 }
 
 /// Specifies the recipient of an invoice.
