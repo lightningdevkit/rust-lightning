@@ -5,16 +5,9 @@ use lightning_types::payment::PaymentHash;
 /// Holds payments with the corresponding HTLCs until it is possible to pay the fee.
 /// When the fee is successfully paid with a forwarded payment, the queue should be consumed and the
 /// remaining payments forwarded.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub(crate) struct PaymentQueue {
 	payments: Vec<(PaymentHash, Vec<InterceptedHTLC>)>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) struct InterceptedHTLC {
-	pub(crate) intercept_id: InterceptId,
-	pub(crate) expected_outbound_amount_msat: u64,
-	pub(crate) payment_hash: PaymentHash,
 }
 
 impl PaymentQueue {
@@ -54,10 +47,11 @@ impl PaymentQueue {
 	}
 }
 
-impl Default for PaymentQueue {
-	fn default() -> Self {
-		Self { payments: Vec::new() }
-	}
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct InterceptedHTLC {
+	pub(crate) intercept_id: InterceptId,
+	pub(crate) expected_outbound_amount_msat: u64,
+	pub(crate) payment_hash: PaymentHash,
 }
 
 #[cfg(test)]
