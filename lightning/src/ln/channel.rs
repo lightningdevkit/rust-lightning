@@ -1412,29 +1412,6 @@ impl<SP: Deref> Channel<SP> where
 		result.map(|monitor| (self.as_funded_mut().expect("Channel should be funded"), monitor))
 	}
 
-	pub fn unset_funding_info(&mut self) {
-		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
-		if let ChannelPhase::Funded(mut funded_chan) = phase {
-			funded_chan.unset_funding_info();
-
-			let context = funded_chan.context;
-			let unfunded_context = UnfundedChannelContext {
-				unfunded_channel_age_ticks: 0,
-				holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
-			};
-			let unfunded_chan = OutboundV1Channel {
-				context,
-				unfunded_context,
-				signer_pending_open_channel: false,
-			};
-			self.phase = ChannelPhase::UnfundedOutboundV1(unfunded_chan);
-		} else {
-			self.phase = phase;
-		};
-
-		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
-	}
-
 	pub fn funding_tx_constructed<L: Deref>(
 		&mut self, signing_session: InteractiveTxSigningSession, logger: &L
 	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
