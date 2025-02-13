@@ -1970,10 +1970,10 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.funding().channel_value_satoshis);
 		// They sign the holder commitment transaction...
 		log_trace!(logger, "Checking {} tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
-			self.received_msg(), log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context().counterparty_funding_pubkey().serialize()),
+			self.received_msg(), log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.context().get_counterparty_pubkeys().funding_pubkey.serialize()),
 			encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
 			encode::serialize_hex(&funding_script), &self.context().channel_id());
-		secp_check!(self.context().secp_ctx.verify_ecdsa(&sighash, sig, self.context().counterparty_funding_pubkey()), format!("Invalid {} signature from peer", self.received_msg()));
+		secp_check!(self.context().secp_ctx.verify_ecdsa(&sighash, sig, &self.context().get_counterparty_pubkeys().funding_pubkey), format!("Invalid {} signature from peer", self.received_msg()));
 
 		Ok(initial_commitment_tx)
 	}
@@ -2015,7 +2015,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			counterparty_signature,
 			Vec::new(),
 			&context.get_holder_pubkeys().funding_pubkey,
-			context.counterparty_funding_pubkey()
+			&context.get_counterparty_pubkeys().funding_pubkey,
 		);
 
 		if context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new()).is_err() {
@@ -3636,11 +3636,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// pays to get_funding_redeemscript().to_p2wsh()).
 	/// Panics if called before accept_channel/InboundV1Channel::new
 	pub fn get_funding_redeemscript(&self) -> ScriptBuf {
-		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
-	}
-
-	fn counterparty_funding_pubkey(&self) -> &PublicKey {
-		&self.get_counterparty_pubkeys().funding_pubkey
+		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, &self.get_counterparty_pubkeys().funding_pubkey)
 	}
 
 	pub fn get_feerate_sat_per_1000_weight(&self) -> u32 {
@@ -5466,9 +5462,9 @@ impl<SP: Deref> FundedChannel<SP> where
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),
-				log_bytes!(self.context.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(self.context.get_counterparty_pubkeys().funding_pubkey.serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
 				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), &self.context.channel_id());
-			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.counterparty_funding_pubkey()) {
+			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.get_counterparty_pubkeys().funding_pubkey) {
 				return Err(ChannelError::close("Invalid commitment tx signature from peer".to_owned()));
 			}
 			bitcoin_tx.txid
@@ -5560,7 +5556,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			msg.signature,
 			msg.htlc_signatures.clone(),
 			&self.context.get_holder_pubkeys().funding_pubkey,
-			self.context.counterparty_funding_pubkey()
+			&self.context.get_counterparty_pubkeys().funding_pubkey,
 		);
 
 		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
@@ -7164,7 +7160,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
 		let funding_key = self.context.get_holder_pubkeys().funding_pubkey.serialize();
-		let counterparty_funding_key = self.context.counterparty_funding_pubkey().serialize();
+		let counterparty_funding_key = self.context.get_counterparty_pubkeys().funding_pubkey.serialize();
 		let mut holder_sig = sig.serialize_der().to_vec();
 		holder_sig.push(EcdsaSighashType::All as u8);
 		let mut cp_sig = counterparty_sig.serialize_der().to_vec();
@@ -7277,7 +7273,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				skip_remote_output = true;
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?.0;
 				let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.funding.channel_value_satoshis);
-				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.context.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
+				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.get_counterparty_pubkeys().funding_pubkey), "Invalid closing tx signature from peer".to_owned());
 			},
 		};
 
@@ -8024,8 +8020,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			short_channel_id,
 			node_id_1: if were_node_one { node_id } else { counterparty_node_id },
 			node_id_2: if were_node_one { counterparty_node_id } else { node_id },
-			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.context.get_holder_pubkeys().funding_pubkey } else { self.context.counterparty_funding_pubkey() }),
-			bitcoin_key_2: NodeId::from_pubkey(if were_node_one { self.context.counterparty_funding_pubkey() } else { &self.context.get_holder_pubkeys().funding_pubkey }),
+			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.context.get_holder_pubkeys().funding_pubkey } else { &self.context.get_counterparty_pubkeys().funding_pubkey }),
+			bitcoin_key_2: NodeId::from_pubkey(if were_node_one { &self.context.get_counterparty_pubkeys().funding_pubkey } else { &self.context.get_holder_pubkeys().funding_pubkey }),
 			excess_data: Vec::new(),
 		};
 
@@ -8150,10 +8146,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				"Bad announcement_signatures. Failed to verify node_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}",
 				 &announcement, self.context.get_counterparty_node_id())));
 		}
-		if self.context.secp_ctx.verify_ecdsa(&msghash, &msg.bitcoin_signature, self.context.counterparty_funding_pubkey()).is_err() {
+		if self.context.secp_ctx.verify_ecdsa(&msghash, &msg.bitcoin_signature, &self.context.get_counterparty_pubkeys().funding_pubkey).is_err() {
 			return Err(ChannelError::close(format!(
 				"Bad announcement_signatures. Failed to verify bitcoin_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})",
-				&announcement, self.context.counterparty_funding_pubkey())));
+				&announcement, &self.context.get_counterparty_pubkeys().funding_pubkey)));
 		}
 
 		self.context.announcement_sigs = Some((msg.node_signature, msg.bitcoin_signature));
@@ -11414,7 +11410,7 @@ mod tests {
 				let counterparty_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_sig_hex).unwrap()[..]).unwrap();
 				let sighash = unsigned_tx.get_sighash_all(&redeemscript, chan.funding.channel_value_satoshis);
 				log_trace!(logger, "unsigned_tx = {}", serialize(&unsigned_tx.transaction).as_hex());
-				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, chan.context.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
+				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, &chan.context.get_counterparty_pubkeys().funding_pubkey).is_ok(), "verify counterparty commitment sig");
 
 				let mut per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)> = Vec::new();
 				per_htlc.clear(); // Don't warn about excess mut for no-HTLC calls
@@ -11432,7 +11428,7 @@ mod tests {
 					counterparty_signature,
 					counterparty_htlc_sigs,
 					&chan.context.holder_signer.as_ref().pubkeys().funding_pubkey,
-					chan.context.counterparty_funding_pubkey()
+					&chan.context.get_counterparty_pubkeys().funding_pubkey,
 				);
 				let holder_sig = signer.sign_holder_commitment(&holder_commitment_tx, &secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&<Vec<u8>>::from_hex($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
