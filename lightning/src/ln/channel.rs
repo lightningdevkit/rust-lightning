@@ -1650,6 +1650,10 @@ pub(super) struct FundingScope {
 	next_remote_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
 
 	pub(super) channel_transaction_parameters: ChannelTransactionParameters,
+
+	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
+	/// [`ChannelContext::is_manual_broadcast`] is true) this will be a dummy empty transaction.
+	funding_transaction: Option<Transaction>,
 }
 
 impl FundingScope {
@@ -1902,9 +1906,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
-	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
-	/// is_manual_broadcast is true) this will be a dummy empty transaction.
-	funding_transaction: Option<Transaction>,
 	/// This flag indicates that it is the user's responsibility to validated and broadcast the
 	/// funding transaction.
 	is_manual_broadcast: bool,
@@ -2321,7 +2322,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
+				self.funding.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
@@ -2598,6 +2599,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				funding_outpoint: None,
 				channel_type_features: channel_type.clone()
 			},
+			funding_transaction: None,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -2679,7 +2681,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 			counterparty_forwarding_info: None,
 
-			funding_transaction: None,
 			is_batch_funding: None,
 
 			counterparty_cur_commitment_point: Some(open_channel_fields.first_per_commitment_point),
@@ -2833,6 +2834,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				funding_outpoint: None,
 				channel_type_features: channel_type.clone()
 			},
+			funding_transaction: None,
 		};
 		let channel_context = Self {
 			user_id,
@@ -2914,7 +2916,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 			counterparty_forwarding_info: None,
 
-			funding_transaction: None,
 			is_batch_funding: None,
 
 			counterparty_cur_commitment_point: None,
@@ -4327,8 +4328,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	///
 	/// Note that if [`Self::is_manual_broadcast`] is true the transaction will be a dummy
 	/// transaction.
-	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		self.if_unbroadcasted_funding(|| self.funding_transaction.clone())
+	pub fn unbroadcasted_funding(&self, funding: &FundingScope) -> Option<Transaction> {
+		self.if_unbroadcasted_funding(|| funding.funding_transaction.clone())
 	}
 
 	/// Returns the transaction ID if there is a pending funding transaction that is yet to be
@@ -4392,8 +4393,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}))
 			} else { None }
 		} else { None };
-		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(&funding);
-		let unbroadcasted_funding_tx = self.unbroadcasted_funding();
+		let unbroadcasted_batch_funding_txid = self.unbroadcasted_batch_funding_txid(funding);
+		let unbroadcasted_funding_tx = self.unbroadcasted_funding(funding);
 
 		self.channel_state = ChannelState::ShutdownComplete;
 		self.update_time_counter += 1;
@@ -6219,7 +6220,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if funding_tx_opt.is_some() {
 				// We have a finalized funding transaction, so we can set the funding transaction and reset the
 				// signing session fields.
-				self.context.funding_transaction = funding_tx_opt;
+				self.funding.funding_transaction = funding_tx_opt;
 				self.context.next_funding_txid = None;
 				self.interactive_tx_signing_session = None;
 			}
@@ -6451,7 +6452,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable = None;
-		if let Some(funding_transaction) = &self.context.funding_transaction {
+		if let Some(funding_transaction) = &self.funding.funding_transaction {
 			if (self.funding.is_outbound() || self.is_v2_established()) &&
 				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
@@ -7326,7 +7327,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			user_channel_id: self.context.user_id,
 			channel_capacity_satoshis: self.funding.channel_value_satoshis,
 			counterparty_node_id: self.context.counterparty_node_id,
-			unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+			unbroadcasted_funding_tx: self.context.unbroadcasted_funding(&self.funding),
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
@@ -7734,7 +7735,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			// Because deciding we're awaiting initial broadcast spuriously could result in
 			// funds-loss (as we don't have a monitor, but have the funding transaction confirmed),
 			// we hard-assert here, even in production builds.
-			if self.funding.is_outbound() { assert!(self.context.funding_transaction.is_some()); }
+			if self.funding.is_outbound() { assert!(self.funding.funding_transaction.is_some()); }
 			assert!(self.context.monitor_pending_channel_ready);
 			assert_eq!(self.context.latest_monitor_update_id, 0);
 			return true;
@@ -9109,8 +9110,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.context.minimum_depth = Some(COINBASE_MATURITY);
 		}
 
-		debug_assert!(self.context.funding_transaction.is_none());
-		self.context.funding_transaction = Some(funding_transaction);
+		debug_assert!(self.funding.funding_transaction.is_none());
+		self.funding.funding_transaction = Some(funding_transaction);
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let funding_created = self.get_funding_created_msg(logger);
@@ -10195,7 +10196,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 		}
 
 		self.funding.channel_transaction_parameters.write(writer)?;
-		self.context.funding_transaction.write(writer)?;
+		self.funding.funding_transaction.write(writer)?;
 
 		self.context.counterparty_cur_commitment_point.write(writer)?;
 		self.context.counterparty_prev_commitment_point.write(writer)?;
@@ -10782,6 +10783,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 				channel_transaction_parameters: channel_parameters,
+				funding_transaction,
 			},
 			context: ChannelContext {
 				user_id,
@@ -10860,7 +10862,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				counterparty_forwarding_info,
 
-				funding_transaction,
 				is_batch_funding,
 
 				counterparty_cur_commitment_point,

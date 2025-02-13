@@ -3296,7 +3296,7 @@ macro_rules! handle_monitor_update_completion {
 							.get_mut(&channel_id)
 							.and_then(Channel::as_funded_mut)
 						{
-							batch_funding_tx = batch_funding_tx.or_else(|| funded_chan.context.unbroadcasted_funding());
+							batch_funding_tx = batch_funding_tx.or_else(|| funded_chan.context.unbroadcasted_funding(&funded_chan.funding));
 							funded_chan.set_batch_ready();
 							let mut pending_events = $self.pending_events.lock().unwrap();
 							emit_channel_pending_event!(pending_events, funded_chan);
@@ -8531,7 +8531,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								msg: tx_signatures,
 							});
 						}
-						if let Some(ref funding_tx) = chan.context.unbroadcasted_funding() {
+						if let Some(ref funding_tx) = chan.context.unbroadcasted_funding(&chan.funding) {
 							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 							{
 								let mut pending_events = self.pending_events.lock().unwrap();
