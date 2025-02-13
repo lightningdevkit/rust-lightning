@@ -393,7 +393,7 @@ mod test {
 		// When we get the proof back, override its contents to an offer from nodes[1]
 		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
 		nodes[0]
-			.node
+			.offers_handler
 			.testing_dnssec_proof_offer_resolution_override
 			.lock()
 			.unwrap()
@@ -404,7 +404,7 @@ mod test {
 		let retry = Retry::Attempts(0);
 		let amt = 42_000;
 		nodes[0]
-			.node
+			.offers_handler
 			.pay_for_offer_from_human_readable_name(name, amt, payment_id, retry, None, resolvers)
 			.unwrap();
 
