@@ -808,6 +808,9 @@ pub trait ChannelSigner {
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 
+	/// Provide counterparty parameters
+	fn provide_counterparty_parameters(&mut self, counterparty_keys: &ChannelTransactionParameters);
+
 	/// Returns the parameters of this signer
 	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters>;
 
@@ -1961,6 +1964,24 @@ impl ChannelSigner for InMemorySigner {
 			return;
 		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		self.channel_parameters = Some(channel_parameters.clone());
+	}
+
+	fn provide_counterparty_parameters(
+		&mut self, channel_parameters: &ChannelTransactionParameters,
+	) {
+		assert!(
+			channel_parameters.counterparty_parameters.is_some(),
+			"Counterparty parameters must be populated"
+		);
+		assert!(
+			self.channel_parameters.is_none()
+				|| self.channel_parameters.as_ref().unwrap() == channel_parameters
+		);
+		if self.channel_parameters.is_some() {
+			// The channel parameters were already set and they match, return early.
+			return;
+		}
 		self.channel_parameters = Some(channel_parameters.clone());
 	}
 
