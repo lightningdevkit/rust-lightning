@@ -1862,7 +1862,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
-	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
+	pub(super) channel_transaction_parameters: ChannelTransactionParameters,
 	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
 	/// is_manual_broadcast is true) this will be a dummy empty transaction.
 	funding_transaction: Option<Transaction>,
