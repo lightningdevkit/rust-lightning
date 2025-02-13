@@ -17,6 +17,7 @@ use crate::ln::inbound_payment;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::offer::Offer;
 use crate::offers::nonce::Nonce;
+use crate::onion_message::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::prelude::*;
 use crate::sign::EntropySource;
@@ -27,7 +28,7 @@ use bitcoin::secp256k1::schnorr;
 use lightning_invoice::PaymentSecret;
 use types::payment::PaymentHash;
 
-use crate::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext};
 use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, PaymentContext};
 use crate::events::PaymentFailureReason;
 use crate::ln::channelmanager::{Bolt12PaymentError, PaymentId, Verification};
@@ -44,8 +45,10 @@ use crate::util::logger::{Logger, WithContext};
 #[cfg(not(feature = "std"))]
 use core::sync::atomic::Ordering;
 
-#[cfg(async_payments)]
-use crate::offers::static_invoice::StaticInvoice;
+#[cfg(async_payments)] use {
+	crate::offers::static_invoice::StaticInvoice,
+	crate::offers::signer,
+};
 
 #[cfg(not(c_bindings))]
 use {
@@ -166,6 +169,17 @@ pub trait OffersMessageCommons {
 		&self, payment_id: PaymentId, retryable_invoice_request: Option<RetryableInvoiceRequest>,
 	) -> Result<(), ()>;
 
+	#[cfg(async_payments)]
+	/// Handles the received [`StaticInvoice`], ensuring it is neither unexpected nor a duplicate
+	/// before proceeding with further operations.
+	fn handle_static_invoice_received(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId,
+	) -> Result<(), Bolt12PaymentError>;
+
+	#[cfg(async_payments)]
+	/// Sends payment for the [`StaticInvoice`] associated with the given `payment_id`.
+	fn send_payment_for_static_invoice(&self, payment_id: PaymentId) -> Result<(), Bolt12PaymentError>;
+
 	// ----Temporary Functions----
 	// Set of functions temporarily moved to OffersMessageCommons for easier
 	// transition of code from ChannelManager to OffersMessageFlow
@@ -182,12 +196,6 @@ pub trait OffersMessageCommons {
 		payer_note: Option<String>, payment_id: PaymentId,
 		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
 	) -> Result<(), Bolt12SemanticError>;
-
-	/// Initiate a new async payment
-	#[cfg(async_payments)]
-	fn initiate_async_payment(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId
-	) -> Result<(), Bolt12PaymentError>;
 }
 
 /// [`SimpleArcOffersMessageFlow`] is useful when you need a [`OffersMessageFlow`] with a static lifetime, e.g.
@@ -325,6 +333,8 @@ where
 	message_router: MR,
 	entropy_source: ES,
 
+	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
+
 	#[cfg(feature = "_test_utils")]
 	/// In testing, it is useful be able to forge a name -> offer mapping so that we can pay an
 	/// offer generated in the test.
@@ -366,6 +376,8 @@ where
 			message_router,
 			entropy_source,
 
+			pending_async_payments_messages: Mutex::new(Vec::new()),
+
 			logger,
 
 			#[cfg(feature = "_test_utils")]
@@ -403,6 +415,17 @@ where
 			},
 			_ => Err(()),
 		}
+	}
+
+	pub(crate) fn duration_since_epoch(&self) -> Duration {
+		#[cfg(not(feature = "std"))]
+		let now = self.commons.get_highest_seen_timestamp();
+		#[cfg(feature = "std")]
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		now
 	}
 
 	/// Creates a collection of blinded paths by delegating to
@@ -499,6 +522,53 @@ where
 				},
 			));
 		}
+		Ok(())
+	}
+}
+
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageFlow<ES, OMC, MR, L>
+where
+	ES::Target: EntropySource,
+	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	#[cfg(async_payments)]
+	fn initiate_async_payment(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+
+		self.commons.handle_static_invoice_received(invoice, payment_id)?;
+
+		let nonce = Nonce::from_entropy_source(&*self.entropy_source);
+		let hmac = payment_id.hmac_for_async_payment(nonce, &self.inbound_payment_key);
+		let reply_paths = match self.create_blinded_paths(
+			MessageContext::AsyncPayments(
+				AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
+			)
+		) {
+			Ok(paths) => paths,
+			Err(()) => {
+				self.commons.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
+				return Err(Bolt12PaymentError::BlindedPathCreationFailed);
+			}
+		};
+
+		let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
+		const HTLC_AVAILABLE_LIMIT: usize = 10;
+		reply_paths
+			.iter()
+			.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
+			.take(HTLC_AVAILABLE_LIMIT)
+			.for_each(|(invoice_path, reply_path)| {
+				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+					destination: Destination::BlindedPath(invoice_path.clone()),
+					reply_path: reply_path.clone(),
+				};
+				let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
+				pending_async_payments_messages.push((message, instructions));
+			});
+
 		Ok(())
 	}
 }
@@ -681,7 +751,7 @@ where
 					},
 					_ => return None
 				};
-				let res = self.commons.initiate_async_payment(&invoice, payment_id);
+				let res = self.initiate_async_payment(&invoice, payment_id);
 				handle_pay_invoice_res!(res, invoice, self.logger);
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
@@ -808,6 +878,56 @@ where
 
 	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
+	}
+}
+
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> AsyncPaymentsMessageHandler
+	for OffersMessageFlow<ES, OMC, MR, L>
+where
+	ES::Target: EntropySource,
+	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	fn handle_held_htlc_available(
+		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
+		_responder: Option<Responder>
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		#[cfg(async_payments)] {
+			match _context {
+				AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry } => {
+					if let Err(()) = signer::verify_held_htlc_available_context(
+						nonce, hmac, &self.inbound_payment_key
+					) { return None }
+					if self.duration_since_epoch() > path_absolute_expiry { return None }
+				},
+				_ => return None
+			}
+			return _responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()))
+		}
+		#[cfg(not(async_payments))]
+		return None
+	}
+
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
+		#[cfg(async_payments)] {
+			let (payment_id, nonce, hmac) = match _context {
+				AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } => {
+					(payment_id, nonce, hmac)
+				},
+				_ => return
+			};
+			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
+			if let Err(e) = self.commons.send_payment_for_static_invoice(payment_id) {
+				log_trace!(
+					self.logger, "Failed to release held HTLC with payment id {}: {:?}", payment_id, e
+				);
+			}
+		}
+	}
+
+	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
+		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
 	}
 }
 

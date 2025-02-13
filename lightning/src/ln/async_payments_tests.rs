@@ -332,7 +332,7 @@ fn ignore_unexpected_static_invoice() {
 	nodes[0]
 		.onion_messenger
 		.handle_onion_message(nodes[1].node.get_our_node_id(), &unexpected_static_invoice_om);
-	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	let async_pmts_msgs = nodes[0].offers_handler.release_pending_messages();
 	assert!(async_pmts_msgs.is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 
@@ -356,7 +356,7 @@ fn ignore_unexpected_static_invoice() {
 	nodes[0]
 		.onion_messenger
 		.handle_onion_message(nodes[1].node.get_our_node_id(), &static_invoice_om);
-	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	let async_pmts_msgs = nodes[0].offers_handler.release_pending_messages();
 	assert!(!async_pmts_msgs.is_empty());
 	assert!(async_pmts_msgs
 		.into_iter()
@@ -381,7 +381,7 @@ fn ignore_unexpected_static_invoice() {
 	nodes[0]
 		.onion_messenger
 		.handle_onion_message(nodes[1].node.get_our_node_id(), &dup_static_invoice_om);
-	let async_pmts_msgs = AsyncPaymentsMessageHandler::release_pending_messages(nodes[0].node);
+	let async_pmts_msgs = nodes[0].offers_handler.release_pending_messages();
 	assert!(async_pmts_msgs.is_empty());
 }
 

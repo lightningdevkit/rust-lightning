@@ -33,7 +33,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
+use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
@@ -74,9 +74,8 @@ use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
-use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::dns_resolution::HumanReadableName;
-use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
+use crate::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions};
 use crate::onion_message::offers::OffersMessage;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -88,6 +87,7 @@ use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, Maybe
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
+	crate::blinded_path::message::AsyncPaymentsContext,
 	crate::offers::offer::Amount,
 	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
 };
@@ -2553,7 +2553,10 @@ where
 
 	our_network_pubkey: PublicKey,
 
-	pub(super) inbound_payment_key: inbound_payment::ExpandedKey,
+	/// The [`ExpandedKey`] for use in encrypting and decrypting inbound payment data.
+	///
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	pub inbound_payment_key: inbound_payment::ExpandedKey,
 
 	/// LDK puts the [fake scids] that it generates into namespaces, to identify the type of an
 	/// incoming payment. To make it harder for a third-party to identify the type of a payment,
@@ -2646,7 +2649,6 @@ where
 	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
-	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -3579,7 +3581,6 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
-			pending_async_payments_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -4781,45 +4782,6 @@ where
 		});
 
 		res
-	}
-
-	#[cfg(async_payments)]
-	fn initiate_async_payment(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId
-	) -> Result<(), Bolt12PaymentError> {
-
-		self.handle_static_invoice_received(invoice, payment_id)?;
-
-		let nonce = Nonce::from_entropy_source(&*self.entropy_source);
-		let hmac = payment_id.hmac_for_async_payment(nonce, &self.inbound_payment_key);
-		let reply_paths = match self.create_blinded_paths(
-			MessageContext::AsyncPayments(
-				AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
-			)
-		) {
-			Ok(paths) => paths,
-			Err(()) => {
-				self.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
-				return Err(Bolt12PaymentError::BlindedPathCreationFailed);
-			}
-		};
-
-		let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
-		const HTLC_AVAILABLE_LIMIT: usize = 10;
-		reply_paths
-			.iter()
-			.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
-			.take(HTLC_AVAILABLE_LIMIT)
-			.for_each(|(invoice_path, reply_path)| {
-				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: Destination::BlindedPath(invoice_path.clone()),
-					reply_path: reply_path.clone(),
-				};
-				let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
-				pending_async_payments_messages.push((message, instructions));
-			});
-
-		Ok(())
 	}
 
 	#[cfg(async_payments)]
@@ -9999,6 +9961,18 @@ where
 		self.pending_outbound_payments.received_offer(payment_id, retryable_invoice_request)
 	}
 
+	#[cfg(async_payments)]
+	fn handle_static_invoice_received(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+		self.handle_static_invoice_received(invoice, payment_id)
+	}
+
+	#[cfg(async_payments)]
+	fn send_payment_for_static_invoice(&self, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
+		self.send_payment_for_static_invoice(payment_id)
+	}
+
 	// ----Temporary Functions----
 	// Set of functions temporarily moved to OffersMessageCommons for easier
 	// transition of code from ChannelManager to OffersMessageFlow
@@ -10017,13 +9991,6 @@ where
 		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
 	) -> Result<(), Bolt12SemanticError> {
 		self.pay_for_offer_intern(offer, quantity, amount_msats, payer_note, payment_id, human_readable_name, create_pending_payment)
-	}
-
-	#[cfg(async_payments)]
-	fn initiate_async_payment(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId
-	) -> Result<(), Bolt12PaymentError> {
-		self.initiate_async_payment(invoice, payment_id)
 	}
 }
 
@@ -12017,61 +11984,6 @@ where
 }
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	fn handle_held_htlc_available(
-		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
-		_responder: Option<Responder>
-	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
-		#[cfg(async_payments)] {
-			match _context {
-				AsyncPaymentsContext::InboundPayment { nonce, hmac, path_absolute_expiry } => {
-					if let Err(()) = signer::verify_held_htlc_available_context(
-						nonce, hmac, &self.inbound_payment_key
-					) { return None }
-					if self.duration_since_epoch() > path_absolute_expiry { return None }
-				},
-				_ => return None
-			}
-			return _responder.map(|responder| (ReleaseHeldHtlc {}, responder.respond()))
-		}
-		#[cfg(not(async_payments))]
-		return None
-	}
-
-	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
-		#[cfg(async_payments)] {
-			let (payment_id, nonce, hmac) = match _context {
-				AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } => {
-					(payment_id, nonce, hmac)
-				},
-				_ => return
-			};
-			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
-			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
-				log_trace!(
-					self.logger, "Failed to release held HTLC with payment id {}: {:?}", payment_id, e
-				);
-			}
-		}
-	}
-
-	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
-	}
-}
-
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
 NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -14025,7 +13937,6 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
-			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 

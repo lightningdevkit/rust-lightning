@@ -2107,7 +2107,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
 	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
 	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
 	IgnoringMessageHandler,
 >;
@@ -2128,7 +2128,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
 	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler,
 >;
