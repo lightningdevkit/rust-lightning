@@ -40,7 +40,7 @@ use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo,
 use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{
 	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
-	htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction,
+	htlc_timeout_tx_weight, ChannelPublicKeys, CommitmentTransaction,
 	HolderCommitmentTransaction, ChannelTransactionParameters,
 	CounterpartyChannelTransactionParameters, MAX_HTLCS,
 	get_commitment_transaction_number_obscure_factor,
@@ -1823,7 +1823,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			return Err(ChannelError::close("Failed to advance holder commitment point".to_owned()));
 		}
 
-		let funding_txo_script = context.get_funding_redeemscript().to_p2wsh();
+		let funding_txo_script = context.get_funding_spk();
 		let funding_txo = context.get_funding_txo().unwrap();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_point, &context.get_counterparty_pubkeys().payment_point, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
@@ -1973,7 +1973,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let transaction_number = self.unfunded_context.transaction_number();
 
 		let mut output_index = None;
-		let expected_spk = self.context.get_funding_redeemscript().to_p2wsh();
+		let expected_spk = self.context.get_funding_spk();
 		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
 			if outp.script_pubkey() == &expected_spk && outp.value() == self.context.get_value_satoshis() {
 				if output_index.is_some() {
@@ -3390,11 +3390,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
 	}
 
-	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
-	/// pays to get_funding_redeemscript().to_p2wsh()).
-	/// Panics if called before accept_channel/InboundV1Channel::new
-	pub fn get_funding_redeemscript(&self) -> ScriptBuf {
-		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
+	pub fn get_funding_spk(&self) -> ScriptBuf {
+		self.holder_signer.as_ref().get_funding_spk()
 	}
 
 	fn counterparty_funding_pubkey(&self) -> &PublicKey {
@@ -7471,7 +7468,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				if self.context.funding_tx_confirmation_height == 0 {
 					if tx.compute_txid() == funding_txo.txid {
 						let txo_idx = funding_txo.index as usize;
-						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_redeemscript().to_p2wsh() ||
+						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_spk() ||
 								tx.output[txo_idx].value.to_sat() != self.context.channel_value_satoshis {
 							if self.context.is_outbound() {
 								// If we generated the funding transaction and it doesn't match what it
@@ -8167,7 +8164,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 					log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {} in channel {}",
 						encode::serialize_hex(&commitment_stats.tx.trust().built_transaction().transaction),
-						&counterparty_commitment_txid, encode::serialize_hex(&self.context.get_funding_redeemscript()),
+						&counterparty_commitment_txid, encode::serialize_hex(&self.context.get_funding_spk()),
 						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
 
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
@@ -9126,7 +9123,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				is_initiator: false,
 				inputs_to_contribute: funding_inputs,
 				outputs_to_contribute: Vec::new(),
-				expected_remote_shared_funding_output: Some((context.get_funding_redeemscript().to_p2wsh(), context.channel_value_satoshis)),
+				expected_remote_shared_funding_output: Some((context.get_funding_spk(), context.channel_value_satoshis)),
 			}
 		).map_err(|_| ChannelError::Close((
 			"V2 channel rejected due to sender error".into(),
@@ -10515,7 +10512,7 @@ mod tests {
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
 
 		// Node A --> Node B: funding created
-		let output_script = node_a_chan.context.get_funding_redeemscript();
+		let output_script = node_a_chan.context.get_funding_spk();
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
@@ -10645,7 +10642,7 @@ mod tests {
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 
 		// Node A --> Node B: funding created
-		let output_script = node_a_chan.context.get_funding_redeemscript();
+		let output_script = node_a_chan.context.get_funding_spk();
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
@@ -10834,7 +10831,7 @@ mod tests {
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
 
 		// Node A --> Node B: funding created
-		let output_script = node_a_chan.context.get_funding_redeemscript();
+		let output_script = node_a_chan.context.get_funding_spk();
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
@@ -10904,7 +10901,7 @@ mod tests {
 		).unwrap();
 		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(&&logger).unwrap(), &config.channel_handshake_limits, &features).unwrap();
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-			value: Amount::from_sat(10000000), script_pubkey: outbound_chan.context.get_funding_redeemscript(),
+			value: Amount::from_sat(10000000), script_pubkey: outbound_chan.context.get_funding_spk(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
 		let funding_created = outbound_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap().unwrap();
@@ -11118,7 +11115,7 @@ mod tests {
 				};
 				let trusted_tx = commitment_tx.trust();
 				let unsigned_tx = trusted_tx.built_transaction();
-				let redeemscript = chan.context.get_funding_redeemscript();
+				let redeemscript = chan_utils::make_funding_redeemscript(&chan.context.get_holder_pubkeys().funding_pubkey, chan.context.counterparty_funding_pubkey());
 				let counterparty_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_sig_hex).unwrap()[..]).unwrap();
 				let sighash = unsigned_tx.get_sighash_all(&redeemscript, chan.context.channel_value_satoshis);
 				log_trace!(logger, "unsigned_tx = {}", serialize(&unsigned_tx.transaction).as_hex());
@@ -12021,7 +12018,7 @@ mod tests {
 		).unwrap();
 
 		// Fund the channel with a batch funding transaction.
-		let output_script = node_a_chan.context.get_funding_redeemscript();
+		let output_script = node_a_chan.context.get_funding_spk();
 		let tx = Transaction {
 			version: Version::ONE,
 			lock_time: LockTime::ZERO,
