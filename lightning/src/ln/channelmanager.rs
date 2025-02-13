@@ -3251,7 +3251,7 @@ macro_rules! handle_monitor_update_completion {
 							.get_mut(&channel_id)
 							.and_then(Channel::as_funded_mut)
 						{
-							batch_funding_tx = batch_funding_tx.or_else(|| funded_chan.context.unbroadcasted_funding());
+							batch_funding_tx = batch_funding_tx.or_else(|| funded_chan.context.unbroadcasted_funding(&funded_chan.funding));
 							funded_chan.set_batch_ready();
 							let mut pending_events = $self.pending_events.lock().unwrap();
 							emit_channel_pending_event!(pending_events, funded_chan);
