@@ -67,8 +67,7 @@ use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, Ligh
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
-use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
-use crate::offers::invoice_error::InvoiceError;
+use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
@@ -78,7 +77,7 @@ use crate::offers::signer;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
-use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use crate::onion_message::offers::OffersMessage;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
@@ -1662,7 +1661,6 @@ where
 /// Additionally, it implements the following traits:
 /// - [`ChannelMessageHandler`] to handle off-chain channel activity from peers
 /// - [`MessageSendEventsProvider`] to similarly send such messages to peers
-/// - [`OffersMessageHandler`] for BOLT 12 message handling and sending
 /// - [`EventsProvider`] to generate user-actionable [`Event`]s
 /// - [`chain::Listen`] and [`chain::Confirm`] for notification of on-chain activity
 ///
@@ -2086,10 +2084,10 @@ where
 ///
 /// The [`offers`] module is useful for creating BOLT 12 offers. An [`Offer`] is a precursor to a
 /// [`Bolt12Invoice`], which must first be requested by the payer. The interchange of these messages
-/// as defined in the specification is handled by [`ChannelManager`] and its implementation of
-/// [`OffersMessageHandler`]. However, this only works with an [`Offer`] created using a builder
-/// returned by [`create_offer_builder`]. With this approach, BOLT 12 offers and invoices are
-/// stateless just as BOLT 11 invoices are.
+/// as defined in the specification is handled by [`ChannelManager`] and [`OffersMessageFlow`]'s
+/// implementation of [`OffersMessageHandler`]. However, this only works with an [`Offer`] created
+/// using a builder returned by [`create_offer_builder`]. With this approach, BOLT 12 offers and
+/// invoices are stateless just as BOLT 11 invoices are.
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
@@ -2385,6 +2383,8 @@ where
 /// [`update_channel`]: chain::Watch::update_channel
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
 /// [`read`]: ReadableArgs::read
+/// [`OffersMessageFlow`]: crate::offers::flow::OffersMessageFlow
+/// [`OffersMessageHandler`]: crate::onion_message::offers::OffersMessageHandler
 //
 // Lock order:
 // The tree structure below illustrates the lock order requirements for the different locks of the
@@ -2555,7 +2555,7 @@ where
 
 	our_network_pubkey: PublicKey,
 
-	inbound_payment_key: inbound_payment::ExpandedKey,
+	pub(super) inbound_payment_key: inbound_payment::ExpandedKey,
 
 	/// LDK puts the [fake scids] that it generates into namespaces, to identify the type of an
 	/// incoming payment. To make it harder for a third-party to identify the type of a payment,
@@ -4756,23 +4756,6 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
-	}
-
-	fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<PaymentId, ()> {
-		let secp_ctx = &self.secp_ctx;
-		let expanded_key = &self.inbound_payment_key;
-
-		match context {
-			None if invoice.is_for_refund_without_paths() => {
-				invoice.verify_using_metadata(expanded_key, secp_ctx)
-			},
-			Some(&OffersContext::OutboundPayment { payment_id, nonce, .. }) => {
-				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
-			},
-			_ => Err(()),
-		}
 	}
 
 	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
@@ -9948,7 +9931,12 @@ where
 	fn get_current_blocktime(&self) -> Duration {
 		Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
 	}
-	
+
+	#[cfg(not(feature = "std"))]
+	fn get_highest_seen_timestamp(&self) -> Duration {
+		Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+	}
+
 	fn get_peer_for_blinded_path(&self) -> Vec<MessageForwardNode> {
 		self.per_peer_state.read().unwrap()
 			.iter()
@@ -9965,36 +9953,36 @@ where
 			})
 			.collect::<Vec<_>>()
 	}
-	
+
 	fn create_blinded_payment_paths(
 		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext, relative_expiry_time: u32,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		self.create_blinded_payment_paths(amount_msats, payment_secret, payment_context, relative_expiry_time)
 	}
-	
+
 	fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 		min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()> {
 		self.create_inbound_payment(min_value_msat, invoice_expiry_delta_secs, min_final_cltv_expiry_delta)
 	}
-	
+
 	fn release_invoice_requests_awaiting_invoice(&self) -> Vec<(PaymentId, RetryableInvoiceRequest)> {
 		self.pending_outbound_payments.release_invoice_requests_awaiting_invoice()
 	}
-	
+
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice,
 	) -> Result<schnorr::Signature, ()> {
 		self.node_signer.sign_bolt12_invoice(invoice)
 	}
-	
+
 	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
 		self.send_payment_for_verified_bolt12_invoice(invoice, payment_id)
 	}
-	
+
 	fn abandon_payment_with_reason(&self, payment_id: PaymentId, reason: PaymentFailureReason) {
 		self.abandon_payment_with_reason(payment_id, reason);
 	}
-	
+
 	// ----Temporary Functions----
 	// Set of functions temporarily moved to OffersMessageCommons for easier
 	// transition of code from ChannelManager to OffersMessageFlow
@@ -10002,11 +9990,11 @@ where
 	fn get_pending_offers_messages(&self) -> MutexGuard<'_, Vec<(OffersMessage, MessageSendInstructions)>> {
 		self.pending_offers_messages.lock().expect("Mutex is locked by other thread.")
 	}
-	
+
 	fn enqueue_invoice_request(&self, invoice_request: InvoiceRequest, reply_paths: Vec<BlindedMessagePath>) -> Result<(), Bolt12SemanticError> {
 		self.enqueue_invoice_request(invoice_request, reply_paths)
 	}
-	
+
 	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
@@ -12067,263 +12055,6 @@ where
 			let _ = handle_error!(self, self.internal_tx_abort(&counterparty_node_id, msg), counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
-	}
-}
-
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	fn handle_message(
-		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
-	) -> Option<(OffersMessage, ResponseInstruction)> {
-		let secp_ctx = &self.secp_ctx;
-		let expanded_key = &self.inbound_payment_key;
-
-		macro_rules! handle_pay_invoice_res {
-			($res: expr, $invoice: expr, $logger: expr) => {{
-				let error = match $res {
-					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
-						log_trace!(
-							$logger, "Invoice requires unknown features: {:?}",
-							$invoice.invoice_features()
-						);
-						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
-					},
-					Err(Bolt12PaymentError::SendingFailed(e)) => {
-						log_trace!($logger, "Failed paying invoice: {:?}", e);
-						InvoiceError::from_string(format!("{:?}", e))
-					},
-					#[cfg(async_payments)]
-					Err(Bolt12PaymentError::BlindedPathCreationFailed) => {
-						let err_msg = "Failed to create a blinded path back to ourselves";
-						log_trace!($logger, "{}", err_msg);
-						InvoiceError::from_string(err_msg.to_string())
-					},
-					Err(Bolt12PaymentError::UnexpectedInvoice)
-						| Err(Bolt12PaymentError::DuplicateInvoice)
-						| Ok(()) => return None,
-				};
-
-				match responder {
-					Some(responder) => return Some((OffersMessage::InvoiceError(error), responder.respond())),
-					None => {
-						log_trace!($logger, "No reply path to send error: {:?}", error);
-						return None
-					},
-				}
-			}}
-		}
-
-		match message {
-			OffersMessage::InvoiceRequest(invoice_request) => {
-				let responder = match responder {
-					Some(responder) => responder,
-					None => return None,
-				};
-
-				let nonce = match context {
-					None if invoice_request.metadata().is_some() => None,
-					Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
-					_ => return None,
-				};
-
-				let invoice_request = match nonce {
-					Some(nonce) => match invoice_request.verify_using_recipient_data(
-						nonce, expanded_key, secp_ctx,
-					) {
-						Ok(invoice_request) => invoice_request,
-						Err(()) => return None,
-					},
-					None => match invoice_request.verify_using_metadata(expanded_key, secp_ctx) {
-						Ok(invoice_request) => invoice_request,
-						Err(()) => return None,
-					},
-				};
-
-				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-					&invoice_request.inner
-				) {
-					Ok(amount_msats) => amount_msats,
-					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
-				};
-
-				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
-				let (payment_hash, payment_secret) = match self.create_inbound_payment(
-					Some(amount_msats), relative_expiry, None
-				) {
-					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
-					Err(()) => {
-						let error = Bolt12SemanticError::InvalidAmount;
-						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
-					},
-				};
-
-				let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
-					offer_id: invoice_request.offer_id,
-					invoice_request: invoice_request.fields(),
-				});
-				let payment_paths = match self.create_blinded_payment_paths(
-					Some(amount_msats), payment_secret, payment_context, relative_expiry
-				) {
-					Ok(payment_paths) => payment_paths,
-					Err(()) => {
-						let error = Bolt12SemanticError::MissingPaths;
-						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
-					},
-				};
-
-				#[cfg(not(feature = "std"))]
-				let created_at = Duration::from_secs(
-					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
-				);
-
-				let response = if invoice_request.keys.is_some() {
-					#[cfg(feature = "std")]
-					let builder = invoice_request.respond_using_derived_keys(
-						payment_paths, payment_hash
-					);
-					#[cfg(not(feature = "std"))]
-					let builder = invoice_request.respond_using_derived_keys_no_std(
-						payment_paths, payment_hash, created_at
-					);
-					builder
-						.map(InvoiceBuilder::<DerivedSigningPubkey>::from)
-						.and_then(|builder| builder.allow_mpp().build_and_sign(secp_ctx))
-						.map_err(InvoiceError::from)
-				} else {
-					#[cfg(feature = "std")]
-					let builder = invoice_request.respond_with(payment_paths, payment_hash);
-					#[cfg(not(feature = "std"))]
-					let builder = invoice_request.respond_with_no_std(
-						payment_paths, payment_hash, created_at
-					);
-					builder
-						.map(InvoiceBuilder::<ExplicitSigningPubkey>::from)
-						.and_then(|builder| builder.allow_mpp().build())
-						.map_err(InvoiceError::from)
-						.and_then(|invoice| {
-							#[cfg(c_bindings)]
-							let mut invoice = invoice;
-							invoice
-								.sign(|invoice: &UnsignedBolt12Invoice|
-									self.node_signer.sign_bolt12_invoice(invoice)
-								)
-								.map_err(InvoiceError::from)
-						})
-				};
-
-				match response {
-					Ok(invoice) => {
-						let nonce = Nonce::from_entropy_source(&*self.entropy_source);
-						let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-						let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash, nonce, hmac });
-						Some((OffersMessage::Invoice(invoice), responder.respond_with_reply_path(context)))
-					},
-					Err(error) => Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
-				}
-			},
-			OffersMessage::Invoice(invoice) => {
-				let payment_id = match self.verify_bolt12_invoice(&invoice, context.as_ref()) {
-					Ok(payment_id) => payment_id,
-					Err(()) => return None,
-				};
-
-				let logger = WithContext::from(
-					&self.logger, None, None, Some(invoice.payment_hash()),
-				);
-
-				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
-				handle_pay_invoice_res!(res, invoice, logger);
-			},
-			#[cfg(async_payments)]
-			OffersMessage::StaticInvoice(invoice) => {
-				let payment_id = match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if payment_id.verify_for_offer_payment(hmac, nonce, expanded_key).is_err() {
-							return None
-						}
-						payment_id
-					},
-					_ => return None
-				};
-				let res = self.initiate_async_payment(&invoice, payment_id);
-				handle_pay_invoice_res!(res, invoice, self.logger);
-			},
-			OffersMessage::InvoiceError(invoice_error) => {
-				let payment_hash = match context {
-					Some(OffersContext::InboundPayment { payment_hash, nonce, hmac }) => {
-						match payment_hash.verify_for_offer_payment(hmac, nonce, expanded_key) {
-							Ok(_) => Some(payment_hash),
-							Err(_) => None,
-						}
-					},
-					_ => None,
-				};
-
-				let logger = WithContext::from(&self.logger, None, None, payment_hash);
-				log_trace!(logger, "Received invoice_error: {}", invoice_error);
-
-				match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify_for_offer_payment(hmac, nonce, expanded_key) {
-							self.abandon_payment_with_reason(
-								payment_id, PaymentFailureReason::InvoiceRequestRejected,
-							);
-						}
-					},
-					_ => {},
-				}
-
-				None
-			},
-		}
-	}
-
-	fn message_received(&self) {
-		for (payment_id, retryable_invoice_request) in self
-			.pending_outbound_payments
-			.release_invoice_requests_awaiting_invoice()
-		{
-			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
-			let hmac = payment_id.hmac_for_offer_payment(nonce, &self.inbound_payment_key);
-			let context = MessageContext::Offers(OffersContext::OutboundPayment {
-				payment_id,
-				nonce,
-				hmac: Some(hmac)
-			});
-			match self.create_blinded_paths(context) {
-				Ok(reply_paths) => match self.enqueue_invoice_request(invoice_request, reply_paths) {
-					Ok(_) => {}
-					Err(_) => {
-						log_warn!(self.logger,
-							"Retry failed for an invoice request with payment_id: {}",
-							payment_id
-						);
-					}
-				},
-				Err(_) => {
-					log_warn!(self.logger,
-						"Retry failed for an invoice request with payment_id: {}. \
-							Reason: router could not find a blinded path to include as the reply path",
-						payment_id
-					);
-				}
-			}
-		}
-	}
-
-	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
 	}
 }
 
