@@ -53,7 +53,7 @@ use lightning::ln::channelmanager::{
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
-	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
+	ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
@@ -118,7 +118,7 @@ impl Router for FuzzRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _params: &RouteParameters,
 		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
-	) -> Result<Route, msgs::LightningError> {
+	) -> Result<Route, &'static str> {
 		unreachable!()
 	}
 

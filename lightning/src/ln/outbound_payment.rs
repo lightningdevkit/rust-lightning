@@ -2430,7 +2430,6 @@ mod tests {
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
-	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
@@ -2532,8 +2531,7 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 0);
-		router.expect_find_route(route_params.clone(),
-			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
+		router.expect_find_route(route_params.clone(), Err(""));
 
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
@@ -2863,13 +2861,11 @@ mod tests {
 		);
 		assert!(outbound_payments.has_pending_payments());
 
-		router.expect_find_route(
-			RouteParameters::from_payment_params_and_value(
-				PaymentParameters::from_bolt12_invoice(&invoice),
-				invoice.amount_msats(),
-			),
-			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }),
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_bolt12_invoice(&invoice),
+			invoice.amount_msats(),
 		);
+		router.expect_find_route(route_params, Err(""));
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
