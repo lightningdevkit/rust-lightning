@@ -237,7 +237,7 @@ fn static_invoice_unknown_required_features() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 
@@ -297,7 +297,7 @@ fn ignore_unexpected_static_invoice() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 
@@ -414,7 +414,7 @@ fn async_receive_flow_success() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 	let release_held_htlc_om =
@@ -462,7 +462,7 @@ fn expired_static_invoice_fail() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 
@@ -545,7 +545,7 @@ fn async_receive_mpp() {
 	let amt_msat = 15_000_000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None)
 		.unwrap();
 	let release_held_htlc_om_3_0 =
@@ -629,7 +629,7 @@ fn amount_doesnt_match_invreq() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None)
 		.unwrap();
 	let release_held_htlc_om_3_0 =
@@ -858,7 +858,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
 
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(2), None)
 		.unwrap();
 	let release_held_htlc_om_2_0 =
@@ -947,7 +947,7 @@ fn expired_static_invoice_message_path() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None)
 		.unwrap();
 
@@ -1051,7 +1051,7 @@ fn expired_static_invoice_payment_path() {
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
-		.node
+		.offers_handler
 		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 	let release_held_htlc_om =
