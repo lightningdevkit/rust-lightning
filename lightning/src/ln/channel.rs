@@ -1392,13 +1392,16 @@ impl<SP: Deref> Channel<SP> where
 	{
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
+			let channel_state = chan.context.channel_state;
 			let logger = WithChannelContext::from(logger, &chan.context, None);
 			match chan.funding_signed(msg, best_block, signer_provider, &&logger) {
 				Ok((chan, monitor)) => {
+					debug_assert!(matches!(chan.context.channel_state, ChannelState::AwaitingChannelReady(_)));
 					self.phase = ChannelPhase::Funded(chan);
 					Ok(monitor)
 				},
 				Err((chan, e)) => {
+					debug_assert_eq!(chan.context.channel_state, channel_state);
 					self.phase = ChannelPhase::UnfundedOutboundV1(chan);
 					Err(e)
 				},
