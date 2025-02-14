@@ -185,6 +185,8 @@ fn do_test_v2_channel_establishment(
 		funding_outpoint,
 		channel_type_features,
 	};
+	channel.funding.counterparty_funding_pubkey =
+		Some(accept_channel_v2_msg.common_fields.funding_pubkey);
 
 	channel
 		.context
