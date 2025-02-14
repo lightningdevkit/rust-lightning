@@ -8288,24 +8288,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					.and_then(|(funded_chan, monitor)| {
 						self.chain_monitor
 							.watch_channel(funded_chan.context.channel_id(), monitor)
-							.map(|persist_status| (funded_chan, persist_status))
 							.map_err(|()| {
+								// We weren't able to watch the channel to begin with, so no
+								// updates should be made on it. Previously, full_stack_target
+								// found an (unreachable) panic when the monitor update contained
+								// within `shutdown_finish` was applied.
+								funded_chan.unset_funding_info();
 								ChannelError::close("Channel ID was a duplicate".to_owned())
 							})
+							.map(|persist_status| (funded_chan, persist_status))
 					})
 				{
 					Ok((funded_chan, persist_status)) => {
 						handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, funded_chan, INITIAL_MONITOR);
 						Ok(())
 					},
-					Err(e) => {
-						// We weren't able to watch the channel to begin with, so no
-						// updates should be made on it. Previously, full_stack_target
-						// found an (unreachable) panic when the monitor update contained
-						// within `shutdown_finish` was applied.
-						chan.unset_funding_info();
-						try_channel_entry!(self, peer_state, Err(e), chan_entry)
-					},
+					Err(e) => try_channel_entry!(self, peer_state, Err(e), chan_entry),
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))

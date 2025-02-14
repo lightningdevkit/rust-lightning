@@ -1393,13 +1393,16 @@ impl<SP: Deref> Channel<SP> where
 	{
 		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
 		let result = if let ChannelPhase::UnfundedOutboundV1(chan) = phase {
+			let channel_state = chan.context.channel_state;
 			let logger = WithChannelContext::from(logger, &chan.context, None);
 			match chan.funding_signed(msg, best_block, signer_provider, &&logger) {
 				Ok((chan, monitor)) => {
+					debug_assert!(matches!(chan.context.channel_state, ChannelState::AwaitingChannelReady(_)));
 					self.phase = ChannelPhase::Funded(chan);
 					Ok(monitor)
 				},
 				Err((chan, e)) => {
+					debug_assert_eq!(chan.context.channel_state, channel_state);
 					self.phase = ChannelPhase::UnfundedOutboundV1(chan);
 					Err(e)
 				},
@@ -1411,29 +1414,6 @@ impl<SP: Deref> Channel<SP> where
 
 		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
 		result.map(|monitor| (self.as_funded_mut().expect("Channel should be funded"), monitor))
-	}
-
-	pub fn unset_funding_info(&mut self) {
-		let phase = core::mem::replace(&mut self.phase, ChannelPhase::Undefined);
-		if let ChannelPhase::Funded(mut funded_chan) = phase {
-			funded_chan.unset_funding_info();
-
-			let context = funded_chan.context;
-			let unfunded_context = UnfundedChannelContext {
-				unfunded_channel_age_ticks: 0,
-				holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
-			};
-			let unfunded_chan = OutboundV1Channel {
-				context,
-				unfunded_context,
-				signer_pending_open_channel: false,
-			};
-			self.phase = ChannelPhase::UnfundedOutboundV1(unfunded_chan);
-		} else {
-			self.phase = phase;
-		};
-
-		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
