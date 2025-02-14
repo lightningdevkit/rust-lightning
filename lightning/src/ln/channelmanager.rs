@@ -12657,6 +12657,99 @@ where
 	fn handle_offer_paths(
 		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
 	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
+		#[cfg(async_payments)] {
+			let expanded_key = &self.inbound_payment_key;
+			let entropy = &*self.entropy_source;
+			let secp_ctx = &self.secp_ctx;
+			let duration_since_epoch = self.duration_since_epoch();
+
+			match _context {
+				AsyncPaymentsContext::OfferPaths { nonce, hmac, path_absolute_expiry } => {
+					if let Err(()) = signer::verify_offer_paths_context(nonce, hmac, expanded_key) {
+						return None
+					}
+					if duration_since_epoch > path_absolute_expiry { return None }
+				},
+				_ => return None
+			}
+
+			if !self.async_receive_offer_cache.lock().unwrap().should_refresh_offer(duration_since_epoch) {
+				return None
+			}
+
+			// Require at least two hours before we'll need to start the process of creating a new offer.
+			const MIN_OFFER_PATHS_RELATIVE_EXPIRY: Duration =
+				Duration::from_secs(2 * 60 * 60).saturating_add(AsyncReceiveOffer::OFFER_RELATIVE_EXPIRY_BUFFER);
+			let min_offer_paths_absolute_expiry =
+				duration_since_epoch.saturating_add(MIN_OFFER_PATHS_RELATIVE_EXPIRY);
+			let offer_paths_absolute_expiry =
+				_message.paths_absolute_expiry.unwrap_or(Duration::from_secs(u64::MAX));
+			if offer_paths_absolute_expiry < min_offer_paths_absolute_expiry {
+				log_error!(self.logger, "Received offer paths with too-soon absolute Unix epoch expiry: {}", offer_paths_absolute_expiry.as_secs());
+				return None
+			}
+
+			// Expire the offer at the same time as the static invoice so we automatically refresh both
+			// at the same time.
+			let offer_and_invoice_absolute_expiry = Duration::from_secs(core::cmp::min(
+				offer_paths_absolute_expiry.as_secs(),
+				duration_since_epoch.saturating_add(STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY).as_secs()
+			));
+
+			let (offer, offer_nonce) = {
+				let (offer_builder, offer_nonce) =
+					match self.create_async_receive_offer_builder(_message.paths) {
+						Ok((builder, nonce)) => (builder, nonce),
+						Err(e) => {
+							log_error!(self.logger, "Failed to create offer builder when replying to OfferPaths message: {:?}", e);
+							return None
+						},
+					};
+				match offer_builder.absolute_expiry(offer_and_invoice_absolute_expiry).build() {
+					Ok(offer) => (offer, offer_nonce),
+					Err(e) => {
+						log_error!(self.logger, "Failed to build offer when replying to OfferPaths message: {:?}", e);
+						return None
+					},
+				}
+			};
+
+			let static_invoice_relative_expiry =
+				offer_and_invoice_absolute_expiry.saturating_sub(duration_since_epoch);
+			let static_invoice = {
+				let invoice_res = self.create_static_invoice_builder(
+					&offer, offer_nonce, Some(static_invoice_relative_expiry )
+				).and_then(|builder| builder.build_and_sign(secp_ctx));
+				match invoice_res {
+					Ok(invoice) => invoice,
+					Err(e) => {
+						log_error!(self.logger, "Failed to create static invoice when replying to OfferPaths message: {:?}", e);
+						return None
+					},
+				}
+			};
+
+			let invoice_persisted_paths = {
+				let nonce = Nonce::from_entropy_source(entropy);
+				let hmac = signer::hmac_for_static_invoice_persisted_context(nonce, expanded_key);
+				let context = MessageContext::AsyncPayments(AsyncPaymentsContext::StaticInvoicePersisted {
+					offer, nonce, hmac,
+					path_absolute_expiry: duration_since_epoch.saturating_add(REPLY_PATH_RELATIVE_EXPIRY)
+				});
+				match self.create_blinded_paths(context) {
+					Ok(paths) => paths,
+					Err(()) => {
+						log_error!(self.logger, "Failed to create blinded paths when replying to OfferPaths message");
+						return None
+					},
+				}
+			};
+
+			let reply = ServeStaticInvoice { invoice: static_invoice, invoice_persisted_paths };
+			return _responder.map(|responder| (reply, responder.respond()))
+		}
+
+		#[cfg(not(async_payments))]
 		None
 	}
 
