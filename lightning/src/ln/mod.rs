@@ -89,6 +89,8 @@ mod monitor_tests;
 #[allow(unused_mut)]
 mod shutdown_tests;
 #[cfg(test)]
+mod quiescence_tests;
+#[cfg(test)]
 #[allow(unused_mut)]
 mod async_signer_tests;
 #[cfg(test)]
