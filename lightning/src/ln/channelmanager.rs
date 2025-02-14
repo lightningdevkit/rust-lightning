@@ -4430,7 +4430,24 @@ where
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
 				let current_height: u32 = self.best_block.read().unwrap().height;
-				match create_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash,
+				match create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive(next_hop_data), shared_secret, msg.payment_hash,
+					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
+					current_height)
+				{
+					Ok(info) => {
+						// Note that we could obviously respond immediately with an update_fulfill_htlc
+						// message, however that would leak that we are the recipient of this payment, so
+						// instead we stay symmetric with the forwarding case, only responding (after a
+						// delay) once they've send us a commitment_signed!
+						PendingHTLCStatus::Forward(info)
+					},
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
+			onion_utils::Hop::BlindedReceive(next_hop_data) => {
+				// OUR PAYMENT!
+				let current_height: u32 = self.best_block.read().unwrap().height;
+				match create_recv_pending_htlc_info(msgs::InboundOnionPayload::BlindedReceive(next_hop_data), shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
 					current_height)
 				{
@@ -4445,7 +4462,14 @@ where
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
-				match create_fwd_pending_htlc_info(msg, next_hop_data, next_hop_hmac,
+				match create_fwd_pending_htlc_info(msg, msgs::InboundOnionPayload::Forward(next_hop_data), next_hop_hmac,
+					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
+					Ok(info) => PendingHTLCStatus::Forward(info),
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
+			onion_utils::Hop::BlindedForward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+				match create_fwd_pending_htlc_info(msg, msgs::InboundOnionPayload::BlindedForward(next_hop_data), next_hop_hmac,
 					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
@@ -5860,22 +5884,22 @@ where
 														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 													},
 												};
-												match next_hop {
-													onion_utils::Hop::Receive(hop_data) => {
-														let current_height: u32 = self.best_block.read().unwrap().height;
-														match create_recv_pending_htlc_info(hop_data,
-															incoming_shared_secret, payment_hash, outgoing_amt_msat,
-															outgoing_cltv_value, Some(phantom_shared_secret), false, None,
-															current_height)
-														{
-															Ok(info) => phantom_receives.push((
-																prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
-																prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
-															)),
-															Err(InboundHTLCErr { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
-														}
-													},
-													_ => panic!(),
+												let inbound_onion_payload = match next_hop {
+													onion_utils::Hop::Receive(hop_data) => msgs::InboundOnionPayload::Receive(hop_data),
+													onion_utils::Hop::BlindedReceive(hop_data) => msgs::InboundOnionPayload::BlindedReceive(hop_data),
+													_ => panic!()
+												};
+												let current_height: u32 = self.best_block.read().unwrap().height;
+												match create_recv_pending_htlc_info(inbound_onion_payload,
+													incoming_shared_secret, payment_hash, outgoing_amt_msat,
+													outgoing_cltv_value, Some(phantom_shared_secret), false, None,
+													current_height)
+												{
+													Ok(info) => phantom_receives.push((
+														prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+														prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
+													)),
+													Err(InboundHTLCErr { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 												}
 											} else {
 												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
@@ -15570,16 +15594,17 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 		let sender_intended_amt_msat = 100;
 		let extra_fee_msat = 10;
-		let hop_data = msgs::InboundOnionPayload::Receive {
+		let hop_data = msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
 			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 42,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: sender_intended_amt_msat,
 			}),
 			custom_tlvs: Vec::new(),
-		};
+		});
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
@@ -15592,16 +15617,17 @@ mod tests {
 		} else { panic!(); }
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
-		let hop_data = msgs::InboundOnionPayload::Receive { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
+		let hop_data = msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
 			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 42,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: sender_intended_amt_msat,
 			}),
 			custom_tlvs: Vec::new(),
-		};
+		});
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
@@ -15616,16 +15642,17 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
-		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive {
+		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
 			sender_intended_htlc_amt_msat: 100,
 			cltv_expiry_height: 22,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]), total_msat: 100,
+				payment_secret: PaymentSecret([0; 32]),
+				total_msat: 100,
 			}),
 			custom_tlvs: Vec::new(),
-		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
+		}), [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334

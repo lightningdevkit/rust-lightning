@@ -411,15 +411,23 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 		let failed_destination = match check {
 			ForwardCheckFail::InboundOnionCheck => HTLCDestination::InvalidOnion,
-			ForwardCheckFail::ForwardPayloadEncodedAsReceive => HTLCDestination::FailedPayment { payment_hash },
+			ForwardCheckFail::ForwardPayloadEncodedAsReceive => HTLCDestination::InvalidOnion,
 			ForwardCheckFail::OutboundChannelCheck =>
 				HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1_2.2 },
 		};
 		expect_htlc_handling_failed_destinations!(
 			nodes[1].node.get_and_clear_pending_events(), &[failed_destination.clone()]
 		);
-		expect_payment_failed_conditions(&nodes[0], payment_hash, false,
-			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+		match check {
+			ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
+				expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+					PaymentFailedConditions::new().expected_htlc_error_data(0x4000 | 22, &[0; 0]));
+			}
+			_ => {
+				expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+					PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+			}
+		};
 		return
 	}
 
@@ -1560,8 +1568,8 @@ fn route_blinding_spec_test_vector() {
 			Ok(res) => res,
 			_ => panic!("Unexpected error")
 		};
-	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::Forward {
-		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::BlindedForward {
+		next_hop_data: msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
 		}, next_hop_hmac, new_packet_bytes
 	} = bob_peeled_onion {
@@ -1594,8 +1602,8 @@ fn route_blinding_spec_test_vector() {
 			Ok(res) => res,
 			_ => panic!("Unexpected error")
 		};
-	let (dave_packet_bytes, dave_hmac) = if let onion_utils::Hop::Forward {
-		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+	let (dave_packet_bytes, dave_hmac) = if let onion_utils::Hop::BlindedForward {
+		next_hop_data: msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
 		}, next_hop_hmac, new_packet_bytes
 	} = carol_peeled_onion {
@@ -1628,8 +1636,8 @@ fn route_blinding_spec_test_vector() {
 			Ok(res) => res,
 			_ => panic!("Unexpected error")
 		};
-	let (eve_packet_bytes, eve_hmac) = if let onion_utils::Hop::Forward {
-		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+	let (eve_packet_bytes, eve_hmac) = if let onion_utils::Hop::BlindedForward {
+		next_hop_data: msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
 		}, next_hop_hmac, new_packet_bytes
 	} = dave_peeled_onion {
