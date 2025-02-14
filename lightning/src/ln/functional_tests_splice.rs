@@ -32,7 +32,12 @@ fn test_v1_splice_in() {
 	let channel_reserve_amnt_sat = 1_000;
 
 	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
-		&nodes, initiator_node_index, acceptor_node_index, channel_value_sat, push_msat);
+		&nodes,
+		initiator_node_index,
+		acceptor_node_index,
+		channel_value_sat,
+		push_msat,
+	);
 
 	let expected_funded_channel_id =
 		"ae3367da2c13bc1ceb86bf56418f62828f7ce9d6bfb15a46af5ba1f1ed8b124f";

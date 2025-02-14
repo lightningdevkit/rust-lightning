@@ -9561,7 +9561,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 						},
 						Err(err) => {
-							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
+							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					}
 				} else {
@@ -9596,12 +9596,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
 					counterparty_node_id
 				), msg.channel_id)),
-			hash_map::Entry::Occupied(mut chan) => {
-				if let Some(chan) = chan.get_mut().as_funded_mut() {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					match chan.splice_ack(msg) {
 						Ok(_) => {}
 						Err(err) => {
-							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
+							try_channel_entry!(self, peer_state, Err(err), chan_entry)
 						}
 					}
 				} else {
