@@ -4511,18 +4511,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
 					// we give ourselves a few blocks of headroom after expiration before going
 					// on-chain for an expired HTLC.
-					// Note that, to avoid a potential attack whereby a node delays claiming an HTLC
-					// from us until we've reached the point where we go on-chain with the
-					// corresponding inbound HTLC, we must ensure that outbound HTLCs go on chain at
-					// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
-					//  aka outbound_cltv + LATENCY_GRACE_PERIOD_BLOCKS == height - CLTV_CLAIM_BUFFER
-					//      inbound_cltv == height + CLTV_CLAIM_BUFFER
-					//      outbound_cltv + LATENCY_GRACE_PERIOD_BLOCKS + CLTV_CLAIM_BUFFER <= inbound_cltv - CLTV_CLAIM_BUFFER
-					//      LATENCY_GRACE_PERIOD_BLOCKS + 2*CLTV_CLAIM_BUFFER <= inbound_cltv - outbound_cltv
-					//      CLTV_EXPIRY_DELTA <= inbound_cltv - outbound_cltv (by check in ChannelManager::decode_update_add_htlc_onion)
-					//      LATENCY_GRACE_PERIOD_BLOCKS + 2*CLTV_CLAIM_BUFFER <= CLTV_EXPIRY_DELTA
-					//  The final, above, condition is checked for statically in channelmanager
-					//  with CHECK_CLTV_EXPIRY_SANITY_2.
 					let htlc_outbound = $holder_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
 					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {

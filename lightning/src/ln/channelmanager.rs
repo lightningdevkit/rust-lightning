@@ -2850,19 +2850,34 @@ pub(super) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 // a payment was being routed, so we add an extra block to be safe.
 pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = HTLC_FAIL_BACK_BUFFER as u16 + 3;
 
-// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
-// ie that if the next-hop peer fails the HTLC within
-// LATENCY_GRACE_PERIOD_BLOCKS then we'll still have CLTV_CLAIM_BUFFER left to timeout it onchain,
-// then waiting ANTI_REORG_DELAY to be reorg-safe on the outbound HLTC and
-// failing the corresponding htlc backward, and us now seeing the last block of ANTI_REORG_DELAY before
-// LATENCY_GRACE_PERIOD_BLOCKS.
-#[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - CLTV_CLAIM_BUFFER - ANTI_REORG_DELAY - LATENCY_GRACE_PERIOD_BLOCKS;
+// Check that our MIN_CLTV_EXPIRY_DELTA gives us enough time to get everything on chain and locked
+// in with enough time left to fail the corresponding HTLC back to our inbound edge before they
+// force-close on us.
+// In other words, if the next-hop peer fails HTLC LATENCY_GRACE_PERIOD_BLOCKS after our
+// CLTV_CLAIM_BUFFER (because that's how many blocks we allow them after expiry), we'll still have
+// CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY left to get two transactions on chain and the second
+// fully locked in before the peer force-closes on us (LATENCY_GRACE_PERIOD_BLOCKS before the
+// expiry, i.e. assuming the peer force-closes right at the expiry and we're behind by
+// LATENCY_GRACE_PERIOD_BLOCKS).
+const _CHECK_CLTV_EXPIRY_SANITY: () = assert!(
+	MIN_CLTV_EXPIRY_DELTA as u32 >= 2*LATENCY_GRACE_PERIOD_BLOCKS + CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY
+);
 
-// Check for ability of an attacker to make us fail on-chain by delaying an HTLC claim. See
-// ChannelMonitor::should_broadcast_holder_commitment_txn for a description of why this is needed.
-#[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
+// Check that our MIN_CLTV_EXPIRY_DELTA gives us enough time to get the HTLC preimage back to our
+// counterparty if the outbound edge gives us the preimage only one block before we'd force-close
+// the channel.
+// ie they provide the preimage LATENCY_GRACE_PERIOD_BLOCKS - 1 after the HTLC expires, then we
+// pass the preimage back, which takes LATENCY_GRACE_PERIOD_BLOCKS to complete, and we want to make
+// sure this all happens at least N blocks before the inbound HTLC expires (where N is the
+// counterparty's CLTV_CLAIM_BUFFER or equivalent).
+const _ASSUMED_COUNTERPARTY_CLTV_CLAIM_BUFFER: u32 = 6 * 6;
+
+const _CHECK_COUNTERPARTY_REALISTIC: () =
+	assert!(_ASSUMED_COUNTERPARTY_CLTV_CLAIM_BUFFER >= CLTV_CLAIM_BUFFER);
+
+const _CHECK_CLTV_EXPIRY_OFFCHAIN: () = assert!(
+	MIN_CLTV_EXPIRY_DELTA as u32 >= 2*LATENCY_GRACE_PERIOD_BLOCKS - 1 + _ASSUMED_COUNTERPARTY_CLTV_CLAIM_BUFFER
+);
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
 pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
