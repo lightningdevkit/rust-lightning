@@ -2299,9 +2299,10 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 		check_added_monitors(node, 1);
 	}
 	let expected_payment_id = match events[0] {
-		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
 			assert_eq!(expected_payment_preimage, *payment_preimage);
 			assert_eq!(expected_payment_hash, *payment_hash);
+			assert!(amount_msat.is_some());
 			if let Some(expected_fee_msat) = expected_fee_msat_opt {
 				assert_eq!(*fee_paid_msat, expected_fee_msat);
 			} else {

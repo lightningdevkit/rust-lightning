@@ -929,9 +929,17 @@ pub enum Event {
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_hash: PaymentHash,
+		/// The total amount that was paid, across all paths.
+		///
+		/// Note that, like [`Route::get_total_amount`], this does *not* include the paid fees.
+		///
+		/// This is only `None` for payments initiated on LDK versions prior to 0.2.
+		///
+		/// [`Route::get_total_amount`]: crate::routing::router::Route::get_total_amount
+		amount_msat: Option<u64>,
 		/// The total fee which was spent at intermediate hops in this payment, across all paths.
 		///
-		/// Note that, like [`Route::get_total_fees`] this does *not* include any potential
+		/// Note that, like [`Route::get_total_fees`], this does *not* include any potential
 		/// overpayment to the recipient node.
 		///
 		/// If the recipient or an intermediate node misbehaves and gives us free money, this may
@@ -1548,13 +1556,14 @@ impl Writeable for Event {
 					(13, payment_id, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
 					(1, payment_hash, required),
 					(3, payment_id, option),
 					(5, fee_paid_msat, option),
+					(7, amount_msat, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -1887,12 +1896,14 @@ impl MaybeReadable for Event {
 					let mut payment_preimage = PaymentPreimage([0; 32]);
 					let mut payment_hash = None;
 					let mut payment_id = None;
+					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
 						(3, payment_id, option),
 						(5, fee_paid_msat, option),
+						(7, amount_msat, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
@@ -1901,6 +1912,7 @@ impl MaybeReadable for Event {
 						payment_id,
 						payment_preimage,
 						payment_hash: payment_hash.unwrap(),
+						amount_msat,
 						fee_paid_msat,
 					}))
 				};

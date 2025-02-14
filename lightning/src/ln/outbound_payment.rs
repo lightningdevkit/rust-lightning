@@ -122,6 +122,8 @@ pub(crate) enum PendingOutboundPayment {
 		/// Filled in for any payment which moved to `Fulfilled` on LDK 0.0.104 or later.
 		payment_hash: Option<PaymentHash>,
 		timer_ticks_without_htlcs: u8,
+		/// The total payment amount across all paths, used to be able to issue `PaymentSent`.
+		total_msat: Option<u64>,
 	},
 	/// When we've decided to give up retrying a payment, we mark it as abandoned so we can eventually
 	/// generate a `PaymentFailed` event when all HTLCs have irrevocably failed.
@@ -131,6 +133,9 @@ pub(crate) enum PendingOutboundPayment {
 		/// Will be `None` if the payment was serialized before 0.0.115 or if downgrading to 0.0.124
 		/// or later with a reason that was added after.
 		reason: Option<PaymentFailureReason>,
+		/// The total payment amount across all paths, used to be able to issue `PaymentSent` if
+		/// an HTLC still happens to succeed after we marked the payment as abandoned.
+		total_msat: Option<u64>,
 	},
 }
 
@@ -210,6 +215,15 @@ impl PendingOutboundPayment {
 		}
 	}
 
+	fn total_msat(&self) -> Option<u64> {
+		match self {
+			PendingOutboundPayment::Retryable { total_msat, .. } => Some(*total_msat),
+			PendingOutboundPayment::Fulfilled { total_msat, .. } => *total_msat,
+			PendingOutboundPayment::Abandoned { total_msat, .. } => *total_msat,
+			_ => None,
+		}
+	}
+
 	fn payment_hash(&self) -> Option<PaymentHash> {
 		match self {
 			PendingOutboundPayment::Legacy { .. } => None,
@@ -236,7 +250,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); return; },
 		});
 		let payment_hash = self.payment_hash();
-		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
+		let total_msat = self.total_msat();
+		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0, total_msat };
 	}
 
 	fn mark_abandoned(&mut self, reason: PaymentFailureReason) {
@@ -248,6 +263,7 @@ impl PendingOutboundPayment {
 			},
 			_ => new_hash_set(),
 		};
+		let total_msat = self.total_msat();
 		match self {
 			Self::Retryable { payment_hash, .. } |
 				Self::InvoiceReceived { payment_hash, .. } |
@@ -257,6 +273,7 @@ impl PendingOutboundPayment {
 					session_privs,
 					payment_hash: *payment_hash,
 					reason: Some(reason),
+					total_msat,
 				};
 			},
 			_ => {}
@@ -1928,10 +1945,12 @@ impl OutboundPayments {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 				log_info!(logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
+				let amount_msat = payment.get().total_msat();
 				pending_events.push_back((events::Event::PaymentSent {
 					payment_id: Some(payment_id),
 					payment_preimage,
 					payment_hash,
+					amount_msat,
 					fee_paid_msat,
 				}, Some(ev_completion_action.clone())));
 				payment.get_mut().mark_fulfilled();
@@ -2362,6 +2381,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, payment_hash, option),
 		(3, timer_ticks_without_htlcs, (default_value, 0)),
+		(5, total_msat, option),
 	},
 	(2, Retryable) => {
 		(0, session_privs, required),
@@ -2386,6 +2406,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, reason, upgradable_option),
 		(2, payment_hash, required),
+		(3, total_msat, option),
 	},
 	(5, AwaitingInvoice) => {
 		(0, expiration, required),
