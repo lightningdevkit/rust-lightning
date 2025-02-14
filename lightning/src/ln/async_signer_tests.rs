@@ -74,7 +74,7 @@ fn do_test_open_channel(zero_conf: bool) {
 		match &events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
 				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(
-					temporary_channel_id, &nodes[0].node.get_our_node_id(), 0)
+					temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None)
 					.expect("Unable to accept inbound zero-conf channel");
 			},
 			ev => panic!("Expected OpenChannelRequest, not {:?}", ev)
@@ -319,7 +319,7 @@ fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 		match &events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
 				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(
-					temporary_channel_id, &nodes[0].node.get_our_node_id(), 0)
+					temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None)
 					.expect("Unable to accept inbound zero-conf channel");
 			},
 			ev => panic!("Expected OpenChannelRequest, not {:?}", ev)

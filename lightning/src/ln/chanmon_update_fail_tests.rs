@@ -2775,9 +2775,9 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			if use_0conf {
-				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None).unwrap();
 			} else {
-				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None).unwrap();
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -2866,9 +2866,9 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			if use_0conf {
-				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None).unwrap();
 			} else {
-				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None).unwrap();
 			}
 		},
 		_ => panic!("Unexpected event"),
