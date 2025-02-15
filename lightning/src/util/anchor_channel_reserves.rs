@@ -72,7 +72,7 @@ const P2WPKH_INPUT_WEIGHT: u64 = (36 + 4 + 1) * WITNESS_SCALE_FACTOR as u64 + (1
 // - 22 bytes for the script (OP_0 OP_PUSH20 20 byte public key hash)
 const P2WPKH_OUTPUT_WEIGHT: u64 = (8 + 1 + 22) * WITNESS_SCALE_FACTOR as u64;
 
-// A P2TR input consists of:
+// A P2TR key path input consists of:
 // - 36 bytes for the previous outpoint:
 //   - 32 bytes transaction hash
 //   - 4 bytes index
@@ -82,7 +82,7 @@ const P2WPKH_OUTPUT_WEIGHT: u64 = (8 + 1 + 22) * WITNESS_SCALE_FACTOR as u64;
 //   - 1 byte for witness items count
 //   - 1 byte for the signature length
 //   - 64 bytes for the Schnorr signature
-const P2TR_INPUT_WEIGHT: u64 = (36 + 4 + 1) * WITNESS_SCALE_FACTOR as u64 + (1 + 1 + 64);
+const P2TR_KEYPATH_INPUT_WEIGHT: u64 = (36 + 4 + 1) * WITNESS_SCALE_FACTOR as u64 + (1 + 1 + 64);
 // A P2TR output consists of:
 // - 8 bytes for the output amount
 // - 1 byte for the script length
@@ -109,7 +109,7 @@ const ANCHOR_INPUT_WEIGHT: u64 = (36 + 4 + 1) * WITNESS_SCALE_FACTOR as u64 + (1
 fn htlc_success_transaction_weight(context: &AnchorChannelReserveContext) -> u64 {
 	PER_HTLC_SUCCESS_WEIGHT
 		+ if context.taproot_wallet {
-			P2TR_INPUT_WEIGHT + P2TR_OUTPUT_WEIGHT
+			P2TR_KEYPATH_INPUT_WEIGHT + P2TR_OUTPUT_WEIGHT
 		} else {
 			P2WPKH_INPUT_WEIGHT + P2WPKH_OUTPUT_WEIGHT
 		}
@@ -118,7 +118,7 @@ fn htlc_success_transaction_weight(context: &AnchorChannelReserveContext) -> u64
 fn htlc_timeout_transaction_weight(context: &AnchorChannelReserveContext) -> u64 {
 	PER_HTLC_TIMEOUT_WEIGHT
 		+ if context.taproot_wallet {
-			P2TR_INPUT_WEIGHT + P2TR_OUTPUT_WEIGHT
+			P2TR_KEYPATH_INPUT_WEIGHT + P2TR_OUTPUT_WEIGHT
 		} else {
 			P2WPKH_INPUT_WEIGHT + P2WPKH_OUTPUT_WEIGHT
 		}
@@ -209,7 +209,7 @@ pub fn get_reserve_per_channel(context: &AnchorChannelReserveContext) -> Amount 
 	get_reserve_per_channel_with_input(
 		context,
 		if context.taproot_wallet {
-			Weight::from_wu(P2TR_INPUT_WEIGHT)
+			Weight::from_wu(P2TR_KEYPATH_INPUT_WEIGHT)
 		} else {
 			Weight::from_wu(P2WPKH_INPUT_WEIGHT)
 		},
@@ -378,7 +378,7 @@ mod test {
 		assert_eq!(
 			anchor_output_spend_transaction_weight(
 				&AnchorChannelReserveContext { taproot_wallet: true, ..Default::default() },
-				Weight::from_wu(P2TR_INPUT_WEIGHT),
+				Weight::from_wu(P2TR_KEYPATH_INPUT_WEIGHT),
 			),
 			723
 		);
