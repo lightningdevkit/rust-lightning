@@ -30,7 +30,10 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{secp256k1, Sequence, TxIn, Weight};
+use bitcoin::{secp256k1, Sequence};
+#[cfg(splicing)]
+use bitcoin::{TxIn, Weight};
+
 
 use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
@@ -11907,7 +11910,6 @@ where
 		});
 	}
 
-	/// TODO(splicing): Implement persisting
 	#[cfg(splicing)]
 	fn handle_splice_init(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceInit) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
@@ -11922,7 +11924,6 @@ where
 		});
 	}
 
-	/// TODO(splicing): Implement persisting
 	#[cfg(splicing)]
 	fn handle_splice_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceAck) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {

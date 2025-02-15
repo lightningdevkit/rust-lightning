@@ -4679,33 +4679,6 @@ fn estimate_v2_funding_transaction_fee(
 	fee_for_weight(funding_feerate_sat_per_1000_weight, weight)
 }
 
-#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
-pub(super) fn calculate_our_funding_satoshis(
-	is_initiator: bool, funding_inputs: &[(TxIn, TransactionU16LenLimited)],
-	total_witness_weight: Weight, funding_feerate_sat_per_1000_weight: u32,
-	holder_dust_limit_satoshis: u64,
-) -> Result<u64, APIError> {
-	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs.len(), total_witness_weight, funding_feerate_sat_per_1000_weight);
-
-	let mut total_input_satoshis = 0u64;
-	for (idx, input) in funding_inputs.iter().enumerate() {
-		if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
-			total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
-		} else {
-			return Err(APIError::APIMisuseError {
-				err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
-					input.1.as_transaction().compute_txid(), input.0.previous_output.vout, idx) });
-		}
-	}
-
-	let funding_satoshis = total_input_satoshis.saturating_sub(estimated_fee);
-	if funding_satoshis < holder_dust_limit_satoshis {
-		Ok(0)
-	} else {
-		Ok(funding_satoshis)
-	}
-}
-
 /// Verify that the provided inputs by a counterparty to the funding transaction are enough
 /// to cover the intended contribution amount *plus* the proportional fees of the counterparty.
 /// Fees are computed using `estimate_v2_funding_transaction_fee`, and contain
@@ -9932,7 +9905,6 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
-	/// TODO(dual_funding): Include witness weight info with the inputs.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
