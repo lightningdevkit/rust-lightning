@@ -28,11 +28,11 @@ use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
 use crate::util::test_channel_signer::TestChannelSigner;
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
@@ -515,7 +515,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// Toggles this node's signer to be available for the given signer operation.
 	/// This is useful for testing behavior for restoring an async signer that previously
 	/// could not return a signature immediately.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn enable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
 		self.set_channel_signer_ops(peer_id, chan_id, signer_op, true);
 	}
@@ -535,7 +535,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// will behave normally, returning `Ok`. When set to `false`, and the channel signer will
 	/// act like an off-line remote signer, returning `Err`. This applies to the signer in all
 	/// relevant places, i.e. the channel manager, chain monitor, and the keys manager.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	fn set_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp, available: bool) {
 		use crate::sign::ChannelSigner;
 		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
@@ -996,7 +996,7 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_channel_ref {
 	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
 		{
@@ -1007,7 +1007,7 @@ macro_rules! get_channel_ref {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_feerate {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
@@ -1019,7 +1019,7 @@ macro_rules! get_feerate {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_channel_type_features {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
@@ -1166,7 +1166,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	node_deserialized
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! reload_node {
 	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let chanman_encoded = $chanman_encoded;
@@ -2005,7 +2005,7 @@ macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 	}}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! expect_pending_htlcs_forwardable_from_events {
 	($node: expr, $events: expr, $ignore: expr) => {{
 		assert_eq!($events.len(), 1);
@@ -2203,7 +2203,7 @@ macro_rules! get_route {
 	}}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 #[macro_export]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
@@ -2339,7 +2339,7 @@ macro_rules! expect_payment_sent {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 #[macro_export]
 macro_rules! expect_payment_path_successful {
 	($node: expr) => {
@@ -2427,7 +2427,7 @@ macro_rules! expect_payment_forwarded {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 #[macro_export]
 macro_rules! expect_channel_shutdown_state {
 	($node: expr, $chan_id: expr, $state: path) => {
@@ -2522,7 +2522,7 @@ impl<'a> PaymentFailedConditions<'a> {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! expect_payment_failed_with_update {
 	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr, $scid: expr, $chan_closed: expr) => {
 		$crate::ln::functional_test_utils::expect_payment_failed_conditions(
@@ -2532,7 +2532,7 @@ macro_rules! expect_payment_failed_with_update {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		#[allow(unused_mut)]
@@ -2551,13 +2551,13 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	if conditions.expected_mpp_parts_remain { assert_eq!(payment_failed_events.len(), 1); } else { assert_eq!(payment_failed_events.len(), 2); }
 	let expected_payment_id = match &payment_failed_events[0] {
 		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, payment_id, failure,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			error_code,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			error_data, .. } => {
 			assert_eq!(*payment_hash, expected_payment_hash, "unexpected payment_hash");
 			assert_eq!(*payment_failed_permanently, expected_payment_failed_permanently, "unexpected payment_failed_permanently value");
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
@@ -3621,7 +3621,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	handle_announce_close_broadcast_events(nodes, a, b, false, "Channel closed because commitment or closing transaction was confirmed on chain.");
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! get_channel_value_stat {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();

@@ -105,10 +105,10 @@ pub(crate) fn verify_channel_type_features(channel_type_features: &Option<Channe
 // number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 pub(crate) const WEIGHT_REVOKED_OUTPUT: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 77;
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "_test_utils")))]
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
 const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
 pub(crate) const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
 

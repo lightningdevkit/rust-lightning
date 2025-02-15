@@ -58,13 +58,14 @@ use alloc::collections::BTreeSet;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
 use crate::sync::{Arc, Mutex, RwLock};
+use lightning_macros::xtest;
 
 use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
 
 use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
 
-#[test]
+#[xtest(feature = "_externalize_tests")]
 fn test_channel_resumption_fail_post_funding() {
 	// If we fail to exchange funding with a peer prior to it disconnecting we'll resume the
 	// channel open on reconnect, however if we do exchange funding we do not currently support
@@ -96,8 +97,8 @@ fn test_channel_resumption_fail_post_funding() {
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 }
 
-#[test]
-fn test_insane_channel_opens() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	let mut cfg = UserConfig::default();
@@ -157,8 +158,8 @@ fn test_insane_channel_opens() {
 	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| { msg.common_fields.max_accepted_htlcs = 484; msg });
 }
 
-#[test]
-fn test_funding_exceeds_no_wumbo_limit() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_funding_exceeds_no_wumbo_limit() {
 	// Test that if a peer does not support wumbo channels, we'll refuse to open a wumbo channel to
 	// them.
 	use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
@@ -239,14 +240,14 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	}
 }
 
-#[test]
-fn test_counterparty_no_reserve() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_counterparty_no_reserve() {
 	do_test_counterparty_no_reserve(true);
 	do_test_counterparty_no_reserve(false);
 }
 
-#[test]
-fn test_async_inbound_update_fee() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_async_inbound_update_fee() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -360,8 +361,8 @@ fn test_async_inbound_update_fee() {
 	check_added_monitors!(nodes[1], 1);
 }
 
-#[test]
-fn test_update_fee_unordered_raa() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fee_unordered_raa() {
 	// Just the intro to the previous test followed by an out-of-order RAA (which caused a
 	// crash in an earlier version of the update_fee patch)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -419,8 +420,8 @@ fn test_update_fee_unordered_raa() {
 	// We can't continue, sadly, because our (1) now has a bogus signature
 }
 
-#[test]
-fn test_multi_flight_update_fee() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_multi_flight_update_fee() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -608,8 +609,8 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
-#[test]
-fn test_sanity_on_in_flight_opens() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_sanity_on_in_flight_opens() {
 	do_test_sanity_on_in_flight_opens(0);
 	do_test_sanity_on_in_flight_opens(0 | 0b1000_0000);
 	do_test_sanity_on_in_flight_opens(1);
@@ -630,8 +631,8 @@ fn test_sanity_on_in_flight_opens() {
 	do_test_sanity_on_in_flight_opens(8 | 0b1000_0000);
 }
 
-#[test]
-fn test_update_fee_vanilla() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fee_vanilla() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -673,8 +674,8 @@ fn test_update_fee_vanilla() {
 	check_added_monitors!(nodes[1], 1);
 }
 
-#[test]
-fn test_update_fee_that_funder_cannot_afford() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fee_that_funder_cannot_afford() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -802,8 +803,8 @@ fn test_update_fee_that_funder_cannot_afford() {
 		[nodes[0].node.get_our_node_id()], channel_value);
 }
 
-#[test]
-fn test_update_fee_with_fundee_update_add_htlc() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fee_with_fundee_update_add_htlc() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -902,8 +903,8 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fee() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fee() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1016,8 +1017,8 @@ fn test_update_fee() {
 	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn fake_network_test() {
+#[xtest(feature = "_externalize_tests")]
+pub fn fake_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that payments get routed and transactions broadcast in semi-reasonable ways.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -1148,8 +1149,8 @@ fn fake_network_test() {
 	check_closed_event!(nodes[3], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn holding_cell_htlc_counting() {
+#[xtest(feature = "_externalize_tests")]
+pub fn holding_cell_htlc_counting() {
 	// Tests that HTLCs in the holding cell count towards the pending HTLC limits on outbound HTLCs
 	// to ensure we don't end up with HTLCs sitting around in our holding cell for several
 	// commitment dance rounds.
@@ -1266,8 +1267,8 @@ fn holding_cell_htlc_counting() {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 }
 
-#[test]
-fn duplicate_htlc_test() {
+#[xtest(feature = "_externalize_tests")]
+pub fn duplicate_htlc_test() {
 	// Test that we accept duplicate payment_hash HTLCs across the network and that
 	// claiming/failing them are all separate and don't affect each other
 	let chanmon_cfgs = create_chanmon_cfgs(6);
@@ -1295,8 +1296,8 @@ fn duplicate_htlc_test() {
 	claim_payment(&nodes[1], &vec!(&nodes[3])[..], payment_preimage);
 }
 
-#[test]
-fn test_duplicate_htlc_different_direction_onchain() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_duplicate_htlc_different_direction_onchain() {
 	// Test that ChannelMonitor doesn't generate 2 preimage txn
 	// when we have 2 HTLCs with same preimage that go across a node
 	// in opposite directions, even with the same payment secret.
@@ -1387,8 +1388,8 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	}
 }
 
-#[test]
-fn test_basic_channel_reserve() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_basic_channel_reserve() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1412,8 +1413,8 @@ fn test_basic_channel_reserve() {
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send);
 }
 
-#[test]
-fn test_fee_spike_violation_fails_htlc() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_fee_spike_violation_fails_htlc() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1559,8 +1560,8 @@ fn test_fee_spike_violation_fails_htlc() {
 	check_added_monitors!(nodes[1], 3);
 }
 
-#[test]
-fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	// Set the fee rate for the channel very high, to the point where the fundee
 	// sending any above-dust amount would result in a channel reserve violation.
@@ -1594,8 +1595,8 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 }
 
-#[test]
-fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1651,8 +1652,8 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		[nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// Test that if we receive many dust HTLCs over an outbound channel, they don't count when
 	// calculating our commitment transaction fee (this was previously broken).
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1693,8 +1694,8 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 		), true, APIError::ChannelUnavailable { .. }, {});
 }
 
-#[test]
-fn test_chan_init_feerate_unaffordability() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_chan_init_feerate_unaffordability() {
 	// Test that we will reject channel opens which do not leave enough to pay for any HTLCs due to
 	// channel reserve and feerate requirements.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1730,8 +1731,8 @@ fn test_chan_init_feerate_unaffordability() {
 	}
 }
 
-#[test]
-fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
 	// Test that if we receive many dust HTLCs over an inbound channel, they don't count when
 	// calculating our counterparty's commitment transaction fee (this was previously broken).
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1760,8 +1761,8 @@ fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
 	route_payment(&nodes[0], &[&nodes[1]], payment_amt);
 }
 
-#[test]
-fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -1831,8 +1832,8 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 		[nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_inbound_outbound_capacity_is_not_zero() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_inbound_outbound_capacity_is_not_zero() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1856,8 +1857,8 @@ fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64, channel_type_features: &Chan
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate as u64 / 1000 * 1000
 }
 
-#[test]
-fn test_channel_reserve_holding_cell_htlcs() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_reserve_holding_cell_htlcs() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	// When this test was written, the default base fee floated based on the HTLC count.
@@ -2112,8 +2113,8 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	assert_eq!(stat2.value_to_self_msat, stat22.value_to_self_msat + recv_value_1 + recv_value_21 + recv_value_22 + recv_value_3);
 }
 
-#[test]
-fn channel_reserve_in_flight_removes() {
+#[xtest(feature = "_externalize_tests")]
+pub fn channel_reserve_in_flight_removes() {
 	// In cases where one side claims an HTLC, it thinks it has additional available funds that it
 	// can send to its counterparty, but due to update ordering, the other side may not yet have
 	// considered those HTLCs fully removed.
@@ -2267,6 +2268,7 @@ fn channel_reserve_in_flight_removes() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 }
 
+#[cfg(any(test, feature = "_test_utils"))]
 enum PostFailBackAction {
 	TimeoutOnChain,
 	ClaimOnChain,
@@ -2282,6 +2284,7 @@ fn test_fail_back_before_backwards_timeout() {
 	do_test_fail_back_before_backwards_timeout(PostFailBackAction::ClaimOffChain);
 }
 
+#[cfg(any(test, feature = "_test_utils"))]
 fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBackAction) {
 	// Test that we fail an HTLC upstream if we are still waiting for confirmation downstream
 	// just before the upstream timeout expires
@@ -2399,8 +2402,8 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 	};
 }
 
-#[test]
-fn channel_monitor_network_test() {
+#[xtest(feature = "_externalize_tests")]
+pub fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that ChannelMonitor is able to recover from various states.
 	let chanmon_cfgs = create_chanmon_cfgs(5);
@@ -2596,8 +2599,8 @@ fn channel_monitor_network_test() {
 	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [node_id_4], 100000);
 }
 
-#[test]
-fn test_justice_tx_htlc_timeout() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_justice_tx_htlc_timeout() {
 	// Test justice txn built on revoked HTLC-Timeout tx, against both sides
 	let mut alice_config = test_default_channel_config();
 	alice_config.channel_handshake_config.announce_for_forwarding = true;
@@ -2662,8 +2665,8 @@ fn test_justice_tx_htlc_timeout() {
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 }
 
-#[test]
-fn test_justice_tx_htlc_success() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_justice_tx_htlc_success() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
 	let mut alice_config = test_default_channel_config();
 	alice_config.channel_handshake_config.announce_for_forwarding = true;
@@ -2719,8 +2722,8 @@ fn test_justice_tx_htlc_success() {
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 }
 
-#[test]
-fn revoked_output_claim() {
+#[xtest(feature = "_externalize_tests")]
+pub fn revoked_output_claim() {
 	// Simple test to ensure a node will claim a revoked output when a stale remote commitment
 	// transaction is broadcast by its counterparty
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2752,8 +2755,8 @@ fn revoked_output_claim() {
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_forming_justice_tx_from_monitor_updates() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_forming_justice_tx_from_monitor_updates() {
 	do_test_forming_justice_tx_from_monitor_updates(true);
 	do_test_forming_justice_tx_from_monitor_updates(false);
 }
@@ -2817,8 +2820,8 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 }
 
 
-#[test]
-fn claim_htlc_outputs() {
+#[xtest(feature = "_externalize_tests")]
+pub fn claim_htlc_outputs() {
 	// Node revoked old state, htlcs haven't time out yet, claim them in shared justice tx
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
@@ -2892,7 +2895,7 @@ fn claim_htlc_outputs() {
 // transaction.
 //
 // This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
-#[test]
+#[xtest(feature = "_externalize_tests")]
 fn test_multiple_package_conflicts() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -3145,8 +3148,8 @@ fn test_multiple_package_conflicts() {
 	);
 }
 
-#[test]
-fn test_htlc_on_chain_success() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_htlc_on_chain_success() {
 	// Test that in case of a unilateral close onchain, we detect the state of output and pass
 	// the preimage backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
@@ -3497,15 +3500,15 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 }
 
-#[test]
-fn test_htlc_on_chain_timeout() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_htlc_on_chain_timeout() {
 	do_test_htlc_on_chain_timeout(ConnectStyle::BestBlockFirstSkippingBlocks);
 	do_test_htlc_on_chain_timeout(ConnectStyle::TransactionsFirstSkippingBlocks);
 	do_test_htlc_on_chain_timeout(ConnectStyle::FullBlockViaListen);
 }
 
-#[test]
-fn test_simple_commitment_revoked_fail_backward() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_simple_commitment_revoked_fail_backward() {
 	// Test that in case of a revoked commitment tx, we detect the resolution of output by justice tx
 	// and fail backward accordingly.
 
@@ -3796,24 +3799,24 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	assert!(failed_htlcs.contains(&third_payment_hash.0));
 }
 
-#[test]
-fn test_commitment_revoked_fail_backward_exhaustive_a() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_commitment_revoked_fail_backward_exhaustive_a() {
 	do_test_commitment_revoked_fail_backward_exhaustive(false, true, false);
 	do_test_commitment_revoked_fail_backward_exhaustive(true, true, false);
 	do_test_commitment_revoked_fail_backward_exhaustive(false, false, false);
 	do_test_commitment_revoked_fail_backward_exhaustive(true, false, false);
 }
 
-#[test]
-fn test_commitment_revoked_fail_backward_exhaustive_b() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_commitment_revoked_fail_backward_exhaustive_b() {
 	do_test_commitment_revoked_fail_backward_exhaustive(false, true, true);
 	do_test_commitment_revoked_fail_backward_exhaustive(true, true, true);
 	do_test_commitment_revoked_fail_backward_exhaustive(false, false, true);
 	do_test_commitment_revoked_fail_backward_exhaustive(true, false, true);
 }
 
-#[test]
-fn fail_backward_pending_htlc_upon_channel_failure() {
+#[xtest(feature = "_externalize_tests")]
+pub fn fail_backward_pending_htlc_upon_channel_failure() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -3897,8 +3900,8 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	check_added_monitors!(nodes[0], 1);
 }
 
-#[test]
-fn test_htlc_ignore_latest_remote_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_htlc_ignore_latest_remote_commitment() {
 	// Test that HTLC transactions spending the latest remote commitment transaction are simply
 	// ignored if we cannot claim them. This originally tickled an invalid unwrap().
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -3936,8 +3939,8 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	connect_block(&nodes[1], &block);
 }
 
-#[test]
-fn test_force_close_fail_back() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_force_close_fail_back() {
 	// Check which HTLCs are failed-backwards on channel force-closure
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -4018,8 +4021,8 @@ fn test_force_close_fail_back() {
 	check_spends!(htlc_tx, commitment_tx);
 }
 
-#[test]
-fn test_dup_events_on_peer_disconnect() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_dup_events_on_peer_disconnect() {
 	// Test that if we receive a duplicative update_fulfill_htlc message after a reconnect we do
 	// not generate a corresponding duplicative PaymentSent event. This did not use to be the case
 	// as we used to generate the event immediately upon receipt of the payment preimage in the
@@ -4049,8 +4052,8 @@ fn test_dup_events_on_peer_disconnect() {
 	expect_payment_path_successful!(nodes[0]);
 }
 
-#[test]
-fn test_peer_disconnected_before_funding_broadcasted() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_peer_disconnected_before_funding_broadcasted() {
 	// Test that channels are closed with `ClosureReason::DisconnectedPeer` if the peer disconnects
 	// before the funding transaction has been broadcasted, and doesn't reconnect back within time.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -4099,8 +4102,8 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 		, [nodes[0].node.get_our_node_id()], 1000000);
 }
 
-#[test]
-fn test_simple_peer_disconnect() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_simple_peer_disconnect() {
 	// Test that we can reconnect when there are no lost messages
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -4432,24 +4435,24 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
-#[test]
-fn test_drop_messages_peer_disconnect_a() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_drop_messages_peer_disconnect_a() {
 	do_test_drop_messages_peer_disconnect(0, true);
 	do_test_drop_messages_peer_disconnect(0, false);
 	do_test_drop_messages_peer_disconnect(1, false);
 	do_test_drop_messages_peer_disconnect(2, false);
 }
 
-#[test]
-fn test_drop_messages_peer_disconnect_b() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_drop_messages_peer_disconnect_b() {
 	do_test_drop_messages_peer_disconnect(3, false);
 	do_test_drop_messages_peer_disconnect(4, false);
 	do_test_drop_messages_peer_disconnect(5, false);
 	do_test_drop_messages_peer_disconnect(6, false);
 }
 
-#[test]
-fn test_channel_ready_without_best_block_updated() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_ready_without_best_block_updated() {
 	// Previously, if we were offline when a funding transaction was locked in, and then we came
 	// back online, calling best_block_updated once followed by transactions_confirmed, we'd not
 	// generate a channel_ready until a later best_block_updated. This tests that we generate the
@@ -4474,8 +4477,8 @@ fn test_channel_ready_without_best_block_updated() {
 	nodes[1].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &as_channel_ready);
 }
 
-#[test]
-fn test_channel_monitor_skipping_block_when_channel_manager_is_leading() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_monitor_skipping_block_when_channel_manager_is_leading() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -4506,8 +4509,8 @@ fn test_channel_monitor_skipping_block_when_channel_manager_is_leading() {
 	nodes[1].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &as_channel_ready);
 }
 
-#[test]
-fn test_channel_monitor_skipping_block_when_channel_manager_is_lagging() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_monitor_skipping_block_when_channel_manager_is_lagging() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -4541,8 +4544,8 @@ fn test_channel_monitor_skipping_block_when_channel_manager_is_lagging() {
 	nodes[1].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &as_channel_ready);
 }
 
-#[test]
-fn test_drop_messages_peer_disconnect_dual_htlc() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_drop_messages_peer_disconnect_dual_htlc() {
 	// Test that we can handle reconnecting when both sides of a channel have pending
 	// commitment_updates when we disconnect.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -4755,8 +4758,8 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
 }
 
-#[test]
-fn test_htlc_timeout() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_htlc_timeout() {
 	do_test_htlc_timeout(true);
 	do_test_htlc_timeout(false);
 }
@@ -4819,8 +4822,8 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	}
 }
 
-#[test]
-fn test_holding_cell_htlc_add_timeouts() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_holding_cell_htlc_add_timeouts() {
 	do_test_holding_cell_htlc_add_timeouts(false);
 	do_test_holding_cell_htlc_add_timeouts(true);
 }
@@ -4853,8 +4856,8 @@ macro_rules! check_spendable_outputs {
 	}
 }
 
-#[test]
-fn test_claim_sizeable_push_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_claim_sizeable_push_msat() {
 	// Incidentally test SpendableOutput event generation due to detection of to_local output on commitment tx
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -4882,8 +4885,8 @@ fn test_claim_sizeable_push_msat() {
 	assert_eq!(spend_txn[0].input[0].sequence.0, BREAKDOWN_TIMEOUT as u32);
 }
 
-#[test]
-fn test_claim_on_remote_sizeable_push_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_claim_on_remote_sizeable_push_msat() {
 	// Same test as previous, just test on remote commitment tx, as per_commitment_point registration changes following you're funder/fundee and
 	// to_remote output is encumbered by a P2WPKH
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -4914,8 +4917,8 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	check_spends!(spend_txn[0], node_txn[0]);
 }
 
-#[test]
-fn test_claim_on_remote_revoked_sizeable_push_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	// Same test as previous, just test on remote revoked commitment tx, as per_commitment_point registration changes following you're funder/fundee and
 	// to_remote output is encumbered by a P2WPKH
 
@@ -4947,8 +4950,8 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	check_spends!(spend_txn[2], revoked_local_txn[0], node_txn[0]); // Both outputs
 }
 
-#[test]
-fn test_static_spendable_outputs_preimage_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_static_spendable_outputs_preimage_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -4994,8 +4997,8 @@ fn test_static_spendable_outputs_preimage_tx() {
 	check_spends!(spend_txn[0], node_txn[0]);
 }
 
-#[test]
-fn test_static_spendable_outputs_timeout_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_static_spendable_outputs_timeout_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5041,7 +5044,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	check_spends!(spend_txn[2], node_txn[0], commitment_tx[0]); // All outputs
 }
 
-fn do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(split_tx: bool) {
+pub fn do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(split_tx: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5088,14 +5091,14 @@ fn do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(split_tx: b
 	check_spends!(spend_txn[0], node_txn[0]);
 }
 
-#[test]
-fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(true);
 	do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(false);
 }
 
-#[test]
-fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -5164,8 +5167,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(spend_txn[0], node_txn[0]);
 }
 
-#[test]
-fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -5235,8 +5238,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	check_spends!(spend_txn[2], revoked_local_txn[0], node_txn[1]); // Both outputs
 }
 
-#[test]
-fn test_onchain_to_onchain_claim() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_onchain_to_onchain_claim() {
 	// Test that in case of channel closure, we detect the state of output and claim HTLC
 	// on downstream peer's remote commitment tx.
 	// First, have C claim an HTLC against its own latest commitment transaction.
@@ -5353,8 +5356,8 @@ fn test_onchain_to_onchain_claim() {
 	check_added_monitors!(nodes[1], 1);
 }
 
-#[test]
-fn test_duplicate_payment_hash_one_failure_one_success() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Topology : A --> B --> C --> D
 	// We route 2 payments with same hash between B and C, one will be timeout, the other successfully claim
 	// Note that because C will refuse to generate two payment secrets for the same payment hash,
@@ -5499,8 +5502,8 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);
 }
 
-#[test]
-fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5841,25 +5844,25 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	assert_eq!(bs_updates, if deliver_last_raa { 2 } else if !announce_latest { 3 } else { 4 });
 }
 
-#[test]
-fn test_fail_backwards_latest_remote_announce_a() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_fail_backwards_latest_remote_announce_a() {
 	do_test_fail_backwards_unrevoked_remote_announce(false, true);
 }
 
-#[test]
-fn test_fail_backwards_latest_remote_announce_b() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_fail_backwards_latest_remote_announce_b() {
 	do_test_fail_backwards_unrevoked_remote_announce(true, true);
 }
 
-#[test]
-fn test_fail_backwards_previous_remote_announce() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_fail_backwards_previous_remote_announce() {
 	do_test_fail_backwards_unrevoked_remote_announce(false, false);
 	// Note that true, true doesn't make sense as it implies we announce a revoked state, which is
 	// tested for in test_commitment_revoked_fail_backward_exhaustive()
 }
 
-#[test]
-fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5906,8 +5909,8 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
 }
 
-#[test]
-fn test_key_derivation_params() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_key_derivation_params() {
 	// This test is a copy of test_dynamic_spendable_outputs_local_htlc_timeout_tx, with a key
 	// manager rotation to test that `channel_keys_id` returned in
 	// [`SpendableOutputDescriptor::DelayedPaymentOutput`] let us re-derive the channel key set to
@@ -5994,8 +5997,8 @@ fn test_key_derivation_params() {
 	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
 }
 
-#[test]
-fn test_static_output_closing_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_static_output_closing_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6151,8 +6154,8 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 // Note that we don't bother testing both outbound and inbound HTLC failures for each case, and we
 // assume they are handled the same across all six cases, as both outbound and inbound failures are
 // tested for at least one of the cases in other tests.
-#[test]
-fn htlc_claim_single_commitment_only_a() {
+#[xtest(feature = "_externalize_tests")]
+pub fn htlc_claim_single_commitment_only_a() {
 	do_htlc_claim_local_commitment_only(true);
 	do_htlc_claim_local_commitment_only(false);
 
@@ -6160,17 +6163,17 @@ fn htlc_claim_single_commitment_only_a() {
 	do_htlc_claim_current_remote_commitment_only(false);
 }
 
-#[test]
-fn htlc_claim_single_commitment_only_b() {
+#[xtest(feature = "_externalize_tests")]
+pub fn htlc_claim_single_commitment_only_b() {
 	do_htlc_claim_previous_remote_commitment_only(true, false);
 	do_htlc_claim_previous_remote_commitment_only(false, false);
 	do_htlc_claim_previous_remote_commitment_only(true, true);
 	do_htlc_claim_previous_remote_commitment_only(false, true);
 }
 
-#[test]
+#[xtest(feature = "_externalize_tests")]
 #[should_panic]
-fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on its own as we are catching a panic
+pub fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on its own as we are catching a panic
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6193,8 +6196,8 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).is_err());
 }
 
-#[test]
-fn bolt2_open_channel_sending_node_checks_part2() {
+#[xtest(feature = "_externalize_tests")]
+pub fn bolt2_open_channel_sending_node_checks_part2() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6238,8 +6241,8 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.delayed_payment_basepoint.serialize()).is_ok());
 }
 
-#[test]
-fn bolt2_open_channel_sane_dust_limit() {
+#[xtest(feature = "_externalize_tests")]
+pub fn bolt2_open_channel_sane_dust_limit() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6267,8 +6270,8 @@ fn bolt2_open_channel_sane_dust_limit() {
 // originated from our node, its failure is surfaced to the user. We trigger this failure to
 // free the HTLC by increasing our fee while the HTLC is in the holding cell such that the HTLC
 // is no longer affordable once it's freed.
-#[test]
-fn test_fail_holding_cell_htlc_upon_free() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_fail_holding_cell_htlc_upon_free() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6347,8 +6350,8 @@ fn test_fail_holding_cell_htlc_upon_free() {
 // Test that if multiple HTLCs are released from the holding cell and one is
 // valid but the other is no longer valid upon release, the valid HTLC can be
 // successfully completed while the other one fails as expected.
-#[test]
-fn test_free_and_fail_holding_cell_htlcs() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_free_and_fail_holding_cell_htlcs() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6472,8 +6475,8 @@ fn test_free_and_fail_holding_cell_htlcs() {
 // HTLC is failed backwards. We trigger this failure to forward the freed HTLC by increasing
 // our fee while the HTLC is in the holding cell such that the HTLC is no longer affordable
 // once it's freed.
-#[test]
-fn test_fail_holding_cell_htlc_upon_free_multihop() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	// Avoid having to include routing fees in calculations
@@ -6601,8 +6604,8 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	check_added_monitors!(nodes[0], 1);
 }
 
-#[test]
-fn test_payment_route_reaching_same_channel_twice() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_payment_route_reaching_same_channel_twice() {
 	//A route should not go through the same channel twice
 	//It is enforced when constructing a route.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -6630,8 +6633,8 @@ fn test_payment_route_reaching_same_channel_twice() {
 // BOLT 2 Requirement: MUST NOT offer amount_msat it cannot pay for in the remote commitment transaction at the current feerate_per_kw (see "Updating Fees") while maintaining its channel reserve.
 //TODO: I don't believe this is explicitly enforced when sending an HTLC but as the Fee aspect of the BOLT specs is in flux leaving this as a TODO.
 
-#[test]
-fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	//BOLT2 Requirement: MUST NOT offer amount_msat below the receiving node's htlc_minimum_msat (same validation check catches both of these)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6648,8 +6651,8 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	//BOLT2 Requirement: MUST offer amount_msat greater than 0.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6668,8 +6671,8 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send 0-msat HTLC", 2);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	//BOLT2 Requirement: MUST offer amount_msat greater than 0.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6692,8 +6695,8 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 		[nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	//BOLT 2 Requirement: MUST set cltv_expiry less than 500000000.
 	//It is enforced when constructing a route.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -6712,8 +6715,8 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 		assert_eq!(err, &"Channel CLTV overflowed?"));
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment() {
 	//BOLT 2 Requirement: if result would be offering more than the remote's max_accepted_htlcs HTLCs, in the remote commitment transaction: MUST NOT add an HTLC.
 	//BOLT 2 Requirement: for the first HTLC it offers MUST set id to 0.
 	//BOLT 2 Requirement: MUST increase the value of id by 1 for each successive offer.
@@ -6757,8 +6760,8 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	//BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6783,8 +6786,8 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 }
 
 // BOLT 2 Requirements for the Receiver when handling an update_add_htlc message.
-#[test]
-fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	//BOLT2 Requirement: receiving an amount_msat equal to 0, OR less than its own htlc_minimum_msat -> SHOULD fail the channel.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6813,8 +6816,8 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	//BOLT2 Requirement: receiving an amount_msat that the sending node cannot afford at the current feerate_per_kw (while maintaining its channel reserve): SHOULD fail the channel
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6849,8 +6852,8 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	//BOLT 2 Requirement: if a sending node adds more than its max_accepted_htlcs HTLCs to its local commitment transaction: SHOULD fail the channel
 	//BOLT 2 Requirement: MUST allow multiple HTLCs with the same payment_hash.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -6896,8 +6899,8 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	//OR adds more than its max_htlc_value_in_flight_msat worth of offered HTLCs to its local commitment transaction: SHOULD fail the channel
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6920,8 +6923,8 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 1000000);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	//BOLT2 Requirement: if sending node sets cltv_expiry to greater or equal to 500000000: SHOULD fail the channel.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -6944,8 +6947,8 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	//BOLT 2 requirement: if the sender did not previously acknowledge the commitment of that HTLC: MUST ignore a repeated id value after a reconnection.
 	// We test this by first testing that that repeated HTLCs pass commitment signature checks
 	// after disconnect and that non-sequential htlc_ids result in a channel failure.
@@ -6996,8 +6999,8 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7028,8 +7031,8 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7060,8 +7063,8 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment() {
 	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7092,8 +7095,8 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	//BOLT 2 Requirement: A receiving node:	if the id does not correspond to an HTLC in its current commitment transaction MUST fail the channel.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7135,8 +7138,8 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	//BOLT 2 Requirement: A receiving node:	if the payment_preimage value in update_fulfill_htlc doesn't SHA256 hash to the corresponding HTLC payment_hash	MUST fail the channel.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7178,8 +7181,8 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_message() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_message() {
 	//BOLT 2 Requirement: A receiving node: if the BADONION bit in failure_code is not set for update_fail_malformed_htlc MUST fail the channel.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7228,8 +7231,8 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: err_msg.data }, [nodes[1].node.get_our_node_id()], 1000000);
 }
 
-#[test]
-fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_update_fail_htlc() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_update_fail_htlc() {
 	//BOLT 2 Requirement: a receiving node which has an outgoing HTLC canceled by update_fail_malformed_htlc:
 	//    * MUST return an error in the update_fail_htlc sent to the link which originally sent the HTLC, using the failure_code given and setting the data to sha256_of_onion.
 
@@ -7309,8 +7312,8 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	check_added_monitors!(nodes[1], 1);
 }
 
-#[test]
-fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -7482,8 +7485,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	}
 }
 
-#[test]
-fn test_failure_delay_dust_htlc_local_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_failure_delay_dust_htlc_local_commitment() {
 	do_test_failure_delay_dust_htlc_local_commitment(true);
 	do_test_failure_delay_dust_htlc_local_commitment(false);
 }
@@ -7565,15 +7568,15 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	}
 }
 
-#[test]
-fn test_sweep_outbound_htlc_failure_update() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_sweep_outbound_htlc_failure_update() {
 	do_test_sweep_outbound_htlc_failure_update(false, true);
 	do_test_sweep_outbound_htlc_failure_update(false, false);
 	do_test_sweep_outbound_htlc_failure_update(true, false);
 }
 
-#[test]
-fn test_user_configurable_csv_delay() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_user_configurable_csv_delay() {
 	// We test our channel constructors yield errors when we pass them absurd csv delay
 
 	let mut low_our_to_self_config = UserConfig::default();
@@ -7651,8 +7654,8 @@ fn test_user_configurable_csv_delay() {
 	} else { assert!(false); }
 }
 
-#[test]
-fn test_check_htlc_underpaying() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_check_htlc_underpaying() {
 	// Send payment through A -> B but A is maliciously
 	// sending a probe payment (i.e less than expected value0
 	// to B, B should refuse payment.
@@ -7717,8 +7720,8 @@ fn test_check_htlc_underpaying() {
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000|15, &expected_failure_data[..]);
 }
 
-#[test]
-fn test_announce_disable_channels() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_announce_disable_channels() {
 	// Create 2 channels between A and B. Disconnect B. Call timer_tick_occurred and check for generated
 	// ChannelUpdate. Reconnect B, reestablish and check there is non-generated ChannelUpdate.
 
@@ -7809,8 +7812,8 @@ fn test_announce_disable_channels() {
 	assert!(chans_disabled.is_empty());
 }
 
-#[test]
-fn test_bump_penalty_txn_on_revoked_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_bump_penalty_txn_on_revoked_commitment() {
 	// In case of penalty txn with too low feerates for getting into mempools, RBF-bump them to be sure
 	// we're able to claim outputs on revoked commitment transaction before timelocks expiration
 
@@ -7904,8 +7907,8 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	nodes[1].node.get_and_clear_pending_msg_events();
 }
 
-#[test]
-fn test_bump_penalty_txn_on_revoked_htlcs() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// In case of penalty txn with too low feerates for getting into mempools, RBF-bump them to sure
 	// we're able to claim outputs on revoked HTLC transactions before timelocks expiration
 
@@ -8060,8 +8063,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	check_added_monitors!(nodes[0], 1);
 }
 
-#[test]
-fn test_bump_penalty_txn_on_remote_commitment() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_bump_penalty_txn_on_remote_commitment() {
 	// In case of claim txn with too low feerates for getting into mempools, RBF-bump them to be sure
 	// we're able to claim outputs on remote commitment transaction before timelocks expiration
 
@@ -8172,8 +8175,8 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	nodes[1].node.get_and_clear_pending_msg_events();
 }
 
-#[test]
-fn test_counterparty_raa_skip_no_crash() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_counterparty_raa_skip_no_crash() {
 	// Previously, if our counterparty sent two RAAs in a row without us having provided a
 	// commitment transaction, we would have happily carried on and provided them the next
 	// commitment transaction based on one RAA forward. This would probably eventually have led to
@@ -8225,8 +8228,8 @@ fn test_counterparty_raa_skip_no_crash() {
 		, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_bump_txn_sanitize_tracking_maps() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_bump_txn_sanitize_tracking_maps() {
 	// Sanitizing pending_claim_request and claimable_outpoints used to be buggy,
 	// verify we clean then right after expiration of ANTI_REORG_DELAY.
 
@@ -8279,8 +8282,8 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	}
 }
 
-#[test]
-fn test_channel_conf_timeout() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_conf_timeout() {
 	// Tests that, for inbound channels, we give up on them if the funding transaction does not
 	// confirm within 2016 blocks, as recommended by BOLT 2.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -8315,8 +8318,8 @@ fn test_channel_conf_timeout() {
 	}
 }
 
-#[test]
-fn test_override_channel_config() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_override_channel_config() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -8334,8 +8337,8 @@ fn test_override_channel_config() {
 	assert_eq!(res.common_fields.to_self_delay, 200);
 }
 
-#[test]
-fn test_override_0msat_htlc_minimum() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_override_0msat_htlc_minimum() {
 	let mut zero_config = UserConfig::default();
 	zero_config.channel_handshake_config.our_htlc_minimum_msat = 0;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -8352,8 +8355,8 @@ fn test_override_0msat_htlc_minimum() {
 	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 }
 
-#[test]
-fn test_channel_update_has_correct_htlc_maximum_msat() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_update_has_correct_htlc_maximum_msat() {
 	// Tests that the `ChannelUpdate` message has the correct values for `htlc_maximum_msat` set.
 	// Bolt 7 specifies that if present `htlc_maximum_msat`:
 	// 1. MUST be set to less than or equal to the channel capacity. In LDK, this is capped to
@@ -8404,8 +8407,8 @@ fn test_channel_update_has_correct_htlc_maximum_msat() {
 	assert_eq!(node_3_chan_update.contents.htlc_maximum_msat, channel_value_90_percent_msat);
 }
 
-#[test]
-fn test_manually_accept_inbound_channel_request() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_manually_accept_inbound_channel_request() {
 	let mut manually_accept_conf = UserConfig::default();
 	manually_accept_conf.manually_accept_inbound_channels = true;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -8454,8 +8457,8 @@ fn test_manually_accept_inbound_channel_request() {
 	}
 }
 
-#[test]
-fn test_manually_reject_inbound_channel_request() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_manually_reject_inbound_channel_request() {
 	let mut manually_accept_conf = UserConfig::default();
 	manually_accept_conf.manually_accept_inbound_channels = true;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -8494,8 +8497,8 @@ fn test_manually_reject_inbound_channel_request() {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 }
 
-#[test]
-fn test_can_not_accept_inbound_channel_twice() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_can_not_accept_inbound_channel_twice() {
 	let mut manually_accept_conf = UserConfig::default();
 	manually_accept_conf.manually_accept_inbound_channels = true;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -8540,8 +8543,8 @@ fn test_can_not_accept_inbound_channel_twice() {
 	}
 }
 
-#[test]
-fn test_can_not_accept_unknown_inbound_channel() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_can_not_accept_unknown_inbound_channel() {
 	let chanmon_cfg = create_chanmon_cfgs(2);
 	let node_cfg = create_node_cfgs(2, &chanmon_cfg);
 	let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[None, None]);
@@ -8558,8 +8561,8 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	}
 }
 
-#[test]
-fn test_onion_value_mpp_set_calculation() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_onion_value_mpp_set_calculation() {
 	// Test that we use the onion value `amt_to_forward` when
 	// calculating whether we've reached the `total_msat` of an MPP
 	// by having a routing node forward more than `amt_to_forward`
@@ -8731,14 +8734,14 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 	);
 }
 
-#[test]
-fn test_overshoot_mpp() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_overshoot_mpp() {
 	do_test_overshoot_mpp(&[100_000, 101_000], 200_000);
 	do_test_overshoot_mpp(&[100_000, 10_000, 100_000], 200_000);
 }
 
-#[test]
-fn test_simple_mpp() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_simple_mpp() {
 	// Simple test of sending a multi-path payment.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -8765,8 +8768,8 @@ fn test_simple_mpp() {
 	);
 }
 
-#[test]
-fn test_preimage_storage() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_preimage_storage() {
 	// Simple test of payment preimage storage allowing no client-side storage to claim payments
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -8804,8 +8807,8 @@ fn test_preimage_storage() {
 	}
 }
 
-#[test]
-fn test_bad_secret_hash() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_bad_secret_hash() {
 	// Simple test of unregistered payment hash/invalid payment secret handling
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -8870,8 +8873,8 @@ fn test_bad_secret_hash() {
 	expect_payment_failed!(nodes[0], random_payment_hash, true, expected_error_code, expected_error_data);
 }
 
-#[test]
-fn test_update_err_monitor_lockdown() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_err_monitor_lockdown() {
 	// Our monitor will lock update of local commitment transaction if a broadcastion condition
 	// has been fulfilled (either force-close from Channel or block height requiring a HTLC-
 	// timeout). Trying to update monitor after lockdown should return a ChannelMonitorUpdateStatus
@@ -8943,8 +8946,8 @@ fn test_update_err_monitor_lockdown() {
 	assert_eq!(events.len(), 1);
 }
 
-#[test]
-fn test_concurrent_monitor_claim() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_concurrent_monitor_claim() {
 	// Watchtower A receives block, broadcasts state N, then channel receives new state N+1,
 	// sending it to both watchtowers, Bob accepts N+1, then receives block and broadcasts
 	// the latest state N+1, Alice rejects state N+1, but Bob has already broadcast it,
@@ -9069,8 +9072,8 @@ fn test_concurrent_monitor_claim() {
 	}
 }
 
-#[test]
-fn test_pre_lockin_no_chan_closed_update() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_pre_lockin_no_chan_closed_update() {
 	// Test that if a peer closes a channel in response to a funding_created message we don't
 	// generate a channel update (as the channel cannot appear on chain without a funding_signed
 	// message).
@@ -9108,8 +9111,8 @@ fn test_pre_lockin_no_chan_closed_update() {
 		[nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_htlc_no_detection() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_htlc_no_detection() {
 	// This test is a mutation to underscore the detection logic bug we had
 	// before #653. HTLC value routed is above the remaining balance, thus
 	// inverting HTLC and `to_remote` output. HTLC will come second and
@@ -9340,16 +9343,16 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	}
 }
 
-#[test]
-fn test_onchain_htlc_settlement_after_close() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_onchain_htlc_settlement_after_close() {
 	do_test_onchain_htlc_settlement_after_close(true, true);
 	do_test_onchain_htlc_settlement_after_close(false, true); // Technically redundant, but may as well
 	do_test_onchain_htlc_settlement_after_close(true, false);
 	do_test_onchain_htlc_settlement_after_close(false, false);
 }
 
-#[test]
-fn test_duplicate_temporary_channel_id_from_different_peers() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_duplicate_temporary_channel_id_from_different_peers() {
 	// Tests that we can accept two different `OpenChannel` requests with the same
 	// `temporary_channel_id`, as long as they are from different peers.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -9398,8 +9401,8 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 	}
 }
 
-#[test]
-fn test_peer_funding_sidechannel() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_peer_funding_sidechannel() {
 	// Test that if a peer somehow learns which txid we'll use for our channel funding before we
 	// receive `funding_transaction_generated` the peer cannot cause us to crash. We'd previously
 	// assumed that LDK would receive `funding_transaction_generated` prior to our peer learning
@@ -9453,8 +9456,8 @@ fn test_peer_funding_sidechannel() {
 	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
-#[test]
-fn test_duplicate_conflicting_funding_from_second_peer() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_duplicate_conflicting_funding_from_second_peer() {
 	// Test that if a user tries to fund a channel with a channel ID they'd previously used
 	// we don't try to remove the previous ChannelMonitor. This is largely a test to ensure we
 	// don't regress in the fuzzer, as such funding getting passed our channel_id-matches checks
@@ -9494,8 +9497,8 @@ fn test_duplicate_conflicting_funding_from_second_peer() {
 	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(temp_chan_id, true, err_reason)]);
 }
 
-#[test]
-fn test_duplicate_funding_err_in_funding() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_duplicate_funding_err_in_funding() {
 	// Test that if we have a live channel with one peer, then another peer comes along and tries
 	// to create a second channel with the same txid we'll fail and not overwrite the
 	// outpoint_to_peer map in `ChannelManager`.
@@ -9542,8 +9545,8 @@ fn test_duplicate_funding_err_in_funding() {
 	);
 }
 
-#[test]
-fn test_duplicate_chan_id() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_duplicate_chan_id() {
 	// Test that if a given peer tries to open a channel with the same channel_id as one that is
 	// already open we reject it and keep the old channel.
 	//
@@ -9700,8 +9703,8 @@ fn test_duplicate_chan_id() {
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
 
-#[test]
-fn test_error_chans_closed() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_error_chans_closed() {
 	// Test that we properly handle error messages, closing appropriate channels.
 	//
 	// Prior to #787 we'd allow a peer to make us force-close a channel we had with a different
@@ -9766,8 +9769,8 @@ fn test_error_chans_closed() {
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
 }
 
-#[test]
-fn test_invalid_funding_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_invalid_funding_tx() {
 	// Test that we properly handle invalid funding transactions sent to us from a peer.
 	//
 	// Previously, all other major lightning implementations had failed to properly sanitize
@@ -9854,8 +9857,8 @@ fn test_invalid_funding_tx() {
 	mine_transaction(&nodes[1], &spend_tx);
 }
 
-#[test]
-fn test_coinbase_funding_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_coinbase_funding_tx() {
 	// Miners are able to fund channels directly from coinbase transactions, however
 	// by consensus rules, outputs of a coinbase transaction are encumbered by a 100
 	// block maturity timelock. To ensure that a (non-0conf) channel like this is enforceable
@@ -10006,8 +10009,8 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	}
 }
 
-#[test]
-fn test_tx_confirmed_skipping_blocks_immediate_broadcast() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_tx_confirmed_skipping_blocks_immediate_broadcast() {
 	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(false);
 	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(true);
 }
@@ -10099,8 +10102,8 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 	}
 }
 
-#[test]
-fn test_dup_htlc_second_fail_panic() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_dup_htlc_second_fail_panic() {
 	// Previously, if we received two HTLCs back-to-back, where the second overran the expected
 	// value for the payment, we'd fail back both HTLCs after generating a `PaymentClaimable` event.
 	// Then, if the user failed the second payment, they'd hit a "tried to fail an already failed
@@ -10108,15 +10111,15 @@ fn test_dup_htlc_second_fail_panic() {
 	do_test_dup_htlc_second_rejected(true);
 }
 
-#[test]
-fn test_dup_htlc_second_rejected() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_dup_htlc_second_rejected() {
 	// Test that if we receive a second HTLC for an MPP payment that overruns the payment amount we
 	// simply reject the second HTLC but are still able to claim the first HTLC.
 	do_test_dup_htlc_second_rejected(false);
 }
 
-#[test]
-fn test_inconsistent_mpp_params() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_inconsistent_mpp_params() {
 	// Test that if we recieve two HTLCs with different payment parameters we fail back the first
 	// such HTLC and allow the second to stay.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -10226,8 +10229,8 @@ fn test_inconsistent_mpp_params() {
 	expect_payment_sent(&nodes[0], our_payment_preimage, Some(None), true, true);
 }
 
-#[test]
-fn test_double_partial_claim() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_double_partial_claim() {
 	// Test what happens if a node receives a payment, generates a PaymentClaimable event, the HTLCs
 	// time out, the sender resends only some of the MPP parts, then the user processes the
 	// PaymentClaimable event, ensuring they don't inadvertently claim only part of the full payment
@@ -10528,15 +10531,15 @@ fn do_test_max_dust_htlc_exposure_by_threshold_type(multiplier_dust_limit: bool,
 	}
 }
 
-#[test]
-fn test_max_dust_htlc_exposure() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_max_dust_htlc_exposure() {
 	do_test_max_dust_htlc_exposure_by_threshold_type(false, false);
 	do_test_max_dust_htlc_exposure_by_threshold_type(false, true);
 	do_test_max_dust_htlc_exposure_by_threshold_type(true, false);
 	do_test_max_dust_htlc_exposure_by_threshold_type(true, true);
 }
 
-#[test]
+#[xtest(feature = "_externalize_tests")]
 fn test_nondust_htlc_fees_are_dust() {
 	// Test that the transaction fees paid in nondust HTLCs count towards our dust limit
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -10624,8 +10627,8 @@ fn test_nondust_htlc_fees_are_dust() {
 }
 
 
-#[test]
-fn test_non_final_funding_tx() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_non_final_funding_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -10664,8 +10667,8 @@ fn test_non_final_funding_tx() {
 	assert_eq!(get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id()).data, "Failed to fund channel");
 }
 
-#[test]
-fn test_non_final_funding_tx_within_headroom() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_non_final_funding_tx_within_headroom() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -10698,8 +10701,8 @@ fn test_non_final_funding_tx_within_headroom() {
 	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 }
 
-#[test]
-fn accept_busted_but_better_fee() {
+#[xtest(feature = "_externalize_tests")]
+pub fn accept_busted_but_better_fee() {
 	// If a peer sends us a fee update that is too low, but higher than our previous channel
 	// feerate, we should accept it. In the future we may want to consider closing the channel
 	// later, but for now we only accept the update.
@@ -10827,16 +10830,16 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 	}
 }
 
-#[test]
-fn test_payment_with_custom_min_cltv_expiry_delta() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_payment_with_custom_min_cltv_expiry_delta() {
 	do_payment_with_custom_min_final_cltv_expiry(false, false);
 	do_payment_with_custom_min_final_cltv_expiry(false, true);
 	do_payment_with_custom_min_final_cltv_expiry(true, false);
 	do_payment_with_custom_min_final_cltv_expiry(true, true);
 }
 
-#[test]
-fn test_disconnects_peer_awaiting_response_ticks() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_disconnects_peer_awaiting_response_ticks() {
 	// Tests that nodes which are awaiting on a response critical for channel responsiveness
 	// disconnect their counterparty after `DISCONNECT_PEER_AWAITING_RESPONSE_TICKS`.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -10964,8 +10967,8 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 	}
 }
 
-#[test]
-fn test_remove_expired_outbound_unfunded_channels() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_remove_expired_outbound_unfunded_channels() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -11015,8 +11018,8 @@ fn test_remove_expired_outbound_unfunded_channels() {
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, false, &[nodes[1].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_remove_expired_inbound_unfunded_channels() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_remove_expired_inbound_unfunded_channels() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -11066,8 +11069,8 @@ fn test_remove_expired_inbound_unfunded_channels() {
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, false, &[nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn test_channel_close_when_not_timely_accepted() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_channel_close_when_not_timely_accepted() {
 	// Create network of two nodes
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -11109,8 +11112,8 @@ fn test_channel_close_when_not_timely_accepted() {
 	}
 }
 
-#[test]
-fn test_rebroadcast_open_channel_when_reconnect_mid_handshake() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_rebroadcast_open_channel_when_reconnect_mid_handshake() {
 	// Create network of two nodes
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -11231,14 +11234,14 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	check_added_monitors(&nodes[0], 3);
 }
 
-#[test]
-fn test_multi_post_event_actions() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);
 	do_test_multi_post_event_actions(false);
 }
 
-#[test]
-fn test_batch_channel_open() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_batch_channel_open() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -11305,8 +11308,8 @@ fn test_batch_channel_open() {
 	)));
 }
 
-#[test]
-fn test_close_in_funding_batch() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_close_in_funding_batch() {
 	// This test ensures that if one of the channels
 	// in the batch closes, the complete batch will close.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -11387,8 +11390,8 @@ fn test_close_in_funding_batch() {
 	assert!(nodes[0].node.list_channels().is_empty());
 }
 
-#[test]
-fn test_batch_funding_close_after_funding_signed() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_batch_funding_close_after_funding_signed() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -11529,14 +11532,14 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	assert!(nodes[1].node.list_channels().is_empty());
 }
 
-#[test]
-fn test_funding_and_commitment_tx_confirm_same_block() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_funding_and_commitment_tx_confirm_same_block() {
 	do_test_funding_and_commitment_tx_confirm_same_block(false);
 	do_test_funding_and_commitment_tx_confirm_same_block(true);
 }
 
-#[test]
-fn test_accept_inbound_channel_errors_queued() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_accept_inbound_channel_errors_queued() {
 	// For manually accepted inbound channels, tests that a close error is correctly handled
 	// and the channel fails for the initiator.
 	let mut config0 = test_default_channel_config();
@@ -11568,8 +11571,8 @@ fn test_accept_inbound_channel_errors_queued() {
 		open_channel_msg.common_fields.temporary_channel_id);
 }
 
-#[test]
-fn test_manual_funding_abandon() {
+#[xtest(feature = "_externalize_tests")]
+pub fn test_manual_funding_abandon() {
 	let mut cfg = UserConfig::default();
 	cfg.channel_handshake_config.minimum_depth = 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -11610,7 +11613,7 @@ fn test_manual_funding_abandon() {
 	}));
 }
 
-#[test]
+#[xtest(feature = "_externalize_tests")]
 fn test_funding_signed_event() {
 	let mut cfg = UserConfig::default();
 	cfg.channel_handshake_config.minimum_depth = 1;
