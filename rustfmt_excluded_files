@@ -43,4 +43,3 @@ lightning/src/routing/router.rs
 lightning/src/routing/scoring.rs
 lightning/src/routing/test_utils.rs
 lightning/src/routing/utxo.rs
-lightning/src/offers/flow.rs
