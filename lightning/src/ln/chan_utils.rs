@@ -196,15 +196,16 @@ pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_t
 		/ 1000
 }
 
-pub(crate) fn per_outbound_htlc_counterparty_commit_tx_fee_msat(feerate_per_kw: u32, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	// Note that we need to divide before multiplying to round properly,
-	// since the lowest denomination of bitcoin on-chain is the satoshi.
-	let commitment_tx_fee = COMMITMENT_TX_WEIGHT_PER_HTLC * feerate_per_kw as u64 / 1000 * 1000;
-	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		commitment_tx_fee + htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
+pub(crate) fn commit_and_htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
+	let num_htlcs = num_accepted_htlcs + num_offered_htlcs;
+	let commit_tx_fees_sat = commit_tx_fee_sat(feerate_per_kw, num_htlcs, channel_type_features);
+	let htlc_tx_fees_sat = if !channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		num_accepted_htlcs as u64 * htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
+	  + num_offered_htlcs as u64 * htlc_timeout_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
 	} else {
-		commitment_tx_fee
-	}
+		0
+	};
+	commit_tx_fees_sat + htlc_tx_fees_sat
 }
 
 // Various functions for key derivation and transaction creation for use within channels. Primarily

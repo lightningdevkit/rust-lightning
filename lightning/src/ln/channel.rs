@@ -46,7 +46,7 @@ use crate::ln::chan_utils::{
 	HolderCommitmentTransaction, ChannelTransactionParameters,
 	CounterpartyChannelTransactionParameters, MAX_HTLCS,
 	get_commitment_transaction_number_obscure_factor,
-	ClosingTransaction, commit_tx_fee_sat, per_outbound_htlc_counterparty_commit_tx_fee_msat,
+	ClosingTransaction, commit_tx_fee_sat,
 };
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -834,6 +834,10 @@ struct HTLCStats {
 	pending_inbound_htlcs_value_msat: u64,
 	pending_outbound_htlcs_value_msat: u64,
 	on_counterparty_tx_dust_exposure_msat: u64,
+	// If the counterparty sets a feerate on the channel in excess of our dust_exposure_limiting_feerate,
+	// this will be set to the dust exposure that would result from us adding an additional nondust outbound
+	// htlc on the counterparty's commitment transaction.
+	extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat: Option<u64>,
 	on_holder_tx_dust_exposure_msat: u64,
 	outbound_holding_cell_msat: u64,
 	on_holder_tx_outbound_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
@@ -3705,20 +3709,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			.or(self.pending_update_fee.map(|(fee, _)| fee))
 			.unwrap_or(self.feerate_per_kw)
 			.checked_sub(dust_exposure_limiting_feerate);
-		if let Some(excess_feerate) = excess_feerate_opt {
-			let on_counterparty_tx_nondust_htlcs =
-				on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs;
-			on_counterparty_tx_dust_exposure_msat +=
-				commit_tx_fee_sat(excess_feerate, on_counterparty_tx_nondust_htlcs, &self.channel_type) * 1000;
-			if !self.channel_type.supports_anchors_zero_fee_htlc_tx() {
-				on_counterparty_tx_dust_exposure_msat +=
-					on_counterparty_tx_accepted_nondust_htlcs as u64 * htlc_success_tx_weight(&self.channel_type)
-					* excess_feerate as u64 / 1000;
-				on_counterparty_tx_dust_exposure_msat +=
-					on_counterparty_tx_offered_nondust_htlcs as u64 * htlc_timeout_tx_weight(&self.channel_type)
-					* excess_feerate as u64 / 1000;
-			}
-		}
+		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
+			let extra_htlc_dust_exposure = on_counterparty_tx_dust_exposure_msat
+				+ chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, &self.channel_type) * 1000;
+			on_counterparty_tx_dust_exposure_msat
+				+= chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, &self.channel_type) * 1000;
+			extra_htlc_dust_exposure
+		});
 
 		HTLCStats {
 			pending_inbound_htlcs: self.pending_inbound_htlcs.len(),
@@ -3726,6 +3723,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			pending_inbound_htlcs_value_msat,
 			pending_outbound_htlcs_value_msat,
 			on_counterparty_tx_dust_exposure_msat,
+			extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat,
 			on_holder_tx_dust_exposure_msat,
 			outbound_holding_cell_msat,
 			on_holder_tx_outbound_holding_cell_htlcs_count,
@@ -3930,13 +3928,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000)
 		};
 
-		let excess_feerate_opt = self.feerate_per_kw.checked_sub(dust_exposure_limiting_feerate);
-		if let Some(excess_feerate) = excess_feerate_opt {
-			let htlc_dust_exposure_msat =
-				per_outbound_htlc_counterparty_commit_tx_fee_msat(excess_feerate, &context.channel_type);
-			let nondust_htlc_counterparty_tx_dust_exposure =
-				htlc_stats.on_counterparty_tx_dust_exposure_msat.saturating_add(htlc_dust_exposure_msat);
-			if nondust_htlc_counterparty_tx_dust_exposure > max_dust_htlc_exposure_msat {
+		if let Some(extra_htlc_dust_exposure) = htlc_stats.extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat {
+			if extra_htlc_dust_exposure > max_dust_htlc_exposure_msat {
 				// If adding an extra HTLC would put us over the dust limit in total fees, we cannot
 				// send any non-dust HTLCs.
 				available_capacity_msat = cmp::min(available_capacity_msat, htlc_success_dust_limit * 1000);
