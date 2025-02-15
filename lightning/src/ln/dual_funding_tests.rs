@@ -49,13 +49,16 @@ fn do_test_v2_channel_establishment(
 	let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 
 	// Create a funding input for the new channel along with its previous transaction.
-	let initiator_funding_inputs: Vec<_> = create_dual_funding_utxos_with_prev_txs(
+	let initiator_funding_inputs = create_dual_funding_utxos_with_prev_txs(
 		&nodes[0],
 		&[session.initiator_input_value_satoshis],
-	)
-	.into_iter()
-	.map(|(txin, tx)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
-	.collect();
+	);
+	let total_weight =
+		Weight::from_wu(initiator_funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum());
+	let initiator_funding_inputs: Vec<_> = initiator_funding_inputs
+		.into_iter()
+		.map(|(txin, tx, _)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
+		.collect();
 
 	// Alice creates a dual-funded channel as initiator.
 	let funding_satoshis = session.funding_input_sats;
