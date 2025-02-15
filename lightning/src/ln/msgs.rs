@@ -726,6 +726,36 @@ pub struct UpdateFulfillHTLC {
 	pub payment_preimage: PaymentPreimage,
 }
 
+/// A [`peer_storage`] message that can be sent to or received from a peer.
+///
+/// This message is used to distribute backup data to peers.
+/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]  
+/// to recover critical information, such as channel states, for fund recovery.
+///
+/// [`peer_storage`] is used to send our own encrypted backup data to a peer.
+///
+/// [`peer_storage`]: https://github.com/lightning/bolts/pull/1110
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct PeerStorage {
+	/// Our encrypted backup data included in the msg.
+	pub data: Vec<u8>,
+}
+
+/// A [`peer_storage_retrieval`] message that can be sent to or received from a peer.
+///
+/// This message is sent to peers for whom we store backup data.
+/// If we receive this message, it indicates that the peer had stored our backup data.  
+/// This data can be used for fund recovery in case of data loss.
+///
+/// [`peer_storage_retrieval`] is used to send the most recent backup of the peer.
+///
+/// [`peer_storage_retrieval`]: https://github.com/lightning/bolts/pull/1110
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct PeerStorageRetrieval {
+	/// Most recent peer's data included in the msg.
+	pub data: Vec<u8>,
+}
+
 /// An [`update_fail_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_fail_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
@@ -1507,6 +1537,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_funding_signed(&self, their_node_id: PublicKey, msg: &FundingSigned);
 	/// Handle an incoming `channel_ready` message from the given peer.
 	fn handle_channel_ready(&self, their_node_id: PublicKey, msg: &ChannelReady);
+
+	// Peer Storage
+	/// Handle an incoming `peer_storage` message from the given peer.
+	fn handle_peer_storage(&self, their_node_id: PublicKey, msg: PeerStorage);
+	/// Handle an incoming `peer_storage_retrieval` message from the given peer.
+	fn handle_peer_storage_retrieval(&self, their_node_id: PublicKey, msg: PeerStorageRetrieval);
 
 	// Channel close:
 	/// Handle an incoming `shutdown` message from the given peer.
@@ -2638,6 +2674,14 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 	channel_id,
 	htlc_id,
 	payment_preimage
+}, {});
+
+impl_writeable_msg!(PeerStorage, {
+	data
+}, {});
+
+impl_writeable_msg!(PeerStorageRetrieval, {
+	data
 }, {});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
@@ -4539,6 +4583,26 @@ mod tests {
 		};
 		let encoded_value = ping.encode();
 		let target_value = <Vec<u8>>::from_hex("0040004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_peer_storage() {
+		let peer_storage = msgs::PeerStorage {
+			data: <Vec<u8>>::from_hex("01020304050607080910").unwrap()
+		};
+		let encoded_value = peer_storage.encode();
+		let target_value = <Vec<u8>>::from_hex("000a01020304050607080910").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_peer_storage_retrieval() {
+		let peer_storage_retrieval = msgs::PeerStorageRetrieval {
+			data: <Vec<u8>>::from_hex("01020304050607080910").unwrap()
+		};
+		let encoded_value = peer_storage_retrieval.encode();
+		let target_value = <Vec<u8>>::from_hex("000a01020304050607080910").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 

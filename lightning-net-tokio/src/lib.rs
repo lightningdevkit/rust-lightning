@@ -761,6 +761,11 @@ mod tests {
 		fn handle_tx_init_rbf(&self, _their_node_id: PublicKey, _msg: &TxInitRbf) {}
 		fn handle_tx_ack_rbf(&self, _their_node_id: PublicKey, _msg: &TxAckRbf) {}
 		fn handle_tx_abort(&self, _their_node_id: PublicKey, _msg: &TxAbort) {}
+		fn handle_peer_storage(&self, _their_node_id: PublicKey, _msg: PeerStorage) {}
+		fn handle_peer_storage_retrieval(
+			&self, _their_node_id: PublicKey, _msg: PeerStorageRetrieval,
+		) {
+		}
 		fn peer_disconnected(&self, their_node_id: PublicKey) {
 			if their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);
