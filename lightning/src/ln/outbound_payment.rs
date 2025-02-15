@@ -140,10 +140,10 @@ pub(crate) enum PendingOutboundPayment {
 }
 
 #[derive(Clone)]
-pub(crate) struct RetryableInvoiceRequest {
+pub struct RetryableInvoiceRequest {
 	pub(crate) invoice_request: InvoiceRequest,
 	pub(crate) nonce: Nonce,
-	pub(super) needs_retry: bool,
+	pub(crate) needs_retry: bool,
 }
 
 impl_writeable_tlv_based!(RetryableInvoiceRequest, {
@@ -454,7 +454,7 @@ impl Display for PaymentAttempts {
 /// [`PendingOutboundPayment::AwaitingOffer`] should be considered stale and candidate for removal
 /// in [`OutboundPayments::remove_stale_payments`].
 #[derive(Clone, Copy)]
-pub(crate) enum StaleExpiration {
+pub enum StaleExpiration {
 	/// Number of times [`OutboundPayments::remove_stale_payments`] is called.
 	TimerTicks(u64),
 	/// Duration since the Unix epoch.
@@ -475,14 +475,11 @@ impl_writeable_tlv_based_enum_legacy!(StaleExpiration,
 /// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RetryableSendFailure {
-	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired or
-	/// the BOLT 12 invoice paid to via [`ChannelManager::send_payment_for_bolt12_invoice`] was
-	/// expired.
+	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired.
 	#[cfg_attr(feature = "std", doc = "")]
 	#[cfg_attr(feature = "std", doc = "Note that this error is *not* caused by [`Retry::Timeout`].")]
 	///
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
-	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	PaymentExpired,
 	/// We were unable to find a route to the destination.
 	RouteNotFound,

@@ -54,6 +54,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use {
 	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::ln::peer_handler::IgnoringMessageHandler,
+	crate::offers::flow::SimpleArcOffersMessageFlow,
 	crate::sign::KeysManager,
 	crate::sync::Arc,
 };
@@ -2082,6 +2083,10 @@ where
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		message_recipients.get_mut(&peer_node_id).and_then(|buffer| buffer.dequeue_message())
 	}
+
+	fn message_received(&self) {
+		self.offers_handler.message_received();
+	}
 }
 
 // TODO: parameterize the below Simple* types with OnionMessenger and handle the messages it
@@ -2101,9 +2106,9 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
 	IgnoringMessageHandler,
 >;
 
@@ -2122,8 +2127,8 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
+	Arc<SimpleArcOffersMessageFlow<M, T, F, L>>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler,
 >;

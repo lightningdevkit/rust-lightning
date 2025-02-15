@@ -1610,14 +1610,6 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// If it's `None`, then no particular network chain hash compatibility will be enforced when
 	/// connecting to peers.
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>>;
-
-	/// Indicates that a message was received from any peer for any handler.
-	/// Called before the message is passed to the appropriate handler.
-	/// Useful for indicating that a network connection is active.
-	///
-	/// Note: Since this function is called frequently, it should be as
-	/// efficient as possible for its intended purpose.
-	fn message_received(&self);
 }
 
 /// A trait to describe an object which can receive routing messages.
@@ -1738,6 +1730,17 @@ pub trait OnionMessageHandler {
 	///
 	/// Note that this method is called before [`Self::peer_connected`].
 	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures;
+
+	/// Indicates that a message was received from any peer for any handler.
+	///
+	/// This function delegates to the underlying [`OffersMessageHandler::message_received`].
+	/// Refer to its documentation for more details on the behavior and implementation.
+	///
+	/// **Note:** Since this function is called frequently, it should be implemented
+	/// with efficiency in mind to minimize performance overhead.
+	///
+	/// [`OffersMessageHandler::message_received`]: crate::onion_message::offers::OffersMessageHandler::message_received
+	fn message_received(&self) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

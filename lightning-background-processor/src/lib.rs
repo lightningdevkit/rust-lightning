@@ -1083,6 +1083,7 @@ mod tests {
 		IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 	};
 	use lightning::ln::types::ChannelId;
+	use lightning::offers::flow;
 	use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
@@ -1178,6 +1179,19 @@ mod tests {
 		>,
 	>;
 
+	type OffersMessageFlow = flow::OffersMessageFlow<
+		Arc<KeysManager>,
+		Arc<ChannelManager>,
+		Arc<
+			DefaultMessageRouter<
+				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+				Arc<test_utils::TestLogger>,
+				Arc<KeysManager>,
+			>,
+		>,
+		Arc<test_utils::TestLogger>,
+	>;
+
 	type OM = OnionMessenger<
 		Arc<KeysManager>,
 		Arc<KeysManager>,
@@ -1191,7 +1205,7 @@ mod tests {
 			>,
 		>,
 		IgnoringMessageHandler,
-		Arc<ChannelManager>,
+		Arc<OffersMessageFlow>,
 		IgnoringMessageHandler,
 		IgnoringMessageHandler,
 	>;
@@ -1587,6 +1601,15 @@ mod tests {
 				params,
 				genesis_block.header.time,
 			));
+			let offers_message_flow = Arc::new(OffersMessageFlow::new(
+				manager.inbound_payment_key,
+				manager.get_our_node_id(),
+				keys_manager.clone(),
+				manager.clone(),
+				msg_router.clone(),
+				logger.clone(),
+			));
+
 			let messenger = Arc::new(OnionMessenger::new(
 				keys_manager.clone(),
 				keys_manager.clone(),
@@ -1594,7 +1617,7 @@ mod tests {
 				manager.clone(),
 				msg_router.clone(),
 				IgnoringMessageHandler {},
-				manager.clone(),
+				offers_message_flow,
 				IgnoringMessageHandler {},
 				IgnoringMessageHandler {},
 			));
