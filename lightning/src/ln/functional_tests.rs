@@ -10596,9 +10596,20 @@ fn test_max_dust_htlc_exposure() {
 }
 
 #[test]
-fn test_nondust_htlc_fees_are_dust() {
-	// Test that the transaction fees paid in nondust HTLCs count towards our dust limit
+fn test_nondust_htlc_excess_fees_are_dust() {
+	// Test that the excess transaction fees paid in nondust HTLCs count towards our dust limit
+	const DEFAULT_FEERATE: u32 = 253;
+	const HIGH_FEERATE: u32 = 275;
+	const EXCESS_FEERATE: u32 = HIGH_FEERATE - DEFAULT_FEERATE;
 	let chanmon_cfgs = create_chanmon_cfgs(3);
+	{
+		// Set the feerate of the channel funder above the `dust_exposure_limiting_feerate` of
+		// the fundee. This delta means that the fundee will add the mining fees of the commitment and
+		// htlc transactions in excess of its `dust_exposure_limiting_feerate` to its total dust htlc
+		// exposure.
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = HIGH_FEERATE;
+	}
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
 	let mut config = test_default_channel_config();
@@ -10606,18 +10617,16 @@ fn test_nondust_htlc_fees_are_dust() {
 	config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(10_000);
 	// Make sure the HTLC limits don't get in the way
-	config.channel_handshake_limits.min_max_accepted_htlcs = 400;
-	config.channel_handshake_config.our_max_accepted_htlcs = 400;
+	config.channel_handshake_limits.min_max_accepted_htlcs = chan_utils::MAX_HTLCS;
+	config.channel_handshake_config.our_max_accepted_htlcs = chan_utils::MAX_HTLCS;
 	config.channel_handshake_config.our_htlc_minimum_msat = 1;
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	// Create a channel from 1 -> 0 but immediately push all of the funds towards 0
-	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 1, 0).2;
-	while nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat > 0 {
-		send_payment(&nodes[1], &[&nodes[0]], nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat);
-	}
+	// Leave enough on the funder side to let it pay the mining fees for a commit tx with tons of htlcs
+	let chan_id_1 = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 1_000_000, 750_000_000).2;
 
 	// First get the channel one HTLC_VALUE HTLC away from the dust limit by sending dust HTLCs
 	// repeatedly until we run out of space.
@@ -10637,16 +10646,24 @@ fn test_nondust_htlc_fees_are_dust() {
 	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat, 0,
 		"Make sure we are able to send once we clear one HTLC");
 
+	// Skip the router complaint when node 0 will attempt to pay node 1
+	let (route_0_1, payment_hash_0_1, _, payment_secret_0_1) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_limit * 2);
+
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	assert_eq!(nodes[0].node.list_channels()[0].pending_inbound_htlcs.len(), 0);
+	assert_eq!(nodes[1].node.list_channels()[0].pending_outbound_htlcs.len(), 0);
+
 	// At this point we have somewhere between dust_limit and dust_limit * 2 left in our dust
 	// exposure limit, and we want to max that out using non-dust HTLCs.
 	let commitment_tx_per_htlc_cost =
-		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * 253;
+		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * EXCESS_FEERATE as u64;
 	let max_htlcs_remaining = dust_limit * 2 / commitment_tx_per_htlc_cost;
-	assert!(max_htlcs_remaining < 30,
+	assert!(max_htlcs_remaining < chan_utils::MAX_HTLCS.into(),
 		"We should be able to fill our dust limit without too many HTLCs");
 	for i in 0..max_htlcs_remaining + 1 {
 		assert_ne!(i, max_htlcs_remaining);
-		if nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat < dust_limit {
+		if nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat <= dust_limit {
 			// We found our limit, and it was less than max_htlcs_remaining!
 			// At this point we can only send dust HTLCs as any non-dust HTLCs will overuse our
 			// remaining dust exposure.
@@ -10654,6 +10671,57 @@ fn test_nondust_htlc_fees_are_dust() {
 		}
 		route_payment(&nodes[0], &[&nodes[1]], dust_limit * 2);
 	}
+
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	assert_eq!(nodes[0].node.list_channels()[0].pending_inbound_htlcs.len(), 0);
+	assert_eq!(nodes[1].node.list_channels()[0].pending_outbound_htlcs.len(), 0);
+
+	// Send an additional non-dust htlc from 1 to 0, and check the complaint
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], dust_limit * 2);
+	nodes[1].node.send_payment_with_route(route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.remove(0));
+	nodes[0].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[0]);
+	expect_htlc_handling_failed_destinations!(nodes[0].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]);
+	nodes[0].logger.assert_log("lightning::ln::channel",
+		format!("Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
+			2535000, 2530000), 1);
+	check_added_monitors!(nodes[0], 1);
+
+	// Clear the failed htlc
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	assert!(updates.update_add_htlcs.is_empty());
+	assert!(updates.update_fulfill_htlcs.is_empty());
+	assert_eq!(updates.update_fail_htlcs.len(), 1);
+	assert!(updates.update_fail_malformed_htlcs.is_empty());
+	assert!(updates.update_fee.is_none());
+	nodes[1].node.handle_update_fail_htlc(nodes[0].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
+	expect_payment_failed!(nodes[1], payment_hash, false);
+
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	assert_eq!(nodes[0].node.list_channels()[0].pending_inbound_htlcs.len(), 0);
+	assert_eq!(nodes[1].node.list_channels()[0].pending_outbound_htlcs.len(), 0);
+
+	// Send an additional non-dust htlc from 0 to 1 using the pre-calculated route above, and check the immediate complaint
+	unwrap_send_err!(nodes[0], nodes[0].node.send_payment_with_route(route_0_1, payment_hash_0_1,
+			RecipientOnionFields::secret_only(payment_secret_0_1), PaymentId(payment_hash_0_1.0)
+		), true, APIError::ChannelUnavailable { .. }, {});
+	nodes[0].logger.assert_log("lightning::ln::outbound_payment",
+		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", 2325000), 1);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	assert_eq!(nodes[0].node.list_channels()[0].pending_inbound_htlcs.len(), 0);
+	assert_eq!(nodes[1].node.list_channels()[0].pending_outbound_htlcs.len(), 0);
 
 	// At this point non-dust HTLCs are no longer accepted from node 0 -> 1, we also check that
 	// such HTLCs can't be routed over the same channel either.
