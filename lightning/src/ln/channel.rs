@@ -7336,6 +7336,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			})
 	}
 
+	/// When this function is called, the HTLC is already irrevocably committed to the channel;
+	/// this function determines whether to fail the HTLC, or forward / claim it.
 	pub fn can_accept_incoming_htlc<F: Deref, L: Deref>(
 		&self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L
 	) -> Result<(), (&'static str, u16)>
@@ -7350,33 +7352,19 @@ impl<SP: Deref> FundedChannel<SP> where
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.context.get_pending_htlc_stats(None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
+		let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat;
+		if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+			// Note that the total dust exposure includes both the dust HTLCs and the excess mining fees of the counterparty commitment transaction
+			log_info!(logger, "Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
+				on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+			return Err(("Exceeded our total dust exposure limit on counterparty commitment tx", 0x1000|7))
+		}
+		let htlc_success_dust_limit = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
 		} else {
 			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
+			dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000
 		};
-		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
-			let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat;
-			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				return Err(("Exceeded our dust exposure limit on counterparty commitment tx", 0x1000|7))
-			}
-		} else {
-			let htlc_dust_exposure_msat =
-				per_outbound_htlc_counterparty_commit_tx_fee_msat(self.context.feerate_per_kw, &self.context.channel_type);
-			let counterparty_tx_dust_exposure =
-				htlc_stats.on_counterparty_tx_dust_exposure_msat.saturating_add(htlc_dust_exposure_msat);
-			if counterparty_tx_dust_exposure > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to tx fee dust at {} over the limit {} on counterparty commitment tx",
-					counterparty_tx_dust_exposure, max_dust_htlc_exposure_msat);
-				return Err(("Exceeded our tx fee dust exposure limit on counterparty commitment tx", 0x1000|7))
-			}
-		}
-
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_holder_tx_dust_htlc_exposure_msat = htlc_stats.on_holder_tx_dust_exposure_msat;

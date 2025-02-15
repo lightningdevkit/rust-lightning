@@ -10378,13 +10378,13 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	} else { 0 };
 	let initial_feerate = if apply_excess_fee { 253 * 2 } else { 253 };
 	let expected_dust_buffer_feerate = initial_feerate + 2530;
-	let mut commitment_tx_cost = commit_tx_fee_msat(initial_feerate - 253, nondust_htlc_count_in_limit, &ChannelTypeFeatures::empty());
-	commitment_tx_cost +=
+	let mut commitment_tx_cost_msat = commit_tx_fee_msat(initial_feerate - 253, nondust_htlc_count_in_limit, &ChannelTypeFeatures::empty());
+	commitment_tx_cost_msat +=
 		if on_holder_tx {
 			htlc_success_tx_weight(&ChannelTypeFeatures::empty())
 		} else {
 			htlc_timeout_tx_weight(&ChannelTypeFeatures::empty())
-		} * (initial_feerate as u64 - 253) / 1000 * nondust_htlc_count_in_limit;
+		} * (initial_feerate as u64 - 253) * nondust_htlc_count_in_limit;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = initial_feerate;
@@ -10393,8 +10393,8 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		// Default test fee estimator rate is 253 sat/kw, so we set the multiplier to 5_000_000 / 253
 		// to get roughly the same initial value as the default setting when this test was
 		// originally written.
-		MaxDustHTLCExposure::FeeRateMultiplier((5_000_000 + commitment_tx_cost) / 253)
-	} else { MaxDustHTLCExposure::FixedLimitMsat(5_000_000 + commitment_tx_cost) };
+		MaxDustHTLCExposure::FeeRateMultiplier((5_000_000 + commitment_tx_cost_msat) / 253)
+	} else { MaxDustHTLCExposure::FixedLimitMsat(5_000_000 + commitment_tx_cost_msat) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -10538,8 +10538,8 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		} else {
 			// Outbound dust balance: 5200 sats
 			nodes[0].logger.assert_log("lightning::ln::channel",
-				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					dust_htlc_on_counterparty_tx_msat * dust_htlc_on_counterparty_tx + commitment_tx_cost + 4,
+				format!("Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
+					dust_htlc_on_counterparty_tx_msat * dust_htlc_on_counterparty_tx + commitment_tx_cost_msat + 4,
 					max_dust_htlc_exposure_msat), 1);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
