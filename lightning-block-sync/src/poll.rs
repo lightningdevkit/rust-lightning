@@ -7,7 +7,9 @@ use crate::{
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
+
 use lightning::chain::BestBlock;
+use lightning::impl_writeable_tlv_based;
 
 use std::ops::Deref;
 
@@ -170,6 +172,11 @@ impl ValidatedBlockHeader {
 		BestBlock::new(self.block_hash, self.inner.height)
 	}
 }
+
+impl_writeable_tlv_based!(ValidatedBlockHeader, {
+	(0, block_hash, required),
+	(2, inner, required),
+});
 
 /// A block with validated data against its transaction list and corresponding block hash.
 pub struct ValidatedBlock {
