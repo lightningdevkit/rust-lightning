@@ -8310,7 +8310,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			), ChannelId([0; 32])));
 		}
 
-		#[cfg(not(test))]
 		if msg.data.len() > MAX_PEER_STORAGE_SIZE {
 			log_debug!(logger, "Sending warning to peer and ignoring peer storage request from {} as its over 1KiB", log_pubkey!(counterparty_node_id));
 
