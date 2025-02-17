@@ -7828,7 +7828,7 @@ pub fn test_bump_penalty_txn_on_revoked_commitment() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 30)
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[0].node.bolt11_invoice_features()).unwrap();
 	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000);
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);

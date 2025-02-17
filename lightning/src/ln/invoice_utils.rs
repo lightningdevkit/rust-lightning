@@ -711,6 +711,7 @@ mod test {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::network::Network;
 	use crate::sign::PhantomKeysManager;
+	use crate::chain::channelmonitor::HTLC_FAIL_BACK_BUFFER;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
@@ -843,7 +844,7 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-		let custom_min_final_cltv_expiry_delta = Some(21);
+		let custom_min_final_cltv_expiry_delta = Some(HTLC_FAIL_BACK_BUFFER as u16);
 		let description = Bolt11InvoiceDescription::Direct(Description::empty());
 		let invoice_params = Bolt11InvoiceParameters {
 			amount_msats: Some(10_000),

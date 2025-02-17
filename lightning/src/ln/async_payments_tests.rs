@@ -540,6 +540,13 @@ fn async_receive_mpp() {
 	create_announced_chan_between_nodes(&nodes, 0, 2);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+
+	// Ensure all nodes start at the same height.
+	connect_blocks(&nodes[0], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
+
 	let (offer, static_invoice) = create_static_invoice(&nodes[1], &nodes[3], None, &secp_ctx);
 
 	// In other tests we hardcode the sender's random bytes so we can predict the keysend preimage to
@@ -621,6 +628,12 @@ fn amount_doesnt_match_invreq() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+
+	// Ensure all nodes start at the same height.
+	connect_blocks(&nodes[0], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
 
 	let (offer, static_invoice) = create_static_invoice(&nodes[1], &nodes[3], None, &secp_ctx);
 
@@ -815,8 +828,14 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let node_chanmgrs =
 		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	// Ensure all nodes start at the same height.
+	connect_blocks(&nodes[0], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
 	let blinded_paths_to_always_online_node = nodes[1]
 		.message_router

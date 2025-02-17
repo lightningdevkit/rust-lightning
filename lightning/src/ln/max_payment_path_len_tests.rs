@@ -156,6 +156,11 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
+	// Start with all nodes at the same height
+	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+
 	// Construct the route parameters for sending to nodes[2]'s 1-hop blinded path.
 	let amt_msat = 100_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);

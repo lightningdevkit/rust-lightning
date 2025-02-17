@@ -493,7 +493,8 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::RecipientOnionFields;
+	use crate::ln::channelmanager::{RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
+	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs;
 	use crate::ln::onion_utils::create_payment_onion;
@@ -624,7 +625,7 @@ mod tests {
 			RouteHop {
 				pubkey: hop_pk,
 				fee_msat: hop_fee,
-				cltv_expiry_delta: 42,
+				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
 				short_channel_id: 1,
 				node_features: NodeFeatures::empty(),
 				channel_features: ChannelFeatures::empty(),
@@ -633,7 +634,7 @@ mod tests {
 			RouteHop {
 				pubkey: recipient_pk,
 				fee_msat: recipient_amount,
-				cltv_expiry_delta: 42,
+				cltv_expiry_delta: TEST_FINAL_CLTV,
 				short_channel_id: 2,
 				node_features: NodeFeatures::empty(),
 				channel_features: ChannelFeatures::empty(),

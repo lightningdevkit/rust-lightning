@@ -15994,7 +15994,7 @@ mod tests {
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
 			sender_intended_htlc_amt_msat: 100,
-			cltv_expiry_height: 22,
+			cltv_expiry_height: TEST_FINAL_CLTV,
 			payment_metadata: None,
 			keysend_preimage: None,
 			payment_data: Some(msgs::FinalOnionHopData {
@@ -16002,7 +16002,7 @@ mod tests {
 				total_msat: 100,
 			}),
 			custom_tlvs: Vec::new(),
-		}), [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
+		}), [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, current_height);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334
