@@ -204,6 +204,12 @@ fn mpp_to_one_hop_blinded_path() {
 	let chan_upd_1_3 = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents;
 	create_announced_chan_between_nodes(&nodes, 2, 3).0.contents;
 
+	// Ensure all nodes start at the same height.
+	connect_blocks(&nodes[0], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
+
 	let amt_msat = 15_000_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
 	let payee_tlvs = UnauthenticatedReceiveTlvs {
@@ -266,6 +272,14 @@ fn mpp_to_three_hop_blinded_paths() {
 	let chan_upd_2_4 = create_announced_chan_between_nodes(&nodes, 2, 4).0.contents;
 	let chan_upd_3_5 = create_announced_chan_between_nodes(&nodes, 3, 5).0.contents;
 	let chan_upd_4_5 = create_announced_chan_between_nodes(&nodes, 4, 5).0.contents;
+
+	// Start every node on the same block height to make reasoning about timeouts easier
+	connect_blocks(&nodes[0], 6*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 6*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 6*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 6*CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
+	connect_blocks(&nodes[4], 6*CHAN_CONFIRM_DEPTH + 1 - nodes[4].best_block_info().1);
+	connect_blocks(&nodes[5], 6*CHAN_CONFIRM_DEPTH + 1 - nodes[5].best_block_info().1);
 
 	let amt_msat = 15_000_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[5], Some(amt_msat), None);
@@ -1069,6 +1083,12 @@ fn blinded_path_retries() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
 	let chan_1_3 = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0);
 	let chan_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+
+	// Ensure all nodes start at the same height.
+	connect_blocks(&nodes[0], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);

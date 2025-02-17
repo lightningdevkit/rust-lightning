@@ -246,7 +246,7 @@ fn test_routed_scid_alias() {
 		htlc_maximum_msat: None,
 		htlc_minimum_msat: None,
 	}])];
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap()
 		.with_route_hints(hop_hints).unwrap();
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
@@ -412,7 +412,7 @@ fn test_inbound_scid_privacy() {
 		htlc_maximum_msat: None,
 		htlc_minimum_msat: None,
 	}])];
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap()
 		.with_route_hints(hop_hints.clone()).unwrap();
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000);
@@ -428,7 +428,7 @@ fn test_inbound_scid_privacy() {
 	// what channel we're talking about.
 	hop_hints[0].0[0].short_channel_id = last_hop[0].short_channel_id.unwrap();
 
-	let payment_params_2 = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42)
+	let payment_params_2 = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap()
 		.with_route_hints(hop_hints).unwrap();
 	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000);
