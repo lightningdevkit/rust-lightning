@@ -52,6 +52,9 @@ use bitcoin::{OutPoint, Transaction};
 use core::ops::Deref;
 use core::time::Duration;
 
+#[cfg(async_payments)]
+use crate::offers::nonce::Nonce;
+
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -1572,6 +1575,31 @@ pub enum Event {
 		/// onion messages.
 		peer_node_id: PublicKey,
 	},
+	/// We received a [`StaticInvoice`] from an async recipient that wants us to serve the invoice to
+	/// payers on their behalf when they are offline. This event will only be generated if we
+	/// previously created paths using [`ChannelManager::blinded_paths_for_async_recipient`] and
+	/// configured the recipient with them via [`UserConfig::paths_to_static_invoice_server`].
+	///
+	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	#[cfg(async_payments)]
+	PersistStaticInvoice {
+		/// The invoice that should be persisted and later provided to payers when handling a future
+		/// `Event::StaticInvoiceRequested`.
+		invoice: StaticInvoice,
+		/// An identifier for the recipient, originally surfaced in
+		/// [`ChannelManager::blinded_paths_for_async_recipient`]. When an
+		/// `Event::StaticInvoiceRequested` comes in for this invoice, this id will be surfaced so the
+		/// persisted invoice can be retrieved from the database.
+		recipient_id_nonce: Nonce,
+		/// Once the [`StaticInvoice`] is persisted, [`ChannelManager::static_invoice_persisted`] should
+		/// be called with this responder to confirm to the recipient that their [`Offer`] is ready to
+		/// be used for async payments.
+		///
+		/// [`ChannelManager::static_invoice_persisted`]: crate::ln::channelmanager::ChannelManager::static_invoice_persisted
+		/// [`Offer`]: crate::offers::offer::Offer
+		invoice_persisted_path: Responder,
+	},
 }
 
 impl Writeable for Event {
@@ -1995,6 +2023,12 @@ impl Writeable for Event {
 					(6, counterparty_node_id, required),
 					(8, former_temporary_channel_id, required),
 				});
+			},
+			#[cfg(async_payments)]
+			&Event::PersistStaticInvoice { .. } => {
+				45u8.write(writer)?;
+				// No need to write these events because we can just restart the static invoice negotiation
+				// on startup.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -2560,6 +2594,9 @@ impl MaybeReadable for Event {
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
 			},
+			// Note that we do not write a length-prefixed TLV for PersistStaticInvoice events.
+			#[cfg(async_payments)]
+			45u8 => Ok(None),
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

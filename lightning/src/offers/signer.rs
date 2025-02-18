@@ -657,6 +657,17 @@ pub(crate) fn hmac_for_serve_static_invoice_context(
 }
 
 #[cfg(async_payments)]
+pub(crate) fn verify_serve_static_invoice_context(
+	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_serve_static_invoice_context(nonce, expanded_key) == hmac {
+		Ok(())
+	} else {
+		Err(())
+	}
+}
+
+#[cfg(async_payments)]
 pub(crate) fn hmac_for_static_invoice_persisted_context(
 	nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Hmac<Sha256> {
