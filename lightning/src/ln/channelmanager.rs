@@ -5272,6 +5272,13 @@ where
 		}
 	}
 
+	/// Should be called after handling an [`Event::PersistStaticInvoice`], where the `Responder`
+	/// comes from [`Event::PersistStaticInvoice::invoice_persisted_path`].
+	#[cfg(async_payments)]
+	pub fn static_invoice_persisted(&self, invoice_persisted_path: Responder) {
+		self.flow.static_invoice_persisted(invoice_persisted_path);
+	}
+
 	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId,
@@ -13535,6 +13542,31 @@ where
 		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
 	) {
+		#[cfg(async_payments)]
+		{
+			let responder = match _responder {
+				Some(resp) => resp,
+				None => return,
+			};
+
+			let (recipient_id, invoice_id) =
+				match self.flow.verify_serve_static_invoice_message(&_message, _context) {
+					Ok((recipient_id, inv_id)) => (recipient_id, inv_id),
+					Err(()) => return,
+				};
+
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push_back((
+				Event::PersistStaticInvoice {
+					invoice: _message.invoice,
+					invoice_slot: _message.invoice_slot,
+					recipient_id,
+					invoice_id,
+					invoice_persisted_path: responder,
+				},
+				None,
+			));
+		}
 	}
 
 	fn handle_static_invoice_persisted(
