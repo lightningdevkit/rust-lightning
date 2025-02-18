@@ -177,6 +177,14 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	invoice_builder_methods_test_common!(self, Self, self.invoice, Self, self, mut);
 }
 
+impl PartialEq for StaticInvoice {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for StaticInvoice {}
+
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
 pub struct UnsignedStaticInvoice {
 	bytes: Vec<u8>,

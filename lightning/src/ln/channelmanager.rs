@@ -4928,6 +4928,22 @@ where
 		);
 	}
 
+	///
+	#[cfg(async_payments)]
+	pub fn static_invoice_persisted(&self, message_paths: Vec<BlindedMessagePath>) -> Result<(), ()> {
+		let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
+
+		let message = AsyncPaymentsMessage::StaticInvoicePersisted(StaticInvoicePersisted {});
+		for path in message_paths.into_iter().take(OFFERS_MESSAGE_REQUEST_LIMIT) {
+			let instructions = MessageSendInstructions::WithoutReplyPath {
+				destination: Destination::BlindedPath(path),
+			};
+			pending_async_payments_messages.push((message.clone(), instructions));
+		}
+
+		Ok(())
+	}
+
 	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
@@ -12856,7 +12872,31 @@ where
 
 	fn handle_serve_static_invoice(
 		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
-	) {}
+	) {
+		#[cfg(async_payments)] {
+			let expanded_key = &self.inbound_payment_key;
+			let recipient_id_nonce = match _context {
+				AsyncPaymentsContext::ServeStaticInvoice {
+					recipient_id_nonce, nonce, hmac, path_absolute_expiry
+				} => {
+					if let Err(()) = signer::verify_serve_static_invoice_context(nonce, hmac, expanded_key) {
+						return
+					}
+					if self.duration_since_epoch() > path_absolute_expiry { return }
+					recipient_id_nonce
+				},
+				_ => return
+			};
+
+			PersistenceNotifierGuard::notify_on_drop(self);
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push_back((Event::PersistStaticInvoice {
+				invoice: _message.invoice,
+				recipient_id_nonce,
+				invoice_persisted_paths: _message.invoice_persisted_paths
+			}, None));
+		}
+	}
 
 	fn handle_static_invoice_persisted(
 		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
