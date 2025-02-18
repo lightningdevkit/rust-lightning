@@ -77,6 +77,7 @@ use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailab
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use crate::onion_message::packet::OnionMessageContents;
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
@@ -4967,19 +4968,10 @@ where
 			};
 
 			let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
-			const HTLC_AVAILABLE_LIMIT: usize = 10;
-			reply_paths
-				.iter()
-				.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
-				.take(HTLC_AVAILABLE_LIMIT)
-				.for_each(|(invoice_path, reply_path)| {
-					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-						destination: Destination::BlindedPath(invoice_path.clone()),
-						reply_path: reply_path.clone(),
-					};
-					let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
-					pending_async_payments_messages.push((message, instructions));
-				});
+			let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
+			enqueue_onion_message_with_reply_paths(
+				message, invoice.message_paths(), reply_paths, &mut pending_async_payments_messages
+			);
 
 			NotifyOption::DoPersist
 		});
@@ -10544,18 +10536,10 @@ where
 	) -> Result<(), Bolt12SemanticError> {
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		if !invoice_request.paths().is_empty() {
-			reply_paths
-				.iter()
-				.flat_map(|reply_path| invoice_request.paths().iter().map(move |path| (path, reply_path)))
-				.take(OFFERS_MESSAGE_REQUEST_LIMIT)
-				.for_each(|(path, reply_path)| {
-					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-						destination: Destination::BlindedPath(path.clone()),
-						reply_path: reply_path.clone(),
-					};
-					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
-					pending_offers_messages.push((message, instructions));
-				});
+			let message = OffersMessage::InvoiceRequest(invoice_request.clone());
+			enqueue_onion_message_with_reply_paths(
+				message, invoice_request.paths(), reply_paths, &mut pending_offers_messages
+			);
 		} else if let Some(node_id) = invoice_request.issuer_signing_pubkey() {
 			for reply_path in reply_paths {
 				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
@@ -10653,18 +10637,10 @@ where
 						pending_offers_messages.push((message, instructions));
 					}
 				} else {
-					reply_paths
-						.iter()
-						.flat_map(|reply_path| refund.paths().iter().map(move |path| (path, reply_path)))
-						.take(OFFERS_MESSAGE_REQUEST_LIMIT)
-						.for_each(|(path, reply_path)| {
-							let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-								destination: Destination::BlindedPath(path.clone()),
-								reply_path: reply_path.clone(),
-							};
-							let message = OffersMessage::Invoice(invoice.clone());
-							pending_offers_messages.push((message, instructions));
-						});
+					let message = OffersMessage::Invoice(invoice.clone());
+					enqueue_onion_message_with_reply_paths(
+						message, refund.paths(), reply_paths, &mut pending_offers_messages
+					);
 				}
 
 				Ok(invoice)
@@ -12804,6 +12780,27 @@ where
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
 		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
 	}
+}
+
+fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
+	message: T, message_paths: &[BlindedMessagePath], reply_paths: Vec<BlindedMessagePath>,
+	queue: &mut Vec<(T, MessageSendInstructions)>
+) {
+	reply_paths
+		.iter()
+		.flat_map(|reply_path|
+			message_paths
+				.iter()
+				.map(move |path| (path.clone(), reply_path))
+		)
+		.take(OFFERS_MESSAGE_REQUEST_LIMIT)
+		.for_each(|(path, reply_path)| {
+			let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+				destination: Destination::BlindedPath(path.clone()),
+				reply_path: reply_path.clone(),
+			};
+			queue.push((message.clone(), instructions));
+		});
 }
 
 /// Fetches the set of [`NodeFeatures`] flags that are provided by or required by
