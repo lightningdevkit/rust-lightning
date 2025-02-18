@@ -223,13 +223,13 @@ impl_writeable_tlv_based!(HTLCUpdate, {
 /// transaction.
 pub(crate) const COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE: u32 = 12;
 
-/// When we go to force-close a channel because an HTLC is expiring, we should ensure that the
-/// HTLC(s) expiring are not considered pinnable, allowing us to aggregate them with other HTLC(s)
-/// expiring at the same time.
-const _: () = assert!(CLTV_CLAIM_BUFFER > COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
+/// When we go to force-close a channel because an HTLC is expiring, by the time we've gotten the
+/// commitment transaction confirmed, we should ensure that the HTLC(s) expiring are not considered
+/// pinnable, allowing us to aggregate them with other HTLC(s) expiring at the same time.
+const _: () = assert!(MAX_BLOCKS_FOR_CONF > COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
 
 /// The upper bound on how many blocks we think it can take for us to get a transaction confirmed.
-pub(crate) const MAX_BLOCKS_FOR_CONF: u32 = 9;
+pub(crate) const MAX_BLOCKS_FOR_CONF: u32 = 18;
 
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.

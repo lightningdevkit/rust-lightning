@@ -3500,7 +3500,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // 1 timeout tx
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], commitment_tx[0]);
-	assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT + 1);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -9387,25 +9387,19 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	// Step (6):
 	// Finally, check that Bob broadcasted a preimage-claiming transaction for the HTLC output on the
 	// broadcasted commitment transaction.
-	{
-		let script_weight = match broadcast_alice {
-			true => OFFERED_HTLC_SCRIPT_WEIGHT,
-			false => ACCEPTED_HTLC_SCRIPT_WEIGHT
-		};
-		// If Alice force-closed, Bob only broadcasts a HTLC-output-claiming transaction. Otherwise,
-		// Bob force-closed and broadcasts the commitment transaction along with a
-		// HTLC-output-claiming transaction.
-		let mut bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-		if broadcast_alice {
-			assert_eq!(bob_txn.len(), 1);
-			check_spends!(bob_txn[0], txn_to_broadcast[0]);
-			assert_eq!(bob_txn[0].input[0].witness.last().unwrap().len(), script_weight);
-		} else {
-			assert_eq!(bob_txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 2 });
-			let htlc_tx = bob_txn.pop().unwrap();
-			check_spends!(htlc_tx, txn_to_broadcast[0]);
-			assert_eq!(htlc_tx.input[0].witness.last().unwrap().len(), script_weight);
-		}
+	// If Alice force-closed, Bob only broadcasts a HTLC-output-claiming transaction. Otherwise,
+	// Bob force-closed and broadcasts the commitment transaction along with a
+	// HTLC-output-claiming transaction.
+	let mut bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	if broadcast_alice {
+		assert_eq!(bob_txn.len(), 1);
+		check_spends!(bob_txn[0], txn_to_broadcast[0]);
+		assert_eq!(bob_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	} else {
+		assert_eq!(bob_txn.len(), if nodes[1].connect_style.borrow().updates_best_block_first() { 3 } else { 2 });
+		let htlc_tx = bob_txn.pop().unwrap();
+		check_spends!(htlc_tx, txn_to_broadcast[0]);
+		assert_eq!(htlc_tx.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT + 1);
 	}
 }
 
