@@ -71,6 +71,7 @@ use {
 	},
 	crate::onion_message::async_payments::{
 		HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ServeStaticInvoice,
+		StaticInvoicePersisted,
 	},
 	crate::onion_message::messenger::Responder,
 };
@@ -1549,6 +1550,59 @@ where
 		};
 
 		Ok((ServeStaticInvoice { invoice, forward_invoice_request_path }, reply_path_context))
+	}
+
+	/// Verifies an incoming [`ServeStaticInvoice`] onion message from an often-offline recipient who
+	/// wants us as a static invoice server to serve the [`ServeStaticInvoice::invoice`] to payers on
+	/// their behalf.
+	///
+	/// If verification succeeds, the provided [`ServeStaticInvoice::invoice`] should be persisted
+	/// keyed by [`ServeStaticInvoice::recipient_id_nonce`]. The invoice should then be served in
+	/// response to incoming [`InvoiceRequest`]s that have a context of
+	/// [`OffersContext::StaticInvoiceRequested`], where the
+	/// [`OffersContext::StaticInvoiceRequested::recipient_id_nonce`] matches the `recipient_id_nonce`
+	/// from the original [`ServeStaticInvoice`] message.
+	///
+	/// Once the invoice is persisted, [`Self::static_invoice_persisted`] must be called to confirm to
+	/// the recipient that their offer is ready to receive async payments.
+	///
+	/// [`ServeStaticInvoice::invoice`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice
+	#[cfg(async_payments)]
+	pub(crate) fn verify_serve_static_invoice_message(
+		&self, message: &ServeStaticInvoice, context: AsyncPaymentsContext,
+	) -> Result<Nonce, ()> {
+		if message.invoice.is_expired_no_std(self.duration_since_epoch()) {
+			return Err(());
+		}
+		let expanded_key = &self.inbound_payment_key;
+		match context {
+			AsyncPaymentsContext::ServeStaticInvoice {
+				recipient_id_nonce,
+				nonce,
+				hmac,
+				path_absolute_expiry,
+			} => {
+				signer::verify_serve_static_invoice_context(nonce, hmac, expanded_key)?;
+				if self.duration_since_epoch() > path_absolute_expiry {
+					return Err(());
+				}
+
+				return Ok(recipient_id_nonce);
+			},
+			_ => return Err(()),
+		};
+	}
+
+	/// Indicates that a [`ServeStaticInvoice::invoice`] has been persisted and is ready to be served
+	/// to payers on behalf of an often-offline recipient. This method must be called after persisting
+	/// a [`StaticInvoice`] to confirm to the recipient that their corresponding [`Offer`] is ready to
+	/// receive async payments.
+	#[cfg(async_payments)]
+	pub(crate) fn serving_static_invoice(&self, responder: Responder) {
+		let mut pending_async_payments_messages =
+			self.pending_async_payments_messages.lock().unwrap();
+		let message = AsyncPaymentsMessage::StaticInvoicePersisted(StaticInvoicePersisted {});
+		pending_async_payments_messages.push((message, responder.respond().into_instructions()));
 	}
 
 	/// Handles an incoming [`StaticInvoicePersisted`] onion message from the static invoice server.
