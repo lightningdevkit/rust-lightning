@@ -5362,115 +5362,119 @@ pub fn test_onchain_to_onchain_claim() {
 #[xtest(feature = "_externalize_tests")]
 pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Topology : A --> B --> C --> D
-	// We route 2 payments with same hash between B and C, one will be timeout, the other successfully claim
-	// Note that because C will refuse to generate two payment secrets for the same payment hash,
-	// we forward one of the payments onwards to D.
-	let chanmon_cfgs = create_chanmon_cfgs(4);
-	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	//                          \-> E
+	// We route 2 payments with same hash between B and C, one we will time out on chain, the other
+	// successfully claim.
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
 	config.channel_config.forwarding_fee_base_msat = 196;
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
-		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs,
+		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
+	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
 
+	// Create the required channels and route one HTLC from A to D and another from A to E.
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 	create_announced_chan_between_nodes(&nodes, 2, 3);
+	create_announced_chan_between_nodes(&nodes, 2, 4);
 
 	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
-	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
-	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
-	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
-	connect_blocks(&nodes[3], node_max_height - nodes[3].best_block_info().1);
+	connect_blocks(&nodes[0], node_max_height * 2 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height * 2 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height * 2 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], node_max_height * 2 - nodes[3].best_block_info().1);
+	connect_blocks(&nodes[4], node_max_height * 2 - nodes[4].best_block_info().1);
 
-	let (our_payment_preimage, duplicate_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 900_000);
+	let (our_payment_preimage, duplicate_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3]], 900_000);
 
-	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, None).unwrap();
-	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
-	// script push size limit so that the below script length checks match
-	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
-	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV - 40)
-		.with_bolt11_features(nodes[3].node.bolt11_invoice_features()).unwrap();
-	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 800_000);
-	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 800_000, duplicate_payment_hash, payment_secret);
+	let payment_secret = nodes[4].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, None).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[4].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[4].node.bolt11_invoice_features()).unwrap();
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[4], payment_params, 800_000);
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[4]]], 800_000, duplicate_payment_hash, payment_secret);
 
+	// Now mine C's commitment transaction on node B and mine enough blocks to get the HTLC timeout
+	// transaction (which we'll split in two so that we can resolve the HTLCs differently).
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_txn[0].input.len(), 1);
+	assert_eq!(commitment_txn[0].output.len(), 3);
 	check_spends!(commitment_txn[0], chan_2.3);
 
 	mine_transaction(&nodes[1], &commitment_txn[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 40 + MIN_CLTV_EXPIRY_DELTA as u32); // Confirm blocks until the HTLC expires
 
-	let htlc_timeout_tx;
-	{ // Extract one of the two HTLC-Timeout transaction
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// ChannelMonitor: timeout tx * 2-or-3
-		assert!(node_txn.len() == 2 || node_txn.len() == 3);
+	// Confirm blocks until both HTLCs expire and get a transaction which times out one HTLC.
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV + config.channel_config.cltv_expiry_delta as u32);
 
-		check_spends!(node_txn[0], commitment_txn[0]);
-		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[0].output.len(), 1);
+	let htlc_timeout_tx = {
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
 
-		if node_txn.len() > 2 {
-			check_spends!(node_txn[1], commitment_txn[0]);
-			assert_eq!(node_txn[1].input.len(), 1);
-			assert_eq!(node_txn[1].output.len(), 1);
-			assert_eq!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+		let mut tx = node_txn.pop().unwrap();
+		check_spends!(tx, commitment_txn[0]);
+		assert_eq!(tx.input.len(), 2);
+		assert_eq!(tx.output.len(), 1);
+		// Note that the witness script lengths are one longer than our constant as the CLTV value
+		// went to two bytes rather than one.
+		assert_eq!(tx.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT + 1);
+		assert_eq!(tx.input[1].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT + 1);
 
-			check_spends!(node_txn[2], commitment_txn[0]);
-			assert_eq!(node_txn[2].input.len(), 1);
-			assert_eq!(node_txn[2].output.len(), 1);
-			assert_ne!(node_txn[0].input[0].previous_output, node_txn[2].input[0].previous_output);
-		} else {
-			check_spends!(node_txn[1], commitment_txn[0]);
-			assert_eq!(node_txn[1].input.len(), 1);
-			assert_eq!(node_txn[1].output.len(), 1);
-			assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+		// Split the HTLC claim transaction into two, one for each HTLC.
+		if commitment_txn[0].output[tx.input[1].previous_output.vout as usize].value.to_sat() < 850 {
+			tx.input.remove(1);
 		}
-
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		// Assign htlc_timeout_tx to the forwarded HTLC (with value ~800 sats). The received HTLC
-		// (with value 900 sats) will be claimed in the below `claim_funds` call.
-		if node_txn.len() > 2 {
-			assert_eq!(node_txn[2].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-			htlc_timeout_tx = if node_txn[2].output[0].value.to_sat() < 900 { node_txn[2].clone() } else { node_txn[0].clone() };
-		} else {
-			htlc_timeout_tx = if node_txn[0].output[0].value.to_sat() < 900 { node_txn[1].clone() } else { node_txn[0].clone() };
+		if commitment_txn[0].output[tx.input[0].previous_output.vout as usize].value.to_sat() < 850 {
+			tx.input.remove(0);
 		}
-	}
+		assert_eq!(tx.input.len(), 1);
+		tx
+	};
 
-	nodes[2].node.claim_funds(our_payment_preimage);
-	expect_payment_claimed!(nodes[2], duplicate_payment_hash, 900_000);
+	// Now give node E the payment preimage and pass it back to C.
+	nodes[4].node.claim_funds(our_payment_preimage);
+	expect_payment_claimed!(nodes[4], duplicate_payment_hash, 800_000);
+	check_added_monitors!(nodes[4], 1);
+	let updates = get_htlc_update_msgs!(nodes[4], nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fulfill_htlc(nodes[4].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	let _cs_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	expect_payment_forwarded!(nodes[2], nodes[1], nodes[4], Some(196), false, false);
+	check_added_monitors!(nodes[2], 1);
+	commitment_signed_dance!(nodes[2], nodes[4], &updates.commitment_signed, false);
 
+	// Mine the commitment transaction on node C and get the HTLC success transactions it will
+	// generate (note that the ChannelMonitor doesn't differentiate between HTLCs once it has the
+	// preimage).
 	mine_transaction(&nodes[2], &commitment_txn[0]);
-	check_added_monitors!(nodes[2], 2);
+	check_added_monitors!(nodes[2], 1);
 	check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
-	let events = nodes[2].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::UpdateHTLCs { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match events[2] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexepected event"),
-	}
+	check_closed_broadcast(&nodes[2], 1, true);
+
 	let htlc_success_txn: Vec<_> = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(htlc_success_txn.len(), 2); // ChannelMonitor: HTLC-Success txn (*2 due to 2-HTLC outputs)
 	check_spends!(htlc_success_txn[0], commitment_txn[0]);
 	check_spends!(htlc_success_txn[1], commitment_txn[0]);
 	assert_eq!(htlc_success_txn[0].input.len(), 1);
-	assert_eq!(htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	// Note that the witness script lengths are one longer than our constant as the CLTV value went
+	// to two bytes rather than one.
+	assert_eq!(htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT + 1);
 	assert_eq!(htlc_success_txn[1].input.len(), 1);
-	assert_eq!(htlc_success_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(htlc_success_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT + 1);
 	assert_ne!(htlc_success_txn[0].input[0].previous_output, htlc_success_txn[1].input[0].previous_output);
-	assert_ne!(htlc_success_txn[1].input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
 
+	let htlc_success_tx_to_confirm =
+		if htlc_success_txn[0].input[0].previous_output == htlc_timeout_tx.input[0].previous_output {
+			&htlc_success_txn[1]
+		} else {
+			&htlc_success_txn[0]
+		};
+	assert_ne!(htlc_success_tx_to_confirm.input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
+
+	// Mine the HTLC timeout transaction on node B.
 	mine_transaction(&nodes[1], &htlc_timeout_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
@@ -5484,14 +5488,13 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	{
-		commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, true);
-	}
+	commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, true);
 	expect_payment_failed_with_update!(nodes[0], duplicate_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 
-	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
-	mine_transaction(&nodes[1], &htlc_success_txn[1]);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196), true, true);
+	// Finally, give node B the HTLC success transaction and ensure it extracts the preimage to
+	// provide to node A.
+	mine_transaction(&nodes[1], htlc_success_tx_to_confirm);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(392), true, true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
