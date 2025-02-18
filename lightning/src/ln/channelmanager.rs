@@ -12760,7 +12760,35 @@ where
 
 	fn handle_static_invoice_persisted(
 		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
-	) {}
+	) {
+		#[cfg(async_payments)] {
+			let expanded_key = &self.inbound_payment_key;
+			let duration_since_epoch = self.duration_since_epoch();
+
+			let mut new_offer = match _context {
+				AsyncPaymentsContext::StaticInvoicePersisted {
+					offer, nonce, hmac, path_absolute_expiry
+				} => {
+					if let Err(()) = signer::verify_static_invoice_persisted_context(nonce, hmac, expanded_key) {
+						return
+					}
+					if duration_since_epoch > path_absolute_expiry { return }
+					if offer.is_expired_no_std(duration_since_epoch) { return }
+					Some(offer)
+				},
+				_ => return
+			};
+
+			PersistenceNotifierGuard::optionally_notify(self, || {
+				let mut offer_cache = self.async_receive_offer_cache.lock().unwrap();
+				if !offer_cache.should_refresh_offer(duration_since_epoch) {
+					return NotifyOption::SkipPersistNoEvents
+				}
+				offer_cache.offer = new_offer.take();
+				NotifyOption::DoPersist
+			});
+		}
+	}
 
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
