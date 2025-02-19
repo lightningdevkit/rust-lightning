@@ -15759,10 +15759,12 @@ mod tests {
 		let new_fee = user_config.channel_config.forwarding_fee_proportional_millionths + 100;
 		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
 			forwarding_fee_proportional_millionths: Some(new_fee),
+			accept_underpaying_htlcs: Some(true),
 			..Default::default()
 		}).unwrap();
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().cltv_expiry_delta, new_cltv_expiry_delta);
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, new_fee);
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().accept_underpaying_htlcs, true);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		match &events[0] {

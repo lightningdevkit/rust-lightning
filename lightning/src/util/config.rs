@@ -601,6 +601,9 @@ impl ChannelConfig {
 		{
 			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
 		}
+		if let Some(accept_underpaying_htlcs) = update.accept_underpaying_htlcs {
+			self.accept_underpaying_htlcs = accept_underpaying_htlcs;
+		}
 	}
 }
 
@@ -674,14 +677,30 @@ impl crate::util::ser::Readable for ChannelConfig {
 }
 
 /// A parallel struct to [`ChannelConfig`] to define partial updates.
-#[allow(missing_docs)]
 #[derive(Default)]
 pub struct ChannelConfigUpdate {
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound over the channel. See
+	/// [`ChannelConfig::forwarding_fee_proportional_millionths`].
 	pub forwarding_fee_proportional_millionths: Option<u32>,
+
+	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel. See
+	/// [`ChannelConfig::forwarding_fee_base_msat`].
 	pub forwarding_fee_base_msat: Option<u32>,
+
+	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over the channel this
+	/// config applies to. See [`ChannelConfig::cltv_expiry_delta`].
 	pub cltv_expiry_delta: Option<u16>,
+
+	/// The total exposure we are willing to allow to dust HTLCs. See [`ChannelConfig::max_dust_htlc_exposure`].
 	pub max_dust_htlc_exposure_msat: Option<MaxDustHTLCExposure>,
+
+	/// The additional fee we're willing to pay to avoid waiting for the counterparty's `to_self_delay` to reclaim
+	/// funds. See [`ChannelConfig::force_close_avoidance_max_fee_satoshis`].
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
+
+	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound HTLCs. See
+	/// [`ChannelConfig::accept_underpaying_htlcs`].
+	pub accept_underpaying_htlcs: Option<bool>,
 }
 
 impl From<ChannelConfig> for ChannelConfigUpdate {
@@ -696,6 +715,7 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 			force_close_avoidance_max_fee_satoshis: Some(
 				config.force_close_avoidance_max_fee_satoshis,
 			),
+			accept_underpaying_htlcs: Some(config.accept_underpaying_htlcs),
 		}
 	}
 }
