@@ -27,7 +27,7 @@ use crate::onion_message::messenger::OnionMessenger;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
-use crate::util::config::{UserConfig, MaxDustHTLCExposure};
+use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 #[cfg(test)]
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
@@ -1327,7 +1327,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			receiver.node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &initiator.node.get_our_node_id(), 0).unwrap();
+			receiver.node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &initiator.node.get_our_node_id(), 0, None).unwrap();
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1395,7 +1395,7 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: 
 		assert_eq!(events.len(), 1);
 		match &events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } =>
-				node_b.node.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42).unwrap(),
+				node_b.node.accept_inbound_channel(temporary_channel_id, counterparty_node_id, 42, None).unwrap(),
 			_ => panic!("Unexpected event"),
 		};
 	}

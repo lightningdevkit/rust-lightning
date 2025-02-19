@@ -22,7 +22,7 @@ use crate::events::bump_transaction::WalletSource;
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
-use crate::ln::channel::{CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, Channel};
+use crate::ln::channel::{get_holder_selected_channel_reserve_satoshis, Channel, InboundV1Channel, OutboundV1Channel, COINBASE_MATURITY, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
@@ -30,14 +30,14 @@ use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
 use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route, RouteParameters};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
-use crate::ln::msgs;
+use crate::ln::msgs::{self, AcceptChannel};
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::{self, TestLogger, WatchtowerPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
-use crate::util::config::{UserConfig, MaxDustHTLCExposure};
+use crate::util::config::{ChannelConfigOverrides, ChannelHandshakeConfigUpdate, ChannelConfigUpdate, MaxDustHTLCExposure, UserConfig};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::locktime::absolute::LockTime;
@@ -8408,12 +8408,14 @@ fn test_channel_update_has_correct_htlc_maximum_msat() {
 fn test_manually_accept_inbound_channel_request() {
 	let mut manually_accept_conf = UserConfig::default();
 	manually_accept_conf.manually_accept_inbound_channels = true;
+	manually_accept_conf.channel_handshake_config.minimum_depth = 1;
+
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(manually_accept_conf)).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(manually_accept_conf)).unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &res);
@@ -8422,10 +8424,28 @@ fn test_manually_accept_inbound_channel_request() {
 	// accepting the inbound channel request.
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
+	let config_overrides = ChannelConfigOverrides {
+		handshake_overrides: Some(ChannelHandshakeConfigUpdate {
+			max_inbound_htlc_value_in_flight_percent_of_channel: None,
+			htlc_minimum_msat: None,
+			minimum_depth: None,
+			to_self_delay: None,
+			max_accepted_htlcs: Some(3),
+			channel_reserve_proportional_millionths: None,
+		}),
+		update_overrides: Some(ChannelConfigUpdate {
+			forwarding_fee_proportional_millionths: None,
+			forwarding_fee_base_msat: Some(555),
+			cltv_expiry_delta: None,
+			max_dust_htlc_exposure_msat: None,
+			force_close_avoidance_max_fee_satoshis: None,
+			accept_underpaying_htlcs: None,
+		}),
+	};
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23).unwrap();
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23, Some(config_overrides)).unwrap();
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -8433,25 +8453,65 @@ fn test_manually_accept_inbound_channel_request() {
 	let accept_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(accept_msg_ev.len(), 1);
 
+	let ref accept_channel: AcceptChannel;
 	match accept_msg_ev[0] {
-		MessageSendEvent::SendAcceptChannel { ref node_id, .. } => {
+		MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+
+			// Assert overriden handshake parameter.
+			assert_eq!(msg.common_fields.max_accepted_htlcs, 3);
+
+			accept_channel = msg;
 		}
 		_ => panic!("Unexpected event"),
 	}
-	let error_message = "Channel force-closed";
-	nodes[1].node.force_close_broadcasting_latest_txn(&temp_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 
-	let close_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(close_msg_ev.len(), 1);
+	// Continue channel opening process until channel update messages are sent.
+	nodes[0].node.handle_accept_channel(nodes[1].node.get_our_node_id(), &accept_channel);
+	let (temporary_channel_id, tx, funding_outpoint) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100_000, 42);
+	nodes[0].node.unsafe_manual_funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), funding_outpoint).unwrap();
+	check_added_monitors!(nodes[0], 0);
 
-	let events = nodes[1].node.get_and_clear_pending_events();
-	match events[0] {
-		Event::ChannelClosed { user_channel_id, .. } => {
-			assert_eq!(user_channel_id, 23);
-		}
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created);
+	check_added_monitors!(nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed);
+	check_added_monitors!(nodes[0], 1);
+	let events = &nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match &events[0] {
+		crate::events::Event::FundingTxBroadcastSafe { funding_txo, .. } => {
+			assert_eq!(funding_txo.txid, funding_outpoint.txid);
+			assert_eq!(funding_txo.vout, funding_outpoint.index.into());
+		},
 		_ => panic!("Unexpected event"),
-	}
+	};
+	match &events[1] {
+		crate::events::Event::ChannelPending { counterparty_node_id, .. } => {
+			assert_eq!(*&nodes[1].node.get_our_node_id(), *counterparty_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	mine_transaction(&nodes[0], &tx);
+	mine_transaction(&nodes[1], &tx);
+
+	let as_channel_ready = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &as_channel_ready);
+	let as_channel_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	nodes[0].node.handle_channel_ready(nodes[1].node.get_our_node_id(), &as_channel_ready);
+
+	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	// Assert that the overriden base fee surfaces in the channel update.
+	let channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+	assert_eq!(channel_update.contents.fee_base_msat, 555);
+
+	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 }
 
 #[test]
@@ -8515,8 +8575,8 @@ fn test_can_not_accept_inbound_channel_twice() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
-			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0);
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None).unwrap();
+			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0, None);
 			match api_res {
 				Err(APIError::APIMisuseError { err }) => {
 					assert_eq!(err, "No such channel awaiting to be accepted.");
@@ -8548,7 +8608,7 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	let nodes = create_network(2, &node_cfg, &node_chanmgr);
 
 	let unknown_channel_id = ChannelId::new_zero();
-	let api_res = nodes[0].node.accept_inbound_channel(&unknown_channel_id, &nodes[1].node.get_our_node_id(), 0);
+	let api_res = nodes[0].node.accept_inbound_channel(&unknown_channel_id, &nodes[1].node.get_our_node_id(), 0, None);
 	match api_res {
 		Err(APIError::APIMisuseError { err }) => {
 			assert_eq!(err, "No such channel awaiting to be accepted.");
@@ -11557,7 +11617,7 @@ fn test_accept_inbound_channel_errors_queued() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23) {
+			match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23, None) {
 				Err(APIError::ChannelUnavailable { err: _ }) => (),
 				_ => panic!(),
 			}
@@ -11667,4 +11727,3 @@ fn test_funding_signed_event() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 	nodes[1].node.get_and_clear_pending_msg_events();
 }
-

@@ -601,6 +601,9 @@ impl ChannelConfig {
 		{
 			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
 		}
+		if let Some(accept_underpaying_htlcs) = update.accept_underpaying_htlcs {
+			self.accept_underpaying_htlcs = accept_underpaying_htlcs;
+		}
 	}
 }
 
@@ -674,14 +677,30 @@ impl crate::util::ser::Readable for ChannelConfig {
 }
 
 /// A parallel struct to [`ChannelConfig`] to define partial updates.
-#[allow(missing_docs)]
 #[derive(Default)]
 pub struct ChannelConfigUpdate {
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound over the channel. See
+	/// [`ChannelConfig::forwarding_fee_proportional_millionths`].
 	pub forwarding_fee_proportional_millionths: Option<u32>,
+
+	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel. See
+	/// [`ChannelConfig::forwarding_fee_base_msat`].
 	pub forwarding_fee_base_msat: Option<u32>,
+
+	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over the channel this
+	/// config applies to. See [`ChannelConfig::cltv_expiry_delta`].
 	pub cltv_expiry_delta: Option<u16>,
+
+	/// The total exposure we are willing to allow to dust HTLCs. See [`ChannelConfig::max_dust_htlc_exposure`].
 	pub max_dust_htlc_exposure_msat: Option<MaxDustHTLCExposure>,
+
+	/// The additional fee we're willing to pay to avoid waiting for the counterparty's `to_self_delay` to reclaim
+	/// funds. See [`ChannelConfig::force_close_avoidance_max_fee_satoshis`].
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
+
+	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound HTLCs. See
+	/// [`ChannelConfig::accept_underpaying_htlcs`].
+	pub accept_underpaying_htlcs: Option<bool>,
 }
 
 impl From<ChannelConfig> for ChannelConfigUpdate {
@@ -696,6 +715,7 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 			force_close_avoidance_max_fee_satoshis: Some(
 				config.force_close_avoidance_max_fee_satoshis,
 			),
+			accept_underpaying_htlcs: Some(config.accept_underpaying_htlcs),
 		}
 	}
 }
@@ -891,5 +911,86 @@ impl Readable for UserConfig {
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 		})
+	}
+}
+
+/// Config structure for overriding channel parameters.
+#[derive(Default)]
+pub struct ChannelConfigOverrides {
+	/// Overrides for channel handshake parameters.
+	pub handshake_overrides: Option<ChannelHandshakeConfigUpdate>,
+
+	/// Overrides for channel update parameters.
+	pub update_overrides: Option<ChannelConfigUpdate>,
+}
+
+impl UserConfig {
+	/// Applies given channel config overrides to the user config.
+	pub fn apply(&mut self, config: &ChannelConfigOverrides) {
+		if let Some(handshake_overrides) = &config.handshake_overrides {
+			self.channel_handshake_config.apply(&handshake_overrides);
+		}
+
+		if let Some(update_overrides) = &config.update_overrides {
+			self.channel_config.apply(&update_overrides);
+		}
+	}
+}
+
+/// Config structure for overriding channel handshake parameters.
+#[derive(Default)]
+pub struct ChannelHandshakeConfigUpdate {
+	/// Overrides the percentage of the channel value we will cap the total value of outstanding inbound HTLCs to. See
+	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`].
+	pub max_inbound_htlc_value_in_flight_percent_of_channel: Option<u8>,
+
+	/// Overrides the smallest value HTLC we will accept to process. See [`ChannelHandshakeConfig::our_htlc_minimum_msat`].
+	pub htlc_minimum_msat: Option<u64>,
+
+	/// Overrides confirmations we will wait for before considering the channel locked in. See
+	/// [`ChannelHandshakeConfig::minimum_depth`].
+	pub minimum_depth: Option<u32>,
+
+	/// Overrides the number of blocks we require our counterparty to wait to claim their money. See
+	/// [`ChannelHandshakeConfig::our_to_self_delay`].
+	pub to_self_delay: Option<u16>,
+
+	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time. See
+	/// [`ChannelHandshakeConfig::our_max_accepted_htlcs`].
+	pub max_accepted_htlcs: Option<u16>,
+
+	/// The Proportion of the channel value to configure as counterparty's channel reserve. See
+	/// [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`].
+	pub channel_reserve_proportional_millionths: Option<u32>,
+}
+
+impl ChannelHandshakeConfig {
+	/// Applies the provided handshake config update.
+	pub fn apply(&mut self, config: &ChannelHandshakeConfigUpdate) {
+		if let Some(max_in_flight_percent) =
+			config.max_inbound_htlc_value_in_flight_percent_of_channel
+		{
+			self.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;
+		}
+
+		if let Some(htlc_minimum_msat) = config.htlc_minimum_msat {
+			self.our_htlc_minimum_msat = htlc_minimum_msat;
+		}
+
+		if let Some(minimum_depth) = config.minimum_depth {
+			self.minimum_depth = minimum_depth;
+		}
+
+		if let Some(to_self_delay) = config.to_self_delay {
+			self.our_to_self_delay = to_self_delay;
+		}
+
+		if let Some(max_accepted_htlcs) = config.max_accepted_htlcs {
+			self.our_max_accepted_htlcs = max_accepted_htlcs;
+		}
+
+		if let Some(channel_reserve) = config.channel_reserve_proportional_millionths {
+			self.their_channel_reserve_proportional_millionths = channel_reserve;
+		}
 	}
 }

@@ -80,7 +80,7 @@ use crate::onion_message::messenger::{Destination, MessageRouter, Responder, Res
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
+use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
@@ -1902,7 +1902,7 @@ where
 ///
 ///             let user_channel_id = 43;
 ///             match channel_manager.accept_inbound_channel(
-///                 &temporary_channel_id, &counterparty_node_id, user_channel_id
+///                 &temporary_channel_id, &counterparty_node_id, user_channel_id, None
 ///             ) {
 ///                 Ok(()) => println!("Accepting channel {}", temporary_channel_id),
 ///                 Err(e) => println!("Error accepting channel {}: {:?}", temporary_channel_id, e),
@@ -7755,8 +7755,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id)
+	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>) -> Result<(), APIError> {
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id, config_overrides)
 	}
 
 	/// Accepts a request to open a channel after a [`events::Event::OpenChannelRequest`], treating
@@ -7777,15 +7777,23 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id)
+	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>) -> Result<(), APIError> {
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id, config_overrides)
 	}
 
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128,
+		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
 	) -> Result<(), APIError> {
+
+		let mut config = self.default_configuration.clone();
+
+		// Apply configuration overrides.
+		if let Some(overrides) = config_overrides {
+			config.apply(&overrides);
+		};
+
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(*temporary_channel_id), None);
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -7815,7 +7823,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						InboundV1Channel::new(
 							&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
 							&self.channel_type_features(), &peer_state.latest_features, &open_channel_msg,
-							user_channel_id, &self.default_configuration, best_block_height, &self.logger, accept_0conf
+							user_channel_id, &config, best_block_height, &self.logger, accept_0conf
 						).map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id)
 						).map(|mut channel| {
 							let logger = WithChannelContext::from(&self.logger, &channel.context, None);
@@ -7835,7 +7843,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							self.get_our_node_id(), *counterparty_node_id,
 							&self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg,
-							user_channel_id, &self.default_configuration, best_block_height,
+							user_channel_id, &config, best_block_height,
 							&self.logger,
 						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
 							ChannelError::Close(
@@ -14657,9 +14665,9 @@ mod tests {
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, RecipientOnionFields, InterceptId};
+	use crate::ln::channelmanager::{create_recv_pending_htlc_info, inbound_payment, ChannelConfigOverrides, HTLCForwardInfo, InterceptId, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{self, ErrorAction};
+	use crate::ln::msgs::{self, AcceptChannel, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::ln::outbound_payment::Retry;
 	use crate::prelude::*;
@@ -14667,7 +14675,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
-	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
+	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
 	use crate::sign::EntropySource;
 
 	#[test]
@@ -15480,7 +15488,7 @@ mod tests {
 		// Test the API functions.
 		check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, 500_000_000, 42, None, None), unkown_public_key);
 
-		check_unkown_peer_error(nodes[0].node.accept_inbound_channel(&channel_id, &unkown_public_key, 42), unkown_public_key);
+		check_unkown_peer_error(nodes[0].node.accept_inbound_channel(&channel_id, &unkown_public_key, 42, None), unkown_public_key);
 
 		check_unkown_peer_error(nodes[0].node.close_channel(&channel_id, &unkown_public_key), unkown_public_key);
 
@@ -15511,7 +15519,7 @@ mod tests {
 		let error_message = "Channel force-closed";
 
 		// Test the API functions.
-		check_api_misuse_error(nodes[0].node.accept_inbound_channel(&channel_id, &counterparty_node_id, 42));
+		check_api_misuse_error(nodes[0].node.accept_inbound_channel(&channel_id, &counterparty_node_id, 42, None));
 
 		check_channel_unavailable_error(nodes[0].node.close_channel(&channel_id, &counterparty_node_id), channel_id, counterparty_node_id);
 
@@ -15702,7 +15710,7 @@ mod tests {
 			let events = nodes[1].node.get_and_clear_pending_events();
 			match events[0] {
 				Event::OpenChannelRequest { temporary_channel_id, .. } => {
-					nodes[1].node.accept_inbound_channel(&temporary_channel_id, &random_pk, 23).unwrap();
+					nodes[1].node.accept_inbound_channel(&temporary_channel_id, &random_pk, 23, None).unwrap();
 				}
 				_ => panic!("Unexpected event"),
 			}
@@ -15720,7 +15728,7 @@ mod tests {
 		let events = nodes[1].node.get_and_clear_pending_events();
 		match events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &last_random_pk, 23) {
+				match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &last_random_pk, 23, None) {
 					Err(APIError::APIMisuseError { err }) =>
 						assert_eq!(err, "Too many peers with unfunded channels, refusing to accept new ones"),
 					_ => panic!(),
@@ -15736,7 +15744,7 @@ mod tests {
 		let events = nodes[1].node.get_and_clear_pending_events();
 		match events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &last_random_pk, 23).unwrap();
+				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &last_random_pk, 23, None).unwrap();
 			}
 			_ => panic!("Unexpected event"),
 		}
@@ -15819,6 +15827,33 @@ mod tests {
 
 	#[test]
 	fn test_inbound_anchors_manual_acceptance() {
+		test_inbound_anchors_manual_acceptance_with_override(None);
+	}
+
+	#[test]
+	fn test_inbound_anchors_manual_acceptance_overridden() {
+		let overrides = ChannelConfigOverrides {
+			handshake_overrides: Some(ChannelHandshakeConfigUpdate {
+				max_inbound_htlc_value_in_flight_percent_of_channel: Some(5),
+				htlc_minimum_msat: Some(1000),
+				minimum_depth: Some(2),
+				to_self_delay: Some(200),
+				max_accepted_htlcs: Some(5),
+				channel_reserve_proportional_millionths: Some(20000),
+			}),
+			update_overrides: None,
+		};
+
+		let accept_message = test_inbound_anchors_manual_acceptance_with_override(Some(overrides));
+		assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
+		assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
+		assert_eq!(accept_message.common_fields.minimum_depth, 2);
+		assert_eq!(accept_message.common_fields.to_self_delay, 200);
+		assert_eq!(accept_message.common_fields.max_accepted_htlcs, 5);
+		assert_eq!(accept_message.channel_reserve_satoshis, 2_000);
+	}
+
+	fn test_inbound_anchors_manual_acceptance_with_override(config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
 		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
 		// flag set and (sometimes) accept channels as 0conf.
 		let mut anchors_cfg = test_default_channel_config();
@@ -15855,10 +15890,10 @@ mod tests {
 		let events = nodes[2].node.get_and_clear_pending_events();
 		match events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } =>
-				nodes[2].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23).unwrap(),
+				nodes[2].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23, config_overrides).unwrap(),
 			_ => panic!("Unexpected event"),
 		}
-		get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+		get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id())
 	}
 
 	#[test]
@@ -15943,10 +15978,12 @@ mod tests {
 		let new_fee = user_config.channel_config.forwarding_fee_proportional_millionths + 100;
 		nodes[0].node.update_partial_channel_config(&channel.counterparty.node_id, &[channel.channel_id], &ChannelConfigUpdate {
 			forwarding_fee_proportional_millionths: Some(new_fee),
+			accept_underpaying_htlcs: Some(true),
 			..Default::default()
 		}).unwrap();
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().cltv_expiry_delta, new_cltv_expiry_delta);
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, new_fee);
+		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().accept_underpaying_htlcs, true);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		match &events[0] {
