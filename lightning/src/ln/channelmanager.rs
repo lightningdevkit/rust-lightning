@@ -4427,27 +4427,16 @@ where
 			}
 		}
 		match decoded_hop {
-			onion_utils::Hop::Receive(next_hop_data) => {
+			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } => {
+				let inbound_onion_payload = match decoded_hop {
+					onion_utils::Hop::Receive(hop_data) => msgs::InboundOnionPayload::Receive(hop_data),
+					onion_utils::Hop::BlindedReceive(hop_data) => msgs::InboundOnionPayload::BlindedReceive(hop_data),
+					_ => unreachable!()
+				};
+
 				// OUR PAYMENT!
 				let current_height: u32 = self.best_block.read().unwrap().height;
-				match create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive(next_hop_data), shared_secret, msg.payment_hash,
-					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
-					current_height)
-				{
-					Ok(info) => {
-						// Note that we could obviously respond immediately with an update_fulfill_htlc
-						// message, however that would leak that we are the recipient of this payment, so
-						// instead we stay symmetric with the forwarding case, only responding (after a
-						// delay) once they've send us a commitment_signed!
-						PendingHTLCStatus::Forward(info)
-					},
-					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
-				}
-			},
-			onion_utils::Hop::BlindedReceive(next_hop_data) => {
-				// OUR PAYMENT!
-				let current_height: u32 = self.best_block.read().unwrap().height;
-				match create_recv_pending_htlc_info(msgs::InboundOnionPayload::BlindedReceive(next_hop_data), shared_secret, msg.payment_hash,
+				match create_recv_pending_htlc_info(inbound_onion_payload, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
 					current_height)
 				{
