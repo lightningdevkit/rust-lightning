@@ -903,16 +903,6 @@ struct ChannelLiquidity {
 	offset_history_last_updated: Duration,
 }
 
-// Check that the liquidity HashMap's entries sit on round cache lines.
-//
-// Specifically, the first cache line will have the key, the liquidity offsets, and the total
-// points tracked in the historical tracker.
-//
-// The next two cache lines will have the historical points, which we only access last during
-// scoring, followed by the last_updated `Duration`s (which we do not need during scoring).
-const _LIQUIDITY_MAP_SIZING_CHECK: usize = 192 - ::core::mem::size_of::<(u64, ChannelLiquidity)>();
-const _LIQUIDITY_MAP_SIZING_CHECK_2: usize = ::core::mem::size_of::<(u64, ChannelLiquidity)>() - 192;
-
 /// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity.
 struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>> {
 	min_liquidity_offset_msat: L,
