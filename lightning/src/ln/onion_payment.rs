@@ -3,10 +3,9 @@
 //! Primarily features [`peel_payment_onion`], which allows the decoding of an onion statelessly
 //! and can be used to predict whether we'd accept a payment.
 
-use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::hashes::hmac::{Hmac, HmacEngine};
+use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
 use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
@@ -285,7 +284,7 @@ where
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
-	let (hop, shared_secret, next_packet_details_opt) =
+	let (hop, next_packet_details_opt) =
 		decode_incoming_update_add_htlc_onion(msg, node_signer, logger, secp_ctx
 	).map_err(|e| {
 		let (err_code, err_data) = match e {
@@ -296,7 +295,8 @@ where
 		InboundHTLCErr { msg, err_code, err_data }
 	})?;
 	Ok(match hop {
-		onion_utils::Hop::Forward { next_hop_hmac, new_packet_bytes, .. } | onion_utils::Hop::BlindedForward { next_hop_hmac, new_packet_bytes, .. } => {
+		onion_utils::Hop::Forward { shared_secret, next_hop_hmac, new_packet_bytes, .. } |
+		onion_utils::Hop::BlindedForward { shared_secret, next_hop_hmac, new_packet_bytes, .. } => {
 			let inbound_onion_payload = match hop {
 				onion_utils::Hop::Forward { next_hop_data, .. } => msgs::InboundOnionPayload::Forward(next_hop_data),
 				onion_utils::Hop::BlindedForward { next_hop_data, .. } => msgs::InboundOnionPayload::BlindedForward(next_hop_data),
@@ -328,19 +328,19 @@ where
 			// TODO: If this is potentially a phantom payment we should decode the phantom payment
 			// onion here and check it.
 			create_fwd_pending_htlc_info(
-				msg, inbound_onion_payload, next_hop_hmac, new_packet_bytes, shared_secret,
+				msg, inbound_onion_payload, next_hop_hmac, new_packet_bytes, shared_secret.secret_bytes(),
 				Some(next_packet_pubkey),
 			)?
 		},
-		onion_utils::Hop::Receive(received_data) => {
+		onion_utils::Hop::Receive { hop_data, shared_secret } => {
 			create_recv_pending_htlc_info(
-				msgs::InboundOnionPayload::Receive(received_data), shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
+				msgs::InboundOnionPayload::Receive(hop_data), shared_secret.secret_bytes(), msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
 				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height,
 			)?
 		},
-		onion_utils::Hop::BlindedReceive(received_data) => {
+		onion_utils::Hop::BlindedReceive { hop_data, shared_secret } => {
 			create_recv_pending_htlc_info(
-				msgs::InboundOnionPayload::BlindedReceive(received_data), shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
+				msgs::InboundOnionPayload::BlindedReceive(hop_data), shared_secret.secret_bytes(), msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
 				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height,
 			)?
 		}
@@ -356,7 +356,7 @@ pub(super) struct NextPacketDetails {
 
 pub(super) fn decode_incoming_update_add_htlc_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
-) -> Result<(onion_utils::Hop, [u8; 32], Option<NextPacketDetails>), HTLCFailureMsg>
+) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), HTLCFailureMsg>
 where
 	NS::Target: NodeSigner,
 	L::Target: Logger,
@@ -384,16 +384,6 @@ where
 		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 	}
 
-	let blinded_node_id_tweak = msg.blinding_point.map(|bp| {
-		let blinded_tlvs_ss = node_signer.ecdh(Recipient::Node, &bp, None).unwrap().secret_bytes();
-		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
-		hmac.input(blinded_tlvs_ss.as_ref());
-		Scalar::from_be_bytes(Hmac::from_engine(hmac).to_byte_array()).unwrap()
-	});
-	let shared_secret = node_signer.ecdh(
-		Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), blinded_node_id_tweak.as_ref()
-	).unwrap().secret_bytes();
-
 	if msg.onion_routing_packet.version != 0 {
 		//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
 		//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
@@ -403,58 +393,55 @@ where
 		//node knows the HMAC matched, so they already know what is there...
 		return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
 	}
-	macro_rules! return_err {
-		($msg: expr, $err_code: expr, $data: expr) => {
-			{
-				if msg.blinding_point.is_some() {
-					return_malformed_err!($msg, INVALID_ONION_BLINDING)
-				}
 
-				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-				return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-					channel_id: msg.channel_id,
-					htlc_id: msg.htlc_id,
-					reason: HTLCFailReason::reason($err_code, $data.to_vec())
-						.get_encrypted_failure_packet(&shared_secret, &None),
-				}));
-			}
+	let encode_relay_error = |message: &str, err_code: u16, shared_secret: [u8; 32], data: &[u8]| {
+		if msg.blinding_point.is_some() {
+			return_malformed_err!(message, INVALID_ONION_BLINDING)
 		}
-	}
+
+		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
+		return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+			channel_id: msg.channel_id,
+			htlc_id: msg.htlc_id,
+			reason: HTLCFailReason::reason(err_code, data.to_vec())
+				.get_encrypted_failure_packet(&shared_secret, &None),
+		}));
+	};
 
 	let next_hop = match onion_utils::decode_next_payment_hop(
-		shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
+		Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac,
 		msg.payment_hash, msg.blinding_point, node_signer
 	) {
 		Ok(res) => res,
 		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 			return_malformed_err!(err_msg, err_code);
 		},
-		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-			return_err!(err_msg, err_code, &[0; 0]);
+		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret }) => {
+			return encode_relay_error(err_msg, err_code, shared_secret.secret_bytes(), &[0; 0]);
 		},
 	};
 
 	let next_packet_details = match next_hop {
-		Hop::Forward { next_hop_data: msgs::InboundOnionForwardPayload { short_channel_id, amt_to_forward, outgoing_cltv_value }, .. } => {
+		Hop::Forward { next_hop_data: msgs::InboundOnionForwardPayload { short_channel_id, amt_to_forward, outgoing_cltv_value }, shared_secret, .. } => {
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
-				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey, outgoing_scid: short_channel_id,
 				outgoing_amt_msat: amt_to_forward, outgoing_cltv_value
 			})
 		}
-		Hop::BlindedForward { next_hop_data: msgs::InboundOnionBlindedForwardPayload { short_channel_id, ref payment_relay, ref payment_constraints, ref features, .. }, .. } => {
+		Hop::BlindedForward { next_hop_data: msgs::InboundOnionBlindedForwardPayload { short_channel_id, ref payment_relay, ref payment_constraints, ref features, .. }, shared_secret, .. } => {
 			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
 				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
 			) {
 				Ok((amt, cltv)) => (amt, cltv),
 				Err(()) => {
-					return_err!("Underflow calculating outbound amount or cltv value for blinded forward",
-						INVALID_ONION_BLINDING, &[0; 32]);
+					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded forward",
+						INVALID_ONION_BLINDING, shared_secret.secret_bytes(), &[0; 32]);
 				}
 			};
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(&secp_ctx,
-				msg.onion_routing_packet.public_key.unwrap(), &shared_secret);
+				msg.onion_routing_packet.public_key.unwrap(), &shared_secret.secret_bytes());
 			Some(NextPacketDetails {
 				next_packet_pubkey, outgoing_scid: short_channel_id, outgoing_amt_msat: amt_to_forward,
 				outgoing_cltv_value
@@ -463,7 +450,7 @@ where
 		_ => None
 	};
 
-	Ok((next_hop, shared_secret, next_packet_details))
+	Ok((next_hop, next_packet_details))
 }
 
 pub(super) fn check_incoming_htlc_cltv(

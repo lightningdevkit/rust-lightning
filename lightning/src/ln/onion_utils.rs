@@ -16,7 +16,7 @@ use crate::ln::msgs;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters, TrampolineHop};
-use crate::sign::NodeSigner;
+use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::{self, APIError};
@@ -1419,6 +1419,8 @@ pub(crate) enum Hop {
 	Forward {
 		/// Onion payload data used in forwarding the payment.
 		next_hop_data: msgs::InboundOnionForwardPayload,
+		/// Shared secret that was used to decrypt next_hop_data.
+		shared_secret: SharedSecret,
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
@@ -1428,6 +1430,8 @@ pub(crate) enum Hop {
 	BlindedForward {
 		/// Onion payload data used in forwarding the payment.
 		next_hop_data: msgs::InboundOnionBlindedForwardPayload,
+		/// Shared secret that was used to decrypt next_hop_data.
+		shared_secret: SharedSecret,
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
@@ -1435,10 +1439,20 @@ pub(crate) enum Hop {
 	},
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
-	Receive(msgs::InboundOnionReceivePayload),
+	Receive {
+		/// Onion payload data used to receive our payment.
+		hop_data: msgs::InboundOnionReceivePayload,
+		/// Shared secret that was used to decrypt hop_data.
+		shared_secret: SharedSecret,
+	},
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
-	BlindedReceive(msgs::InboundOnionBlindedReceivePayload),
+	BlindedReceive {
+		/// Onion payload data used to receive our payment.
+		hop_data: msgs::InboundOnionBlindedReceivePayload,
+		/// Shared secret that was used to decrypt hop_data.
+		shared_secret: SharedSecret,
+	},
 }
 
 impl Hop {
@@ -1454,6 +1468,15 @@ impl Hop {
 			_ => false,
 		}
 	}
+
+	pub(crate) fn shared_secret(&self) -> &SharedSecret {
+		match self {
+			Hop::Forward { shared_secret, .. } => shared_secret,
+			Hop::BlindedForward { shared_secret, .. } => shared_secret,
+			Hop::Receive { shared_secret, .. } => shared_secret,
+			Hop::BlindedReceive { shared_secret, .. } => shared_secret,
+		}
+	}
 }
 
 /// Error returned when we fail to decode the onion packet.
@@ -1462,18 +1485,27 @@ pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
 	Malformed { err_msg: &'static str, err_code: u16 },
 	/// We failed to decode the onion payload.
-	Relay { err_msg: &'static str, err_code: u16 },
+	Relay { err_msg: &'static str, err_code: u16, shared_secret: SharedSecret },
 }
 
 pub(crate) fn decode_next_payment_hop<NS: Deref>(
-	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash,
-	blinding_point: Option<PublicKey>, node_signer: NS,
+	recipient: Recipient, hop_pubkey: &PublicKey, hop_data: &[u8], hmac_bytes: [u8; 32],
+	payment_hash: PaymentHash, blinding_point: Option<PublicKey>, node_signer: NS,
 ) -> Result<Hop, OnionDecodeErr>
 where
 	NS::Target: NodeSigner,
 {
+	let blinded_node_id_tweak = blinding_point.map(|bp| {
+		let blinded_tlvs_ss = node_signer.ecdh(recipient, &bp, None).unwrap().secret_bytes();
+		let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+		hmac.input(blinded_tlvs_ss.as_ref());
+		Scalar::from_be_bytes(Hmac::from_engine(hmac).to_byte_array()).unwrap()
+	});
+	let shared_secret =
+		node_signer.ecdh(recipient, hop_pubkey, blinded_node_id_tweak.as_ref()).unwrap();
+
 	let decoded_hop: Result<(msgs::InboundOnionPayload, Option<_>), _> = decode_next_hop(
-		shared_secret,
+		shared_secret.secret_bytes(),
 		hop_data,
 		hmac_bytes,
 		Some(payment_hash),
@@ -1482,25 +1514,56 @@ where
 	match decoded_hop {
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
 			match next_hop_data {
-				msgs::InboundOnionPayload::Forward(next_hop_data) => {
-					Ok(Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes })
-				},
-				msgs::InboundOnionPayload::BlindedForward(next_hop_data) => {
-					Ok(Hop::BlindedForward { next_hop_data, next_hop_hmac, new_packet_bytes })
-				},
-				_ => Err(OnionDecodeErr::Relay {
-					err_msg: "Final Node OnionHopData provided for us as an intermediary node",
-					err_code: 0x4000 | 22,
+				msgs::InboundOnionPayload::Forward(next_hop_data) => Ok(Hop::Forward {
+					shared_secret,
+					next_hop_data,
+					next_hop_hmac,
+					new_packet_bytes,
 				}),
+				msgs::InboundOnionPayload::BlindedForward(next_hop_data) => {
+					Ok(Hop::BlindedForward {
+						shared_secret,
+						next_hop_data,
+						next_hop_hmac,
+						new_packet_bytes,
+					})
+				},
+				_ => {
+					if blinding_point.is_some() {
+						return Err(OnionDecodeErr::Malformed {
+							err_msg:
+								"Final Node OnionHopData provided for us as an intermediary node",
+							err_code: INVALID_ONION_BLINDING,
+						});
+					}
+					Err(OnionDecodeErr::Relay {
+						err_msg: "Final Node OnionHopData provided for us as an intermediary node",
+						err_code: 0x4000 | 22,
+						shared_secret,
+					})
+				},
 			}
 		},
 		Ok((next_hop_data, None)) => match next_hop_data {
-			msgs::InboundOnionPayload::Receive(payload) => Ok(Hop::Receive(payload)),
-			msgs::InboundOnionPayload::BlindedReceive(payload) => Ok(Hop::BlindedReceive(payload)),
-			_ => Err(OnionDecodeErr::Relay {
-				err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-				err_code: 0x4000 | 22,
-			}),
+			msgs::InboundOnionPayload::Receive(hop_data) => {
+				Ok(Hop::Receive { shared_secret, hop_data })
+			},
+			msgs::InboundOnionPayload::BlindedReceive(hop_data) => {
+				Ok(Hop::BlindedReceive { shared_secret, hop_data })
+			},
+			_ => {
+				if blinding_point.is_some() {
+					return Err(OnionDecodeErr::Malformed {
+						err_msg: "Intermediate Node OnionHopData provided for us as a final node",
+						err_code: INVALID_ONION_BLINDING,
+					});
+				}
+				Err(OnionDecodeErr::Relay {
+					err_msg: "Intermediate Node OnionHopData provided for us as a final node",
+					err_code: 0x4000 | 22,
+					shared_secret,
+				})
+			},
 		},
 		Err(e) => Err(e),
 	}
@@ -1646,6 +1709,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data",
 				err_code: error_code,
+				shared_secret: SharedSecret::from_bytes(shared_secret),
 			});
 		},
 		Ok(msg) => {
@@ -1654,6 +1718,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
 					err_code: 0x4000 | 22,
+					shared_secret: SharedSecret::from_bytes(shared_secret),
 				});
 			}
 			if hmac == [0; 32] {

@@ -1561,7 +1561,7 @@ fn route_blinding_spec_test_vector() {
 	let bob_node_signer = TestEcdhSigner { node_secret: bob_secret };
 	// Can't use the public API here as we need to avoid the CLTV delta checks (test vector uses
 	// < MIN_CLTV_EXPIRY_DELTA).
-	let (bob_peeled_onion, _, next_packet_details_opt) =
+	let (bob_peeled_onion, next_packet_details_opt) =
 		match onion_payment::decode_incoming_update_add_htlc_onion(
 			&bob_update_add, &bob_node_signer, &logger, &secp_ctx
 		) {
@@ -1571,7 +1571,7 @@ fn route_blinding_spec_test_vector() {
 	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::BlindedForward {
 		next_hop_data: msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
-		}, next_hop_hmac, new_packet_bytes
+		}, next_hop_hmac, new_packet_bytes, ..
 	} = bob_peeled_onion {
 		assert_eq!(short_channel_id, 1729);
 		assert!(next_blinding_override.is_none());
@@ -1595,7 +1595,7 @@ fn route_blinding_spec_test_vector() {
 		carol_onion
 	);
 	let carol_node_signer = TestEcdhSigner { node_secret: carol_secret };
-	let (carol_peeled_onion, _, next_packet_details_opt) =
+	let (carol_peeled_onion, next_packet_details_opt) =
 		match onion_payment::decode_incoming_update_add_htlc_onion(
 			&carol_update_add, &carol_node_signer, &logger, &secp_ctx
 		) {
@@ -1605,7 +1605,7 @@ fn route_blinding_spec_test_vector() {
 	let (dave_packet_bytes, dave_hmac) = if let onion_utils::Hop::BlindedForward {
 		next_hop_data: msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
-		}, next_hop_hmac, new_packet_bytes
+		}, next_hop_hmac, new_packet_bytes, ..
 	} = carol_peeled_onion {
 		assert_eq!(short_channel_id, 1105);
 		assert_eq!(next_blinding_override, Some(pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f")));
@@ -1629,7 +1629,7 @@ fn route_blinding_spec_test_vector() {
 		dave_onion
 	);
 	let dave_node_signer = TestEcdhSigner { node_secret: dave_secret };
-	let (dave_peeled_onion, _, next_packet_details_opt) =
+	let (dave_peeled_onion, next_packet_details_opt) =
 		match onion_payment::decode_incoming_update_add_htlc_onion(
 			&dave_update_add, &dave_node_signer, &logger, &secp_ctx
 		) {
@@ -1639,7 +1639,7 @@ fn route_blinding_spec_test_vector() {
 	let (eve_packet_bytes, eve_hmac) = if let onion_utils::Hop::BlindedForward {
 		next_hop_data: msgs::InboundOnionBlindedForwardPayload {
 			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
-		}, next_hop_hmac, new_packet_bytes
+		}, next_hop_hmac, new_packet_bytes, ..
 	} = dave_peeled_onion {
 		assert_eq!(short_channel_id, 561);
 		assert!(next_blinding_override.is_none());

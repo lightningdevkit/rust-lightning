@@ -822,6 +822,7 @@ pub trait ChannelSigner {
 ///
 /// This indicates to [`NodeSigner::sign_invoice`] what node secret key should be used to sign
 /// the invoice.
+#[derive(Clone, Copy)]
 pub enum Recipient {
 	/// The invoice should be signed with the local node secret key.
 	Node,

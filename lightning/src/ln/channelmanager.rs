@@ -4429,8 +4429,8 @@ where
 		match decoded_hop {
 			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } => {
 				let inbound_onion_payload = match decoded_hop {
-					onion_utils::Hop::Receive(hop_data) => msgs::InboundOnionPayload::Receive(hop_data),
-					onion_utils::Hop::BlindedReceive(hop_data) => msgs::InboundOnionPayload::BlindedReceive(hop_data),
+					onion_utils::Hop::Receive { hop_data, .. } => msgs::InboundOnionPayload::Receive(hop_data),
+					onion_utils::Hop::BlindedReceive { hop_data, .. } => msgs::InboundOnionPayload::BlindedReceive(hop_data),
 					_ => unreachable!()
 				};
 
@@ -4450,14 +4450,14 @@ where
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes, .. } => {
 				match create_fwd_pending_htlc_info(msg, msgs::InboundOnionPayload::Forward(next_hop_data), next_hop_hmac,
 					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			onion_utils::Hop::BlindedForward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+			onion_utils::Hop::BlindedForward { next_hop_data, next_hop_hmac, new_packet_bytes, .. } => {
 				match create_fwd_pending_htlc_info(msg, msgs::InboundOnionPayload::BlindedForward(next_hop_data), next_hop_hmac,
 					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
@@ -5685,7 +5685,7 @@ where
 			let mut htlc_forwards = Vec::new();
 			let mut htlc_fails = Vec::new();
 			for update_add_htlc in &update_add_htlcs {
-				let (next_hop, shared_secret, next_packet_details_opt) = match decode_incoming_update_add_htlc_onion(
+				let (next_hop, next_packet_details_opt) = match decode_incoming_update_add_htlc_onion(
 					&update_add_htlc, &*self.node_signer, &*self.logger, &self.secp_ctx
 				) {
 					Ok(decoded_onion) => decoded_onion,
@@ -5697,6 +5697,7 @@ where
 
 				let is_intro_node_blinded_forward = next_hop.is_intro_node_blinded_forward();
 				let outgoing_scid_opt = next_packet_details_opt.as_ref().map(|d| d.outgoing_scid);
+				let shared_secret = next_hop.shared_secret().secret_bytes();
 
 				// Process the HTLC on the incoming channel.
 				match self.do_funded_channel_callback(incoming_scid, |chan: &mut FundedChannel<SP>| {
@@ -5855,10 +5856,9 @@ where
 										if let PendingHTLCRouting::Forward { ref onion_packet, .. } = routing {
 											let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
 											if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.chain_hash) {
-												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(
-													phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac,
-													payment_hash, None, &*self.node_signer
+													Recipient::PhantomNode, &onion_packet.public_key.unwrap(), &onion_packet.hop_data,
+													onion_packet.hmac, payment_hash, None, &*self.node_signer
 												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
@@ -5869,15 +5869,17 @@ where
 														// of the onion.
 														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret }) => {
+														let phantom_shared_secret = shared_secret.secret_bytes();
 														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 													},
 												};
-												let inbound_onion_payload = match next_hop {
-													onion_utils::Hop::Receive(hop_data) => msgs::InboundOnionPayload::Receive(hop_data),
-													onion_utils::Hop::BlindedReceive(hop_data) => msgs::InboundOnionPayload::BlindedReceive(hop_data),
+												let (inbound_onion_payload, shared_secret) = match next_hop {
+													onion_utils::Hop::Receive { hop_data, shared_secret } => (msgs::InboundOnionPayload::Receive(hop_data), shared_secret),
+													onion_utils::Hop::BlindedReceive { hop_data, shared_secret } => (msgs::InboundOnionPayload::BlindedReceive(hop_data), shared_secret),
 													_ => panic!()
 												};
+												let phantom_shared_secret = shared_secret.secret_bytes();
 												let current_height: u32 = self.best_block.read().unwrap().height;
 												match create_recv_pending_htlc_info(inbound_onion_payload,
 													incoming_shared_secret, payment_hash, outgoing_amt_msat,
