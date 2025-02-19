@@ -33,7 +33,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
+use crate::blinded_path::message::{self, AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
@@ -10598,8 +10598,12 @@ where
 			.map(|(node_id, _)| *node_id)
 			.collect::<Vec<_>>();
 
+		let recipient_tlvs = message::ReceiveTlvs {
+			context: Some(context)
+		};
+
 		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.create_blinded_paths(recipient, recipient_tlvs, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
@@ -10626,8 +10630,12 @@ where
 			})
 			.collect::<Vec<_>>();
 
+		let recipient_tlvs = message::ReceiveTlvs {
+			context: Some(MessageContext::Offers(context))
+		};
+
 		self.message_router
-			.create_compact_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
+			.create_compact_blinded_paths(recipient, recipient_tlvs, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 

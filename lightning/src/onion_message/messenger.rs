@@ -186,7 +186,7 @@ where
 /// # use bitcoin::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::EmptyNodeIdLookUp;
-/// # use lightning::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext};
+/// # use lightning::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext, ReceiveTlvs};
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions, OnionMessagePath, OnionMessenger};
@@ -213,7 +213,7 @@ where
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _recipient_tlvs: ReceiveTlvs, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedMessagePath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -268,8 +268,10 @@ where
 /// 	MessageForwardNode { node_id: hop_node_id3, short_channel_id: None },
 /// 	MessageForwardNode { node_id: hop_node_id4, short_channel_id: None },
 /// ];
-/// let context = MessageContext::Custom(Vec::new());
-/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, context, &keys_manager, &secp_ctx).unwrap();
+/// let recipient_tlvs = ReceiveTlvs {
+///		context: Some(MessageContext::Custom(Vec::new())),
+///	};
+/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, recipient_tlvs, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -491,7 +493,7 @@ pub trait MessageRouter {
 	/// Creates [`BlindedMessagePath`]s to the `recipient` node. The nodes in `peers` are assumed to
 	/// be direct peers with the `recipient`.
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
+		&self, recipient: PublicKey, recipient_tlvs: ReceiveTlvs, peers: Vec<PublicKey>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()>;
 
@@ -509,14 +511,14 @@ pub trait MessageRouter {
 	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
 	/// ignoring the short channel ids.
 	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>,
+		&self, recipient: PublicKey, recipient_tlvs: ReceiveTlvs, peers: Vec<MessageForwardNode>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let peers = peers
 			.into_iter()
 			.map(|MessageForwardNode { node_id, short_channel_id: _ }| node_id)
 			.collect();
-		self.create_blinded_paths(recipient, context, peers, secp_ctx)
+		self.create_blinded_paths(recipient, recipient_tlvs, peers, secp_ctx)
 	}
 }
 
@@ -551,7 +553,7 @@ where
 		I: ExactSizeIterator<Item = MessageForwardNode>,
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: I,
+		network_graph: &G, recipient: PublicKey, recipient_tlvs: ReceiveTlvs, peers: I,
 		entropy_source: &ES, secp_ctx: &Secp256k1<T>, compact_paths: bool,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		// Limit the number of blinded paths that are computed.
@@ -591,7 +593,13 @@ where
 		let paths = peer_info
 			.into_iter()
 			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(&[peer], recipient, context.clone(), entropy, secp_ctx)
+				BlindedMessagePath::new(
+					&[peer],
+					recipient,
+					recipient_tlvs.clone(),
+					entropy,
+					secp_ctx,
+				)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -600,8 +608,14 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
-					BlindedMessagePath::new(&[], recipient, context, &**entropy_source, secp_ctx)
-						.map(|path| vec![path])
+					BlindedMessagePath::new(
+						&[],
+						recipient,
+						recipient_tlvs,
+						&**entropy_source,
+						secp_ctx,
+					)
+					.map(|path| vec![path])
 				} else {
 					Err(())
 				}
@@ -659,15 +673,15 @@ where
 	}
 
 	pub(crate) fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+		network_graph: &G, recipient: PublicKey, recipient_tlvs: ReceiveTlvs,
+		peers: Vec<PublicKey>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let peers =
 			peers.into_iter().map(|node_id| MessageForwardNode { node_id, short_channel_id: None });
 		Self::create_blinded_paths_from_iter(
 			network_graph,
 			recipient,
-			context,
+			recipient_tlvs,
 			peers.into_iter(),
 			entropy_source,
 			secp_ctx,
@@ -676,13 +690,13 @@ where
 	}
 
 	pub(crate) fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		network_graph: &G, recipient: PublicKey, context: MessageContext,
+		network_graph: &G, recipient: PublicKey, recipient_tlvs: ReceiveTlvs,
 		peers: Vec<MessageForwardNode>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		Self::create_blinded_paths_from_iter(
 			network_graph,
 			recipient,
-			context,
+			recipient_tlvs,
 			peers.into_iter(),
 			entropy_source,
 			secp_ctx,
@@ -704,13 +718,13 @@ where
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
+		&self, recipient: PublicKey, recipient_tlvs: ReceiveTlvs, peers: Vec<PublicKey>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		Self::create_blinded_paths(
 			&self.network_graph,
 			recipient,
-			context,
+			recipient_tlvs,
 			peers,
 			&self.entropy_source,
 			secp_ctx,
@@ -718,13 +732,13 @@ where
 	}
 
 	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>,
+		&self, recipient: PublicKey, recipient_tlvs: ReceiveTlvs, peers: Vec<MessageForwardNode>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		Self::create_compact_blinded_paths(
 			&self.network_graph,
 			recipient,
-			context,
+			recipient_tlvs,
 			peers,
 			&self.entropy_source,
 			secp_ctx,
@@ -1404,8 +1418,10 @@ where
 				.collect::<Vec<_>>()
 		};
 
+		let recipient_tlvs = ReceiveTlvs { context: Some(context) };
+
 		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
+			.create_blinded_paths(recipient, recipient_tlvs, peers, secp_ctx)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| SendError::PathNotFound)
 	}
