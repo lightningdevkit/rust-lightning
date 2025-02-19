@@ -1303,6 +1303,16 @@ where
 		self.offers_handler = offers_handler;
 	}
 
+	#[cfg(test)]
+	pub(crate) fn set_async_payments_handler(&mut self, async_payments_handler: APH) {
+		self.async_payments_handler = async_payments_handler;
+	}
+
+	// #[cfg(test)]
+	// pub(crate) fn set_dns_resolver_handler(&mut self, dns_resolver_handler: DRH) {
+	//   self.dns_resolver_handler = dns_resolver_handler;
+	// }
+
 	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
 	pub fn send_onion_message<T: OnionMessageContents>(
 		&self, contents: T, instructions: MessageSendInstructions,
