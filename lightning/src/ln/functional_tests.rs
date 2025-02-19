@@ -769,7 +769,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
 			&mut htlcs,
-			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
+			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};
@@ -1512,7 +1512,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			commit_tx_keys.clone(),
 			feerate_per_kw,
 			&mut vec![(accepted_htlc_info, ())],
-			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
+			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
 	};

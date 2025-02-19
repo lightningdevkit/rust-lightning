@@ -136,7 +136,9 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 			per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let channel_context =
 			peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().context();
-		(channel_context.get_funding_txo(), channel_context.get_channel_type().clone())
+		let channel_funding =
+			peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().funding();
+		(channel_funding.get_funding_txo(), channel_context.get_channel_type().clone())
 	};
 
 	let channel_transaction_parameters = ChannelTransactionParameters {
@@ -183,7 +185,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		signature: channel
 			.context
 			.get_initial_counterparty_commitment_signature_for_test(
-				&channel.funding,
+				&mut channel.funding,
 				&&logger_a,
 				channel_transaction_parameters,
 				accept_channel_v2_msg.common_fields.first_per_commitment_point,

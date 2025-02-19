@@ -506,7 +506,7 @@ impl ChannelDetails {
 				},
 				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(funding),
 			},
-			funding_txo: context.get_funding_txo(),
+			funding_txo: funding.get_funding_txo(),
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
 			channel_type: if context.have_received_message() {
@@ -531,8 +531,8 @@ impl ChannelDetails {
 			user_channel_id: context.get_user_id(),
 			confirmations_required: context.minimum_depth(),
 			confirmations: Some(context.get_funding_tx_confirmations(best_block_height)),
-			force_close_spend_delay: context.get_counterparty_selected_contest_delay(),
-			is_outbound: context.is_outbound(),
+			force_close_spend_delay: funding.get_counterparty_selected_contest_delay(),
+			is_outbound: funding.is_outbound(),
 			is_channel_ready: context.is_usable(),
 			is_usable: context.is_live(),
 			is_announced: context.should_announce(),
