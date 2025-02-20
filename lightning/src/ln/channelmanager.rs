@@ -87,7 +87,7 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
-use crate::offers::flow::OffersMessageFlow;
+use crate::offers::flow::{InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY,
 };
@@ -5277,6 +5277,14 @@ where
 	#[cfg(async_payments)]
 	pub fn static_invoice_persisted(&self, invoice_persisted_path: Responder) {
 		self.flow.static_invoice_persisted(invoice_persisted_path);
+	}
+
+	/// Forwards a [`StaticInvoice`] in response to an [`Event::StaticInvoiceRequested`].
+	#[cfg(async_payments)]
+	pub fn send_static_invoice(
+		&self, invoice: StaticInvoice, responder: Responder,
+	) -> Result<(), Bolt12SemanticError> {
+		self.flow.enqueue_static_invoice(invoice, responder)
 	}
 
 	#[cfg(async_payments)]
@@ -13355,7 +13363,17 @@ where
 				};
 
 				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
-					Ok(invoice_request) => invoice_request,
+					Ok(InvreqResponseInstructions::SendInvoice(invoice_request)) => invoice_request,
+					Ok(InvreqResponseInstructions::SendStaticInvoice {
+						recipient_id: _recipient_id, invoice_id: _invoice_id
+					}) => {
+						#[cfg(async_payments)]
+						self.pending_events.lock().unwrap().push_back((Event::StaticInvoiceRequested {
+							recipient_id: _recipient_id, invoice_id: _invoice_id, reply_path: responder
+						}, None));
+
+						return None
+					},
 					Err(_) => return None,
 				};
 
