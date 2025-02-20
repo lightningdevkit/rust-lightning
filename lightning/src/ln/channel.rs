@@ -4731,13 +4731,12 @@ fn estimate_v2_funding_transaction_fee(
 #[cfg(splicing)]
 pub(super) fn check_v2_funding_inputs_sufficient(
 	contribution_amount: i64, funding_inputs: &[(TxIn, Transaction, Weight)], is_initiator: bool,
-	extra_common_input_weight: Option<Weight>, funding_feerate_sat_per_1000_weight: u32,
+	is_splice: bool, funding_feerate_sat_per_1000_weight: u32,
 ) -> Result<u64, ChannelError> {
 	let mut total_input_witness_weight = Weight::from_wu(funding_inputs.iter().map(|(_, _, w)| w.to_wu()).sum());
-	if is_initiator {
-		if let Some(extra) = extra_common_input_weight {
-			total_input_witness_weight += extra;
-		}
+	if is_initiator && is_splice {
+		// consider the weight of the witness needed for spending the old funding transaction
+		total_input_witness_weight += Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
 	}
 	let estimated_fee = estimate_v2_funding_transaction_fee(is_initiator, funding_inputs.len(), total_input_witness_weight, funding_feerate_sat_per_1000_weight);
 
@@ -8471,8 +8470,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		// Check that inputs are sufficient to cover our contribution.
 		// Extra common weight is the weight for spending the old funding
-		let extra_input_weight = Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT);
-		let _fee = check_v2_funding_inputs_sufficient(our_funding_contribution_satoshis, &our_funding_inputs, true, Some(extra_input_weight), funding_feerate_per_kw)
+		let _fee = check_v2_funding_inputs_sufficient(our_funding_contribution_satoshis, &our_funding_inputs, true, true, funding_feerate_per_kw)
 			.map_err(|err| APIError::APIMisuseError { err: format!(
 				"Insufficient inputs for splicing; channel ID {}, err {}",
 				self.context.channel_id(), err,
@@ -12976,9 +12974,7 @@ mod tests {
 	#[cfg(splicing)]
 	#[test]
 	fn test_check_v2_funding_inputs_sufficient() {
-		use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 		use crate::ln::channel::check_v2_funding_inputs_sufficient;
-		use bitcoin::Weight;
 
 		// positive case, inputs well over intended contribution
 		assert_eq!(
@@ -12989,7 +12985,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				true,
-				Some(Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT)),
+				true,
 				2000,
 			).unwrap(),
 			1948,
@@ -13003,7 +12999,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				true,
-				Some(Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT)),
+				true,
 				2000,
 			);
 			assert_eq!(
@@ -13023,7 +13019,7 @@ mod tests {
 						funding_input_sats(100_000),
 					],
 					true,
-					Some(Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT)),
+					true,
 					2000,
 				).unwrap(),
 				expected_fee,
@@ -13039,7 +13035,7 @@ mod tests {
 					funding_input_sats(100_000),
 				],
 				true,
-				Some(Weight::from_wu(FUNDING_TRANSACTION_WITNESS_WEIGHT)),
+				true,
 				2200,
 			);
 			assert_eq!(
@@ -13059,7 +13055,7 @@ mod tests {
 						funding_input_sats(100_000),
 					],
 					false,
-					None,
+					false,
 					2000,
 				).unwrap(),
 				expected_fee,
