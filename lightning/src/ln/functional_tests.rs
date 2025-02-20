@@ -217,9 +217,8 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 
 		let channel = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
 		assert!(channel.is_unfunded_v1());
-		let chan_context = channel.context_mut();
-		chan_context.holder_selected_channel_reserve_satoshis = 0;
-		chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
+		channel.funding_mut().holder_selected_channel_reserve_satoshis = 0;
+		channel.context_mut().holder_max_htlc_value_in_flight_msat = 100_000_000;
 	}
 
 	let funding_tx = sign_funding_transaction(&nodes[0], &nodes[1], 100_000, temp_channel_id);
