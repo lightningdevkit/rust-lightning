@@ -4415,7 +4415,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
 	fn get_funding_signed_msg<L: Deref>(
-		&mut self, logger: &L, counterparty_initial_commitment_tx: CommitmentTransaction
+		&mut self, channel_parameters: &ChannelTransactionParameters, logger: &L,
+		counterparty_initial_commitment_tx: CommitmentTransaction,
 	) -> Option<msgs::FundingSigned> where L::Target: Logger {
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
@@ -4426,7 +4427,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let signature = match &self.holder_signer {
 			// TODO (arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_counterparty_commitment(
-				&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx
+				channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx
 			).ok(),
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -4515,7 +4516,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		match self.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
-				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
+				let channel_parameters = &funding.channel_transaction_parameters;
+				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
 					.map_err(|_| ChannelError::Close(
 						(
@@ -6592,7 +6594,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let funding_signed = if self.context.signer_pending_funding && !self.funding.is_outbound() {
 			let counterparty_keys = self.context.build_remote_transaction_keys(&self.funding);
 			let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number + 1, &counterparty_keys, false, false, logger).tx;
-			self.context.get_funding_signed_msg(logger, counterparty_initial_commitment_tx)
+			self.context.get_funding_signed_msg(&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx)
 		} else { None };
 		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
 		// funding.
@@ -8572,6 +8574,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					}
 
 					let res = ecdsa.sign_counterparty_commitment(
+							&self.funding.channel_transaction_parameters,
 							&commitment_stats.tx,
 							commitment_stats.inbound_htlc_preimages,
 							commitment_stats.outbound_htlc_preimages,
@@ -9045,7 +9048,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let signature = match &self.context.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
+				let channel_parameters = &self.funding.channel_transaction_parameters;
+				ecdsa.sign_counterparty_commitment(channel_parameters, &counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
 					.map(|(sig, _)| sig).ok()
 			},
 			// TODO (taproot|arik)
@@ -9496,7 +9500,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			Err(err) => return Err((self, err)),
 		};
 
-		let funding_signed = self.context.get_funding_signed_msg(logger, counterparty_initial_commitment_tx);
+		let funding_signed = self.context.get_funding_signed_msg(
+			&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx
+		);
 
 		log_info!(logger, "{} funding_signed for peer for channel {}",
 			if funding_signed.is_some() { "Generated" } else { "Waiting for signature on" }, &self.context.channel_id());

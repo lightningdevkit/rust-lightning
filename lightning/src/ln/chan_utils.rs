@@ -931,6 +931,11 @@ impl ChannelTransactionParameters {
 		}
 	}
 
+	/// Returns the counterparty's pubkeys.
+	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
+		self.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
+	}
+
 	#[cfg(test)]
 	pub fn test_dummy(channel_value_satoshis: u64) -> Self {
 		let dummy_keys = ChannelPublicKeys {

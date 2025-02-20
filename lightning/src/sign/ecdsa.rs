@@ -15,7 +15,7 @@ use crate::types::payment::PaymentPreimage;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::sign::{ChannelSigner, HTLCDescriptor};
+use crate::sign::{ChannelSigner, ChannelTransactionParameters, HTLCDescriptor};
 
 /// A trait to sign Lightning channel transactions as described in
 /// [BOLT 3](https://github.com/lightning/bolts/blob/master/03-transactions.md).
@@ -53,7 +53,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_counterparty_commitment(
-		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
 	/// Creates a signature for a holder's commitment transaction.

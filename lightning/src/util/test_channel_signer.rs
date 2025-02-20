@@ -229,10 +229,11 @@ impl ChannelSigner for TestChannelSigner {
 
 impl EcdsaChannelSigner for TestChannelSigner {
 	fn sign_counterparty_commitment(
-		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()> {
-		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
+		self.verify_counterparty_commitment_tx(channel_parameters, commitment_tx, secp_ctx);
 
 		{
 			#[cfg(test)]
@@ -266,6 +267,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		Ok(self
 			.inner
 			.sign_counterparty_commitment(
+				channel_parameters,
 				commitment_tx,
 				inbound_htlc_preimages,
 				outbound_htlc_preimages,
@@ -530,13 +532,14 @@ impl TaprootChannelSigner for TestChannelSigner {
 
 impl TestChannelSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(
-		&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>,
 	) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx
 			.verify(
-				&self.inner.get_channel_parameters().unwrap().as_counterparty_broadcastable(),
-				self.inner.counterparty_pubkeys().unwrap(),
-				self.inner.pubkeys(),
+				&channel_parameters.as_counterparty_broadcastable(),
+				channel_parameters.counterparty_pubkeys().unwrap(),
+				&channel_parameters.holder_pubkeys,
 				secp_ctx,
 			)
 			.expect("derived different per-tx keys or built transaction")

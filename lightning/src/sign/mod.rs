@@ -1390,15 +1390,16 @@ const MISSING_PARAMS_ERR: &'static str =
 
 impl EcdsaChannelSigner for InMemorySigner {
 	fn sign_counterparty_commitment(
-		&self, commitment_tx: &CommitmentTransaction,
-		_inbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &CommitmentTransaction, _inbound_htlc_preimages: Vec<PaymentPreimage>,
 		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()> {
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_keys =
+			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let channel_funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 
@@ -1406,16 +1407,14 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let commitment_sig = built_tx.sign_counterparty_commitment(
 			&self.funding_key,
 			&channel_funding_redeemscript,
-			self.channel_value_satoshis,
+			channel_parameters.channel_value_satoshis,
 			secp_ctx,
 		);
 		let commitment_txid = built_tx.txid;
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
 		for htlc in commitment_tx.htlcs() {
-			let channel_parameters = self.get_channel_parameters().expect(MISSING_PARAMS_ERR);
-			let holder_selected_contest_delay =
-				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
+			let holder_selected_contest_delay = channel_parameters.holder_selected_contest_delay;
 			let chan_type = &channel_parameters.channel_type_features;
 			let htlc_tx = chan_utils::build_htlc_transaction(
 				&commitment_txid,
