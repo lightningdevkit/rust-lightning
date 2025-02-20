@@ -412,8 +412,9 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_counterparty_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, htlc_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignCounterpartyHtlcTransaction) {
@@ -421,6 +422,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 		Ok(EcdsaChannelSigner::sign_counterparty_htlc_transaction(
 			&self.inner,
+			channel_parameters,
 			htlc_tx,
 			input,
 			amount,

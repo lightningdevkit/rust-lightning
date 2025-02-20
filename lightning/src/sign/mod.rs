@@ -1610,25 +1610,27 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	fn sign_counterparty_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, htlc_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let htlc_key =
 			chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key);
 		let revocation_pubkey = RevocationKey::from_basepoint(
 			&secp_ctx,
-			&self.pubkeys().revocation_basepoint,
+			&channel_parameters.holder_pubkeys.revocation_basepoint,
 			&per_commitment_point,
 		);
-		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let counterparty_keys =
+			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let counterparty_htlcpubkey = HtlcKey::from_basepoint(
 			&secp_ctx,
 			&counterparty_keys.htlc_basepoint,
 			&per_commitment_point,
 		);
-		let htlc_basepoint = self.pubkeys().htlc_basepoint;
+		let htlc_basepoint = channel_parameters.holder_pubkeys.htlc_basepoint;
 		let htlcpubkey = HtlcKey::from_basepoint(&secp_ctx, &htlc_basepoint, &per_commitment_point);
-		let chan_type = self.channel_type_features().expect(MISSING_PARAMS_ERR);
+		let chan_type = &channel_parameters.channel_type_features;
 		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(
 			&htlc,
 			chan_type,
