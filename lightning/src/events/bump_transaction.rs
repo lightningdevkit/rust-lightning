@@ -956,7 +956,7 @@ mod tests {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: 42_000_000,
 					keys_id: [42; 32],
-					transaction_parameters: ChannelTransactionParameters::test_dummy(),
+					transaction_parameters: ChannelTransactionParameters::test_dummy(42_000_000),
 				},
 				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
 			},

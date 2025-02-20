@@ -171,6 +171,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		is_outbound_from_holder: true,
 		funding_outpoint,
 		channel_type_features,
+		channel_value_satoshis: funding_satoshis,
 	};
 
 	channel

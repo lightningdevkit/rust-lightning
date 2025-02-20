@@ -58,7 +58,7 @@ use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::types::payment::PaymentPreimage;
-use crate::util::ser::Writeable;
+use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
@@ -127,7 +127,7 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(8, revocation_pubkey, required),
 	(10, channel_keys_id, required),
 	(12, channel_value_satoshis, required),
-	(13, channel_transaction_parameters, option),
+	(13, channel_transaction_parameters, (option: ReadableArgs, channel_value_satoshis.0.unwrap())),
 });
 
 pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
@@ -196,7 +196,7 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 	(2, output, required),
 	(4, channel_keys_id, required),
 	(6, channel_value_satoshis, required),
-	(7, channel_transaction_parameters, option),
+	(7, channel_transaction_parameters, (option: ReadableArgs, channel_value_satoshis.0.unwrap())),
 });
 
 /// Describes the necessary information to spend a spendable output.
@@ -562,7 +562,7 @@ pub struct ChannelDerivationParameters {
 impl_writeable_tlv_based!(ChannelDerivationParameters, {
 	(0, value_satoshis, required),
 	(2, keys_id, required),
-	(4, transaction_parameters, required),
+	(4, transaction_parameters, (required: ReadableArgs, value_satoshis.0.unwrap())),
 });
 
 /// A descriptor used to sign for a commitment transaction's HTLC output.

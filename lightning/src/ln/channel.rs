@@ -2597,7 +2597,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 					pubkeys: counterparty_pubkeys,
 				}),
 				funding_outpoint: None,
-				channel_type_features: channel_type.clone()
+				channel_type_features: channel_type.clone(),
+				channel_value_satoshis,
 			},
 			funding_transaction: None,
 		};
@@ -2832,7 +2833,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
 				funding_outpoint: None,
-				channel_type_features: channel_type.clone()
+				channel_type_features: channel_type.clone(),
+				channel_value_satoshis,
 			},
 			funding_transaction: None,
 		};
@@ -10512,7 +10514,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let mut channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
+		let mut channel_parameters: ChannelTransactionParameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -10657,6 +10659,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// ChannelTransactionParameters may have had an empty features set upon deserialization.
 		// To account for that, we're proactively setting/overriding the field here.
 		channel_parameters.channel_type_features = chan_features.clone();
+		// ChannelTransactionParameters::channel_value_satoshis defaults to 0 prior to version 0.2.
+		channel_parameters.channel_value_satoshis = channel_value_satoshis;
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
