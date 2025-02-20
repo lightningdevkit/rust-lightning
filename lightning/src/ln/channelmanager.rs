@@ -4281,6 +4281,60 @@ where
 		}
 	}
 
+	/// See [`splice_channel`]
+	#[cfg(splicing)]
+	fn internal_splice_channel(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
+		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
+		funding_feerate_per_kw: u32, locktime: Option<u32>,
+	) -> (Result<(), APIError>, NotifyOption) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) }) {
+			Ok(p) => p,
+			Err(e) => return (Err(e), NotifyOption::SkipPersistNoEvents),
+		};
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(*channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let locktime = locktime.unwrap_or(self.current_best_block().height);
+				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
+					let msg = match chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs, funding_feerate_per_kw, locktime) {
+						Ok(m) => m,
+						Err(e) => return (Err(e), NotifyOption::SkipPersistNoEvents),
+					};
+
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
+						node_id: *counterparty_node_id,
+						msg,
+					});
+
+					(Ok(()), NotifyOption::SkipPersistHandleEvents)
+				} else {
+					(Err(APIError::ChannelUnavailable {
+						err: format!(
+							"Channel with id {} is not funded, cannot splice it",
+							channel_id
+						)
+					}), NotifyOption::SkipPersistNoEvents)
+				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				(Err(APIError::ChannelUnavailable {
+					err: format!(
+						"Channel with id {} not found for the passed counterparty node_id {}",
+						channel_id, counterparty_node_id,
+					)
+				}), NotifyOption::SkipPersistNoEvents)
+			},
+		}
+	}
+
 	/// Initiate a splice, to change the channel capacity of an existing funded channel.
 	/// After completion of splicing, the funding transaction will be replaced by a new one, spending the old funding transaction,
 	/// with optional extra inputs (splice-in) and/or extra outputs (splice-out or change).
@@ -4300,60 +4354,11 @@ where
 	) -> Result<(), APIError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let per_peer_state = self.per_peer_state.read().unwrap();
-
-			let peer_state_mutex = match per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) }) {
-				Ok(p) => p,
-				Err(e) => {
-					res = Err(e);
-					return NotifyOption::SkipPersistNoEvents;
-				}
-			};
-
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-
-			// Look for the channel
-			match peer_state.channel_by_id.entry(*channel_id) {
-				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					let locktime = locktime.unwrap_or(self.current_best_block().height);
-					if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-						let msg = match chan.splice_channel(our_funding_contribution_satoshis, our_funding_inputs.clone(), funding_feerate_per_kw, locktime) {
-							Ok(m) => m,
-							Err(e) => {
-								res = Err(e);
-								return NotifyOption::SkipPersistNoEvents;
-							}
-						};
-
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
-							node_id: *counterparty_node_id,
-							msg,
-						});
-
-						res = Ok(());
-						NotifyOption::SkipPersistHandleEvents
-					} else {
-						res = Err(APIError::ChannelUnavailable {
-							err: format!(
-								"Channel with id {} is not funded, cannot splice it",
-								channel_id
-							)
-						});
-						NotifyOption::SkipPersistNoEvents
-					}
-				},
-				hash_map::Entry::Vacant(_) => {
-					res = Err(APIError::ChannelUnavailable {
-						err: format!(
-							"Channel with id {} not found for the passed counterparty node_id {}",
-							channel_id, counterparty_node_id,
-						)
-					});
-					NotifyOption::SkipPersistNoEvents
-				},
-			}
+			let (result, notify_option) = self.internal_splice_channel(
+				channel_id, counterparty_node_id, our_funding_contribution_satoshis, &our_funding_inputs, funding_feerate_per_kw, locktime
+			);
+			res = result;
+			notify_option
 		});
 		res
 	}
