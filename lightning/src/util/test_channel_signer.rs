@@ -332,8 +332,9 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedHtlc) {
@@ -341,6 +342,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 		Ok(EcdsaChannelSigner::sign_justice_revoked_htlc(
 			&self.inner,
+			channel_parameters,
 			justice_tx,
 			input,
 			amount,

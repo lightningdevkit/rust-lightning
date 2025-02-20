@@ -1537,8 +1537,9 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let revocation_key = chan_utils::derive_private_revocation_key(
 			&secp_ctx,
@@ -1548,11 +1549,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
 		let revocation_pubkey = RevocationKey::from_basepoint(
 			&secp_ctx,
-			&self.pubkeys().revocation_basepoint,
+			&channel_parameters.holder_pubkeys.revocation_basepoint,
 			&per_commitment_point,
 		);
 		let witness_script = {
-			let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+			let counterparty_keys =
+				channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 			let counterparty_htlcpubkey = HtlcKey::from_basepoint(
 				&secp_ctx,
 				&counterparty_keys.htlc_basepoint,
@@ -1560,13 +1562,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 			);
 			let holder_htlcpubkey = HtlcKey::from_basepoint(
 				&secp_ctx,
-				&self.pubkeys().htlc_basepoint,
+				&channel_parameters.holder_pubkeys.htlc_basepoint,
 				&per_commitment_point,
 			);
-			let chan_type = self.channel_type_features().expect(MISSING_PARAMS_ERR);
 			chan_utils::get_htlc_redeemscript_with_explicit_keys(
 				&htlc,
-				chan_type,
+				&channel_parameters.channel_type_features,
 				&counterparty_htlcpubkey,
 				&holder_htlcpubkey,
 				&revocation_pubkey,
