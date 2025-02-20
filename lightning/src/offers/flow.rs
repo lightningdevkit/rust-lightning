@@ -426,6 +426,26 @@ fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
 		});
 }
 
+/// Instructions for how to respond to an `InvoiceRequest`.
+pub enum InvreqResponseInstructions {
+	/// We are the recipient of this payment, and a [`Bolt12Invoice`] should be sent in response to
+	/// the invoice request since it is now verified.
+	SendInvoice(VerifiedInvoiceRequest),
+	/// We are a static invoice server and should respond to this invoice request by retrieving the
+	/// [`StaticInvoice`] corresponding to the `recipient_id` and `invoice_id` and calling
+	/// `OffersMessageFlow::enqueue_static_invoice`.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	SendStaticInvoice {
+		/// An identifier for the async recipient for whom we are serving [`StaticInvoice`]s.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		recipient_id: Vec<u8>,
+		/// An identifier for the specific invoice being requested by the payer.
+		invoice_id: u128,
+	},
+}
+
 impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
@@ -443,13 +463,28 @@ where
 	/// - The verification process (via recipient context data or metadata) fails.
 	pub fn verify_invoice_request(
 		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
-	) -> Result<VerifiedInvoiceRequest, ()> {
+	) -> Result<InvreqResponseInstructions, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		let nonce = match context {
 			None if invoice_request.metadata().is_some() => None,
 			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
+			#[cfg(async_payments)]
+			Some(OffersContext::StaticInvoiceRequested {
+				recipient_id,
+				invoice_id,
+				path_absolute_expiry,
+			}) => {
+				if path_absolute_expiry < self.duration_since_epoch() {
+					return Err(());
+				}
+
+				return Ok(InvreqResponseInstructions::SendStaticInvoice {
+					recipient_id,
+					invoice_id,
+				});
+			},
 			_ => return Err(()),
 		};
 
@@ -460,7 +495,7 @@ where
 			None => invoice_request.verify_using_metadata(expanded_key, secp_ctx),
 		}?;
 
-		Ok(invoice_request)
+		Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
 	}
 
 	/// Verifies a [`Bolt12Invoice`] using the provided [`OffersContext`] or the invoice's payer metadata,
@@ -1066,6 +1101,26 @@ where
 				&mut pending_offers_messages,
 			);
 		}
+
+		Ok(())
+	}
+
+	/// Forwards a [`StaticInvoice`] over the provided `responder`.
+	#[cfg(async_payments)]
+	pub(crate) fn enqueue_static_invoice(
+		&self, invoice: StaticInvoice, responder: Responder,
+	) -> Result<(), Bolt12SemanticError> {
+		let duration_since_epoch = self.duration_since_epoch();
+		if invoice.is_expired_no_std(duration_since_epoch) {
+			return Err(Bolt12SemanticError::AlreadyExpired);
+		}
+		if invoice.is_offer_expired_no_std(duration_since_epoch) {
+			return Err(Bolt12SemanticError::AlreadyExpired);
+		}
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		let message = OffersMessage::StaticInvoice(invoice);
+		pending_offers_messages.push((message, responder.respond().into_instructions()));
 
 		Ok(())
 	}
