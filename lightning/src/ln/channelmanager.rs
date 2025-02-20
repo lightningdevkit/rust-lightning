@@ -4286,7 +4286,9 @@ where
 	/// After completion of splicing, the funding transaction will be replaced by a new one, spending the old funding transaction,
 	/// with optional extra inputs (splice-in) and/or extra outputs (splice-out or change).
 	/// TODO(splicing): Implementation is currently incomplete.
+	///
 	/// Note: Currently only splice-in is supported (increase in channel capacity), splice-out is not.
+	///
 	/// - our_funding_contribution_satoshis: the amount contributed by us to the channel. This will increase our channel balance.
 	/// - our_funding_inputs: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
@@ -9556,17 +9558,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					match chan.splice_init(msg) {
-						Ok(splice_ack_msg) => {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
-								node_id: *counterparty_node_id,
-								msg: splice_ack_msg,
-							});
-						},
-						Err(err) => {
-							try_channel_entry!(self, peer_state, Err(err), chan_entry)
-						}
-					}
+					let splice_ack_msg = try_channel_entry!(self, peer_state, chan.splice_init(msg), chan_entry);
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
+						node_id: *counterparty_node_id,
+						msg: splice_ack_msg,
+					});
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot be spliced".to_owned(), msg.channel_id));
 				}
@@ -9601,12 +9597,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					match chan.splice_ack(msg) {
-						Ok(_) => {}
-						Err(err) => {
-							try_channel_entry!(self, peer_state, Err(err), chan_entry)
-						}
-					}
+					try_channel_entry!(self, peer_state, chan.splice_ack(msg), chan_entry);
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
 				}
@@ -11903,7 +11894,7 @@ where
 			let persist = match &res {
 				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
-				Ok(()) => NotifyOption::SkipPersistNoEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
 			};
 			let _ = handle_error!(self, res, counterparty_node_id);
 			persist
@@ -11917,7 +11908,7 @@ where
 			let persist = match &res {
 				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
-				Ok(()) => NotifyOption::SkipPersistNoEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
 			};
 			let _ = handle_error!(self, res, counterparty_node_id);
 			persist

@@ -8519,15 +8519,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		if !self.context.is_live() {
-			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not live")));
-		}
-
 		// - If it has received shutdown:
 		//   MUST send a warning and close the connection or send an error
 		//   and fail the channel.
-		if self.context.channel_state.is_remote_shutdown_sent() {
-			return Err(ChannelError::close("Got splice_init when channel was not in an operational state".to_owned()));
+		if !self.context.is_live() {
+			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not live")));
 		}
 
 		if their_funding_contribution_satoshis.saturating_add(our_funding_contribution_satoshis) < 0 {
