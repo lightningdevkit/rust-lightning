@@ -11722,7 +11722,7 @@ mod tests {
 					&chan.context.holder_signer.as_ref().pubkeys().funding_pubkey,
 					chan.funding.counterparty_funding_pubkey()
 				);
-				let holder_sig = signer.sign_holder_commitment(&holder_commitment_tx, &secp_ctx).unwrap();
+				let holder_sig = signer.sign_holder_commitment(&chan.funding.channel_transaction_parameters, &holder_commitment_tx, &secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&<Vec<u8>>::from_hex($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
 
 				let funding_redeemscript = chan.funding.get_funding_redeemscript();

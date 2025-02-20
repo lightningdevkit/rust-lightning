@@ -277,13 +277,15 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignHolderCommitment) {
 			return Err(());
 		}
-		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
+		let trusted_tx =
+			self.verify_holder_commitment_tx(channel_parameters, commitment_tx, secp_ctx);
 		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
 		if state.last_holder_revoked_commitment - 1 != commitment_number
@@ -294,14 +296,18 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
 			}
 		}
-		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
+		Ok(self.inner.sign_holder_commitment(channel_parameters, commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
+		Ok(self
+			.inner
+			.unsafe_sign_holder_commitment(channel_parameters, commitment_tx, secp_ctx)
+			.unwrap())
 	}
 
 	fn sign_justice_revoked_output(
@@ -546,13 +552,14 @@ impl TestChannelSigner {
 	}
 
 	fn verify_holder_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(
-		&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>,
 	) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx
 			.verify(
-				&self.inner.get_channel_parameters().unwrap().as_holder_broadcastable(),
-				self.inner.pubkeys(),
-				self.inner.counterparty_pubkeys().unwrap(),
+				&channel_parameters.as_holder_broadcastable(),
+				&channel_parameters.holder_pubkeys,
+				channel_parameters.counterparty_pubkeys().unwrap(),
 				secp_ctx,
 			)
 			.expect("derived different per-tx keys or built transaction")
