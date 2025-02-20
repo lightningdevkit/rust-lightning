@@ -8435,7 +8435,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
+		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
