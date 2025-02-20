@@ -311,7 +311,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		#[cfg(test)]
@@ -320,6 +321,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		}
 		Ok(EcdsaChannelSigner::sign_justice_revoked_output(
 			&self.inner,
+			channel_parameters,
 			justice_tx,
 			input,
 			amount,

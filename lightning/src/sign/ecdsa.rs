@@ -112,7 +112,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Create a signature for the given input in a transaction spending a commitment transaction

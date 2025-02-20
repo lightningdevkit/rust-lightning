@@ -3517,8 +3517,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
 			self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 
+		let channel_parameters = &self.onchain_tx_handler.channel_transaction_parameters;
 		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
-			&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)?;
+			&channel_parameters, &justice_tx, input_idx, value, &per_commitment_key,
+			&self.onchain_tx_handler.secp_ctx,
+		)?;
 		justice_tx.input[input_idx].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(sig));
 		justice_tx.input[input_idx].witness.push(&[1u8]);
 		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());

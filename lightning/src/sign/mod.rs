@@ -1492,7 +1492,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let revocation_key = chan_utils::derive_private_revocation_key(
@@ -1503,13 +1504,13 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
 		let revocation_pubkey = RevocationKey::from_basepoint(
 			&secp_ctx,
-			&self.pubkeys().revocation_basepoint,
+			&channel_parameters.holder_pubkeys.revocation_basepoint,
 			&per_commitment_point,
 		);
 		let witness_script = {
-			let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
-			let holder_selected_contest_delay =
-				self.holder_selected_contest_delay().expect(MISSING_PARAMS_ERR);
+			let counterparty_keys =
+				channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+			let holder_selected_contest_delay = channel_parameters.holder_selected_contest_delay;
 			let counterparty_delayedpubkey = DelayedPaymentKey::from_basepoint(
 				&secp_ctx,
 				&counterparty_keys.delayed_payment_basepoint,
