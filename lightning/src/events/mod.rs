@@ -1511,11 +1511,11 @@ pub enum Event {
 	#[cfg(async_payments)]
 	PersistStaticInvoice {
 		/// The invoice that should be persisted and later provided to payers when handling a future
-		/// `Event::StaticInvoiceRequested`.
+		/// [`Event::StaticInvoiceRequested`].
 		invoice: StaticInvoice,
 		/// An identifier for the recipient, originally surfaced in
 		/// [`ChannelManager::blinded_paths_for_async_recipient`]. When an
-		/// `Event::StaticInvoiceRequested` comes in for this invoice, this id will be surfaced so the
+		/// [`Event::StaticInvoiceRequested`] comes in for this invoice, this id will be surfaced so the
 		/// persisted invoice can be retrieved from the database.
 		recipient_id_nonce: Nonce,
 		/// Once the [`StaticInvoice`] is persisted, [`ChannelManager::static_invoice_persisted`] should
@@ -1525,6 +1525,34 @@ pub enum Event {
 		/// [`ChannelManager::static_invoice_persisted`]: crate::ln::channelmanager::ChannelManager::static_invoice_persisted
 		/// [`Offer`]: crate::offers::offer::Offer
 		invoice_persisted_paths: Vec<BlindedMessagePath>,
+	},
+	/// We received an [`InvoiceRequest`] on behalf of an often-offline recipient for whom we are
+	/// serving [`StaticInvoice`]s.
+	///
+	/// This event will only be generated if we previously created paths using
+	/// [`ChannelManager::blinded_paths_for_async_recipient`] and configured the recipient with them
+	/// via [`UserConfig::paths_to_static_invoice_server`].
+	///
+	/// If we previously persisted a [`StaticInvoice`] from an [`Event::PersistStaticInvoice`] that
+	/// matches the contained [`Event::StaticInvoiceRequested::recipient_id_nonce`], that
+	/// invoice should be retrieved now and forwarded to the payer via
+	/// [`ChannelManager::send_static_invoice`].
+	///
+	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`ChannelManager::send_static_invoice`]: crate::ln::channelmanager::ChannelManager::send_static_invoice
+	#[cfg(async_payments)]
+	StaticInvoiceRequested {
+		/// An identifier for the recipient previously surfaced in
+		/// [`Event::PersistStaticInvoice::recipient_id_nonce`]. Useful to retrieve the [`StaticInvoice`]
+		/// requested by the payer.
+		recipient_id_nonce: Nonce,
+		/// The path over which the [`StaticInvoice`] will be sent to the payer, which should be
+		/// provided to [`ChannelManager::send_static_invoice`] along with the invoice.
+		///
+		/// [`ChannelManager::send_static_invoice`]: crate::ln::channelmanager::ChannelManager::send_static_invoice
+		reply_path: BlindedMessagePath,
 	},
 }
 
@@ -1866,6 +1894,14 @@ impl Writeable for Event {
 					(0, invoice, required),
 					(2, recipient_id_nonce, required),
 					(4, invoice_persisted_paths, required),
+				});
+			},
+			#[cfg(async_payments)]
+			&Event::StaticInvoiceRequested { ref recipient_id_nonce, ref reply_path } => {
+				47u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, recipient_id_nonce, required),
+					(2, reply_path, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -2393,6 +2429,20 @@ impl MaybeReadable for Event {
 						invoice: _init_tlv_based_struct_field!(invoice, required),
 						recipient_id_nonce: _init_tlv_based_struct_field!(recipient_id_nonce, required),
 						invoice_persisted_paths: _init_tlv_based_struct_field!(invoice_persisted_paths, required),
+					}))
+				};
+				f()
+			},
+			#[cfg(async_payments)]
+			47u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, recipient_id_nonce, required),
+						(2, reply_path, required),
+					});
+					Ok(Some(Event::StaticInvoiceRequested {
+						recipient_id_nonce: _init_tlv_based_struct_field!(recipient_id_nonce, required),
+						reply_path: _init_tlv_based_struct_field!(reply_path, required),
 					}))
 				};
 				f()

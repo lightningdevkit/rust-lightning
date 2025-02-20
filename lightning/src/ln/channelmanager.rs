@@ -4944,6 +4944,27 @@ where
 		Ok(())
 	}
 
+	/// Forwards a [`StaticInvoice`] that was previously persisted by us from an
+	/// [`Event::PersistStaticInvoice`], in response to an [`Event::StaticInvoiceRequested`].
+	#[cfg(async_payments)]
+	pub fn send_static_invoice(
+		&self, invoice: StaticInvoice, path: BlindedMessagePath
+	) -> Result<(), ()> {
+		let duration_since_epoch = self.duration_since_epoch();
+		if invoice.is_expired_no_std(duration_since_epoch) { return Err(()) }
+		if invoice.is_offer_expired_no_std(duration_since_epoch) { return Err(()) }
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+
+		let message = OffersMessage::StaticInvoice(invoice);
+		// TODO include reply path for invoice error
+		let instructions = MessageSendInstructions::WithoutReplyPath {
+			destination: Destination::BlindedPath(path),
+		};
+		pending_offers_messages.push((message, instructions));
+
+		Ok(())
+	}
+
 	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
@@ -12533,6 +12554,25 @@ where
 				let nonce = match context {
 					None if invoice_request.metadata().is_some() => None,
 					Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
+					#[cfg(async_payments)]
+					Some(OffersContext::StaticInvoiceRequested {
+						recipient_id_nonce, nonce, hmac, path_absolute_expiry
+					}) => {
+						// TODO: vet invreq more?
+						if signer::verify_async_recipient_invreq_context(nonce, hmac, expanded_key).is_err() {
+							return None
+						}
+						if path_absolute_expiry < self.duration_since_epoch() {
+							return None
+						}
+
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push_back((Event::StaticInvoiceRequested {
+							recipient_id_nonce, reply_path: responder.reply_path().clone()
+						}, None));
+
+						return None
+					},
 					_ => return None,
 				};
 

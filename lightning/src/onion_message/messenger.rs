@@ -428,6 +428,11 @@ impl Responder {
 			context: Some(context),
 		}
 	}
+
+	#[cfg(async_payments)]
+	pub(crate) fn reply_path(&self) -> &BlindedMessagePath {
+		&self.reply_path
+	}
 }
 
 /// Instructions for how and where to send the response to an onion message.
