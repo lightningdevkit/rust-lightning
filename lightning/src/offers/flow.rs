@@ -406,6 +406,14 @@ fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
 		});
 }
 
+///
+pub enum InvreqResponseInstructions {
+	///
+	SendInvoice(VerifiedInvoiceRequest),
+	///
+	SendStaticInvoice(Nonce),
+}
+
 impl<MR: Deref> OffersMessageFlow<MR>
 where
 	MR::Target: MessageRouter,
@@ -423,13 +431,31 @@ where
 	/// - The verification process (via recipient context data or metadata) fails.
 	pub fn verify_invoice_request(
 		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
-	) -> Result<VerifiedInvoiceRequest, ()> {
+	) -> Result<InvreqResponseInstructions, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		let nonce = match context {
 			None if invoice_request.metadata().is_some() => None,
 			Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
+			#[cfg(async_payments)]
+			Some(OffersContext::StaticInvoiceRequested {
+				recipient_id_nonce,
+				nonce,
+				hmac,
+				path_absolute_expiry,
+			}) => {
+				// TODO: vet invreq more?
+				if signer::verify_async_recipient_invreq_context(nonce, hmac, expanded_key).is_err()
+				{
+					return Err(());
+				}
+				if path_absolute_expiry < self.duration_since_epoch() {
+					return Err(());
+				}
+
+				return Ok(InvreqResponseInstructions::SendStaticInvoice(recipient_id_nonce));
+			},
 			_ => return Err(()),
 		};
 
@@ -440,7 +466,7 @@ where
 			None => invoice_request.verify_using_metadata(expanded_key, secp_ctx),
 		}?;
 
-		Ok(invoice_request)
+		Ok(InvreqResponseInstructions::SendInvoice(invoice_request))
 	}
 
 	/// Verifies a [`Bolt12Invoice`] using the provided [`OffersContext`] or the invoice's own metadata,
@@ -1071,6 +1097,28 @@ where
 				&mut pending_offers_messages,
 			);
 		}
+
+		Ok(())
+	}
+
+	/// Forwards a [`StaticInvoice`] that was previously persisted by us from an
+	/// [`Event::PersistStaticInvoice`], in response to an [`Event::StaticInvoiceRequested`].
+	#[cfg(async_payments)]
+	pub fn enqueue_static_invoice(
+		&self, invoice: StaticInvoice, responder: Responder,
+	) -> Result<(), Bolt12SemanticError> {
+		let duration_since_epoch = self.duration_since_epoch();
+		if invoice.is_expired_no_std(duration_since_epoch) {
+			return Err(Bolt12SemanticError::AlreadyExpired);
+		}
+		if invoice.is_offer_expired_no_std(duration_since_epoch) {
+			return Err(Bolt12SemanticError::AlreadyExpired);
+		}
+
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		let message = OffersMessage::StaticInvoice(invoice);
+		// TODO include reply path for invoice error
+		pending_offers_messages.push((message, responder.respond().into_instructions()));
 
 		Ok(())
 	}
