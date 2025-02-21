@@ -1666,14 +1666,19 @@ impl InteractiveTxConstructor {
 /// Determine whether a change output should be added or not, and if so, of what size,
 /// considering our given inputs, outputs, and intended contribution.
 /// Computes and takes into account fees.
-/// Return value is the value computed for the change output (in satoshis),
-/// or None if a change is not needed/possible.
+/// Three outcomes are possible:
+/// - Inputs are sufficient for intended contribution, fees, and a larger-than-dust change:
+///   Ok(Some(change_amount))
+/// - Inputs are sufficient for intended contribution and fees, but not for a change:
+///   Ok(None)
+/// - Insputs are not sufficent to cover contribution and fees:
+///   Err(AbortReason::InsufficientFees)
 #[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 pub(super) fn calculate_change_output_value(
 	is_initiator: bool, our_contribution: u64, funding_inputs_prev_outputs: &Vec<&TxOut>,
 	funding_outputs: &Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
 	holder_dust_limit_satoshis: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, AbortReason> {
 	let our_funding_inputs_weight =
 		funding_inputs_prev_outputs.iter().fold(0u64, |weight, prev_output| {
 			weight.saturating_add(estimate_input_weight(prev_output).to_wu())
@@ -1696,13 +1701,19 @@ pub(super) fn calculate_change_output_value(
 		funding_inputs_prev_outputs.iter().map(|out| out.value.to_sat()).sum();
 
 	// Note: in case of additional outputs, they will have to be subtracted here
-	let remaining_value =
-		total_input_satoshis.saturating_sub(our_contribution).saturating_sub(fees_sats);
 
-	if remaining_value <= holder_dust_limit_satoshis {
-		None
+	let min_contribution_and_fees = our_contribution.saturating_add(fees_sats);
+	let min_contribution_and_fees_and_dust = min_contribution_and_fees.saturating_add(holder_dust_limit_satoshis);
+	if total_input_satoshis < min_contribution_and_fees {
+		// Not enough to cover contribution plus fees
+		Err(AbortReason::InsufficientFees)
+	} else if total_input_satoshis < min_contribution_and_fees_and_dust {
+		// Enough to cover contribution plus fees, but leftover is below dust limit
+		Ok(None)
 	} else {
-		Some(remaining_value)
+		// Enough to have over-dust change
+		let remaining_value = total_input_satoshis.saturating_sub(min_contribution_and_fees);
+		Ok(Some(remaining_value))
 	}
 }
 
@@ -2666,7 +2677,7 @@ mod tests {
 				funding_feerate_sat_per_1000_weight,
 				300,
 			);
-			assert_eq!(res.unwrap(), gross_change - fees - common_fees);
+			assert_eq!(res.unwrap().unwrap(), gross_change - fees - common_fees);
 		}
 		{
 			// There is leftover for change, without common fees
@@ -2678,7 +2689,7 @@ mod tests {
 				funding_feerate_sat_per_1000_weight,
 				300,
 			);
-			assert_eq!(res.unwrap(), gross_change - fees);
+			assert_eq!(res.unwrap().unwrap(), gross_change - fees);
 		}
 		{
 			// Larger fee, smaller change
@@ -2690,7 +2701,7 @@ mod tests {
 				9000,
 				300,
 			);
-			assert_eq!(res.unwrap(), 14384);
+			assert_eq!(res.unwrap().unwrap(), 14384);
 		}
 		{
 			// Insufficient inputs, no leftover
@@ -2702,7 +2713,7 @@ mod tests {
 				funding_feerate_sat_per_1000_weight,
 				300,
 			);
-			assert!(res.is_none());
+			assert_eq!(res.err().unwrap(), AbortReason::InsufficientFees);
 		}
 		{
 			// Very small leftover
@@ -2714,7 +2725,7 @@ mod tests {
 				funding_feerate_sat_per_1000_weight,
 				300,
 			);
-			assert!(res.is_none());
+			assert!(res.unwrap().is_none());
 		}
 		{
 			// Small leftover, but not dust
@@ -2726,7 +2737,7 @@ mod tests {
 				funding_feerate_sat_per_1000_weight,
 				100,
 			);
-			assert_eq!(res.unwrap(), 154);
+			assert_eq!(res.unwrap().unwrap(), 154);
 		}
 	}
 }
