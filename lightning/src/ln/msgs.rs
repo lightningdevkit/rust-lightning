@@ -455,8 +455,8 @@ pub type SerialId = u64;
 pub struct Stfu {
 	/// The channel ID where quiescence is intended
 	pub channel_id: ChannelId,
-	/// Initiator flag, 1 if initiating, 0 if replying to an stfu.
-	pub initiator: u8,
+	/// Initiator flag, true if initiating, false if replying to an stfu.
+	pub initiator: bool,
 }
 
 /// A `splice_init` message to be sent by or received from the stfu initiator (splice initiator).
@@ -4112,10 +4112,17 @@ mod tests {
 	fn encoding_stfu() {
 		let stfu = msgs::Stfu {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			initiator: 1,
+			initiator: true,
 		};
 		let encoded_value = stfu.encode();
 		assert_eq!(encoded_value.as_hex().to_string(), "020202020202020202020202020202020202020202020202020202020202020201");
+
+		let stfu = msgs::Stfu {
+			channel_id: ChannelId::from_bytes([3; 32]),
+			initiator: false,
+		};
+		let encoded_value = stfu.encode();
+		assert_eq!(encoded_value.as_hex().to_string(), "030303030303030303030303030303030303030303030303030303030303030300");
 	}
 
 	#[test]

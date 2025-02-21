@@ -978,7 +978,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	lock_fundings!(nodes);
 
 	let chan_a = nodes[0].list_usable_channels()[0].short_channel_id.unwrap();
+	let chan_a_id = nodes[0].list_usable_channels()[0].channel_id;
 	let chan_b = nodes[2].list_usable_channels()[0].short_channel_id.unwrap();
+	let chan_b_id = nodes[2].list_usable_channels()[0].channel_id;
 
 	let mut p_id: u8 = 0;
 	let mut p_idx: u64 = 0;
@@ -1036,6 +1038,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							*node_id == a_id
 						},
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						events::MessageSendEvent::SendStfu { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1101,7 +1107,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
-										out.locked_write(format!("Delivering update_add_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_add_htlc from node {} to node {}.\n", $node, idx).as_bytes());
 										if !$corrupt_forward {
 											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), update_add);
 										} else {
@@ -1116,19 +1122,19 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										}
 									}
 									for update_fulfill in update_fulfill_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fulfill_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fulfill_htlc from node {} to node {}.\n", $node, idx).as_bytes());
 										dest.handle_update_fulfill_htlc(nodes[$node].get_our_node_id(), update_fulfill);
 									}
 									for update_fail in update_fail_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fail_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fail_htlc from node {} to node {}.\n", $node, idx).as_bytes());
 										dest.handle_update_fail_htlc(nodes[$node].get_our_node_id(), update_fail);
 									}
 									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
-										out.locked_write(format!("Delivering update_fail_malformed_htlc to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fail_malformed_htlc from node {} to node {}.\n", $node, idx).as_bytes());
 										dest.handle_update_fail_malformed_htlc(nodes[$node].get_our_node_id(), update_fail_malformed);
 									}
 									if let Some(msg) = update_fee {
-										out.locked_write(format!("Delivering update_fee to node {}.\n", idx).as_bytes());
+										out.locked_write(format!("Delivering update_fee from node {} to node {}.\n", $node, idx).as_bytes());
 										dest.handle_update_fee(nodes[$node].get_our_node_id(), &msg);
 									}
 									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
@@ -1145,7 +1151,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										} });
 										break;
 									}
-									out.locked_write(format!("Delivering commitment_signed to node {}.\n", idx).as_bytes());
+									out.locked_write(format!("Delivering commitment_signed from node {} to node {}.\n", $node, idx).as_bytes());
 									dest.handle_commitment_signed(nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
@@ -1154,7 +1160,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering revoke_and_ack to node {}.\n", idx).as_bytes());
+									out.locked_write(format!("Delivering revoke_and_ack from node {} to node {}.\n", $node, idx).as_bytes());
 									dest.handle_revoke_and_ack(nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -1162,11 +1168,19 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
-									out.locked_write(format!("Delivering channel_reestablish to node {}.\n", idx).as_bytes());
+									out.locked_write(format!("Delivering channel_reestablish from node {} to node {}.\n", $node, idx).as_bytes());
 									dest.handle_channel_reestablish(nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
+						events::MessageSendEvent::SendStfu { ref node_id, ref msg } => {
+							for (idx, dest) in nodes.iter().enumerate() {
+								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering stfu from node {} to node {}.\n", $node, idx).as_bytes());
+									dest.handle_stfu(nodes[$node].get_our_node_id(), msg);
+								}
+							}
+						}
 						events::MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
 						},
@@ -1219,6 +1233,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							events::MessageSendEvent::UpdateHTLCs { .. } => {},
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
+							events::MessageSendEvent::SendStfu { .. } => {},
 							events::MessageSendEvent::SendChannelReady { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
@@ -1245,6 +1260,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							events::MessageSendEvent::UpdateHTLCs { .. } => {},
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
+							events::MessageSendEvent::SendStfu { .. } => {},
 							events::MessageSendEvent::SendChannelReady { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
@@ -1688,6 +1704,19 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				nodes[2].maybe_update_chan_fees();
 			},
 
+			0xa0 => {
+				nodes[0].maybe_propose_quiescence(&nodes[1].get_our_node_id(), &chan_a_id).unwrap()
+			},
+			0xa1 => {
+				nodes[1].maybe_propose_quiescence(&nodes[0].get_our_node_id(), &chan_a_id).unwrap()
+			},
+			0xa2 => {
+				nodes[1].maybe_propose_quiescence(&nodes[2].get_our_node_id(), &chan_b_id).unwrap()
+			},
+			0xa3 => {
+				nodes[2].maybe_propose_quiescence(&nodes[1].get_our_node_id(), &chan_b_id).unwrap()
+			},
+
 			0xf0 => complete_monitor_update(&monitor_a, &chan_1_id, &complete_first),
 			0xf1 => complete_monitor_update(&monitor_a, &chan_1_id, &complete_second),
 			0xf2 => complete_monitor_update(&monitor_a, &chan_1_id, &Vec::pop),
@@ -1753,33 +1782,48 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					chan_b_disconnected = false;
 				}
 
-				for i in 0..std::usize::MAX {
-					if i == 100 {
-						panic!("It may take may iterations to settle the state, but it should not take forever");
-					}
-					// Then, make sure any current forwards make their way to their destination
-					if process_msg_events!(0, false, ProcessMessages::AllMessages) {
-						continue;
-					}
-					if process_msg_events!(1, false, ProcessMessages::AllMessages) {
-						continue;
-					}
-					if process_msg_events!(2, false, ProcessMessages::AllMessages) {
-						continue;
-					}
-					// ...making sure any pending PendingHTLCsForwardable events are handled and
-					// payments claimed.
-					if process_events!(0, false) {
-						continue;
-					}
-					if process_events!(1, false) {
-						continue;
-					}
-					if process_events!(2, false) {
-						continue;
-					}
-					break;
+				macro_rules! process_all_events {
+					() => {
+						for i in 0..std::usize::MAX {
+							if i == 100 {
+								panic!("It may take may iterations to settle the state, but it should not take forever");
+							}
+							// Then, make sure any current forwards make their way to their destination
+							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
+								continue;
+							}
+							if process_msg_events!(1, false, ProcessMessages::AllMessages) {
+								continue;
+							}
+							if process_msg_events!(2, false, ProcessMessages::AllMessages) {
+								continue;
+							}
+							// ...making sure any pending PendingHTLCsForwardable events are handled and
+							// payments claimed.
+							if process_events!(0, false) {
+								continue;
+							}
+							if process_events!(1, false) {
+								continue;
+							}
+							if process_events!(2, false) {
+								continue;
+							}
+							break;
+						}
+					};
 				}
+
+				// At this point, we may be pending quiescence, so we'll process all messages to
+				// ensure we can complete its handshake. We'll then exit quiescence and process all
+				// messages again, to resolve any pending HTLCs (only irrevocably committed ones)
+				// before attempting to send more payments.
+				process_all_events!();
+				nodes[0].exit_quiescence(&nodes[1].get_our_node_id(), &chan_a_id).unwrap();
+				nodes[1].exit_quiescence(&nodes[0].get_our_node_id(), &chan_a_id).unwrap();
+				nodes[1].exit_quiescence(&nodes[2].get_our_node_id(), &chan_b_id).unwrap();
+				nodes[2].exit_quiescence(&nodes[1].get_our_node_id(), &chan_b_id).unwrap();
+				process_all_events!();
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(
