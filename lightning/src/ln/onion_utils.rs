@@ -1805,18 +1805,19 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 
 
 const PAYLOAD_LEN: usize = 4;
+const FULL_PAYLOAD_LEN: usize = PAYLOAD_LEN + 1;
 const MAX_HOPS: usize = 20;
 const HMAC_LEN: usize = 4;
+const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
 
 // Adds the current node's hmacs for all possible positions to this packet.
 fn add_hmacs(shared_secret: &[u8], packet: &mut [u8]) {
-	let full_payload_len = PAYLOAD_LEN + 1; // Including the marker byte.
 	let packet_len = packet.len();
-	let hmac_count = MAX_HOPS * (MAX_HOPS + 1) / 2;
 
-	let message = &packet[..packet_len - MAX_HOPS * full_payload_len-hmac_count*HMAC_LEN];
-	let payloads = &packet[packet_len - MAX_HOPS * full_payload_len-hmac_count*HMAC_LEN..packet_len-hmac_count*HMAC_LEN];
-	let hmacs = &packet[packet_len - hmac_count*HMAC_LEN..];
+	let message = &packet[..packet_len - MAX_HOPS * FULL_PAYLOAD_LEN - HMAC_COUNT * HMAC_LEN];
+	let payloads = &packet[packet_len - MAX_HOPS * FULL_PAYLOAD_LEN - HMAC_COUNT * HMAC_LEN
+		..packet_len - HMAC_COUNT * HMAC_LEN];
+	let hmacs = &packet[packet_len - HMAC_COUNT * HMAC_LEN..];
 
 	let mut new_hmacs = vec![0u8; MAX_HOPS * HMAC_LEN];
 	let um = gen_um_from_shared_secret(&shared_secret);
@@ -1826,7 +1827,7 @@ fn add_hmacs(shared_secret: &[u8], packet: &mut [u8]) {
 		let mut hmac_engine = HmacEngine::<Sha256>::new(&um);
 
 		hmac_engine.input(&message);
-		hmac_engine.input(&payloads[..(position + 1) * full_payload_len]);
+		hmac_engine.input(&payloads[..(position + 1) * FULL_PAYLOAD_LEN]);
 		write_downstream_hmacs(position, MAX_HOPS, hmacs, &mut hmac_engine);
 
 		let full_hmac = Hmac::from_engine(hmac_engine).to_byte_array();
@@ -1835,7 +1836,7 @@ fn add_hmacs(shared_secret: &[u8], packet: &mut [u8]) {
 		new_hmacs[i * HMAC_LEN..(i + 1) * HMAC_LEN].copy_from_slice(hmac);
 	}
 
-	let processed_hmacs = &mut packet[packet_len - hmac_count*HMAC_LEN..];
+	let processed_hmacs = &mut packet[packet_len - HMAC_COUNT * HMAC_LEN..];
 	processed_hmacs[..new_hmacs.len()].copy_from_slice(&new_hmacs);
 }
 
@@ -1854,6 +1855,62 @@ pub fn write_downstream_hmacs(
         hmac_idx += block_size;
     }
 }
+
+
+fn process_failure_packet(packet: &[u8], shared_secret: &[u8], payload: &[u8; 4]) -> Vec<u8> {
+	println!("Failure packet: {}", log_bytes!(&packet));
+
+	// Create new packet.
+	let mut processed_packet = vec![0; packet.len()];
+
+	// Copy message.
+	let message = &packet[..packet.len() - MAX_HOPS * FULL_PAYLOAD_LEN - HMAC_COUNT * HMAC_LEN];
+	processed_packet[..packet.len() - MAX_HOPS * FULL_PAYLOAD_LEN - HMAC_COUNT * HMAC_LEN].copy_from_slice(message);
+
+	println!("Message: {}", log_bytes!(&message));
+
+	// Shift payloads right.
+	{
+		let payloads = &packet[packet.len() - MAX_HOPS * FULL_PAYLOAD_LEN - HMAC_COUNT * HMAC_LEN..packet.len()-HMAC_COUNT*HMAC_LEN];
+		let processed_payloads = &mut processed_packet[packet.len() - MAX_HOPS * FULL_PAYLOAD_LEN - HMAC_COUNT * HMAC_LEN..packet.len()-HMAC_COUNT*HMAC_LEN];
+		processed_payloads[FULL_PAYLOAD_LEN..].copy_from_slice(&payloads[..payloads.len()-FULL_PAYLOAD_LEN]);
+
+		// Add this node's payload.
+		processed_payloads[1..1+PAYLOAD_LEN].copy_from_slice(payload);
+	}
+
+	// Shift hmacs right.
+	{
+		let hmacs = &packet[packet.len() - HMAC_COUNT*HMAC_LEN..];
+		let processed_hmacs = &mut processed_packet[packet.len() - HMAC_COUNT*HMAC_LEN..];
+
+		let mut src_idx = HMAC_COUNT - 2;
+		let mut dest_idx = HMAC_COUNT - 1;
+		let mut copy_len = 1;
+
+		for i in 0..MAX_HOPS - 1 {
+			processed_hmacs[dest_idx * HMAC_LEN..(dest_idx + copy_len) * HMAC_LEN].
+				copy_from_slice(&hmacs[src_idx * HMAC_LEN..(src_idx + copy_len) * HMAC_LEN]);
+
+			// Break at last iteration to prevent underflow when updating indices.
+			if i == MAX_HOPS - 2 {
+				break;
+			}
+
+			copy_len += 1;
+			src_idx -= copy_len + 1;
+			dest_idx -= copy_len;
+		}
+	}
+
+	// Add this node's hmacs.
+	add_hmacs(&shared_secret, &mut processed_packet);
+
+	println!("Failure packet post-hmac: {}", log_bytes!(&processed_packet));
+
+	processed_packet
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -2234,6 +2291,11 @@ use crate::io;
 		let encrypted_packet = super::encrypt_failure_packet(onion_keys[4].shared_secret.as_ref(), packet_slice);
 		assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[0]);
 
+		let payload = [0, 0, 0, 2];
+		let encrypted_packet = process_failure_packet(&encrypted_packet.data, onion_keys[3].shared_secret.as_ref(), &payload);
+		let encrypted_packet = super::encrypt_failure_packet(onion_keys[3].shared_secret.as_ref(), &encrypted_packet);
+
+		assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[1]);
 
 		// let onion_packet_1 = super::encrypt_failure_packet(
 		// 	onion_keys[4].shared_secret.as_ref(),
