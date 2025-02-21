@@ -9,22 +9,20 @@
 
 //! Various wrapper types (most around 32-byte arrays) for use in lightning.
 
+use super::channel_keys::RevocationBasepoint;
+
 use crate::chain::transaction::OutPoint;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
-use super::channel_keys::RevocationBasepoint;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use bitcoin::hashes::{
-	Hash as _,
-	HashEngine as _,
-	sha256::Hash as Sha256,
-};
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
 use bitcoin::hex::display::impl_fmt_traits;
+
 use core::borrow::Borrow;
 use core::ops::Deref;
 
@@ -56,7 +54,9 @@ impl ChannelId {
 
 	/// Create a _temporary_ channel ID randomly, based on an entropy source.
 	pub fn temporary_from_entropy_source<ES: Deref>(entropy_source: &ES) -> Self
-	where ES::Target: EntropySource {
+	where
+		ES::Target: EntropySource,
+	{
 		Self(entropy_source.get_secure_random_bytes())
 	}
 
@@ -80,16 +80,11 @@ impl ChannelId {
 	/// revocation basepoint and hashing the result. The basepoints will be concatenated in increasing
 	/// sorted order.
 	pub fn v2_from_revocation_basepoints(
-		ours: &RevocationBasepoint,
-		theirs: &RevocationBasepoint,
+		ours: &RevocationBasepoint, theirs: &RevocationBasepoint,
 	) -> Self {
 		let ours = ours.0.serialize();
 		let theirs = theirs.0.serialize();
-		let (lesser, greater) = if ours < theirs {
-			(ours, theirs)
-		} else {
-			(theirs, ours)
-		};
+		let (lesser, greater) = if ours < theirs { (ours, theirs) } else { (theirs, ours) };
 		let mut engine = Sha256::engine();
 		engine.input(&lesser[..]);
 		engine.input(&greater[..]);
@@ -98,8 +93,11 @@ impl ChannelId {
 
 	/// Create temporary _v2_ channel ID by concatenating a zeroed out basepoint with the holder
 	/// revocation basepoint and hashing the result.
-	pub fn temporary_v2_from_revocation_basepoint(our_revocation_basepoint: &RevocationBasepoint) -> Self {
-		Self(Sha256::hash(&[[0u8; 33], our_revocation_basepoint.0.serialize()].concat()).to_byte_array())
+	pub fn temporary_v2_from_revocation_basepoint(
+		our_revocation_basepoint: &RevocationBasepoint,
+	) -> Self {
+		let our_revocation_point_bytes = our_revocation_basepoint.0.serialize();
+		Self(Sha256::hash(&[[0u8; 33], our_revocation_point_bytes].concat()).to_byte_array())
 	}
 }
 
@@ -130,20 +128,17 @@ impl_fmt_traits! {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::{
-		Hash as _,
-		HashEngine as _,
-		sha256::Hash as Sha256,
-	};
-	use bitcoin::secp256k1::PublicKey;
+	use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
 	use bitcoin::hex::DisplayHex;
+	use bitcoin::secp256k1::PublicKey;
 
 	use super::ChannelId;
+
+	use crate::io;
 	use crate::ln::channel_keys::RevocationBasepoint;
+	use crate::prelude::*;
 	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;
-	use crate::prelude::*;
-	use crate::io;
 
 	use core::str::FromStr;
 
