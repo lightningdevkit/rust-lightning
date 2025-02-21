@@ -209,7 +209,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Computes the signature for a commitment transaction's anchor output used as an
 	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.

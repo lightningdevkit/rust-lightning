@@ -434,16 +434,17 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignClosingTransaction) {
 			return Err(());
 		}
 		closing_tx
-			.verify(self.inner.funding_outpoint().unwrap().into_bitcoin_outpoint())
+			.verify(channel_parameters.funding_outpoint.as_ref().unwrap().into_bitcoin_outpoint())
 			.expect("derived different closing transaction");
-		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
+		Ok(self.inner.sign_closing_transaction(channel_parameters, closing_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_holder_anchor_input(

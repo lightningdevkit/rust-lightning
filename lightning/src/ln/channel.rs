@@ -7292,7 +7292,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		where L::Target: Logger
 	{
 		let sig = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_closing_transaction(closing_tx, &self.context.secp_ctx).ok(),
+			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_closing_transaction(&self.funding.channel_transaction_parameters, closing_tx, &self.context.secp_ctx).ok(),
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
 			_ => todo!()

@@ -1161,14 +1161,6 @@ impl InMemorySigner {
 		self.get_channel_parameters().map(|params| params.is_outbound_from_holder)
 	}
 
-	/// Funding outpoint
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn funding_outpoint(&self) -> Option<&OutPoint> {
-		self.get_channel_parameters().map(|params| params.funding_outpoint.as_ref()).flatten()
-	}
-
 	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
 	/// building transactions.
 	///
@@ -1653,17 +1645,18 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	fn sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_funding_key =
-			&self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
 		let channel_funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
 		Ok(closing_tx.trust().sign(
 			&self.funding_key,
 			&channel_funding_redeemscript,
-			self.channel_value_satoshis,
+			channel_parameters.channel_value_satoshis,
 			secp_ctx,
 		))
 	}
