@@ -73,7 +73,7 @@
 //! - `DnsResolver` - supports resolving DNS names to TXT DNSSEC proofs for BIP 353 payments
 //!     (see [bLIP 32](https://github.com/lightning/blips/blob/master/blip-0032.md) for more information).
 //! - `ProvideStorage` - Indicates that we offer the capability to store data of our peers
-//! 	(see https://github.com/lightning/bolts/pull/1110 for more info).
+//! 	(see [BOLT PR #1110](https://github.com/lightning/bolts/pull/1110) for more info).
 //! - `Quiescence` - protocol to quiesce a channel by indicating that "SomeThing Fundamental is Underway"
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
 //!
