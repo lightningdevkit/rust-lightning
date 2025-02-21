@@ -690,7 +690,8 @@ where
 			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
 
 			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
-			let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
+			let channel_parameters = &anchor_descriptor.channel_derivation_parameters.transaction_parameters;
+			let anchor_sig = signer.sign_holder_anchor_input(channel_parameters, &anchor_tx, 0, &self.secp)?;
 			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
 
 			#[cfg(debug_assertions)] {

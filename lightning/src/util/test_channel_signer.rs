@@ -448,7 +448,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
+		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		debug_assert!(MIN_CHAN_DUST_LIMIT_SATOSHIS > ANCHOR_OUTPUT_VALUE_SATOSHI);
 		// As long as our minimum dust limit is enforced and is greater than our anchor output
@@ -461,7 +462,13 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::SignHolderAnchorInput) {
 			return Err(());
 		}
-		EcdsaChannelSigner::sign_holder_anchor_input(&self.inner, anchor_tx, input, secp_ctx)
+		EcdsaChannelSigner::sign_holder_anchor_input(
+			&self.inner,
+			channel_parameters,
+			anchor_tx,
+			input,
+			secp_ctx,
+		)
 	}
 
 	fn sign_channel_announcement_with_funding_key(

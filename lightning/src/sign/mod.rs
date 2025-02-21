@@ -1662,10 +1662,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
+		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let witness_script =
-			chan_utils::get_anchor_redeemscript(&self.holder_channel_pubkeys.funding_pubkey);
+			chan_utils::get_anchor_redeemscript(&channel_parameters.holder_pubkeys.funding_pubkey);
 		let sighash = sighash::SighashCache::new(&*anchor_tx)
 			.p2wsh_signature_hash(
 				input,
