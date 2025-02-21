@@ -34,6 +34,7 @@ use bitcoin::secp256k1::{self, SecretKey, PublicKey, Secp256k1, ecdsa::Signature
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::types::ChannelId;
+use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
@@ -1612,6 +1613,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the channel_id of the channel this ChannelMonitor is monitoring for.
 	pub fn channel_id(&self) -> ChannelId {
 		self.inner.lock().unwrap().channel_id()
+	}
+
+	/// Gets the channel type of the corresponding channel.
+	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
+		self.inner.lock().unwrap().channel_type_features()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -4808,6 +4814,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_info!(logger, "Received spendable output {}, spendable at height {}", log_spendable!(spendable_output), entry.confirmation_threshold());
 			self.onchain_events_awaiting_threshold_conf.push(entry);
 		}
+	}
+
+	fn channel_type_features(&self) -> ChannelTypeFeatures {
+		self.onchain_tx_handler.channel_type_features().clone()
 	}
 }
 
