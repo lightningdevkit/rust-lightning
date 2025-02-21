@@ -36,7 +36,6 @@ lightning/src/ln/reload_tests.rs
 lightning/src/ln/reorg_tests.rs
 lightning/src/ln/script.rs
 lightning/src/ln/shutdown_tests.rs
-lightning/src/ln/types.rs
 lightning/src/routing/mod.rs
 lightning/src/routing/router.rs
 lightning/src/routing/scoring.rs
