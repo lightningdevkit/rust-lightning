@@ -47,7 +47,7 @@ impl<T> TestEq for T {}
 #[allow(missing_docs)]
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
+pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
 	Warning(msgs::WarningMessage),
@@ -105,7 +105,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Custom(T),
 }
 
-impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T: core::fmt::Debug + Type + TestEq> Writeable for Message<T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&Message::Init(ref msg) => msg.write(writer),
@@ -164,7 +164,7 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 	}
 }
 
-impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T: core::fmt::Debug + Type + TestEq> Type for Message<T> {
 	/// Returns the type that was used to decode the message payload.
 	fn type_id(&self) -> u16 {
 		match self {
@@ -224,7 +224,7 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 	}
 }
 
-impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T: core::fmt::Debug + Type + TestEq> Message<T> {
 	/// Returns whether the message's type is even, indicating both endpoints must support it.
 	pub fn is_even(&self) -> bool {
 		(self.type_id() & 1) == 0
@@ -447,12 +447,12 @@ impl Type for () {
 }
 
 #[cfg(test)]
-impl<T: core::fmt::Debug + Writeable + PartialEq> Type for T where T: Encode {
+impl<T: Encode + Writeable + core::fmt::Debug + PartialEq> Type for T {
 	fn type_id(&self) -> u16 { T::TYPE }
 }
 
 #[cfg(not(test))]
-impl<T: core::fmt::Debug + Writeable> Type for T where T: Encode {
+impl<T: Encode + core::fmt::Debug + Writeable> Type for T {
 	fn type_id(&self) -> u16 { T::TYPE }
 }
 
