@@ -254,7 +254,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
 	/// closed.
 	fn sign_splicing_funding_input(
-		&self, tx: &Transaction, input_index: usize, input_value: u64,
-		secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
+		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 }

@@ -1686,12 +1686,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 	}
 
 	fn sign_splicing_funding_input(
-		&self, tx: &Transaction, input_index: usize, input_value: u64,
-		secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
+		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_funding_key =
-			&self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
 		let sighash = &sighash::SighashCache::new(tx)

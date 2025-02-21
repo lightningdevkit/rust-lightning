@@ -478,10 +478,16 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_splicing_funding_input(
-		&self, tx: &Transaction, input_index: usize, input_value: u64,
-		secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
+		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		self.inner.sign_splicing_funding_input(tx, input_index, input_value, secp_ctx)
+		self.inner.sign_splicing_funding_input(
+			channel_parameters,
+			tx,
+			input_index,
+			input_value,
+			secp_ctx,
+		)
 	}
 }
 
