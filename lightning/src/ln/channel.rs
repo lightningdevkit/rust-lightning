@@ -2172,12 +2172,17 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		};
 
 		// Optionally add change output
-		if let Some(change_value) = calculate_change_output_value(
+		let change_value_opt = calculate_change_output_value(
 			self.context.is_outbound(), self.dual_funding_context.our_funding_satoshis,
 			&funding_inputs_prev_outputs, &funding_outputs,
 			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
 			self.context.holder_dust_limit_satoshis,
-		) {
+		).map_err(|err| APIError::APIMisuseError {
+			err: format!("Insufficient inputs, cannot cover intended contribution of {} and fees; {}",
+				self.dual_funding_context.our_funding_satoshis, err
+			),
+		})?;
+		if let Some(change_value) = change_value_opt {
 			let change_script = signer_provider.get_destination_script(self.context.channel_keys_id).map_err(
 				|err| APIError::APIMisuseError {
 					err: format!("Failed to get change script as new destination script, {:?}", err),
