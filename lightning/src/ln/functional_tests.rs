@@ -165,7 +165,9 @@ pub fn test_funding_exceeds_no_wumbo_limit() {
 	use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	*node_cfgs[1].override_init_features.borrow_mut() = Some(channelmanager::provided_init_features(&test_default_channel_config()).clear_wumbo());
+	let mut features = channelmanager::provided_init_features(&test_default_channel_config());
+	features.clear_wumbo();
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

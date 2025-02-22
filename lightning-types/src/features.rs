@@ -1040,25 +1040,22 @@ impl<T: sealed::Context> Features<T> {
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	/// Unsets the `upfront_shutdown_script` feature
-	pub fn clear_upfront_shutdown_script(mut self) -> Self {
+	pub fn clear_upfront_shutdown_script(&mut self) {
 		<T as sealed::UpfrontShutdownScript>::clear_bits(&mut self.flags);
-		self
 	}
 }
 
 impl<T: sealed::ShutdownAnySegwit> Features<T> {
 	/// Unsets the `shutdown_anysegwit` feature
-	pub fn clear_shutdown_anysegwit(mut self) -> Self {
+	pub fn clear_shutdown_anysegwit(&mut self) {
 		<T as sealed::ShutdownAnySegwit>::clear_bits(&mut self.flags);
-		self
 	}
 }
 
 impl<T: sealed::Wumbo> Features<T> {
 	/// Unsets the `wumbo` feature
-	pub fn clear_wumbo(mut self) -> Self {
+	pub fn clear_wumbo(&mut self) {
 		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
-		self
 	}
 }
 

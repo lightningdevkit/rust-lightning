@@ -11241,7 +11241,8 @@ mod tests {
 
 	#[test]
 	fn upfront_shutdown_script_incompatibility() {
-		let features = channelmanager::provided_init_features(&UserConfig::default()).clear_shutdown_anysegwit();
+		let mut features = channelmanager::provided_init_features(&UserConfig::default());
+		features.clear_shutdown_anysegwit();
 		let non_v0_segwit_shutdown_script = ShutdownScript::new_witness_program(
 			&WitnessProgram::new(WitnessVersion::V16, &[0, 40]).unwrap(),
 		).unwrap();

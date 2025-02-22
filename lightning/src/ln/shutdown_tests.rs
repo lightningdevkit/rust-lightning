@@ -772,7 +772,9 @@ fn test_upfront_shutdown_script() {
 	}
 
 	// We test that if case of peer non-signaling we don't enforce committed script at channel opening
-	*nodes[0].override_init_features.borrow_mut() = Some(nodes[0].node.init_features().clear_upfront_shutdown_script());
+	let mut features = nodes[0].node.init_features();
+	features.clear_upfront_shutdown_script();
+	*nodes[0].override_init_features.borrow_mut() = Some(features);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
 	nodes[0].node.close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -824,7 +826,9 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	// Clear shutdown_anysegwit on initiator
-	*node_cfgs[0].override_init_features.borrow_mut() = Some(channelmanager::provided_init_features(&test_default_channel_config()).clear_shutdown_anysegwit());
+	let mut features = channelmanager::provided_init_features(&test_default_channel_config());
+	features.clear_shutdown_anysegwit();
+	*node_cfgs[0].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -853,7 +857,9 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	// Clear shutdown_anysegwit on responder
-	*node_cfgs[1].override_init_features.borrow_mut() = Some(channelmanager::provided_init_features(&test_default_channel_config()).clear_shutdown_anysegwit());
+	let mut features = channelmanager::provided_init_features(&test_default_channel_config());
+	features.clear_shutdown_anysegwit();
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -984,8 +990,10 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	*node_cfgs[0].override_init_features.borrow_mut() = Some(channelmanager::provided_init_features(&config).clear_shutdown_anysegwit());
-	*node_cfgs[1].override_init_features.borrow_mut() = Some(channelmanager::provided_init_features(&config).clear_shutdown_anysegwit());
+	let mut features = channelmanager::provided_init_features(&config);
+	features.clear_shutdown_anysegwit();
+	*node_cfgs[0].override_init_features.borrow_mut() = Some(features.clone());
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
