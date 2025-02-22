@@ -1702,7 +1702,8 @@ pub(super) fn calculate_change_output_value(
 	// Note: in case of additional outputs, they will have to be subtracted here
 
 	let min_contribution_and_fees = our_contribution.saturating_add(fees_sats);
-	let min_contribution_and_fees_and_dust = min_contribution_and_fees.saturating_add(holder_dust_limit_satoshis);
+	let min_contribution_and_fees_and_dust =
+		min_contribution_and_fees.saturating_add(holder_dust_limit_satoshis);
 	if total_input_satoshis < min_contribution_and_fees {
 		// Not enough to cover contribution plus fees
 		Err(AbortReason::InsufficientFees)
