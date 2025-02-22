@@ -2232,9 +2232,12 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 }
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
+	/// Prepare and start interactive transaction negotiation.
+	/// `change_destination_opt` - Optional destination for optional change; if None, default destination address is used.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
+		change_destination_opt: Option<ScriptBuf>,
 	) -> Result<Option<InteractiveTxMessageSend>, APIError>
 	where ES::Target: EntropySource
 	{
@@ -2286,10 +2289,15 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			),
 		})?;
 		if let Some(change_value) = change_value_opt {
-			let change_script = signer_provider.get_destination_script(self.context.channel_keys_id).map_err(
-				|err| APIError::APIMisuseError {
-					err: format!("Failed to get change script as new destination script, {:?}", err),
-				})?;
+			let change_script = match change_destination_opt {
+				Some(script) => script,
+				None => {
+					signer_provider.get_destination_script(self.context.channel_keys_id).map_err(
+						|err| APIError::APIMisuseError {
+							err: format!("Failed to get change script as new destination script, {:?}", err),
+						})?
+				}
+			};
 			let mut change_output = TxOut {
 				value: Amount::from_sat(change_value),
 				script_pubkey: change_script,
