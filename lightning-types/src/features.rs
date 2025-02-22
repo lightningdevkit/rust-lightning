@@ -76,6 +76,8 @@
 //! 	(see [BOLT PR #1110](https://github.com/lightning/bolts/pull/1110) for more info).
 //! - `Quiescence` - protocol to quiesce a channel by indicating that "SomeThing Fundamental is Underway"
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
+//! - `ZeroFeeCommitments` - A channel type which always uses zero transaction fee on commitment transactions.
+//! 	(see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -156,7 +158,7 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy,
+			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
 			ZeroConf,
 			// Byte 7
@@ -177,7 +179,7 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy,
+			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
@@ -242,7 +244,7 @@ mod sealed {
 		// Byte 4
 		,
 		// Byte 5
-		SCIDPrivacy,
+		SCIDPrivacy | AnchorZeroFeeCommitments,
 		// Byte 6
 		ZeroConf,
 	]);
@@ -579,6 +581,17 @@ mod sealed {
 		clear_onion_messages,
 		supports_onion_messages,
 		requires_onion_messages
+	);
+	define_feature!(
+		41,
+		AnchorZeroFeeCommitments,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_zero_fee_commitments`.",
+		set_anchor_zero_fee_commitments_optional,
+		set_anchor_zero_fee_commitments_required,
+		clear_anchor_zero_fee_commitments,
+		supports_anchor_zero_fee_commitments,
+		requires_anchor_zero_fee_commitments
 	);
 	define_feature!(
 		43,
