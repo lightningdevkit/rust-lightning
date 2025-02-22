@@ -4097,7 +4097,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
 	/// The channel value is an input as opposed to using from self, so that this can be used in case of splicing
-	/// to checks with new channel value (before being comitted to it).
+	/// to check with new channel value (before being comitted to it).
 	#[cfg(splicing)]
 	pub fn check_balance_meets_v2_reserve_requirements(&self, self_balance: u64, counterparty_balance: u64, channel_value: u64) -> Result<(), ChannelError> {
 		if self_balance > 0 {
@@ -4714,7 +4714,11 @@ pub(super) fn check_v2_funding_inputs_sufficient(
 	// If the inputs are less, but enough to cover intended contribution amount, with
 	// (lower) fees with no change, we are also fine (change will not be generated).
 	// So it's enough to check considering the lower, no-change fees.
+	//
 	// Note: dust limit is not relevant in this check.
+	//
+	// TODO(splicing): refine check including the fact wether a change will be added or not.
+	// Can be done once dual funding preparation is included.
 
 	let minimal_input_amount_needed = contribution_amount.saturating_add(estimated_fee as i64);
 	if (total_input_sats as i64) < minimal_input_amount_needed {
@@ -12987,7 +12991,7 @@ mod tests {
 			);
 			assert_eq!(
 				format!("{:?}", res.err().unwrap()),
-				"Warn : Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1410. Need more inputs.",
+				"Warn: Total input amount 100000 is lower than needed for contribution 220000, considering fees of 1410. Need more inputs.",
 			);
 		}
 
@@ -13023,7 +13027,7 @@ mod tests {
 			);
 			assert_eq!(
 				format!("{:?}", res.err().unwrap()),
-				"Warn : Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2143. Need more inputs.",
+				"Warn: Total input amount 300000 is lower than needed for contribution 298032, considering fees of 2143. Need more inputs.",
 			);
 		}
 
