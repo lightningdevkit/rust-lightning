@@ -176,16 +176,11 @@ pub struct ChannelHandshakeConfig {
 	/// counterparties that do not support the `anchors_zero_fee_htlc_tx` option; we will simply
 	/// fall back to a `static_remote_key` channel.
 	///
-	/// LDK will not support the legacy `option_anchors` commitment version due to a discovered
-	/// vulnerability after its deployment. For more context, see the [`SIGHASH_SINGLE + update_fee
-	/// Considered Harmful`] mailing list post.
-	///
 	/// Default value: `false` (This value is likely to change to `true` in the future.)
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
-	/// [`SIGHASH_SINGLE + update_fee Considered Harmful`]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html
 	pub negotiate_anchors_zero_fee_htlc_tx: bool,
 
 	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time.
