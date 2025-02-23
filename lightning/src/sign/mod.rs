@@ -164,7 +164,7 @@ impl StaticPaymentOutputDescriptor {
 	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
 	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref().and_then(|channel_params| {
-			if channel_params.supports_anchors() {
+			if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 				let payment_point = channel_params.holder_pubkeys.payment_point;
 				Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
 			} else {
@@ -177,7 +177,7 @@ impl StaticPaymentOutputDescriptor {
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
 	pub fn max_witness_length(&self) -> u64 {
-		if self.channel_transaction_parameters.as_ref().map_or(false, |p| p.supports_anchors()) {
+		if self.needs_csv_1_for_spend() {
 			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
 				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
 			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
@@ -185,6 +185,13 @@ impl StaticPaymentOutputDescriptor {
 		} else {
 			P2WPKH_WITNESS_WEIGHT
 		}
+	}
+
+	/// Returns true if spending this output requires a transaction with a CheckSequenceVerify
+	/// value of at least 1.
+	pub fn needs_csv_1_for_spend(&self) -> bool {
+		let chan_params = self.channel_transaction_parameters.as_ref();
+		chan_params.map_or(false, |p| p.channel_type_features.supports_anchors_zero_fee_htlc_tx())
 	}
 }
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
@@ -440,11 +447,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(descriptor.outpoint) {
 						return Err(());
 					}
-					let sequence = if descriptor
-						.channel_transaction_parameters
-						.as_ref()
-						.map_or(false, |p| p.supports_anchors())
-					{
+					let sequence = if descriptor.needs_csv_1_for_spend() {
 						Sequence::from_consensus(1)
 					} else {
 						Sequence::ZERO
