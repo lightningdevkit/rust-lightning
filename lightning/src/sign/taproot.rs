@@ -151,11 +151,5 @@ pub trait TaprootChannelSigner: ChannelSigner {
 		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<PartialSignature, ()>;
 
-	/// Computes the signature for a commitment transaction's anchor output used as an
-	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
-
 	// TODO: sign channel announcement
 }
