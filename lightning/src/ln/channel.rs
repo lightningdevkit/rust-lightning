@@ -2119,7 +2119,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&funding.get_holder_pubkeys().payment_point, &funding.get_counterparty_pubkeys().payment_point, funding.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let monitor_signer = signer_provider.derive_channel_signer(funding.get_value_satoshis(), context.channel_keys_id);
+		let monitor_signer = signer_provider.derive_channel_signer(context.channel_keys_id);
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
 		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
@@ -2407,8 +2407,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let channel_value_satoshis = our_funding_satoshis.saturating_add(open_channel_fields.funding_satoshis);
 
-		let channel_keys_id = signer_provider.generate_channel_keys_id(true, channel_value_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let channel_keys_id = signer_provider.generate_channel_keys_id(true, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -9004,8 +9004,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
-		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		let (funding, context) = ChannelContext::new_for_outbound_channel(
@@ -9561,8 +9561,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 	{
-		let channel_keys_id = signer_provider.generate_channel_keys_id(false, funding_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(funding_satoshis, channel_keys_id);
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
@@ -10615,7 +10615,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
-			let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+			let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 			(channel_keys_id, holder_signer)
 		} else {
 			return Err(DecodeError::InvalidValue);
@@ -10970,11 +10970,11 @@ mod tests {
 		#[cfg(taproot)]
 		type TaprootSigner = InMemorySigner;
 
-		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
+		fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()
 		}
 
-		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+		fn derive_channel_signer(&self, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 			self.signer.clone()
 		}
 
@@ -11597,7 +11597,7 @@ mod tests {
 		let logger : Arc<dyn Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
-		let mut signer = InMemorySigner::new(
+		let signer = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
@@ -11607,7 +11607,6 @@ mod tests {
 
 			// These aren't set in the test vectors:
 			[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-			10_000_000,
 			[0; 32],
 			[0; 32],
 		);

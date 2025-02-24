@@ -356,15 +356,11 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
-		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 		unreachable!();
 	}
 
-	fn derive_channel_signer(
-		&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner {
+	fn derive_channel_signer(&self, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		unreachable!();
 	}
 
@@ -1545,16 +1541,12 @@ impl SignerProvider for TestKeysInterface {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
-		&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32] {
-		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
+		self.backing.generate_channel_keys_id(inbound, user_channel_id)
 	}
 
-	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-	) -> TestChannelSigner {
-		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> TestChannelSigner {
+		let keys = self.backing.derive_channel_signer(channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		let signer =
 			TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
@@ -1611,10 +1603,8 @@ impl TestKeysInterface {
 		self
 	}
 
-	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, id: &[u8; 32],
-	) -> TestChannelSigner {
-		self.derive_channel_signer(channel_value_satoshis, *id)
+	pub fn derive_channel_keys(&self, id: &[u8; 32]) -> TestChannelSigner {
+		self.derive_channel_signer(*id)
 	}
 
 	fn make_enforcement_state_cell(

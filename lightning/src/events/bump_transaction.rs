@@ -97,10 +97,7 @@ impl AnchorDescriptor {
 	where
 		SP::Target: SignerProvider<EcdsaSigner= S>
 	{
-		signer_provider.derive_channel_signer(
-			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.keys_id,
-		)
+		signer_provider.derive_channel_signer(self.channel_derivation_parameters.keys_id)
 	}
 }
 

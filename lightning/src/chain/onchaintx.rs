@@ -383,7 +383,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			bytes_read += bytes_to_read;
 		}
 
-		let signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -1314,7 +1314,6 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
-			0,
 			[0; 32],
 			[0; 32],
 		);

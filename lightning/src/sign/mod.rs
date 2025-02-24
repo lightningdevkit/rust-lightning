@@ -709,10 +709,7 @@ impl HTLCDescriptor {
 	where
 		SP::Target: SignerProvider<EcdsaSigner = S>,
 	{
-		signer_provider.derive_channel_signer(
-			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.keys_id,
-		)
+		signer_provider.derive_channel_signer(self.channel_derivation_parameters.keys_id)
 	}
 }
 
@@ -949,9 +946,7 @@ pub trait SignerProvider {
 	/// `channel_keys_id`.
 	///
 	/// This method must return a different value each time it is called.
-	fn generate_channel_keys_id(
-		&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32];
+	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32];
 
 	/// Derives the private key material backing a `Signer`.
 	///
@@ -959,9 +954,7 @@ pub trait SignerProvider {
 	/// [`SignerProvider::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
 	/// re-derived from its `channel_keys_id`, which can be obtained through its trait method
 	/// [`ChannelSigner::channel_keys_id`].
-	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner;
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner;
 
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
@@ -1014,8 +1007,6 @@ pub struct InMemorySigner {
 	pub commitment_seed: [u8; 32],
 	/// Holder public keys and basepoints.
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
-	/// The total value of this channel.
-	channel_value_satoshis: u64,
 	/// Key derivation parameters.
 	channel_keys_id: [u8; 32],
 	/// A source of random bytes.
@@ -1031,7 +1022,6 @@ impl PartialEq for InMemorySigner {
 			&& self.htlc_base_key == other.htlc_base_key
 			&& self.commitment_seed == other.commitment_seed
 			&& self.holder_channel_pubkeys == other.holder_channel_pubkeys
-			&& self.channel_value_satoshis == other.channel_value_satoshis
 			&& self.channel_keys_id == other.channel_keys_id
 	}
 }
@@ -1046,7 +1036,6 @@ impl Clone for InMemorySigner {
 			htlc_base_key: self.htlc_base_key.clone(),
 			commitment_seed: self.commitment_seed.clone(),
 			holder_channel_pubkeys: self.holder_channel_pubkeys.clone(),
-			channel_value_satoshis: self.channel_value_satoshis,
 			channel_keys_id: self.channel_keys_id,
 			entropy_source: RandomBytes::new(self.get_secure_random_bytes()),
 		}
@@ -1058,8 +1047,7 @@ impl InMemorySigner {
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
 		payment_key: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
-		commitment_seed: [u8; 32], channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-		rand_bytes_unique_start: [u8; 32],
+		commitment_seed: [u8; 32], channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
 		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
 			secp_ctx,
@@ -1076,7 +1064,6 @@ impl InMemorySigner {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			channel_value_satoshis,
 			holder_channel_pubkeys,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
@@ -1831,9 +1818,7 @@ impl KeysManager {
 	}
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
-	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, params: &[u8; 32],
-	) -> InMemorySigner {
+	pub fn derive_channel_keys(&self, params: &[u8; 32]) -> InMemorySigner {
 		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
 		unique_start.input(params);
@@ -1885,7 +1870,6 @@ impl KeysManager {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			channel_value_satoshis,
 			params.clone(),
 			prng_seed,
 		)
@@ -1917,10 +1901,7 @@ impl KeysManager {
 					if keys_cache.is_none()
 						|| keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id
 					{
-						let signer = self.derive_channel_keys(
-							descriptor.channel_value_satoshis,
-							&descriptor.channel_keys_id,
-						);
+						let signer = self.derive_channel_keys(&descriptor.channel_keys_id);
 						keys_cache = Some((signer, descriptor.channel_keys_id));
 					}
 					let witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(
@@ -1937,10 +1918,7 @@ impl KeysManager {
 						|| keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id
 					{
 						keys_cache = Some((
-							self.derive_channel_keys(
-								descriptor.channel_value_satoshis,
-								&descriptor.channel_keys_id,
-							),
+							self.derive_channel_keys(&descriptor.channel_keys_id),
 							descriptor.channel_keys_id,
 						));
 					}
@@ -2109,9 +2087,7 @@ impl SignerProvider for KeysManager {
 	#[cfg(taproot)]
 	type TaprootSigner = InMemorySigner;
 
-	fn generate_channel_keys_id(
-		&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32] {
+	fn generate_channel_keys_id(&self, _inbound: bool, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		// `child_idx` is the only thing guaranteed to make each channel unique without a restart
 		// (though `user_channel_id` should help, depending on user behavior). If it manages to
@@ -2127,10 +2103,8 @@ impl SignerProvider for KeysManager {
 		id
 	}
 
-	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner {
-		self.derive_channel_keys(channel_value_satoshis, &channel_keys_id)
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+		self.derive_channel_keys(&channel_keys_id)
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
@@ -2250,16 +2224,12 @@ impl SignerProvider for PhantomKeysManager {
 	#[cfg(taproot)]
 	type TaprootSigner = InMemorySigner;
 
-	fn generate_channel_keys_id(
-		&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32] {
-		self.inner.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
+		self.inner.generate_channel_keys_id(inbound, user_channel_id)
 	}
 
-	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner {
-		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_id)
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+		self.inner.derive_channel_signer(channel_keys_id)
 	}
 
 	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
@@ -2303,10 +2273,8 @@ impl PhantomKeysManager {
 	}
 
 	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
-	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, params: &[u8; 32],
-	) -> InMemorySigner {
-		self.inner.derive_channel_keys(channel_value_satoshis, params)
+	pub fn derive_channel_keys(&self, params: &[u8; 32]) -> InMemorySigner {
+		self.inner.derive_channel_keys(params)
 	}
 
 	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
