@@ -699,8 +699,13 @@ impl PackageSolvingData {
 		match self {
 			PackageSolvingData::RevokedOutput(RevokedOutput { .. }) =>
 				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
-			PackageSolvingData::RevokedHTLCOutput(..) =>
-				PackageMalleability::Malleable(AggregationCluster::Pinnable),
+			PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput { htlc, .. }) => {
+				if htlc.offered {
+					PackageMalleability::Malleable(AggregationCluster::Unpinnable)
+				} else {
+					PackageMalleability::Malleable(AggregationCluster::Pinnable)
+				}
+			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) =>
 				PackageMalleability::Malleable(AggregationCluster::Unpinnable),
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) =>
@@ -771,10 +776,12 @@ pub struct PackageTemplate {
 	/// Block height at which our counterparty can potentially claim this output as well (assuming
 	/// they have the keys or information required to do so).
 	///
-	/// This is used primarily by external consumers to decide when an output becomes "pinnable"
-	/// because the counterparty can potentially spend it. It is also used internally by
-	/// [`Self::get_height_timer`] to identify when an output must be claimed by, depending on the
-	/// type of output.
+	/// This is used primarily to decide when an output becomes "pinnable" because the counterparty
+	/// can potentially spend it. It is also used internally by [`Self::get_height_timer`] to
+	/// identify when an output must be claimed by, depending on the type of output.
+	///
+	/// Note that for revoked counterparty HTLC outputs the value may be zero in some cases where
+	/// we upgraded from LDK 0.1 or prior.
 	counterparty_spendable_height: u32,
 	// Cache of package feerate committed at previous (re)broadcast. If bumping resources
 	// (either claimed output value or external utxo), it will keep increasing until holder
@@ -834,17 +841,17 @@ impl PackageTemplate {
 				// Now check that we only merge packages if they are both unpinnable or both
 				// pinnable.
 				let self_pinnable = self_cluster == AggregationCluster::Pinnable ||
-					self.counterparty_spendable_height() <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					self.counterparty_spendable_height <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				let other_pinnable = other_cluster == AggregationCluster::Pinnable ||
-					other.counterparty_spendable_height() <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					other.counterparty_spendable_height <= cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				if self_pinnable && other_pinnable {
 					return true;
 				}
 
 				let self_unpinnable = self_cluster == AggregationCluster::Unpinnable &&
-					self.counterparty_spendable_height() > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					self.counterparty_spendable_height > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				let other_unpinnable = other_cluster == AggregationCluster::Unpinnable &&
-					other.counterparty_spendable_height() > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+					other.counterparty_spendable_height > cur_height + COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 				if self_unpinnable && other_unpinnable {
 					return true;
 				}
@@ -854,13 +861,6 @@ impl PackageTemplate {
 	}
 	pub(crate) fn is_malleable(&self) -> bool {
 		matches!(self.malleability, PackageMalleability::Malleable(..))
-	}
-	/// The height at which our counterparty may be able to spend this output.
-	///
-	/// This is an important limit for aggregation as after this height our counterparty may be
-	/// able to pin transactions spending this output in the mempool.
-	pub(crate) fn counterparty_spendable_height(&self) -> u32 {
-		self.counterparty_spendable_height
 	}
 	pub(crate) fn previous_feerate(&self) -> u64 {
 		self.feerate_previous
@@ -1225,6 +1225,18 @@ impl Readable for PackageTemplate {
 			(4, _height_original, option), // Written with a dummy value since 0.1
 			(6, height_timer, option),
 		});
+		for (_, input) in &inputs {
+			if let PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput { htlc, .. }) = input {
+				// LDK versions through 0.1 set the wrong counterparty_spendable_height for
+				// non-offered revoked HTLCs (ie HTLCs we sent to our counterparty which they can
+				// claim with a preimage immediately). Here we detect this and reset the value to
+				// zero, as the value is unused except for merging decisions which doesn't care
+				// about any values below the current height.
+				if !htlc.offered && htlc.cltv_expiry == counterparty_spendable_height {
+					counterparty_spendable_height = 0;
+				}
+			}
+		}
 		Ok(PackageTemplate {
 			inputs,
 			malleability,

@@ -2379,8 +2379,8 @@ mod tests {
 					42,
 					53,
 					features,
-					$nodes[0].node.get_our_node_id(),
-					$nodes[1].node.get_our_node_id(),
+					$nodes[0].node.get_our_node_id().into(),
+					$nodes[1].node.get_our_node_id().into(),
 				)
 				.expect("Failed to update channel from partial announcement");
 			let original_graph_description = $nodes[0].network_graph.to_string();

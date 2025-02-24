@@ -438,7 +438,8 @@ macro_rules! offer_builder_methods { (
 			}
 		}
 
-		let mut bytes = Vec::new();
+		const OFFER_ALLOCATION_SIZE: usize = 512;
+		let mut bytes = Vec::with_capacity(OFFER_ALLOCATION_SIZE);
 		$self.offer.write(&mut bytes).unwrap();
 
 		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
