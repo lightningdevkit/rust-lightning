@@ -64,7 +64,7 @@ use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MessageSendEvent};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
@@ -2042,21 +2042,22 @@ where
 /// [`send_payment`].
 ///
 /// ```
+/// # use bitcoin::hashes::Hash;
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
-/// # use lightning::routing::router::RouteParameters;
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::routing::router::RouteParametersConfig;
+/// # use lightning_invoice::Bolt11Invoice;
 /// #
 /// # fn example<T: AChannelManager>(
-/// #     channel_manager: T, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-/// #     route_params: RouteParameters, retry: Retry
+/// #     channel_manager: T, invoice: &Bolt11Invoice, route_params_config: RouteParametersConfig,
+/// #     retry: Retry
 /// # ) {
 /// # let channel_manager = channel_manager.get_cm();
-/// // let (payment_hash, recipient_onion, route_params) =
-/// //     payment::payment_parameters_from_invoice(&invoice);
-/// let payment_id = PaymentId([42; 32]);
-/// match channel_manager.send_payment(
-///     payment_hash, recipient_onion, payment_id, route_params, retry
+/// # let payment_id = PaymentId([42; 32]);
+/// # let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
+/// match channel_manager.pay_for_bolt11_invoice(
+///     invoice, payment_id, None, route_params_config, retry
 /// ) {
 ///     Ok(()) => println!("Sending payment with hash {}", payment_hash),
 ///     Err(e) => println!("Failed sending payment with hash {}: {:?}", payment_hash, e),
@@ -4767,6 +4768,34 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
+	}
+
+	/// Pays a [`Bolt11Invoice`] associated with the `payment_id`. See [`Self::send_payment`] for more info.
+	///
+	/// # Payment Id
+	/// The invoice's `payment_hash().0` serves as a reliable choice for the `payment_id`.
+	///
+	/// # Handling Invoice Amounts
+	/// Some invoices include a specific amount, while others require you to specify one.
+	/// - If the invoice **includes** an amount, user must not provide `amount_msats`.
+	/// - If the invoice **doesn't include** an amount, you'll need to specify `amount_msats`.
+	///
+	/// If these conditions aren’t met, the function will return `Bolt11PaymentError::InvalidAmount`.
+	///
+	/// # Custom Routing Parameters
+	/// Users can customize routing parameters via [`RouteParametersConfig`].
+	/// To use default settings, call the function with `RouteParametersConfig::default()`.
+	pub fn pay_for_bolt11_invoice(
+		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
+		route_params_config: RouteParametersConfig, retry_strategy: Retry
+	) -> Result<(), Bolt11PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments
+			.pay_for_bolt11_invoice(invoice, payment_id, amount_msats, route_params_config, retry_strategy,
+				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
+				&self.pending_events, |args| self.send_payment_along_path(args))
 	}
 
 	/// Pays the [`Bolt12Invoice`] associated with the `payment_id` encoded in its `payer_metadata`.

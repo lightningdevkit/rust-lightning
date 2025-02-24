@@ -12,6 +12,7 @@
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
+use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaymentFailureReason};
@@ -575,11 +576,12 @@ pub(crate) enum PaymentSendFailure {
 /// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
 #[derive(Debug)]
 pub enum Bolt11PaymentError {
-	/// Incorrect amount was provided to ChannelManager::pay_for_bolt11_invoice.
+	/// Incorrect amount was provided to [`ChannelManager::pay_for_bolt11_invoice`].
 	/// This happens when an amount is specified when [`Bolt11Invoice`] already contains
 	/// an amount, or vice versa.
 	///
 	/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
+	/// [`ChannelManager::pay_for_bolt11_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt11_invoice
 	InvalidAmount,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
@@ -856,6 +858,50 @@ impl OutboundPayments {
 			retry_strategy, route_params, router, first_hops, inflight_htlcs, entropy_source,
 			node_signer, best_block_height, logger, pending_events, send_payment_along_path)
 			.map(|()| payment_hash)
+	}
+
+	pub(super) fn pay_for_bolt11_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
+		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
+		amount_msats: Option<u64>,
+		route_params_config: RouteParametersConfig,
+		retry_strategy: Retry,
+		router: &R,
+		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
+	) -> Result<(), Bolt11PaymentError>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
+
+		let amount = match (invoice.amount_milli_satoshis(), amount_msats) {
+			(Some(amt), None) | (None, Some(amt)) => amt,
+			(None, None) | (Some(_), Some(_)) => return Err(Bolt11PaymentError::InvalidAmount),
+		};
+
+		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
+		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
+
+		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
+			.with_user_config_ignoring_fee_limit(route_params_config);
+
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amount);
+
+		if let Some(max_fee_msat) = route_params_config.max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
+
+		self.send_payment_internal(payment_id, payment_hash, recipient_onion, None, retry_strategy, route_params,
+			router, first_hops, compute_inflight_htlcs,
+			entropy_source, node_signer, best_block_height, logger,
+			pending_events, send_payment_along_path
+		).map_err(|err| Bolt11PaymentError::SendingFailed(err))
 	}
 
 	pub(super) fn send_payment_for_bolt12_invoice<
