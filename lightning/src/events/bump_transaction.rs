@@ -97,12 +97,10 @@ impl AnchorDescriptor {
 	where
 		SP::Target: SignerProvider<EcdsaSigner= S>
 	{
-		let mut signer = signer_provider.derive_channel_signer(
+		signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
 			self.channel_derivation_parameters.keys_id,
-		);
-		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
-		signer
+		)
 	}
 }
 

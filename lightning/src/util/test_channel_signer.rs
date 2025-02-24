@@ -216,10 +216,6 @@ impl ChannelSigner for TestChannelSigner {
 	fn channel_keys_id(&self) -> [u8; 32] {
 		self.inner.channel_keys_id()
 	}
-
-	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
-		self.inner.provide_channel_parameters(channel_parameters)
-	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {

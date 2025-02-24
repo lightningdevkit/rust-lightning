@@ -25,15 +25,6 @@ where
 		}
 	}
 
-	pub(crate) fn as_mut(&mut self) -> &mut dyn ChannelSigner {
-		match self {
-			ChannelSignerType::Ecdsa(ecs) => ecs,
-			#[cfg(taproot)]
-			#[allow(unused)]
-			ChannelSignerType::Taproot(tcs) => tcs,
-		}
-	}
-
 	#[allow(unused)]
 	pub(crate) fn as_ecdsa(&self) -> Option<&<SP::Target as SignerProvider>::EcdsaSigner> {
 		match self {

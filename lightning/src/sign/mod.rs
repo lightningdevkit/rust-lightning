@@ -66,7 +66,6 @@ use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
-use crate::types::features::ChannelTypeFeatures;
 use crate::util::atomic_counter::AtomicCounter;
 use core::convert::TryInto;
 use core::ops::Deref;
@@ -103,7 +102,7 @@ pub struct DelayedPaymentOutputDescriptor {
 	/// The value of the channel which this output originated from, possibly indirectly.
 	pub channel_value_satoshis: u64,
 	/// The channel public keys and other parameters needed to generate a spending transaction or
-	/// to provide to a re-derived signer through [`ChannelSigner::provide_channel_parameters`].
+	/// to provide to a signer.
 	///
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.123 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
@@ -154,8 +153,7 @@ pub struct StaticPaymentOutputDescriptor {
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this transactions spends.
 	pub channel_value_satoshis: u64,
-	/// The necessary channel parameters that need to be provided to the re-derived signer through
-	/// [`ChannelSigner::provide_channel_parameters`].
+	/// The necessary channel parameters that need to be provided to the signer.
 	///
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.117 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
@@ -261,8 +259,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] provided here (which is
 	/// used in the witness script generation), you must pass the counterparty
-	/// [`ChannelPublicKeys::revocation_basepoint`] (which appears in the call to
-	/// [`ChannelSigner::provide_channel_parameters`]) and the provided
+	/// [`ChannelPublicKeys::revocation_basepoint`] and the provided
 	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to
 	/// [`RevocationKey`].
 	///
@@ -554,8 +551,7 @@ pub struct ChannelDerivationParameters {
 	pub value_satoshis: u64,
 	/// The unique identifier to re-derive the signer for the associated channel.
 	pub keys_id: [u8; 32],
-	/// The necessary channel parameters that need to be provided to the re-derived signer through
-	/// [`ChannelSigner::provide_channel_parameters`].
+	/// The necessary channel parameters that need to be provided to the signer.
 	pub transaction_parameters: ChannelTransactionParameters,
 }
 
@@ -713,13 +709,10 @@ impl HTLCDescriptor {
 	where
 		SP::Target: SignerProvider<EcdsaSigner = S>,
 	{
-		let mut signer = signer_provider.derive_channel_signer(
+		signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
 			self.channel_derivation_parameters.keys_id,
-		);
-		signer
-			.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
-		signer
+		)
 	}
 }
 
@@ -803,16 +796,6 @@ pub trait ChannelSigner {
 	///
 	/// This method is *not* asynchronous. Instead, the value must be cached locally.
 	fn channel_keys_id(&self) -> [u8; 32];
-
-	/// Set the counterparty static channel data, including basepoints,
-	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint.
-	///
-	/// This data is static, and will never change for a channel once set. For a given [`ChannelSigner`]
-	/// instance, LDK will call this method exactly once - either immediately after construction
-	/// or when the funding information has been generated.
-	///
-	/// channel_parameters.is_populated() MUST be true.
-	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 }
 
 /// Specifies the recipient of an invoice.
@@ -1031,8 +1014,6 @@ pub struct InMemorySigner {
 	pub commitment_seed: [u8; 32],
 	/// Holder public keys and basepoints.
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
-	/// Counterparty public keys and counterparty/holder `selected_contest_delay`, populated on channel acceptance.
-	channel_parameters: Option<ChannelTransactionParameters>,
 	/// The total value of this channel.
 	channel_value_satoshis: u64,
 	/// Key derivation parameters.
@@ -1050,7 +1031,6 @@ impl PartialEq for InMemorySigner {
 			&& self.htlc_base_key == other.htlc_base_key
 			&& self.commitment_seed == other.commitment_seed
 			&& self.holder_channel_pubkeys == other.holder_channel_pubkeys
-			&& self.channel_parameters == other.channel_parameters
 			&& self.channel_value_satoshis == other.channel_value_satoshis
 			&& self.channel_keys_id == other.channel_keys_id
 	}
@@ -1066,7 +1046,6 @@ impl Clone for InMemorySigner {
 			htlc_base_key: self.htlc_base_key.clone(),
 			commitment_seed: self.commitment_seed.clone(),
 			holder_channel_pubkeys: self.holder_channel_pubkeys.clone(),
-			channel_parameters: self.channel_parameters.clone(),
 			channel_value_satoshis: self.channel_value_satoshis,
 			channel_keys_id: self.channel_keys_id,
 			entropy_source: RandomBytes::new(self.get_secure_random_bytes()),
@@ -1099,7 +1078,6 @@ impl InMemorySigner {
 			commitment_seed,
 			channel_value_satoshis,
 			holder_channel_pubkeys,
-			channel_parameters: None,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
 		}
@@ -1119,64 +1097,6 @@ impl InMemorySigner {
 			)),
 			htlc_basepoint: HtlcBasepoint::from(from_secret(&htlc_base_key)),
 		}
-	}
-
-	/// Returns the counterparty's pubkeys.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
-		self.get_channel_parameters().and_then(|params| {
-			params.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
-		})
-	}
-
-	/// Returns the `contest_delay` value specified by our counterparty and applied on holder-broadcastable
-	/// transactions, i.e., the amount of time that we have to wait to recover our funds if we
-	/// broadcast a transaction.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn counterparty_selected_contest_delay(&self) -> Option<u16> {
-		self.get_channel_parameters().and_then(|params| {
-			params.counterparty_parameters.as_ref().map(|params| params.selected_contest_delay)
-		})
-	}
-
-	/// Returns the `contest_delay` value specified by us and applied on transactions broadcastable
-	/// by our counterparty, i.e., the amount of time that they have to wait to recover their funds
-	/// if they broadcast a transaction.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn holder_selected_contest_delay(&self) -> Option<u16> {
-		self.get_channel_parameters().map(|params| params.holder_selected_contest_delay)
-	}
-
-	/// Returns whether the holder is the initiator.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn is_outbound(&self) -> Option<bool> {
-		self.get_channel_parameters().map(|params| params.is_outbound_from_holder)
-	}
-
-	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
-	/// building transactions.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
-		self.channel_parameters.as_ref()
-	}
-
-	/// Returns the channel type features of the channel parameters. Should be helpful for
-	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
-		self.get_channel_parameters().map(|params| &params.channel_type_features)
 	}
 
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
@@ -1361,23 +1281,10 @@ impl ChannelSigner for InMemorySigner {
 	fn channel_keys_id(&self) -> [u8; 32] {
 		self.channel_keys_id
 	}
-
-	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
-		assert!(
-			self.channel_parameters.is_none()
-				|| self.channel_parameters.as_ref().unwrap() == channel_parameters
-		);
-		if self.channel_parameters.is_some() {
-			// The channel parameters were already set and they match, return early.
-			return;
-		}
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
-		self.channel_parameters = Some(channel_parameters.clone());
-	}
 }
 
 const MISSING_PARAMS_ERR: &'static str =
-	"ChannelSigner::provide_channel_parameters must be called before signing operations";
+	"ChannelTransactionParameters must be populated before signing operations";
 
 impl EcdsaChannelSigner for InMemorySigner {
 	fn sign_counterparty_commitment(
@@ -1385,6 +1292,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		commitment_tx: &CommitmentTransaction, _inbound_htlc_preimages: Vec<PaymentPreimage>,
 		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
@@ -1447,6 +1356,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_keys =
 			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
@@ -1467,6 +1378,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_keys =
 			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
@@ -1487,6 +1400,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let revocation_key = chan_utils::derive_private_revocation_key(
 			&secp_ctx,
 			&per_commitment_key,
@@ -1532,6 +1447,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let revocation_key = chan_utils::derive_private_revocation_key(
 			&secp_ctx,
 			&per_commitment_key,
@@ -1582,6 +1499,10 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		let channel_parameters =
+			&htlc_descriptor.channel_derivation_parameters.transaction_parameters;
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let witness_script = htlc_descriptor.witness_script(secp_ctx);
 		let sighash = &sighash::SighashCache::new(&*htlc_tx)
 			.p2wsh_signature_hash(
@@ -1605,6 +1526,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let htlc_key =
 			chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key);
 		let revocation_pubkey = RevocationKey::from_basepoint(
@@ -1647,6 +1570,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_funding_key =
 			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
@@ -1664,6 +1589,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
 		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let witness_script =
 			chan_utils::get_anchor_redeemscript(&channel_parameters.holder_pubkeys.funding_pubkey);
 		let sighash = sighash::SighashCache::new(&*anchor_tx)
@@ -1688,6 +1615,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
+		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_funding_key =
 			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
@@ -1988,15 +1917,10 @@ impl KeysManager {
 					if keys_cache.is_none()
 						|| keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id
 					{
-						let mut signer = self.derive_channel_keys(
+						let signer = self.derive_channel_keys(
 							descriptor.channel_value_satoshis,
 							&descriptor.channel_keys_id,
 						);
-						if let Some(channel_params) =
-							descriptor.channel_transaction_parameters.as_ref()
-						{
-							signer.provide_channel_parameters(channel_params);
-						}
 						keys_cache = Some((signer, descriptor.channel_keys_id));
 					}
 					let witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(

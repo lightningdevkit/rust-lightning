@@ -2119,8 +2119,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&funding.get_holder_pubkeys().payment_point, &funding.get_counterparty_pubkeys().payment_point, funding.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(funding.get_value_satoshis(), context.channel_keys_id);
-		monitor_signer.provide_channel_parameters(&funding.channel_transaction_parameters);
+		let monitor_signer = signer_provider.derive_channel_signer(funding.get_value_satoshis(), context.channel_keys_id);
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
 		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
@@ -2315,7 +2314,6 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				)));
 		};
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(outpoint);
-		self.context.holder_signer.as_mut().provide_channel_parameters(&self.funding.channel_transaction_parameters);
 
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
@@ -4571,7 +4569,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	#[cfg(all(test))]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
-		&mut self, funding: &mut FundingScope, logger: &L, channel_transaction_parameters: ChannelTransactionParameters,
+		&mut self, funding: &mut FundingScope, logger: &L,
 		counterparty_cur_commitment_point_override: PublicKey,
 	) -> Result<Signature, ChannelError>
 	where
@@ -4579,7 +4577,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		L::Target: Logger
 	{
 		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
-		funding.channel_transaction_parameters = channel_transaction_parameters;
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
 }
@@ -9098,7 +9095,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.assert_no_commitment_advancement(self.unfunded_context.transaction_number(), "funding_created");
 
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		self.context.holder_signer.as_mut().provide_channel_parameters(&self.funding.channel_transaction_parameters);
 
 		// Now that we're past error-generating stuff, update our local state:
 
@@ -9487,9 +9483,6 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let funding_txo = OutPoint { txid: msg.funding_txid, index: msg.funding_output_index };
 		self.funding.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		// This is an externally observable change before we finish all our checks.  In particular
-		// check_funding_created_signature may fail.
-		self.context.holder_signer.as_mut().provide_channel_parameters(&self.funding.channel_transaction_parameters);
 
 		let (channel_monitor, counterparty_initial_commitment_tx) = match self.initial_commitment_signed(
 			ChannelId::v1_from_funding_outpoint(funding_txo), msg.signature,
@@ -10622,12 +10615,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
-			let mut holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
-			// If we've gotten to the funding stage of the channel, populate the signer with its
-			// required channel parameters.
-			if channel_state >= ChannelState::FundingNegotiated {
-				holder_signer.provide_channel_parameters(&channel_parameters);
-			}
+			let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 			(channel_keys_id, holder_signer)
 		} else {
 			return Err(DecodeError::InvalidValue);
@@ -11650,7 +11638,6 @@ mod tests {
 				selected_contest_delay: 144
 			});
 		chan.funding.channel_transaction_parameters.funding_outpoint = Some(funding_info);
-		signer.provide_channel_parameters(&chan.funding.channel_transaction_parameters);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
 		           <Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
