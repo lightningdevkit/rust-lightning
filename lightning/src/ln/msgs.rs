@@ -1811,6 +1811,14 @@ mod fuzzy_internal_msgs {
 		pub outgoing_cltv_value: u32,
 	}
 
+	#[allow(unused)]
+	pub struct InboundTrampolineEntrypointPayload {
+		pub amt_to_forward: u64,
+		pub outgoing_cltv_value: u32,
+		pub multipath_trampoline_data: Option<FinalOnionHopData>,
+		pub trampoline_packet: TrampolineOnionPacket,
+	}
+
 	pub struct InboundOnionReceivePayload {
 		pub payment_data: Option<FinalOnionHopData>,
 		pub payment_metadata: Option<Vec<u8>>,
@@ -1842,6 +1850,8 @@ mod fuzzy_internal_msgs {
 
 	pub enum InboundOnionPayload {
 		Forward(InboundOnionForwardPayload),
+		#[allow(unused)]
+		TrampolineEntrypoint(InboundTrampolineEntrypointPayload),
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
@@ -2932,6 +2942,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		let mut trampoline_onion_packet: Option<TrampolineOnionPacket> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
 
@@ -2946,6 +2957,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			(12, intro_node_blinding_point, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(20, trampoline_onion_packet, option),
 			(77_777, invoice_request, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
@@ -3023,6 +3035,16 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 				short_channel_id,
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+			}))
+		} else if let Some(trampoline_onion_packet) = trampoline_onion_packet {
+			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some()
+			{ return Err(DecodeError::InvalidValue) }
+			Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+				multipath_trampoline_data: payment_data,
+				trampoline_packet: trampoline_onion_packet,
 			}))
 		} else {
 			if encrypted_tlvs_opt.is_some() || total_msat.is_some() || invoice_request.is_some() {
