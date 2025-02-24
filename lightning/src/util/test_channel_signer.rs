@@ -36,7 +36,6 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::HTLCDescriptor;
-use crate::types::features::ChannelTypeFeatures;
 use bitcoin::secp256k1;
 #[cfg(taproot)]
 use bitcoin::secp256k1::All;
@@ -135,10 +134,6 @@ impl TestChannelSigner {
 		disable_revocation_policy_check: bool,
 	) -> Self {
 		Self { inner, state, disable_revocation_policy_check }
-	}
-
-	pub fn channel_type_features(&self) -> &ChannelTypeFeatures {
-		self.inner.channel_type_features().unwrap()
 	}
 
 	#[cfg(test)]
@@ -374,7 +369,10 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(secp_ctx));
 		{
 			let witness_script = htlc_descriptor.witness_script(secp_ctx);
-			let sighash_type = if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
+			let channel_parameters =
+				&htlc_descriptor.channel_derivation_parameters.transaction_parameters;
+			let channel_type_features = &channel_parameters.channel_type_features;
+			let sighash_type = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 				EcdsaSighashType::SinglePlusAnyoneCanPay
 			} else {
 				EcdsaSighashType::All
@@ -389,7 +387,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				.unwrap();
 			let countersignatory_htlc_key = HtlcKey::from_basepoint(
 				&secp_ctx,
-				&self.inner.counterparty_pubkeys().unwrap().htlc_basepoint,
+				&channel_parameters.counterparty_pubkeys().unwrap().htlc_basepoint,
 				&htlc_descriptor.per_commitment_point,
 			);
 
