@@ -1273,6 +1273,164 @@ where
 	}
 }
 
+
+/// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
+/// OutboundRoute).
+#[inline]
+pub(super) fn process_attributable_onion_failure<T: secp256k1::Signing, L: Deref>(
+	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut encrypted_packet: Vec<u8>,
+) -> Option<Vec<u8>>
+where
+	L::Target: Logger,
+{
+	let (path, session_priv, _) = match htlc_source {
+		HTLCSource::OutboundRoute {
+			ref path, ref session_priv, ref first_hop_htlc_msat, ..
+		} => (path, session_priv, first_hop_htlc_msat),
+		_ => {
+			unreachable!()
+		},
+	};
+
+	// Learnings from the HTLC failure to inform future payment retries and scoring.
+	let mut res: Option<Vec<u8>> = None;
+	let mut is_from_final_node = false;
+
+	// Handle packed channel/node updates for passing back for the route handler
+	let callback = |shared_secret, _, _, route_hop_opt: Option<&RouteHop>, route_hop_idx| {
+		println!("route_hop_idx: {}", route_hop_idx);
+		if res.is_some() {
+			return;
+		}
+
+		let route_hop = match route_hop_opt {
+			Some(hop) => hop,
+			None => {
+				// Got an error from within a blinded route.
+				// error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+				// error_packet_ret = Some(vec![0; 32]);
+				// res = Some(FailureLearnings {
+				// 	network_update: None,
+				// 	short_channel_id: None,
+				// 	payment_failed_permanently: false,
+				// 	failed_within_blinded_path: true,
+				// });
+				return;
+			},
+		};
+
+		// The failing hop includes either the inbound channel to the recipient or the outbound channel
+		// from the current hop (i.e., the next hop's inbound channel).
+		let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
+		// For 1-hop blinded paths, the final `path.hops` entry is the recipient.
+		is_from_final_node = route_hop_idx + 1 == path.hops.len() && num_blinded_hops <= 1;
+		let failing_route_hop = if is_from_final_node {
+			route_hop
+		} else {
+			match path.hops.get(route_hop_idx + 1) {
+				Some(hop) => hop,
+				None => {
+					// The failing hop is within a multi-hop blinded path.
+					#[cfg(not(test))]
+					{
+						// error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+						// error_packet_ret = Some(vec![0; 32]);
+					}
+					#[cfg(test)]
+					{
+						// Actually parse the onion error data in tests so we can check that blinded hops fail
+						// back correctly.
+						// let err_packet =
+						// 	decrypt_onion_error_packet(&mut encrypted_packet, shared_secret)
+						// 		.unwrap();
+						// error_code_ret = Some(u16::from_be_bytes(
+						// 	err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
+						// ));
+						// error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+					}
+
+					// res = Some(FailureLearnings {
+					// 	network_update: None,
+					// 	short_channel_id: None,
+					// 	payment_failed_permanently: false,
+					// 	failed_within_blinded_path: true,
+					// });
+					return;
+				},
+			}
+		};
+
+		_ = decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
+
+		let packet_len: usize = encrypted_packet.len();
+
+		let message = &encrypted_packet[..packet_len - MAX_HOPS * FULL_PAYLOAD_LEN-HMAC_COUNT*HMAC_LEN];
+		let payloads = &encrypted_packet[packet_len - MAX_HOPS * FULL_PAYLOAD_LEN-HMAC_COUNT*HMAC_LEN..packet_len-HMAC_COUNT*HMAC_LEN];
+		let hmacs = &encrypted_packet[packet_len - HMAC_COUNT*HMAC_LEN..];
+
+		let um = gen_um_from_shared_secret(shared_secret.as_ref());
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+
+		hmac.input(&message);
+		hmac.input(&payloads[..(MAX_HOPS - route_hop_idx) * FULL_PAYLOAD_LEN]);
+
+		let position: usize = MAX_HOPS - route_hop_idx - 1;
+		write_downstream_hmacs(position, MAX_HOPS, hmacs, &mut hmac);
+
+		let actual_hmac = &hmacs[route_hop_idx * HMAC_LEN..route_hop_idx*HMAC_LEN+HMAC_LEN];
+		let expected_hmac= &Hmac::from_engine(hmac).to_byte_array()[..HMAC_LEN];
+
+		if !fixed_time_eq(expected_hmac, actual_hmac)  {
+			log_debug!(logger, "Invalid HMAC in onion failure packet at pos {}", route_hop_idx);
+
+			return;
+		}
+
+		log_debug!(logger, "Valid HMAC in onion failure packet at pos {}", route_hop_idx);
+
+		match payloads[0] {
+			0 => {
+				// Shift payloads left.
+				let payloads = &mut encrypted_packet[packet_len - MAX_HOPS * FULL_PAYLOAD_LEN-HMAC_COUNT*HMAC_LEN..packet_len-HMAC_COUNT*HMAC_LEN];
+				payloads.copy_within(FULL_PAYLOAD_LEN.., 0);
+
+				// Shift hmacs left.
+				let hmacs = &mut encrypted_packet[packet_len - HMAC_COUNT*HMAC_LEN..];
+				let mut src_idx = MAX_HOPS;
+				let mut dest_idx = 1;
+				let mut copy_len = MAX_HOPS - 1;
+
+				for i in 0..MAX_HOPS - 1 {
+					hmacs.copy_within(src_idx * HMAC_LEN .. (src_idx + copy_len) * HMAC_LEN, dest_idx * HMAC_LEN);
+
+					src_idx += copy_len;
+					dest_idx += copy_len + 1;
+					copy_len -= 1;
+				}
+			}
+			1 => {
+				// Final payload, parse failure msg.
+				let cursor = &mut Cursor::new(message);
+				res = Some(Readable::read(cursor).unwrap());
+			}
+			_ => {
+				panic!("Got a payload type we don't know how to handle!");
+			}
+		}
+	};
+
+	construct_onion_keys_generic_callback(
+		secp_ctx,
+		&path.hops,
+		path.blinded_tail.as_ref(),
+		session_priv,
+		callback,
+	)
+	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+
+	res
+}
+
 #[derive(Clone)]// See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
@@ -1820,10 +1978,10 @@ fn add_hmacs(shared_secret: &[u8], packet: &mut [u8]) {
 	let hmacs = &packet[packet_len - HMAC_COUNT * HMAC_LEN..];
 
 	let mut new_hmacs = vec![0u8; MAX_HOPS * HMAC_LEN];
-	let um = gen_um_from_shared_secret(&shared_secret);
+	let um: [u8; 32] = gen_um_from_shared_secret(&shared_secret);
 
 	for i in 0..MAX_HOPS {
-		let position = MAX_HOPS - i - 1;
+		let position: usize = MAX_HOPS - i - 1;
 		let mut hmac_engine = HmacEngine::<Sha256>::new(&um);
 
 		hmac_engine.input(&message);
@@ -1911,9 +2069,11 @@ mod tests {
 	use core::array;
 use std::fs::File;
 	use std::io::BufReader;
+use std::sync::Arc;
 
 use crate::io;
-	use crate::ln::msgs;
+	use crate::ln::channelmanager::PaymentId;
+use crate::ln::msgs;
 	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::types::payment::PaymentHash;
@@ -1921,6 +2081,7 @@ use crate::io;
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
+use crate::util::test_utils::TestLogger;
 
 	use bitcoin::hex::{DisplayHex, FromHex};
 	use bitcoin::secp256k1::Secp256k1;
@@ -1933,38 +2094,43 @@ use crate::io;
 		SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap()
 	}
 
+	fn build_test_path() -> Path {
+		Path { hops: vec![
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
+				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+			},
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
+				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+			},
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
+				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+			},
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
+				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+			},
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
+				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+			},
+			], blinded_tail: None }
+	}
+
 	fn build_test_onion_keys() -> Vec<OnionKeys> {
 		// Keys from BOLT 4, used in both test vector tests
 		let secp_ctx = Secp256k1::new();
 
+		let path = build_test_path();
 		let route = Route {
-			paths: vec![Path { hops: vec![
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-			], blinded_tail: None }],
+			paths: vec![path],
 			route_params: None,
 		};
 
@@ -2267,6 +2433,7 @@ use crate::io;
 			"e7aca8bf4139f65f977604e3f4a593f2cb031f7b9a711107e6c19691d0c5060a375d0d39d6920d2e08d72d59cee7827bccbacd62aeaee61e9e59a630c4c77cf383cb37b07413aa4de2f2fbf5b40ae40a91a8f4c6d74aeacef1bb1be4ecbc26ec2c824d2bc45db4b9098e732a769788f1cff3f5b41b0d25c132d40dc5ad045ef0043b15332ca3c5a09de2cdb17455a0f82a8f20da08346282823dab062cdbd2111e238528141d69de13de6d83994fbc711e3e269df63a12d3a4177c5c149150eb4dc2f589cd8acabcddba14dec3b0dada12d663b36176cd3c257c5460bab93981ad99f58660efa9b31d7e63b39915329695b3fa60e0a3bdb93e7e29a54ca6a8f360d3848866198f9c3da3ba958e7730847fe1e6478ce8597848d3412b4ae48b06e05ba9a104e648f6eaf183226b5f63ed2e68f77f7e38711b393766a6fab7921b03eb2a6bddfc370eb45c1699c856969e2d574fdd155945ed727fdf2aec4f056a4d49fdefc3abafe41c365a5bd14fd486d6b5e2f24199319e7813e02e798877ffe31a70ae2398d9e31b9e3727e6c1a3c0d995c67d37bb6e72e9660aaaa9232670f382add2edd468927e3303b6142672546997fe105583e7c5a3c4c2b599731308b5416e6c9a3f3ba55b181ad0439d3535356108b059f2cb8742eed7a58d4eba9fe79eaa77c34b12aff1abdaea93197aabd0e74cb271269ca464b3b06aef1d6573df5e1224179616036b368677f26479376681b772d3760e871d99efd34cca5cd6beca95190d967da820b21e5bec60082ea46d776b0517488c84f26d12873912d1f68fafd67bcf4c298e43cfa754959780682a2db0f75f95f0598c0d04fd014c50e4beb86a9e37d95f2bba7e5065ae052dc306555bca203d104c44a538b438c9762de299e1c4ad30d5b4a6460a76484661fc907682af202cd69b9a4473813b2fdc1142f1403a49b7e69a650b7cde9ff133997dcc6d43f049ecac5fce097a21e2bce49c810346426585e3a5a18569b4cddd5ff6bdec66d0b69fcbc5ab3b137b34cc8aefb8b850a764df0e685c81c326611d901c392a519866e132bbb73234f6a358ba284fbafb21aa3605cacbaf9d0c901390a98b7a7dac9d4f0b405f7291c88b2ff45874241c90ac6c5fc895a440453c344d3a365cb929f9c91b9e39cb98b142444aae03a6ae8284c77eb04b0a163813d4c21883df3c0f398f47bf127b5525f222107a2d8fe55289f0cfd3f4bbad6c5387b0594ef8a966afc9e804ccaf75fe39f35c6446f7ee076d433f2f8a44dba1515acc78e589fa8c71b0a006fe14feebd51d0e0aa4e51110d16759eee86192eee90b34432130f387e0ccd2ee71023f1f641cddb571c690107e08f592039fe36d81336a421e89378f351e633932a2f5f697d25b620ffb8e84bb6478e9bd229bf3b164b48d754ae97bd23f319e3c56b3bcdaaeb3bd7fc0369b609e1d6b7f9a98d6f139d335d34022afc76f3c22354b0b43dd865b1c211cf8b1850ac389a1ba507ecc961434b3b61e906895d17f34580cf3ceefd4d77c06c1560aea2b20798f3217c3fab544800b1b19538971f4650217c566f14bb6845e210a0339bed7b93a9d53ae8a6bdca8ede02544601bb6da225d0b138e4217c33c1be2b964a265a8065b893dbcc8fcf74a861311136c5f236b7c3cd2d28e5175789bcf6cbc9974b6ce6285fd958cb7f6f5e5d879a76b4fd6619c34d643120383791a2ce6bfc611885319a13f47c7ba2e8c1ac4c50da3714b5a3c63b0afaa73cbbebc3724383da6c044ff5480fc3ec4d8b43b45dbe206de176e443fcdd383fbacdf3e4256a13068b9750dd1ff605a7f340edd9dbad0f213d828d5ad10bc99189b8b3b3bfeea855c02050e51f66c402b588b9b7c354875b259e128702f6760cd6f77e9dfed0db82075aadb3ccbd5e7024d819e11f1fe57fee830d3b732a9d409d3ee39824857843b41c9d17b6e78bdd014209a2e9006a2823940bd7750ee94a1011e55428933ed90a588feefdb1bbb684ad5538eb4126488812dda96d8b68de37302458d2c06121877a33d2a0decf879407cc53f6a02b5b111b2a4504ac10a8c770e039a68cf50c5ba146dea36bbc8cef7cdcce348fbc607dca64214d9045adbc8987a8ab76666c6f4e219b2e53a53d46740153b25e3e872037ff0322f03159ce4309511d97b8b9d5ba43c8d49ef7962ceacbf04d5c704deb341917ca18fbf3ff6025ffb3b2b400a3ca6fa32a3672d29c3530eb68a5425f022c9958993f92ebcee24a64046ff1dde5ae330016eef4536e2e0a13aa2e13ff3c93fa241c5bcba94bd9493fe8b453b24497a41c832f2899b52b5eaba962c8456fac88b4d6857b2f6d45330d2447142c447038b46177ee57693b9387f5b2ac7a491df3e03094b36b6ccdf668abe836571850476540ac313269bdbed5417f0f6f56f1a35e0a37a28c85f6268b6a89e29ddbd45593f6d69e9ea550c41fc9d265a2a552e1423cc1005487ba118d1164871a16ebe3933b05fb3a3c8614adbf0a4513eaf5720b81794ecce8d9048c8856379760c7e382f8fb0ad7978070087fa1f8c064fa671269bb64c4b1fc9f860b84755a6fda1ef798c1033a1e7a4719c78201acadb2165bc97026f66a21b556d4d09b1e8b0e29e050f6f034a9e649a4a2d1d34f42263b24c4e257909ab62d259188aab42f77f1018490d1de38ef9af5b973335537b09e3816b117a8bb187cb7bd30a1779aec88cf70821a6a0ee4d76e220dbdbacb37e777dd863eccbfc86c04650916c0adbc40d3b7f80",
 			"d135558a6bad7c5a617272dfff6fba9a1ee9d5509b697129b42407b020959566ba84011d09efc5e187c148ba548bf7922e7a5d6c0ceb2ff3a559ae244acd9d783c65977765c5d4e00b723d00f12475aafaafff7b31c1be5a589e6e25f8da2959107206dd42bbcb43438129ce6cce2b6b4ae63edc76b876136ca5ea6cd1c6a04ca86eca143d15e53ccdc9e23953e49dc2f87bb11e5238cd6536e57387225b8fff3bf5f3e686fd08458ffe0211b87d64770db9353500af9b122828a006da754cf979738b4374e146ea79dd93656170b89c98c5f2299d6e9c0410c826c721950c780486cd6d5b7130380d7eaff994a8503a8fef3270ce94889fe996da66ed121741987010f785494415ca991b2e8b39ef2df6bde98efd2aec7d251b2772485194c8368451ad49c2354f9d30d95367bde316fec6cbdddc7dc0d25e99d3075e13d3de0822e4d8e15a7c521d67ce2cc836c49118f205c99f18570504504221e337a29e2716fb28671b2bb91e38ef5e18aaf32c6c02f2fb690358872a1ed28166172631a82c2568d23238017188ebbd48944a147f6cdb3690d5f88e51371cb70adf1fa02afe4ed8b581afc8bcc5104922843a55d52acde09bc9d2b71a663e178788280f3c3eae127d21b0b95777976b3eb17be40a702c244d0e5f833ff49dae6403ff44b131e66df8b88e33ab0a58e379f2c34bf5113c66b9ea8241fc7aa2b1fa53cf4ed3cdd91d407730c66fb039ef3a36d4050dde37d34e80bcfe02a48a6b14ae28227b1627b5ad07608a7763a531f2ffc96dff850e8c583461831b19feffc783bc1beab6301f647e9617d14c92c4b1d63f5147ccda56a35df8ca4806b8884c4aa3c3cc6a174fdc2232404822569c01aba686c1df5eecc059ba97e9688c8b16b70f0d24eacfdba15db1c71f72af1b2af85bd168f0b0800483f115eeccd9b02adf03bdd4a88eab03e43ce342877af2b61f9d3d85497cd1c6b96674f3d4f07f635bb26add1e36835e321d70263b1c04234e222124dad30ffb9f2a138e3ef453442df1af7e566890aedee568093aa922dd62db188aa8361c55503f8e2c2e6ba93de744b55c15260f15ec8e69bb01048ca1fa7bbbd26975bde80930a5b95054688a0ea73af0353cc84b997626a987cc06a517e18f91e02908829d4f4efc011b9867bd9bfe04c5f94e4b9261d30cc39982eb7b250f12aee2a4cce0484ff34eebba89bc6e35bd48d3968e4ca2d77527212017e202141900152f2fd8af0ac3aa456aae13276a13b9b9492a9a636e18244654b3245f07b20eb76b8e1cea8c55e5427f08a63a16b0a633af67c8e48ef8e53519041c9138176eb14b8782c6c2ee76146b8490b97978ee73cd0104e12f483be5a4af414404618e9f6633c55dda6f22252cb793d3d16fae4f0e1431434e7acc8fa2c009d4f6e345ade172313d558a4e61b4377e31b8ed4e28f7e3d387988960f41b82bdda83a4e39828a8644af0377cb3f1cfa6bb26cfa878a5d4599ad2cbd72475931259903165cccb17679e3d0aaa2577f798de15b227f4b0dbf92b8ef891d17c814ab2e4e599b01f4b66c830b7dbbcfb3ab33a9e0af7398c4076f2256986710f7ca41cd8b477579a2e45c32830a3498baf7607b2ead37b75242a7c58dfe486b9b959ff639d04c2b0398fd00a8f8ee76f531b72fd5a3f09ed79e0de573c228f32488179c302be2677576354e22079eeb0a3ffaef65c875078c714d16ed36cf10892352b76d14764f51f0ffbb62f98faf263f41e84ec1ab0d4f723d279879f655be2c5caef768ed6be313a751f0f2af9e3517107f23012c54f36bdcc96f0f1c721bcb8a927cf2ed82e886d0a83975d00e9a0ff849cb9b44d8c030c293c9a02a47df169f4684a84b03c843ac2955bd7566909bb93ef5ae14b3be4fb481358b0e0894a8b4ff6599e4fac7bfb48841aa660dd1b70193e492221ec5d4a28f4dad0818ed1d72ef08da12eb7583f29276586a3e69f10bbe13ba4afca584e86ce2ce599cc7df8b98318a8d448fb3c75ad94671f9d80bc7a1660dc716422176fb19fa1e959d204116d538d2b0ca478b2c9f0ade86cf515d54e95676b0b17a508c13f97deb70bdbf4bc45f4ead427951d7455f892ea20d6a9bac83446a2217607747287b2a990bc8a7a823884d94fbcca38aceb666ca2afc47e8b9d8a3eeea093c92876b83d4e41e032d30365eea2cd717dc70f79cc4c9b7695e81769d2a0c30ca02b98f834bfb968948f150670d1cec91500c27301fc0d01faeacaa96fe0800b177bae2b57eee7909000934b597eb8517ddb11136f5235ce8d7204c22a6784fe8c187121457715b7383ee699a42df1d58a413725c86730d704538af546e7d1a70a15a968f5e7aa9afedcaf8a8e4909d7af6840d9018f8c3ba42f697eca710d31344b0ec20c8e9020e271e67c3822021afdbbbe2b77ef8e2e5d1b6a47865bf5cf925758df8e3a68e0be4cd0ece8c1bf26bf41686a5632bf9f9c720999b62d7d0a6d69bc3afe3d3f202a51ab5e077f76f4f77b9533de8151fbc431e453ad6c1bd6dd65a5c034d9cedcbaef57f4bbeff247ce4d0d5bfba92442bbd34e823edc351080732df64abdac453d982d8cb305dd583b7ffb7296d9d6076c411c3a36f76f5965a78d01795000fa1311cf08a662c74a9aa5369fadd6c8cf29d3de62303b51473b403ffe12a7164b6dc756b3d57377d0528a793b4c478c15a1cb68fc13318182095cc1a756db47ff3e141e59d783a2a87a0c3822f6644cb96813645f62ea76878be6d2ae36ef14f80e",
 		];
+		const SESSION_KEY: &str = "4141414141414141414141414141414141414141414141414141414141414141";
 
 		let failure_data = <Vec<u8>>::from_hex(FAILURE_DATA).unwrap();
 		let failure_data_array = failure_data.into_boxed_slice();
@@ -2295,6 +2462,20 @@ use crate::io;
 			assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[idx]);
 		}
 
+		let ctx_full = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
 
+		let path = build_test_path();
+		let session_priv = SecretKey::from_slice(<Vec<u8>>::from_hex(SESSION_KEY).unwrap().as_slice()).unwrap();
+		let htlc_source = HTLCSource::OutboundRoute {
+			path: path,
+			session_priv: session_priv,
+			first_hop_htlc_msat: 0,
+			payment_id: PaymentId([1; 32])
+,		};
+
+		// Assert that the original failure can be retrieved and that all hmacs check out.
+		let decrypted_failure = process_attributable_onion_failure(&ctx_full, &logger, &htlc_source,encrypted_packet.data).unwrap();
+		assert_eq!(onion_error.failuremsg, decrypted_failure);
 	}
 }
