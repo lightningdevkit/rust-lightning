@@ -13117,7 +13117,8 @@ impl Writeable for HTLCForwardInfo {
 				FAIL_HTLC_VARIANT_ID.write(w)?;
 				write_tlv_fields!(w, {
 					(0, htlc_id, required),
-					(2, err_packet, required),
+					(2, err_packet.data, required),
+					(5, err_packet.attribution_data, option),
 				});
 			},
 			Self::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
@@ -13125,11 +13126,10 @@ impl Writeable for HTLCForwardInfo {
 				// packet so older versions have something to fail back with, but serialize the real data as
 				// optional TLVs for the benefit of newer versions.
 				FAIL_HTLC_VARIANT_ID.write(w)?;
-				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; ATTRIBUTION_DATA_LEN] };
 				write_tlv_fields!(w, {
 					(0, htlc_id, required),
 					(1, failure_code, required),
-					(2, dummy_err_packet, required),
+					(2, Vec::<u8>::new(), required),
 					(3, sha256_of_onion, required),
 				});
 			},
@@ -13149,8 +13149,12 @@ impl Readable for HTLCForwardInfo {
 					(1, malformed_htlc_failure_code, option),
 					(2, err_packet, required),
 					(3, sha256_of_onion, option),
+					(5, attribution_data, option),
 				});
 				if let Some(failure_code) = malformed_htlc_failure_code {
+					if attribution_data.is_some() {
+						return Err(DecodeError::InvalidValue);
+					}
 					Self::FailMalformedHTLC {
 						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
 						failure_code,
@@ -13159,7 +13163,10 @@ impl Readable for HTLCForwardInfo {
 				} else {
 					Self::FailHTLC {
 						htlc_id: _init_tlv_based_struct_field!(htlc_id, required),
-						err_packet: _init_tlv_based_struct_field!(err_packet, required),
+						err_packet: crate::ln::msgs::OnionErrorPacket {
+							data: _init_tlv_based_struct_field!(err_packet, required),
+							attribution_data: _init_tlv_based_struct_field!(attribution_data, option),
+						},
 					}
 				}
 			},

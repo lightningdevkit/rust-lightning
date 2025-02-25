@@ -2703,14 +2703,6 @@ impl_writeable_msg!(PeerStorageRetrieval, {
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
 // serialization format in a way which assumes we know the total serialized length/message end
 // position.
-impl_writeable!(OnionErrorPacket, {
-	data,
-	attribution_data
-});
-
-// Note that this is written as a part of ChannelManager objects, and thus cannot change its
-// serialization format in a way which assumes we know the total serialized length/message end
-// position.
 impl Writeable for OnionPacket {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.version.write(w)?;
