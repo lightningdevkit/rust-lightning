@@ -894,17 +894,6 @@ macro_rules! _init_and_read_tlv_stream {
 	}
 }
 
-/// Dummy macro that drops the second argument (which is used by
-/// [`lightning_macros::drop_legacy_field_definition`] to match for legacy fields but isn't needed
-/// in the final code we want to generate).
-#[doc(hidden)]
-#[macro_export]
-macro_rules! _ignore_arg {
-	($field: ident, $fieldty: tt) => {
-		$field
-	};
-}
-
 /// Reads a TLV stream with the given fields to build a struct/enum variant of type `$thing`
 #[doc(hidden)]
 #[macro_export]
@@ -913,18 +902,8 @@ macro_rules! _decode_and_build {
 		$crate::_init_and_read_len_prefixed_tlv_fields!($stream, {
 			$(($type, $field, $fieldty)),*
 		});
-		// rustc is kinda dumb about unused variable warnings when we declare a variable via an
-		// ident in a macro and then use it in an expr also defined in the same macro call. Thus,
-		// it may generate unused variable warnings for variables that are, in fact, very much
-		// used. Instead, we just blanket ignore unused variables here as it may be useful to write
-		// field names without a _ prefix for legacy fields even if we don't care about the read
-		// value.
-		$(
-			#[allow(unused_variables)]
-			let $field = $crate::_init_tlv_based_struct_field!($field, $fieldty);
-		)*
 		::lightning_macros::drop_legacy_field_definition!($thing {
-			$($field: $crate::_ignore_arg!($field, $fieldty)),*
+			$($field: $crate::_init_tlv_based_struct_field!($field, $fieldty)),*
 		})
 	} }
 }
