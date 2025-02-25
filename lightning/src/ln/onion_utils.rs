@@ -1014,7 +1014,7 @@ where
 			return;
 		}
 
-		log_info!(logger, "Processing index {} of {}", route_hop_idx, path.hops.len());
+		// log_info!(logger, "Processing index {} of {}", route_hop_idx, path.hops.len());
 
 		let route_hop = match route_hop_opt {
 			Some(hop) => hop,
@@ -1106,11 +1106,11 @@ where
 			 	failed_within_blinded_path: false,
 			});
 
-			log_debug!(logger, "Invalid HMAC in onion failure packet at pos {}", route_hop_idx);
+			// log_debug!(logger, "Invalid HMAC in onion failure packet at pos {}", route_hop_idx);
 
 			return;
 		} else {
-			log_debug!(logger, "Valid HMAC in onion failure packet at pos {}", route_hop_idx);
+			// log_debug!(logger, "Valid HMAC in onion failure packet at pos {}", route_hop_idx);
 		}
 
 		// Shift payloads left.
@@ -2006,22 +2006,22 @@ use crate::util::test_utils::TestLogger;
 			RouteHop {
 				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				short_channel_id: 1, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 			},
 			RouteHop {
 				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				short_channel_id: 2, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 			},
 			RouteHop {
 				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
 				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				short_channel_id: 3, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 			},
 			RouteHop {
 				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
 				channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-				short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				short_channel_id: 4, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 			},
 			], blinded_tail: None }
 	}
@@ -2327,28 +2327,20 @@ use crate::util::test_utils::TestLogger;
 		set_max_path_length(&mut route_params, &recipient_onion, None, None, 42).unwrap();
 	}
 
-	// #[test]
-	// fn test_attributable_failure_packet_onion() {
-	// 	const EXPECT_FAILURE: &str = "400f0000000000000064000c3500fd84d1fd012c808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080";
+	#[test]
+	fn test_attributable_failure_packet_onion_mutations() {
+		for mutating_node in 0..5 {
+			for mutated_index in 0..1060+920 {
+				let decrypted_failure = test_attributable_failure_packet_onion_with_mutation(mutating_node, mutated_index);
 
-	// 	for mutating_node in 0..5 {
-	// 		for mutated_index in 0..1968 {
-	// 			println!("Testing mutation {} on node {}", mutated_index, mutating_node);
+				// if let Some(chan_id) = decrypted_failure.short_channel_id {
+				// 	println!("Testing mutation {} on node {}: chan failure at {}", mutated_index, mutating_node, chan_id);
+				// }
 
-	// 			let decrypted_failure = test_attributable_failure_packet_onion_with_mutation(mutating_node, mutated_index);
-
-	// 			match decrypted_failure.result {
-	// 				AttributableFailureResult::Success(success) => {
-	// 					assert_eq!(success.message.to_lower_hex_string(), EXPECT_FAILURE);
-	// 					assert_eq!(decrypted_failure.failure_index, 4);
-	// 				}
-    //     			AttributableFailureResult::InvalidPayload | AttributableFailureResult::InvalidHmac => {
-	// 					assert_eq!(decrypted_failure.failure_index, 4-mutating_node);
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
+				assert!(decrypted_failure.onion_error_code == Some(16399) || decrypted_failure.short_channel_id.is_some());
+			}
+		}
+	}
 
 	#[test]
 	fn test_attributable_failure_packet_onion_happy() {
@@ -2388,12 +2380,21 @@ use crate::util::test_utils::TestLogger;
 
 		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
 
-		// if mutating_node == 0 {
-		// 	packet_slice[mutated_index] ^= 1;
-		// }
-
 		let mut encrypted_packet = super::encrypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &onion_error);
 		// assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[0]);
+
+		let mutate_packet = |packet: &mut OnionErrorPacket, mutated_index| {
+			let data_len = packet.data.len();
+			if mutated_index < data_len {
+				packet.data[mutated_index] ^= 1;
+			} else {
+				packet.attribution_data[mutated_index - data_len] ^= 1;
+			}
+		};
+
+		if mutating_node == 0 {
+			mutate_packet(&mut encrypted_packet, mutated_index);
+	   	}
 
 		for idx in 1..5 {
 
@@ -2403,9 +2404,10 @@ use crate::util::test_utils::TestLogger;
 			process_failure_packet(&mut encrypted_packet, shared_secret, &payload);
 			encrypted_packet = super::encrypt_failure_packet(shared_secret, &encrypted_packet);
 
-			// if idx == mutating_node  {
-			// 	encrypted_packet.data[mutated_index] ^= 1;
-			// }
+			if mutating_node == idx {
+				mutate_packet(&mut encrypted_packet, mutated_index);
+			}
+
 			// assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[idx]);
 		}
 
