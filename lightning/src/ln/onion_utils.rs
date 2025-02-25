@@ -39,6 +39,8 @@ use std::io::{self, Write};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+use super::msgs::OnionErrorPacket;
+
 pub(crate) struct OnionKeys {
 	#[cfg(test)]
 	pub(crate) shared_secret: SharedSecret,
@@ -873,15 +875,16 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 /// Encrypts a failure packet. raw_packet can either be a
 /// msgs::DecodedOnionErrorPacket.encode() result or a msgs::OnionErrorPacket.data element.
 pub(super) fn encrypt_failure_packet(
-	shared_secret: &[u8], raw_packet: &[u8],
+	shared_secret: &[u8], packet: &OnionErrorPacket
 ) -> msgs::OnionErrorPacket {
+	let raw_packet = &packet.data;
 	let ammag = gen_ammag_from_shared_secret(&shared_secret);
 
 	let mut packet_crypted = Vec::with_capacity(raw_packet.len());
 	packet_crypted.resize(raw_packet.len(), 0);
 	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 	chacha.process(&raw_packet, &mut packet_crypted[..]);
-	msgs::OnionErrorPacket { data: packet_crypted }
+	msgs::OnionErrorPacket { data: packet_crypted, attribution_data: packet.attribution_data }
 }
 
 pub(super) fn build_failure_packet(
@@ -958,7 +961,13 @@ pub(super) fn build_first_hop_failure_packet(
 	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
 ) -> msgs::OnionErrorPacket {
 	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data);
-	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
+	let attribution_data = [0; 940];
+
+	let onion_error_packet = OnionErrorPacket {
+		data: failure_packet.encode(),
+		attribution_data,
+	};
+	encrypt_failure_packet(shared_secret, &onion_error_packet)
 }
 
 pub(crate) struct DecodedOnionFailure {
@@ -987,11 +996,13 @@ fn decrypt_onion_error_packet(
 /// OutboundRoute).
 #[inline]
 pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut encrypted_packet: Vec<u8>,
+	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
 where
 	L::Target: Logger,
 {
+	log_info!(logger, "ATTRIBUTION DATA: {:?}", encrypted_packet.attribution_data);
+
 	let (path, session_priv, first_hop_htlc_msat) = match htlc_source {
 		HTLCSource::OutboundRoute {
 			ref path, ref session_priv, ref first_hop_htlc_msat, ..
@@ -1063,7 +1074,7 @@ where
 						// Actually parse the onion error data in tests so we can check that blinded hops fail
 						// back correctly.
 						let err_packet =
-							decrypt_onion_error_packet(&mut encrypted_packet, shared_secret)
+							decrypt_onion_error_packet(&mut encrypted_packet.data, shared_secret)
 								.unwrap();
 						error_code_ret = Some(u16::from_be_bytes(
 							err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
@@ -1085,7 +1096,7 @@ where
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
 
-		let err_packet = match decrypt_onion_error_packet(&mut encrypted_packet, shared_secret) {
+		let err_packet = match decrypt_onion_error_packet(&mut encrypted_packet.data, shared_secret) {
 			Ok(p) => p,
 			Err(_) => return,
 		};
@@ -1572,7 +1583,7 @@ impl HTLCFailReason {
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
-		Self(HTLCFailReasonRepr::LightningError { err: msg.reason.clone() })
+		Self(HTLCFailReasonRepr::LightningError { err: OnionErrorPacket{ data: msg.reason.clone(), attribution_data: msg.attribution_data.unwrap() } }) // TODO: Make safe
 	}
 
 	pub(super) fn get_encrypted_failure_packet(
@@ -1580,14 +1591,19 @@ impl HTLCFailReason {
 	) -> msgs::OnionErrorPacket {
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
+				let attribution_data = [1; 940];
 				if let Some(phantom_ss) = phantom_shared_secret {
 					let phantom_packet =
 						build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
+					let phantom_error_packet = OnionErrorPacket {
+						data: phantom_packet,
+						attribution_data,
+					};
 					let encrypted_phantom_packet =
-						encrypt_failure_packet(phantom_ss, &phantom_packet);
+						encrypt_failure_packet(phantom_ss, &phantom_error_packet);
 					encrypt_failure_packet(
 						incoming_packet_shared_secret,
-						&encrypted_phantom_packet.data[..],
+						&encrypted_phantom_packet
 					)
 				} else {
 					let packet = build_failure_packet(
@@ -1596,11 +1612,15 @@ impl HTLCFailReason {
 						&data[..],
 					)
 					.encode();
-					encrypt_failure_packet(incoming_packet_shared_secret, &packet)
+					let onion_error_packet = OnionErrorPacket {
+						data: packet,
+						attribution_data,
+					};
+					encrypt_failure_packet(incoming_packet_shared_secret, &onion_error_packet)
 				}
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
-				encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
+				encrypt_failure_packet(incoming_packet_shared_secret, &err)
 			},
 		}
 	}
@@ -1613,7 +1633,7 @@ impl HTLCFailReason {
 	{
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err } => {
-				process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
+				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
 			},
 			#[allow(unused)]
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data, .. } => {
@@ -2405,37 +2425,39 @@ use crate::util::test_utils::TestLogger;
 		let hex = "4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 		assert_eq!(onion_error.encode(), <Vec<u8>>::from_hex(hex).unwrap());
 
+		let attribution_data = [0;940];
+
 		let onion_packet_1 = super::encrypt_failure_packet(
 			onion_keys[4].shared_secret.as_ref(),
-			&onion_error.encode()[..],
+			&OnionErrorPacket { data: onion_error.encode(), attribution_data}
 		);
 		let hex = "a5e6bd0c74cb347f10cce367f949098f2457d14c046fd8a22cb96efb30b0fdcda8cb9168b50f2fd45edd73c1b0c8b33002df376801ff58aaa94000bf8a86f92620f343baef38a580102395ae3abf9128d1047a0736ff9b83d456740ebbb4aeb3aa9737f18fb4afb4aa074fb26c4d702f42968888550a3bded8c05247e045b866baef0499f079fdaeef6538f31d44deafffdfd3afa2fb4ca9082b8f1c465371a9894dd8c243fb4847e004f5256b3e90e2edde4c9fb3082ddfe4d1e734cacd96ef0706bf63c9984e22dc98851bcccd1c3494351feb458c9c6af41c0044bea3c47552b1d992ae542b17a2d0bba1a096c78d169034ecb55b6e3a7263c26017f033031228833c1daefc0dedb8cf7c3e37c9c37ebfe42f3225c326e8bcfd338804c145b16e34e4";
 		assert_eq!(onion_packet_1.data, <Vec<u8>>::from_hex(hex).unwrap());
 
 		let onion_packet_2 = super::encrypt_failure_packet(
 			onion_keys[3].shared_secret.as_ref(),
-			&onion_packet_1.data[..],
+			&onion_packet_1
 		);
 		let hex = "c49a1ce81680f78f5f2000cda36268de34a3f0a0662f55b4e837c83a8773c22aa081bab1616a0011585323930fa5b9fae0c85770a2279ff59ec427ad1bbff9001c0cd1497004bd2a0f68b50704cf6d6a4bf3c8b6a0833399a24b3456961ba00736785112594f65b6b2d44d9f5ea4e49b5e1ec2af978cbe31c67114440ac51a62081df0ed46d4a3df295da0b0fe25c0115019f03f15ec86fabb4c852f83449e812f141a9395b3f70b766ebbd4ec2fae2b6955bd8f32684c15abfe8fd3a6261e52650e8807a92158d9f1463261a925e4bfba44bd20b166d532f0017185c3a6ac7957adefe45559e3072c8dc35abeba835a8cb01a71a15c736911126f27d46a36168ca5ef7dccd4e2886212602b181463e0dd30185c96348f9743a02aca8ec27c0b90dca270";
 		assert_eq!(onion_packet_2.data, <Vec<u8>>::from_hex(hex).unwrap());
 
 		let onion_packet_3 = super::encrypt_failure_packet(
 			onion_keys[2].shared_secret.as_ref(),
-			&onion_packet_2.data[..],
+			&onion_packet_2
 		);
 		let hex = "a5d3e8634cfe78b2307d87c6d90be6fe7855b4f2cc9b1dfb19e92e4b79103f61ff9ac25f412ddfb7466e74f81b3e545563cdd8f5524dae873de61d7bdfccd496af2584930d2b566b4f8d3881f8c043df92224f38cf094cfc09d92655989531524593ec6d6caec1863bdfaa79229b5020acc034cd6deeea1021c50586947b9b8e6faa83b81fbfa6133c0af5d6b07c017f7158fa94f0d206baf12dda6b68f785b773b360fd0497e16cc402d779c8d48d0fa6315536ef0660f3f4e1865f5b38ea49c7da4fd959de4e83ff3ab686f059a45c65ba2af4a6a79166aa0f496bf04d06987b6d2ea205bdb0d347718b9aeff5b61dfff344993a275b79717cd815b6ad4c0beb568c4ac9c36ff1c315ec1119a1993c4b61e6eaa0375e0aaf738ac691abd3263bf937e3";
 		assert_eq!(onion_packet_3.data, <Vec<u8>>::from_hex(hex).unwrap());
 
 		let onion_packet_4 = super::encrypt_failure_packet(
 			onion_keys[1].shared_secret.as_ref(),
-			&onion_packet_3.data[..],
+			&onion_packet_3
 		);
 		let hex = "aac3200c4968f56b21f53e5e374e3a2383ad2b1b6501bbcc45abc31e59b26881b7dfadbb56ec8dae8857add94e6702fb4c3a4de22e2e669e1ed926b04447fc73034bb730f4932acd62727b75348a648a1128744657ca6a4e713b9b646c3ca66cac02cdab44dd3439890ef3aaf61708714f7375349b8da541b2548d452d84de7084bb95b3ac2345201d624d31f4d52078aa0fa05a88b4e20202bd2b86ac5b52919ea305a8949de95e935eed0319cf3cf19ebea61d76ba92532497fcdc9411d06bcd4275094d0a4a3c5d3a945e43305a5a9256e333e1f64dbca5fcd4e03a39b9012d197506e06f29339dfee3331995b21615337ae060233d39befea925cc262873e0530408e6990f1cbd233a150ef7b004ff6166c70c68d9f8c853c1abca640b8660db2921";
 		assert_eq!(onion_packet_4.data, <Vec<u8>>::from_hex(hex).unwrap());
 
 		let onion_packet_5 = super::encrypt_failure_packet(
 			onion_keys[0].shared_secret.as_ref(),
-			&onion_packet_4.data[..],
+			&onion_packet_4
 		);
 		let hex = "9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d";
 		assert_eq!(onion_packet_5.data, <Vec<u8>>::from_hex(hex).unwrap());

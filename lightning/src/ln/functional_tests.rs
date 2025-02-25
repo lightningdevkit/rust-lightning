@@ -7047,7 +7047,8 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	let update_msg = msgs::UpdateFailHTLC{
 		channel_id: chan.2,
 		htlc_id: 0,
-		reason: msgs::OnionErrorPacket { data: Vec::new()},
+		reason: Vec::new(),
+		attribution_data: Some([0; 940])
 	};
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_msg);

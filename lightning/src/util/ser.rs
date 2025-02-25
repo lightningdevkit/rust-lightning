@@ -712,6 +712,7 @@ impl_array!(1300, u8); // for OnionPacket.hop_data
 impl_array!(8, u16);
 impl_array!(32, u16);
 
+impl_array!(940, u8);
 impl_array!(100, u8);
 impl_array!(840, u8);
 

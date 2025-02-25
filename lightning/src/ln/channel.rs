@@ -4672,7 +4672,7 @@ trait FailHTLCContents {
 impl FailHTLCContents for msgs::OnionErrorPacket {
 	type Message = msgs::UpdateFailHTLC;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
-		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self }
+		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self.data, attribution_data: Some(self.attribution_data) }
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
@@ -5991,7 +5991,7 @@ impl<SP: Deref> FundedChannel<SP> where
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay((&msg).into()));
 												update_fail_htlcs.push(msg)
 											},
 											HTLCFailureMsg::Malformed(msg) => {
@@ -6699,7 +6699,8 @@ impl<SP: Deref> FundedChannel<SP> where
 						update_fail_htlcs.push(msgs::UpdateFailHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
-							reason: err_packet.clone()
+							reason: err_packet.data.clone(),
+							attribution_data: Some(err_packet.attribution_data)
 						});
 					},
 					&InboundHTLCRemovalReason::FailMalformed((ref sha256_of_onion, ref failure_code)) => {
@@ -10061,7 +10062,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					// `::FailHTLC` variant and write the real malformed error as an optional TLV.
 					malformed_htlcs.push((htlc_id, failure_code, sha256_of_onion));
 
-					let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new() };
+					let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; 940] };
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
 					dummy_err_packet.write(writer)?;
@@ -11500,7 +11501,7 @@ mod tests {
 			htlc_id: 0,
 		};
 		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
-			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42] }
+			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; 940] }
 		};
 		let dummy_holding_cell_malformed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id, failure_code: INVALID_ONION_BLINDING, sha256_of_onion: [0; 32],

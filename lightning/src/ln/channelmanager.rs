@@ -4411,11 +4411,13 @@ where
 		} else {
 			(err_code, &res.0[..])
 		};
+		let failure = HTLCFailReason::reason(err_code, err_data.to_vec())
+		.get_encrypted_failure_packet(shared_secret, &None);
 		HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
-			reason: HTLCFailReason::reason(err_code, err_data.to_vec())
-				.get_encrypted_failure_packet(shared_secret, &None),
+			reason: failure.data.clone(),
+			attribution_data: Some(failure.attribution_data)
 		})
 	}
 
@@ -4439,11 +4441,14 @@ where
 							}
 						))
 					}
+					let failure = HTLCFailReason::reason($err_code, $data.to_vec())
+						.get_encrypted_failure_packet(&shared_secret, &None);
+
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: HTLCFailReason::reason($err_code, $data.to_vec())
-							.get_encrypted_failure_packet(&shared_secret, &None),
+						reason: failure.data,
+						attribution_data: Some(failure.attribution_data)
 					}));
 				}
 			}
@@ -5782,7 +5787,7 @@ where
 				let failure = match htlc_fail {
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
 						htlc_id: fail_htlc.htlc_id,
-						err_packet: fail_htlc.reason,
+						err_packet: (&fail_htlc).into(),
 					},
 					HTLCFailureMsg::Malformed(fail_malformed_htlc) => HTLCForwardInfo::FailMalformedHTLC {
 						htlc_id: fail_malformed_htlc.htlc_id,
@@ -12852,11 +12857,12 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 impl Writeable for HTLCFailureMsg {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			HTLCFailureMsg::Relay(msgs::UpdateFailHTLC { channel_id, htlc_id, reason }) => {
+			HTLCFailureMsg::Relay(msgs::UpdateFailHTLC { channel_id, htlc_id, reason, attribution_data }) => {
 				0u8.write(writer)?;
 				channel_id.write(writer)?;
 				htlc_id.write(writer)?;
 				reason.write(writer)?;
+				attribution_data.write(writer)?; // TODO: Make TLV?
 			},
 			HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 				channel_id, htlc_id, sha256_of_onion, failure_code
@@ -12881,6 +12887,7 @@ impl Readable for HTLCFailureMsg {
 					channel_id: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
 					reason: Readable::read(reader)?,
+					attribution_data: Readable::read(reader)?,
 				}))
 			},
 			1 => {
@@ -13118,7 +13125,7 @@ impl Writeable for HTLCForwardInfo {
 				// packet so older versions have something to fail back with, but serialize the real data as
 				// optional TLVs for the benefit of newer versions.
 				FAIL_HTLC_VARIANT_ID.write(w)?;
-				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new() };
+				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; 940] };
 				write_tlv_fields!(w, {
 					(0, htlc_id, required),
 					(1, failure_code, required),
@@ -15073,8 +15080,8 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-	
-		// Since we do not send peer storage, we manually simulate receiving a dummy 
+
+		// Since we do not send peer storage, we manually simulate receiving a dummy
 		// `PeerStorage` from the channel partner.
 		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
 
@@ -16283,7 +16290,7 @@ mod tests {
 		let mut nodes = create_network(1, &node_cfg, &chanmgrs);
 
 		let dummy_failed_htlc = |htlc_id| {
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42] }, }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; 940] } }
 		};
 		let dummy_malformed_htlc = |htlc_id| {
 			HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code: 0x4000, sha256_of_onion: [0; 32] }

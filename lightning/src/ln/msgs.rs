@@ -729,7 +729,7 @@ pub struct UpdateFulfillHTLC {
 /// A [`peer_storage`] message that can be sent to or received from a peer.
 ///
 /// This message is used to distribute backup data to peers.
-/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]  
+/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]
 /// to recover critical information, such as channel states, for fund recovery.
 ///
 /// [`peer_storage`] is used to send our own encrypted backup data to a peer.
@@ -744,7 +744,7 @@ pub struct PeerStorage {
 /// A [`peer_storage_retrieval`] message that can be sent to or received from a peer.
 ///
 /// This message is sent to peers for whom we store backup data.
-/// If we receive this message, it indicates that the peer had stored our backup data.  
+/// If we receive this message, it indicates that the peer had stored our backup data.
 /// This data can be used for fund recovery in case of data loss.
 ///
 /// [`peer_storage_retrieval`] is used to send the most recent backup of the peer.
@@ -765,9 +765,9 @@ pub struct UpdateFailHTLC {
 	pub channel_id: ChannelId,
 	/// The HTLC ID
 	pub htlc_id: u64,
-	pub(crate) reason: OnionErrorPacket,
+	pub(crate) reason: Vec<u8>,
+	pub attribution_data: Option<[u8; 940]>
 }
-
 /// An [`update_fail_malformed_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_fail_malformed_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
@@ -2043,6 +2043,16 @@ pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
 	pub(crate) data: Vec<u8>,
+	pub(crate) attribution_data: [u8; 940]
+}
+
+impl From<&UpdateFailHTLC> for OnionErrorPacket {
+	fn from(msg: &UpdateFailHTLC) -> Self {
+		OnionErrorPacket {
+			data: msg.reason.clone(),
+			attribution_data: msg.attribution_data.unwrap(),	// TODO: Make safe
+		}
+	}
 }
 
 impl fmt::Display for DecodeError {
@@ -2670,7 +2680,9 @@ impl_writeable_msg!(UpdateFailHTLC, {
 	channel_id,
 	htlc_id,
 	reason
-}, {});
+}, {
+	(4333, attribution_data, option)
+});
 
 impl_writeable_msg!(UpdateFailMalformedHTLC, {
 	channel_id,
@@ -2702,7 +2714,8 @@ impl_writeable_msg!(PeerStorageRetrieval, {
 // serialization format in a way which assumes we know the total serialized length/message end
 // position.
 impl_writeable!(OnionErrorPacket, {
-	data
+	data,
+	attribution_data
 });
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
@@ -4450,13 +4463,11 @@ mod tests {
 
 	#[test]
 	fn encoding_update_fail_htlc() {
-		let reason = OnionErrorPacket {
-			data: [1; 32].to_vec(),
-		};
 		let update_fail_htlc = msgs::UpdateFailHTLC {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
-			reason
+			reason: [1; 32].to_vec(),
+			attribution_data: Some([0; 940])
 		};
 		let encoded_value = update_fail_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();
