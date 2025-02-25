@@ -57,7 +57,7 @@ use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelType
 use crate::types::features::Bolt11InvoiceFeatures;
 #[cfg(trampoline)]
 use crate::routing::gossip::NodeId;
-use crate::routing::router::{BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, RouteParametersConfig, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -2105,6 +2105,7 @@ where
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
 /// # use lightning::ln::channelmanager::AChannelManager;
 /// # use lightning::offers::parse::Bolt12SemanticError;
+/// # use lightning::routing::router::RouteParametersConfig;
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
@@ -2152,15 +2153,16 @@ where
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
 /// # use lightning::offers::offer::Offer;
+/// # use lightning::routing::router::RouteParametersConfig;
 /// #
 /// # fn example<T: AChannelManager>(
 /// #     channel_manager: T, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
-/// #     payer_note: Option<String>, retry: Retry, max_total_routing_fee_msat: Option<u64>
+/// #     payer_note: Option<String>, retry: Retry, route_params_config: RouteParametersConfig
 /// # ) {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
 /// match channel_manager.pay_for_offer(
-///     offer, quantity, amount_msats, payer_note, payment_id, retry, max_total_routing_fee_msat
+///     offer, quantity, amount_msats, payer_note, payment_id, retry, route_params_config
 /// ) {
 ///     Ok(()) => println!("Requesting invoice for offer"),
 ///     Err(e) => println!("Unable to request invoice for offer: {:?}", e),
@@ -2208,16 +2210,17 @@ where
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
 /// # use lightning::offers::parse::Bolt12SemanticError;
+/// # use lightning::routing::router::RouteParametersConfig;
 /// #
 /// # fn example<T: AChannelManager>(
 /// #     channel_manager: T, amount_msats: u64, absolute_expiry: Duration, retry: Retry,
-/// #     max_total_routing_fee_msat: Option<u64>
+/// #     route_params_config: RouteParametersConfig
 /// # ) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
 /// let refund = channel_manager
 ///     .create_refund_builder(
-///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat
+///         amount_msats, absolute_expiry, payment_id, retry, route_params_config
 ///     )?
 /// # ;
 /// # // Needed for compiling for c_bindings
@@ -10161,7 +10164,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
-		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+		retry_strategy: Retry, route_params_config: RouteParametersConfig
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -10186,7 +10189,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat, None,
+				payment_id, expiration, retry_strategy, route_params_config, None,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -10362,7 +10365,7 @@ where
 	pub fn pay_for_offer(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
-		max_total_routing_fee_msat: Option<u64>
+		route_params_config: RouteParametersConfig
 	) -> Result<(), Bolt12SemanticError> {
 		self.pay_for_offer_intern(offer, quantity, amount_msats, payer_note, payment_id, None, |invoice_request, nonce| {
 			let expiration = StaleExpiration::TimerTicks(1);
@@ -10373,7 +10376,7 @@ where
 			};
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
-					payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+					payment_id, expiration, retry_strategy, route_params_config,
 					Some(retryable_invoice_request)
 				)
 				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
@@ -10606,14 +10609,14 @@ where
 	#[cfg(feature = "dnssec")]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
-		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>,
+		retry_strategy: Retry, route_params_config: RouteParametersConfig,
 		dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
 		let (onion_message, context) =
 			self.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
 		let expiration = StaleExpiration::TimerTicks(1);
-		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, max_total_routing_fee_msat, amount_msats)?;
+		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats)?;
 		let message_params = dns_resolvers
 			.iter()
 			.flat_map(|destination| reply_paths.iter().map(move |path| (path, destination)))

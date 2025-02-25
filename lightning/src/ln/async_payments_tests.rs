@@ -33,7 +33,7 @@ use crate::onion_message::messenger::{Destination, MessageRouter, MessageSendIns
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::prelude::*;
-use crate::routing::router::{Payee, PaymentParameters};
+use crate::routing::router::{Payee, PaymentParameters, RouteParametersConfig};
 use crate::sign::NodeSigner;
 use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
@@ -238,7 +238,15 @@ fn static_invoice_unknown_required_features() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(0),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 
 	// Don't forward the invreq since we don't support retrieving the static invoice from the
@@ -298,7 +306,15 @@ fn ignore_unexpected_static_invoice() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(0),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 
 	// Don't forward the invreq since we don't support retrieving the static invoice from the
@@ -415,7 +431,15 @@ fn async_receive_flow_success() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(0),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 	let release_held_htlc_om =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[2]).1;
@@ -463,7 +487,15 @@ fn expired_static_invoice_fail() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(0),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 
 	let invreq_om = nodes[0]
@@ -546,7 +578,15 @@ fn async_receive_mpp() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(1),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 	let release_held_htlc_om_3_0 =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[3]).1;
@@ -630,7 +670,15 @@ fn amount_doesnt_match_invreq() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(1),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 	let release_held_htlc_om_3_0 =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[3]).1;
@@ -859,7 +907,15 @@ fn invalid_async_receive_with_retry<F1, F2>(
 
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(2), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(2),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 	let release_held_htlc_om_2_0 =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[2]).1;
@@ -948,7 +1004,15 @@ fn expired_static_invoice_message_path() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(1), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(1),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 
 	// While the invoice is unexpired, respond with release_held_htlc.
@@ -1052,7 +1116,15 @@ fn expired_static_invoice_payment_path() {
 	let payment_id = PaymentId([1; 32]);
 	nodes[0]
 		.node
-		.pay_for_offer(&offer, None, Some(amt_msat), None, payment_id, Retry::Attempts(0), None)
+		.pay_for_offer(
+			&offer,
+			None,
+			Some(amt_msat),
+			None,
+			payment_id,
+			Retry::Attempts(0),
+			RouteParametersConfig::default(),
+		)
 		.unwrap();
 	let release_held_htlc_om =
 		pass_async_payments_oms(static_invoice, &nodes[0], &nodes[1], &nodes[2]).1;
