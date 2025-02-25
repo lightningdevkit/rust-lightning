@@ -393,27 +393,17 @@ mod test {
 
 		// When we get the proof back, override its contents to an offer from nodes[1]
 		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
-		nodes[0]
-			.node
-			.testing_dnssec_proof_offer_resolution_override
-			.lock()
-			.unwrap()
-			.insert(name.clone(), bs_offer);
+		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
+		proof_override.lock().unwrap().insert(name.clone(), bs_offer);
 
 		let payment_id = PaymentId([42; 32]);
 		let resolvers = vec![Destination::Node(resolver_id)];
 		let retry = Retry::Attempts(0);
 		let amt = 42_000;
+		let params = RouteParametersConfig::default();
 		nodes[0]
 			.node
-			.pay_for_offer_from_human_readable_name(
-				name,
-				amt,
-				payment_id,
-				retry,
-				RouteParametersConfig::default(),
-				resolvers,
-			)
+			.pay_for_offer_from_human_readable_name(name, amt, payment_id, retry, params, resolvers)
 			.unwrap();
 
 		let query = nodes[0].onion_messenger.next_onion_message_for_peer(resolver_id).unwrap();
