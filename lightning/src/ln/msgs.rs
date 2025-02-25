@@ -1793,7 +1793,8 @@ pub struct FinalOnionHopData {
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, PaymentRelay};
-	use crate::offers::invoice_request::InvoiceRequest;
+	use crate::ln::onion_utils::ATTRIBUTION_DATA_LEN;
+use crate::offers::invoice_request::InvoiceRequest;
 	use crate::types::payment::{PaymentPreimage, PaymentSecret};
 	use crate::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
@@ -1923,13 +1924,6 @@ mod fuzzy_internal_msgs {
 		pub(crate) hmac: [u8; 32],
 		pub(crate) failuremsg: Vec<u8>,
 		pub(crate) pad: Vec<u8>,
-	}
-
-	pub struct DecodedAttributableOnionErrorPacket {
-		pub(crate) failuremsg: Vec<u8>,
-		pub(crate) pad: Vec<u8>,
-		pub(crate) payloads: [u8; 100],
-		pub(crate) hmac: [u8; 840],
 	}
 }
 #[cfg(fuzzing)]
@@ -2393,12 +2387,6 @@ impl_writeable!(DecodedOnionErrorPacket, {
 	pad
 });
 
-impl_writeable!(DecodedAttributableOnionErrorPacket, {
-	failuremsg,
-	pad,
-	payloads,
-	hmac
-});
 
 #[cfg(not(taproot))]
 impl_writeable_msg!(FundingCreated, {
