@@ -1509,8 +1509,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	fn provide_latest_holder_commitment_tx(
 		&self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
-	) -> Result<(), ()> {
-		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new()).map_err(|_| ())
+	) {
+		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new())
 	}
 
 	/// This is used to provide payment preimage(s) out-of-band during startup without updating the
@@ -2901,7 +2901,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
-	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, mut htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>, claimed_htlcs: &[(SentHTLCId, PaymentPreimage)], nondust_htlc_sources: Vec<HTLCSource>) -> Result<(), &'static str> {
+	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, mut htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>, claimed_htlcs: &[(SentHTLCId, PaymentPreimage)], nondust_htlc_sources: Vec<HTLCSource>) {
 		if htlc_outputs.iter().any(|(_, s, _)| s.is_some()) {
 			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
 			// `holder_commitment_tx`. In the future, we'll no longer provide the redundant data
@@ -2978,10 +2978,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
-		if self.holder_tx_signed {
-			return Err("Latest holder commitment signed has already been signed, update is rejected");
-		}
-		Ok(())
 	}
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
@@ -3202,11 +3198,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, nondust_htlc_sources } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
-					if let Err(e) = self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs, nondust_htlc_sources.clone()) {
-						log_error!(logger, "Providing latest holder commitment transaction failed/was refused:");
-						log_error!(logger, "    {}", e);
-						ret = Err(());
-					}
+					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs, nondust_htlc_sources.clone());
 				}
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
@@ -5386,7 +5378,7 @@ mod tests {
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
+			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect());
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
@@ -5424,7 +5416,7 @@ mod tests {
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..5]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
+			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect());
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 12);
@@ -5435,7 +5427,7 @@ mod tests {
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..3]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx,
-			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
+			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect());
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);
