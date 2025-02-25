@@ -2039,14 +2039,14 @@ pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
 	pub(crate) data: Vec<u8>,
-	pub(crate) attribution_data: [u8; ATTRIBUTION_DATA_LEN]
+	pub(crate) attribution_data: Option<[u8; ATTRIBUTION_DATA_LEN]>,
 }
 
 impl From<&UpdateFailHTLC> for OnionErrorPacket {
 	fn from(msg: &UpdateFailHTLC) -> Self {
 		OnionErrorPacket {
 			data: msg.reason.clone(),
-			attribution_data: msg.attribution_data.unwrap(),	// TODO: Make safe
+			attribution_data: msg.attribution_data,
 		}
 	}
 }

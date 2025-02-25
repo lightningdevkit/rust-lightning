@@ -929,7 +929,7 @@ pub(super) fn build_failure_packet(
 
 	OnionErrorPacket {
 		data: data,
-		attribution_data,
+		attribution_data: Some(attribution_data),
 	}
 }
 
@@ -1077,8 +1077,8 @@ where
 		// Check attr error hmacs
 
 		let message = &encrypted_packet.data;
-		let payloads = &encrypted_packet.attribution_data[..MAX_HOPS * PAYLOAD_LEN];
-		let hmacs = &encrypted_packet.attribution_data[MAX_HOPS * PAYLOAD_LEN..];
+		let payloads = &encrypted_packet.attribution_data.as_ref().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
+		let hmacs = &encrypted_packet.attribution_data.as_ref().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
 
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
@@ -1108,11 +1108,11 @@ where
 		}
 
 		// Shift payloads left.
-		let payloads = &mut encrypted_packet.attribution_data[..MAX_HOPS * PAYLOAD_LEN];
+		let payloads = &mut encrypted_packet.attribution_data.as_mut().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
 		payloads.copy_within(PAYLOAD_LEN.., 0);
 
 		// Shift hmacs left.
-		let hmacs = &mut encrypted_packet.attribution_data[MAX_HOPS * PAYLOAD_LEN..];
+		let hmacs = &mut encrypted_packet.attribution_data.as_mut().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
 		let mut src_idx = MAX_HOPS;
 		let mut dest_idx = 1;
 		let mut copy_len = MAX_HOPS - 1;
@@ -1428,7 +1428,7 @@ impl HTLCFailReason {
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
-		Self(HTLCFailReasonRepr::LightningError { err: OnionErrorPacket{ data: msg.reason.clone(), attribution_data: msg.attribution_data.unwrap() } }) // TODO: Make safe
+		Self(HTLCFailReasonRepr::LightningError { err: OnionErrorPacket{ data: msg.reason.clone(), attribution_data: msg.attribution_data } })
 	}
 
 	pub(super) fn get_encrypted_failure_packet(
@@ -1922,7 +1922,7 @@ fn process_failure_packet(onion_error: &mut OnionErrorPacket, shared_secret: &[u
 
 	// Shift payloads right.
 	{
-		let payloads = &onion_error.attribution_data[..MAX_HOPS * PAYLOAD_LEN];
+		let payloads = &onion_error.attribution_data.as_ref().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
 		processed_packet[PAYLOAD_LEN..MAX_HOPS * PAYLOAD_LEN].copy_from_slice(&payloads[..payloads.len()-PAYLOAD_LEN]);
 
 		// Add this node's payload.
@@ -1931,7 +1931,7 @@ fn process_failure_packet(onion_error: &mut OnionErrorPacket, shared_secret: &[u
 
 	// Shift hmacs right.
 	{
-		let hmacs = &onion_error.attribution_data[MAX_HOPS * PAYLOAD_LEN..];
+		let hmacs = &onion_error.attribution_data.as_ref().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
 		let processed_hmacs = &mut processed_packet[MAX_HOPS * PAYLOAD_LEN..];
 
 		let mut src_idx = HMAC_COUNT - 2;
@@ -1956,7 +1956,7 @@ fn process_failure_packet(onion_error: &mut OnionErrorPacket, shared_secret: &[u
 	// Add this node's hmacs.
 	add_hmacs(&shared_secret, &onion_error.data, &mut processed_packet);
 
-	onion_error.attribution_data = processed_packet;
+	onion_error.attribution_data = Some(processed_packet);
 }
 
 

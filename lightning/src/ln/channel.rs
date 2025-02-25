@@ -4672,7 +4672,7 @@ trait FailHTLCContents {
 impl FailHTLCContents for msgs::OnionErrorPacket {
 	type Message = msgs::UpdateFailHTLC;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
-		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self.data, attribution_data: Some(self.attribution_data) }
+		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self.data, attribution_data: self.attribution_data }
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
@@ -6700,7 +6700,7 @@ impl<SP: Deref> FundedChannel<SP> where
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
 							reason: err_packet.data.clone(),
-							attribution_data: Some(err_packet.attribution_data)
+							attribution_data: err_packet.attribution_data,
 						});
 					},
 					&InboundHTLCRemovalReason::FailMalformed((ref sha256_of_onion, ref failure_code)) => {
