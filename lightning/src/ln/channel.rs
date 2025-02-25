@@ -1985,7 +1985,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 	fn initial_commitment_signed<L: Deref>(
 		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
-		counterparty_commitment_number: u64, best_block: BestBlock, signer_provider: &SP, logger: &L,
+		_counterparty_commitment_number: u64, best_block: BestBlock, signer_provider: &SP, logger: &L,
 	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError>
 	where
 		L::Target: Logger
@@ -2063,14 +2063,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		                                          funding_redeemscript.clone(), self.funding().channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
-		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_bitcoin_tx.txid, Vec::new(),
-			counterparty_commitment_number,
-			context.counterparty_cur_commitment_point.unwrap(),
-			counterparty_initial_commitment_tx.feerate_per_kw(),
-			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
-			counterparty_initial_commitment_tx.to_countersignatory_value_sat(),
-			logger);
+		channel_monitor.provide_initial_counterparty_commitment_tx(Vec::new(), counterparty_initial_commitment_tx.clone(), logger);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
@@ -8469,6 +8462,8 @@ impl<SP: Deref> FundedChannel<SP> where
 				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
+				// This is everything we need, but we still provide all the above fields for downgrades
+				commitment_tx: Some(counterparty_commitment_tx),
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
