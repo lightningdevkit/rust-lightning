@@ -939,13 +939,7 @@ pub(super) fn build_first_hop_failure_packet(
 ) -> msgs::OnionErrorPacket {
 	let payload = [0; 4];
 	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data, &payload);
-	let attribution_data = [0; ATTRIBUTION_DATA_LEN];
-
-	let onion_error_packet = OnionErrorPacket {
-		data: failure_packet.encode(),
-		attribution_data,
-	};
-	encrypt_failure_packet(shared_secret, &onion_error_packet)
+	encrypt_failure_packet(shared_secret, &failure_packet)
 }
 
 pub(crate) struct DecodedOnionFailure {
