@@ -1737,10 +1737,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_cur_holder_commitment_number()
 	}
 
-	/// Gets whether we've been notified that this channel is closed by the `ChannelManager` (i.e.
-	/// via a [`ChannelMonitorUpdateStep::ChannelForceClosed`]).
-	pub(crate) fn offchain_closed(&self) -> bool {
-		self.inner.lock().unwrap().lockdown_from_offchain
+	/// Fetches whether this monitor has marked the channel as closed and will refuse any further
+	/// updates to the commitment transactions.
+	///
+	/// It can be marked closed in a few different ways, including via a
+	/// [`ChannelMonitorUpdateStep::ChannelForceClosed`] or if the channel has been closed
+	/// on-chain.
+	pub(crate) fn no_further_updates_allowed(&self) -> bool {
+		self.inner.lock().unwrap().no_further_updates_allowed()
 	}
 
 	/// Gets the `node_id` of the counterparty for this channel.
@@ -3278,10 +3282,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed) && is_pre_close_update {
+		if ret.is_ok() && self.no_further_updates_allowed() && is_pre_close_update {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
+	}
+
+	fn no_further_updates_allowed(&self) -> bool {
+		self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed
 	}
 
 	fn get_latest_update_id(&self) -> u64 {
@@ -4227,7 +4235,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if self.lockdown_from_offchain || self.funding_spend_seen || self.holder_tx_signed {
+		if self.no_further_updates_allowed() {
 			// Fail back HTLCs on backwards channels if they expire within
 			// `LATENCY_GRACE_PERIOD_BLOCKS` blocks and the channel is closed (i.e. we're at a
 			// point where no further off-chain updates will be accepted). If we haven't seen the
