@@ -47,6 +47,7 @@ use crate::ln::functional_test_utils::*;
 use crate::ln::onion_utils::{construct_trampoline_onion_keys, construct_trampoline_onion_packet};
 
 use super::msgs::OnionErrorPacket;
+use super::onion_utils::ATTRIBUTION_DATA_LEN;
 
 fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, payment_secret: &PaymentSecret, callback_msg: F1, callback_node: F2, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>, expected_htlc_destination: Option<HTLCDestination>)
 	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
@@ -700,7 +701,7 @@ fn test_onion_failure() {
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 			let onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
-				attribution_data: [0; 940],
+				attribution_data: [0; ATTRIBUTION_DATA_LEN],
 			};
 			let failure = onion_utils::encrypt_failure_packet(
 				&onion_keys[1].shared_secret.as_ref(), &onion_error);
@@ -729,7 +730,7 @@ fn test_onion_failure() {
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 			let onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
-				attribution_data: [0; 940],
+				attribution_data: [0; ATTRIBUTION_DATA_LEN],
 			};
 			let failure = onion_utils::encrypt_failure_packet(
 				&onion_keys[0].shared_secret.as_ref(), &onion_error);
@@ -757,7 +758,7 @@ fn test_onion_failure() {
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 			let onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
-				attribution_data: [0; 940],
+				attribution_data: [0; ATTRIBUTION_DATA_LEN],
 			};
 			let failure = onion_utils::encrypt_failure_packet(
 				&onion_keys[1].shared_secret.as_ref(), &onion_error);

@@ -766,7 +766,7 @@ pub struct UpdateFailHTLC {
 	/// The HTLC ID
 	pub htlc_id: u64,
 	pub(crate) reason: Vec<u8>,
-	pub attribution_data: Option<[u8; 940]>
+	pub attribution_data: Option<[u8; ATTRIBUTION_DATA_LEN]>
 }
 /// An [`update_fail_malformed_htlc`] message to be sent to or received from a peer.
 ///
@@ -1937,6 +1937,8 @@ pub use self::fuzzy_internal_msgs::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_internal_msgs::*;
 
+use super::onion_utils::ATTRIBUTION_DATA_LEN;
+
 /// BOLT 4 onion packet including hop data for the next peer.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct OnionPacket {
@@ -2043,7 +2045,7 @@ pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
 	pub(crate) data: Vec<u8>,
-	pub(crate) attribution_data: [u8; 940]
+	pub(crate) attribution_data: [u8; ATTRIBUTION_DATA_LEN]
 }
 
 impl From<&UpdateFailHTLC> for OnionErrorPacket {
@@ -3461,7 +3463,8 @@ impl_writeable_msg!(GossipTimestampFilter, {
 mod tests {
 	use bitcoin::{Amount, Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use bitcoin::hex::DisplayHex;
-	use crate::ln::types::ChannelId;
+	use crate::ln::onion_utils::ATTRIBUTION_DATA_LEN;
+use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket, InboundOnionForwardPayload, InboundOnionReceivePayload};
@@ -4467,7 +4470,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			reason: [1; 32].to_vec(),
-			attribution_data: Some([0; 940])
+			attribution_data: Some([0; ATTRIBUTION_DATA_LEN])
 		};
 		let encoded_value = update_fail_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();

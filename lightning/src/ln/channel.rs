@@ -49,7 +49,7 @@ use crate::ln::chan_utils::{
 	ClosingTransaction, commit_tx_fee_sat,
 };
 use crate::ln::chan_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason, ATTRIBUTION_DATA_LEN};
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator, fee_for_weight};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
@@ -10062,7 +10062,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					// `::FailHTLC` variant and write the real malformed error as an optional TLV.
 					malformed_htlcs.push((htlc_id, failure_code, sha256_of_onion));
 
-					let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; 940] };
+					let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; ATTRIBUTION_DATA_LEN] };
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
 					dummy_err_packet.write(writer)?;
@@ -10863,7 +10863,7 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::opcodes;
 	use bitcoin::network::Network;
-	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
+	use crate::ln::onion_utils::{ATTRIBUTION_DATA_LEN, INVALID_ONION_BLINDING};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
@@ -11501,7 +11501,7 @@ mod tests {
 			htlc_id: 0,
 		};
 		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
-			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; 940] }
+			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; ATTRIBUTION_DATA_LEN] }
 		};
 		let dummy_holding_cell_malformed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id, failure_code: INVALID_ONION_BLINDING, sha256_of_onion: [0; 32],

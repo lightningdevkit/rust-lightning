@@ -60,7 +60,7 @@ use crate::routing::gossip::NodeId;
 use crate::routing::router::{BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
-use crate::ln::onion_utils;
+use crate::ln::onion_utils::{self, ATTRIBUTION_DATA_LEN};
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError};
 #[cfg(test)]
@@ -13125,7 +13125,7 @@ impl Writeable for HTLCForwardInfo {
 				// packet so older versions have something to fail back with, but serialize the real data as
 				// optional TLVs for the benefit of newer versions.
 				FAIL_HTLC_VARIANT_ID.write(w)?;
-				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; 940] };
+				let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new(), attribution_data: [0; ATTRIBUTION_DATA_LEN] };
 				write_tlv_fields!(w, {
 					(0, htlc_id, required),
 					(1, failure_code, required),
@@ -14858,7 +14858,8 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-	use crate::ln::types::ChannelId;
+	use crate::ln::onion_utils::ATTRIBUTION_DATA_LEN;
+use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{create_recv_pending_htlc_info, inbound_payment, ChannelConfigOverrides, HTLCForwardInfo, InterceptId, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
@@ -16290,7 +16291,7 @@ mod tests {
 		let mut nodes = create_network(1, &node_cfg, &chanmgrs);
 
 		let dummy_failed_htlc = |htlc_id| {
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; 940] } }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; ATTRIBUTION_DATA_LEN] } }
 		};
 		let dummy_malformed_htlc = |htlc_id| {
 			HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code: 0x4000, sha256_of_onion: [0; 32] }
