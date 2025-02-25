@@ -3915,35 +3915,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 		}
-		if self.holder_tx_signed {
-			// If we've signed, we may have broadcast either commitment (prev or current), and
-			// attempted to claim from it immediately without waiting for a confirmation.
-			if self.current_holder_commitment_tx.txid != *confirmed_commitment_txid {
+		// Cancel any pending claims for any holder commitments in case they had previously
+		// confirmed or been signed (in which case we will start attempting to claim without
+		// waiting for confirmation).
+		if self.current_holder_commitment_tx.txid != *confirmed_commitment_txid {
+			log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}",
+				self.current_holder_commitment_tx.txid);
+			let mut outpoint = BitcoinOutPoint { txid: self.current_holder_commitment_tx.txid, vout: 0 };
+			for (htlc, _, _) in &self.current_holder_commitment_tx.htlc_outputs {
+				if let Some(vout) = htlc.transaction_output_index {
+					outpoint.vout = vout;
+					self.onchain_tx_handler.abandon_claim(&outpoint);
+				}
+			}
+		}
+		if let Some(prev_holder_commitment_tx) = &self.prev_holder_signed_commitment_tx {
+			if prev_holder_commitment_tx.txid != *confirmed_commitment_txid {
 				log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}",
-					self.current_holder_commitment_tx.txid);
-				let mut outpoint = BitcoinOutPoint { txid: self.current_holder_commitment_tx.txid, vout: 0 };
-				for (htlc, _, _) in &self.current_holder_commitment_tx.htlc_outputs {
+					prev_holder_commitment_tx.txid);
+				let mut outpoint = BitcoinOutPoint { txid: prev_holder_commitment_tx.txid, vout: 0 };
+				for (htlc, _, _) in &prev_holder_commitment_tx.htlc_outputs {
 					if let Some(vout) = htlc.transaction_output_index {
 						outpoint.vout = vout;
 						self.onchain_tx_handler.abandon_claim(&outpoint);
 					}
 				}
 			}
-			if let Some(prev_holder_commitment_tx) = &self.prev_holder_signed_commitment_tx {
-				if prev_holder_commitment_tx.txid != *confirmed_commitment_txid {
-					log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}",
-						prev_holder_commitment_tx.txid);
-					let mut outpoint = BitcoinOutPoint { txid: prev_holder_commitment_tx.txid, vout: 0 };
-					for (htlc, _, _) in &prev_holder_commitment_tx.htlc_outputs {
-						if let Some(vout) = htlc.transaction_output_index {
-							outpoint.vout = vout;
-							self.onchain_tx_handler.abandon_claim(&outpoint);
-						}
-					}
-				}
-			}
-		} else {
-			// No previous claim.
 		}
 	}
 
