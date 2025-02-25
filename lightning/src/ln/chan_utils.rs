@@ -931,6 +931,13 @@ impl ChannelTransactionParameters {
 		}
 	}
 
+	pub(crate) fn make_funding_redeemscript(&self) -> ScriptBuf {
+		make_funding_redeemscript(
+			&self.holder_pubkeys.funding_pubkey,
+			&self.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey
+		)
+	}
+
 	/// Returns the counterparty's pubkeys.
 	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
 		self.counterparty_parameters.as_ref().map(|params| &params.pubkeys)

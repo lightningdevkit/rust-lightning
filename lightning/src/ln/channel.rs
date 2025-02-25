@@ -42,7 +42,7 @@ use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo,
 use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{
 	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
-	htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction,
+	htlc_timeout_tx_weight, ChannelPublicKeys, CommitmentTransaction,
 	HolderCommitmentTransaction, ChannelTransactionParameters,
 	CounterpartyChannelTransactionParameters, MAX_HTLCS,
 	get_commitment_transaction_number_obscure_factor,
@@ -1709,7 +1709,7 @@ impl FundingScope {
 	/// pays to get_funding_redeemscript().to_p2wsh()).
 	/// Panics if called before accept_channel/InboundV1Channel::new
 	pub fn get_funding_redeemscript(&self) -> ScriptBuf {
-		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
+		self.channel_transaction_parameters.make_funding_redeemscript()
 	}
 
 	fn counterparty_funding_pubkey(&self) -> &PublicKey {
