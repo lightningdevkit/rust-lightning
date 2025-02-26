@@ -3506,20 +3506,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32,
 		mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>
 	) -> CommitmentTransaction {
-		let broadcaster_keys =
-			&self.funding.channel_parameters.counterparty_parameters.as_ref().unwrap().pubkeys;
-		let countersignatory_keys = &self.funding.channel_parameters.holder_pubkeys;
-
-		let broadcaster_funding_key = broadcaster_keys.funding_pubkey;
-		let countersignatory_funding_key = countersignatory_keys.funding_pubkey;
-		let keys = TxCreationKeys::from_channel_static_keys(&their_per_commitment_point,
-			&broadcaster_keys, &countersignatory_keys, &self.onchain_tx_handler.secp_ctx);
 		let channel_parameters = &self.funding.channel_parameters.as_counterparty_broadcastable();
+		let keys = TxCreationKeys::from_channel_static_keys(their_per_commitment_point,
+			channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), &self.onchain_tx_handler.secp_ctx);
 
 		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-			to_broadcaster_value, to_countersignatory_value, broadcaster_funding_key,
-			countersignatory_funding_key, keys, feerate_per_kw, &mut nondust_htlcs,
-			channel_parameters)
+			to_broadcaster_value, to_countersignatory_value, keys, feerate_per_kw, &mut nondust_htlcs, channel_parameters)
 	}
 
 	fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
