@@ -4095,60 +4095,62 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	/// Check a balance against a channel reserver requirement
+	/// Check a balance against a channel reserve requirement
 	#[cfg(splicing)]
-	pub fn check_balance_meets_reserve_requirement(balance: u64, channel_value: u64, dust_limit: u64) -> (bool, u64) {
-		let channel_reserve = get_v2_channel_reserve_satoshis(channel_value, dust_limit);
+	pub fn check_balance_meets_reserve_requirement(balance: u64, channel_value: u64, dust_limit: u64) -> Result<(), u64> {
 		if balance == 0 {
 			// 0 balance is fine
-			(true, channel_reserve)
+			Ok(())
 		} else {
-			((balance >= channel_reserve), channel_reserve)
+			let channel_reserve = get_v2_channel_reserve_satoshis(channel_value, dust_limit);
+			if balance >= channel_reserve {
+				Ok(())
+			} else {
+				Err(channel_reserve)
+			}
 		}
 	}
 
-	/// Check that post-splicing balance meets reserver requirements, but only if it met it pre-splice as well
+	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well
 	#[cfg(splicing)]
-	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64, dust_limit: u64) -> (bool, u64) {
+	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64, dust_limit: u64) -> Result<(), u64> {
 		match Self::check_balance_meets_reserve_requirement(
 			post_balance, post_channel_value, dust_limit
 		) {
-			(true, channel_reserve) => (true, channel_reserve),
-			(false, channel_reserve) =>
+			Ok(_) => Ok(()),
+			Err(post_channel_reserve) =>
 				// post is not OK, check pre
 				match Self::check_balance_meets_reserve_requirement(
 					pre_balance, pre_channel_value, dust_limit
 				) {
-					(true, _) =>
-						// pre OK, post not -> not
-						(false, channel_reserve),
-					(false, _) =>
-						// post not OK, but so was pre -> OK
-						(true, channel_reserve),
+					// pre OK, post not -> not
+					Ok(_) => Err(post_channel_reserve),
+					// post not OK, but so was pre -> OK
+					Err(_) => Ok(()),
 				}
 		}
 	}
 
 	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
-	/// The channel value is an input as opposed to using from self, so that this can be used in case of splicing
-	/// to check with new channel value (before being comitted to it).
+	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
+	/// to check with new channel value (before being committed to it).
 	#[cfg(splicing)]
 	pub fn check_splice_balances_meet_v2_reserve_requirements(&self, self_balance_pre: u64, self_balance_post: u64, counterparty_balance_pre: u64, counterparty_balance_post: u64, channel_value_pre: u64, channel_value_post: u64) -> Result<(), ChannelError> {
-		let (is_ok, channel_reserve_self) = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
+		let is_ok_self = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
 			self_balance_pre, self_balance_post, channel_value_pre, channel_value_post,
 			self.holder_dust_limit_satoshis
 		);
-		if !is_ok {
+		if let Err(channel_reserve_self) = is_ok_self {
 			return Err(ChannelError::Warn(format!(
 				"Balance below reserve, mandated by holder, {} vs {}",
 				self_balance_post, channel_reserve_self,
 			)));
 		}
-		let (is_ok, channel_reserve_cp) = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
+		let is_ok_cp = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
 			counterparty_balance_pre, counterparty_balance_post, channel_value_pre, channel_value_post,
 			self.counterparty_dust_limit_satoshis
 		);
-		if !is_ok {
+		if let Err(channel_reserve_cp) = is_ok_cp {
 			return Err(ChannelError::Warn(format!(
 				"Balance below reserve mandated by counterparty, {} vs {}",
 				counterparty_balance_post, channel_reserve_cp,
@@ -8518,7 +8520,8 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		if their_funding_contribution_satoshis.saturating_add(our_funding_contribution_satoshis) < 0 {
 			return Err(ChannelError::Warn(format!(
-				"Splice-out not supported, only splice in, relative {} + {}",
+				"Splice-out not supported, only splice in, contribution is {} ({} + {})",
+				their_funding_contribution_satoshis + our_funding_contribution_satoshis,
 				their_funding_contribution_satoshis, our_funding_contribution_satoshis,
 			)));
 		}
