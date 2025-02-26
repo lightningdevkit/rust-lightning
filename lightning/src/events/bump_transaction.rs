@@ -91,14 +91,6 @@ impl AnchorDescriptor {
 		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
 		chan_utils::build_anchor_input_witness(&channel_params.broadcaster_pubkeys().funding_pubkey, signature)
 	}
-
-	/// Derives the channel signer required to sign the anchor input.
-	pub fn derive_channel_signer<S: EcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
-	where
-		SP::Target: SignerProvider<EcdsaSigner= S>
-	{
-		signer_provider.derive_channel_signer(self.channel_derivation_parameters.keys_id)
-	}
 }
 
 /// Represents the different types of transactions, originating from LDK, to be bumped.
@@ -118,7 +110,7 @@ pub enum BumpTransactionEvent {
 	///
 	/// The consumer should be able to sign for any of the additional inputs included within the
 	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
-	/// re-derived through [`AnchorDescriptor::derive_channel_signer`]. The anchor input signature
+	/// re-derived through [`SignerProvider::derive_channel_signer`]. The anchor input signature
 	/// can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`], which can then be
 	/// provided to [`build_anchor_input_witness`] along with the `funding_pubkey` to obtain the
 	/// full witness required to spend.
@@ -183,7 +175,7 @@ pub enum BumpTransactionEvent {
 	///
 	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
 	/// HTLC transaction. To sign HTLC inputs, an [`EcdsaChannelSigner`] should be re-derived
-	/// through [`HTLCDescriptor::derive_channel_signer`]. Each HTLC input's signature can be
+	/// through [`SignerProvider::derive_channel_signer`]. Each HTLC input's signature can be
 	/// computed with [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be
 	/// provided to [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required
 	/// to spend.
@@ -684,7 +676,7 @@ where
 			log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
 			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
 
-			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
+			let signer = self.signer_provider.derive_channel_signer(anchor_descriptor.channel_derivation_parameters.keys_id);
 			let channel_parameters = &anchor_descriptor.channel_derivation_parameters.transaction_parameters;
 			let anchor_sig = signer.sign_holder_anchor_input(channel_parameters, &anchor_tx, 0, &self.secp)?;
 			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
@@ -787,8 +779,9 @@ where
 
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
-				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
+			let keys_id = htlc_descriptor.channel_derivation_parameters.keys_id;
+			let signer = signers.entry(keys_id)
+				.or_insert_with(|| self.signer_provider.derive_channel_signer(keys_id));
 			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
 			let witness_script = htlc_descriptor.witness_script(&self.secp);
 			htlc_tx.input[idx].witness = htlc_descriptor.tx_input_witness(&htlc_sig, &witness_script);

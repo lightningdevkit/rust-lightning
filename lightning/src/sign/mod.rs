@@ -68,7 +68,6 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
 use core::convert::TryInto;
-use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(taproot)]
 use musig2::types::{PartialSignature, PublicNonce};
@@ -702,14 +701,6 @@ impl HTLCDescriptor {
 			witness_script,
 			&self.channel_derivation_parameters.transaction_parameters.channel_type_features,
 		)
-	}
-
-	/// Derives the channel signer required to sign the HTLC input.
-	pub fn derive_channel_signer<S: EcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
-	where
-		SP::Target: SignerProvider<EcdsaSigner = S>,
-	{
-		signer_provider.derive_channel_signer(self.channel_derivation_parameters.keys_id)
 	}
 }
 

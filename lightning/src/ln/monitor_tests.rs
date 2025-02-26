@@ -9,7 +9,7 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
+use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
@@ -2921,7 +2921,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		}
 		for (idx, htlc_descriptor) in descriptors.into_iter().enumerate() {
 			let htlc_input_idx = idx + 1;
-			let signer = htlc_descriptor.derive_channel_signer(&nodes[1].keys_manager);
+			let signer = nodes[1].keys_manager.derive_channel_signer(htlc_descriptor.channel_derivation_parameters.keys_id);
 			let our_sig = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
 			let witness_script = htlc_descriptor.witness_script(&secp);
 			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
