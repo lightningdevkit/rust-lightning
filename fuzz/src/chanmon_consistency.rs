@@ -52,7 +52,8 @@ use lightning::ln::channelmanager::{
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{
-	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
+	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init,
+	MessageSendEvent, UpdateAddHTLC,
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
@@ -781,7 +782,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
-				if let events::MessageSendEvent::SendOpenChannel { ref msg, .. } = events[0] {
+				if let MessageSendEvent::SendOpenChannel { ref msg, .. } = events[0] {
 					msg.clone()
 				} else {
 					panic!("Wrong event type");
@@ -817,7 +818,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
-				if let events::MessageSendEvent::SendAcceptChannel { ref msg, .. } = events[0] {
+				if let MessageSendEvent::SendAcceptChannel { ref msg, .. } = events[0] {
 					msg.clone()
 				} else {
 					panic!("Wrong event type");
@@ -860,7 +861,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let funding_created = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
-				if let events::MessageSendEvent::SendFundingCreated { ref msg, .. } = events[0] {
+				if let MessageSendEvent::SendFundingCreated { ref msg, .. } = events[0] {
 					msg.clone()
 				} else {
 					panic!("Wrong event type");
@@ -871,7 +872,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let funding_signed = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
-				if let events::MessageSendEvent::SendFundingSigned { ref msg, .. } = events[0] {
+				if let MessageSendEvent::SendFundingSigned { ref msg, .. } = events[0] {
 					msg.clone()
 				} else {
 					panic!("Wrong event type");
@@ -926,9 +927,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			}
 			for (idx, node_event) in node_events.iter().enumerate() {
 				for event in node_event {
-					if let events::MessageSendEvent::SendChannelReady { ref node_id, ref msg } =
-						event
-					{
+					if let MessageSendEvent::SendChannelReady { ref node_id, ref msg } = event {
 						for node in $nodes.iter() {
 							if node.get_our_node_id() == *node_id {
 								node.handle_channel_ready($nodes[idx].get_our_node_id(), msg);
@@ -943,7 +942,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			for node in $nodes.iter() {
 				let events = node.get_and_clear_pending_msg_events();
 				for event in events {
-					if let events::MessageSendEvent::SendAnnouncementSignatures { .. } = event {
+					if let MessageSendEvent::SendAnnouncementSignatures { .. } = event {
 					} else {
 						panic!("Wrong event type");
 					}
@@ -1028,25 +1027,25 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				let expect_drop_id = if let Some(id) = expect_drop_node { Some(nodes[id].get_our_node_id()) } else { None };
 				for event in $excess_events {
 					let push_a = match event {
-						events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
+						MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
-						events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
+						MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
-						events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
+						MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
-						events::MessageSendEvent::SendStfu { ref node_id, .. } => {
+						MessageSendEvent::SendStfu { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
-						events::MessageSendEvent::SendChannelReady { .. } => continue,
-						events::MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
-						events::MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
+						MessageSendEvent::SendChannelReady { .. } => continue,
+						MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
+						MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
 							assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
@@ -1102,7 +1101,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				for event in &mut events_iter {
 					had_events = true;
 					match event {
-						events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
+						MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
@@ -1140,7 +1139,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
 									if $limit_events != ProcessMessages::AllMessages && processed_change {
 										// If we only want to process some messages, don't deliver the CS until later.
-										extra_ev = Some(events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate {
+										extra_ev = Some(MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate {
 											update_add_htlcs: Vec::new(),
 											update_fail_htlcs: Vec::new(),
 											update_fulfill_htlcs: Vec::new(),
@@ -1156,7 +1155,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								}
 							}
 						},
-						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+						MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering revoke_and_ack from node {} to node {}.\n", $node, idx).as_bytes());
@@ -1164,7 +1163,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								}
 							}
 						},
-						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
+						MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering channel_reestablish from node {} to node {}.\n", $node, idx).as_bytes());
@@ -1172,7 +1171,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								}
 							}
 						},
-						events::MessageSendEvent::SendStfu { ref node_id, ref msg } => {
+						MessageSendEvent::SendStfu { ref node_id, ref msg } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering stfu from node {} to node {}.\n", $node, idx).as_bytes());
@@ -1180,13 +1179,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 								}
 							}
 						}
-						events::MessageSendEvent::SendChannelReady { .. } => {
+						MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
 						},
-						events::MessageSendEvent::SendAnnouncementSignatures { .. } => {
+						MessageSendEvent::SendAnnouncementSignatures { .. } => {
 							// Can be generated as a reestablish response
 						},
-						events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
+						MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 							// When we reconnect we will resend a channel_update to make sure our
 							// counterparty has the latest parameters for receiving payments
 							// through us. We do, however, check that the message does not include
@@ -1229,13 +1228,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				if $counterparty_id == 0 {
 					for event in nodes[0].get_and_clear_pending_msg_events() {
 						match event {
-							events::MessageSendEvent::UpdateHTLCs { .. } => {},
-							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
-							events::MessageSendEvent::SendChannelReestablish { .. } => {},
-							events::MessageSendEvent::SendStfu { .. } => {},
-							events::MessageSendEvent::SendChannelReady { .. } => {},
-							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
+							MessageSendEvent::UpdateHTLCs { .. } => {},
+							MessageSendEvent::SendRevokeAndACK { .. } => {},
+							MessageSendEvent::SendChannelReestablish { .. } => {},
+							MessageSendEvent::SendStfu { .. } => {},
+							MessageSendEvent::SendChannelReady { .. } => {},
+							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
+							MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
 							},
 							_ => {
@@ -1256,13 +1255,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				} else {
 					for event in nodes[2].get_and_clear_pending_msg_events() {
 						match event {
-							events::MessageSendEvent::UpdateHTLCs { .. } => {},
-							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
-							events::MessageSendEvent::SendChannelReestablish { .. } => {},
-							events::MessageSendEvent::SendStfu { .. } => {},
-							events::MessageSendEvent::SendChannelReady { .. } => {},
-							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
+							MessageSendEvent::UpdateHTLCs { .. } => {},
+							MessageSendEvent::SendRevokeAndACK { .. } => {},
+							MessageSendEvent::SendChannelReestablish { .. } => {},
+							MessageSendEvent::SendStfu { .. } => {},
+							MessageSendEvent::SendChannelReady { .. } => {},
+							MessageSendEvent::SendAnnouncementSignatures { .. } => {},
+							MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
 							},
 							_ => {

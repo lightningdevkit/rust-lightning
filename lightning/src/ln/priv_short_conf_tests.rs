@@ -12,14 +12,14 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent};
+use crate::events::{ClosureReason, Event, HTLCDestination};
 use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
 use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 use crate::util::ser::Writeable;
 

@@ -1,13 +1,11 @@
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::Event;
-use crate::events::HTLCDestination;
-use crate::events::MessageSendEvent;
+use crate::events::{Event, HTLCDestination};
 use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::channelmanager::RecipientOnionFields;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::util::errors::APIError;
 use crate::util::test_channel_signer::SignerOp;
 

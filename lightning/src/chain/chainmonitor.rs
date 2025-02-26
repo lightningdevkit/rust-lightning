@@ -928,9 +928,9 @@ mod tests {
 	use crate::{get_htlc_update_msgs, get_revoke_commit_msgs};
 	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
-	use crate::events::{ClosureReason, Event, MessageSendEvent};
+	use crate::events::{ClosureReason, Event};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler};
+	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
 

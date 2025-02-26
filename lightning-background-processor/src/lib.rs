@@ -1070,13 +1070,13 @@ mod tests {
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::transaction::OutPoint;
 	use lightning::chain::{chainmonitor, BestBlock, Confirm, Filter};
-	use lightning::events::{Event, MessageSendEvent, PathFailure, ReplayEvent};
+	use lightning::events::{Event, PathFailure, ReplayEvent};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{
 		ChainParameters, PaymentId, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 	};
 	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init};
+	use lightning::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 	use lightning::ln::peer_handler::{
 		IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 	};
