@@ -13107,7 +13107,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(all(test, splicing))]
+	#[cfg(splicing)]
 	fn get_pre_and_post(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64) -> (u64, u64) {
 		use crate::ln::channel::PendingSplice;
 
@@ -13115,7 +13115,7 @@ mod tests {
 		(pre_channel_value, post_channel_value)
 	}
 
-	#[cfg(all(test, splicing))]
+	#[cfg(splicing)]
 	#[test]
 	fn test_splice_compute_post_value() {
 		{
