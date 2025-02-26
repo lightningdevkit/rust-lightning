@@ -1462,9 +1462,10 @@ impl HTLCFailReason {
 	pub(super) fn get_encrypted_failure_packet(
 		&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>,
 	) -> msgs::OnionErrorPacket {
+		let payload: [u8; 4] = [1; 4];
+
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
-				let payload = [1; 4];
 				if let Some(phantom_ss) = phantom_shared_secret {
 					let mut phantom_packet =
 						build_failure_packet(phantom_ss, *failure_code, &data[..], &payload);
@@ -1489,6 +1490,8 @@ impl HTLCFailReason {
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
 				let mut err = err.clone();
+
+				process_failure_packet(&mut err, incoming_packet_shared_secret, &payload);
 				encrypt_failure_packet(incoming_packet_shared_secret, &mut err);
 
 				err
@@ -1954,38 +1957,43 @@ fn process_failure_packet(onion_error: &mut OnionErrorPacket, shared_secret: &[u
 	// Create new packet.
 	let mut processed_packet = [0; ATTRIBUTION_DATA_LEN];
 
-	// Shift payloads right.
-	{
-		let payloads = &onion_error.attribution_data.as_ref().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
-		processed_packet[PAYLOAD_LEN..MAX_HOPS * PAYLOAD_LEN].copy_from_slice(&payloads[..payloads.len()-PAYLOAD_LEN]);
+	// Process received attribution data. If there's none, we'll still add our payload and hmacs to potentially give the
+	// sender attribution data for the partial path. In order for this to work, all upstream nodes need to support
+	// attributable failures.
+	if let Some(ref attribution_data) = onion_error.attribution_data {
+		// Shift payloads right.
+		{
+			let payloads = &attribution_data[..MAX_HOPS * PAYLOAD_LEN];
+			processed_packet[PAYLOAD_LEN..MAX_HOPS * PAYLOAD_LEN].copy_from_slice(&payloads[..payloads.len()-PAYLOAD_LEN]);
+		}
 
-		// Add this node's payload.
-		processed_packet[0..PAYLOAD_LEN].copy_from_slice(payload);
-	}
+		// Shift hmacs right.
+		{
+			let hmacs = &attribution_data[MAX_HOPS * PAYLOAD_LEN..];
+			let processed_hmacs = &mut processed_packet[MAX_HOPS * PAYLOAD_LEN..];
 
-	// Shift hmacs right.
-	{
-		let hmacs = &onion_error.attribution_data.as_ref().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
-		let processed_hmacs = &mut processed_packet[MAX_HOPS * PAYLOAD_LEN..];
+			let mut src_idx = HMAC_COUNT - 2;
+			let mut dest_idx = HMAC_COUNT - 1;
+			let mut copy_len = 1;
 
-		let mut src_idx = HMAC_COUNT - 2;
-		let mut dest_idx = HMAC_COUNT - 1;
-		let mut copy_len = 1;
+			for i in 0..MAX_HOPS - 1 {
+				processed_hmacs[dest_idx * HMAC_LEN..(dest_idx + copy_len) * HMAC_LEN].
+					copy_from_slice(&hmacs[src_idx * HMAC_LEN..(src_idx + copy_len) * HMAC_LEN]);
 
-		for i in 0..MAX_HOPS - 1 {
-			processed_hmacs[dest_idx * HMAC_LEN..(dest_idx + copy_len) * HMAC_LEN].
-				copy_from_slice(&hmacs[src_idx * HMAC_LEN..(src_idx + copy_len) * HMAC_LEN]);
+				// Break at last iteration to prevent underflow when updating indices.
+				if i == MAX_HOPS - 2 {
+					break;
+				}
 
-			// Break at last iteration to prevent underflow when updating indices.
-			if i == MAX_HOPS - 2 {
-				break;
+				copy_len += 1;
+				src_idx -= copy_len + 1;
+				dest_idx -= copy_len;
 			}
-
-			copy_len += 1;
-			src_idx -= copy_len + 1;
-			dest_idx -= copy_len;
 		}
 	}
+
+	// Add this node's payload.
+	processed_packet[0..PAYLOAD_LEN].copy_from_slice(payload);
 
 	// Add this node's hmacs.
 	add_hmacs(&shared_secret, &onion_error.data, &mut processed_packet);
