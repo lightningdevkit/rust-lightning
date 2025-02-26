@@ -1527,7 +1527,7 @@ where
 	}
 
 	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
+	pub(crate) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		let mut msgs = new_hash_map();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
