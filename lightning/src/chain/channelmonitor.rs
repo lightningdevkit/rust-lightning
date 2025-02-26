@@ -38,7 +38,7 @@ use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
-use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
+use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId, PaymentClaimDetails};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
@@ -3507,11 +3507,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>
 	) -> CommitmentTransaction {
 		let channel_parameters = &self.funding.channel_parameters.as_counterparty_broadcastable();
-		let keys = TxCreationKeys::from_channel_static_keys(their_per_commitment_point,
-			channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), &self.onchain_tx_handler.secp_ctx);
-
-		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-			to_broadcaster_value, to_countersignatory_value, keys, feerate_per_kw, &mut nondust_htlcs, channel_parameters)
+		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number, their_per_commitment_point,
+			to_broadcaster_value, to_countersignatory_value, feerate_per_kw, &mut nondust_htlcs, channel_parameters, &self.onchain_tx_handler.secp_ctx)
 	}
 
 	fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
