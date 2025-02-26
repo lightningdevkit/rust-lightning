@@ -25,7 +25,7 @@ use crate::blinded_path::message::{
 };
 use crate::blinded_path::EmptyNodeIdLookUp;
 use crate::events::{Event, EventsProvider};
-use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
+use crate::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};

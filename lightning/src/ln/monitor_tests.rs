@@ -14,12 +14,12 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATEN
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
-use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::events::{Event, MessageSendEvent, ClosureReason, HTLCDestination};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
-use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler};
 use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;

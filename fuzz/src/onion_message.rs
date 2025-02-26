@@ -10,7 +10,7 @@ use lightning::blinded_path::message::{
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
+use lightning::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
