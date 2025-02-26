@@ -162,8 +162,16 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 			commitment_signed_dance!(nodes[1], nodes[2], update_2_1.commitment_signed, true);
 
 			// backward fail on 1
-			let update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+			let mut update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 			assert!(update_1_0.update_fail_htlcs.len() == 1);
+
+			// TEST DEBUG: Mutate attributable data.
+			//
+			// let mut data = update_1_0.update_fail_htlcs[0].attribution_data.as_mut().unwrap();
+			// for i in 0..ATTRIBUTION_DATA_LEN {
+			// 	data[i] = 1;
+			// }
+
 			update_1_0
 		},
 		_ => unreachable!(),

@@ -1088,55 +1088,54 @@ where
 
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 
-		// Check attr error hmacs
+		// Check attr error hmacs if present.
+		if let Some(ref attribution_data) = encrypted_packet.attribution_data {
+			let message = &encrypted_packet.data;
+			let payloads = &attribution_data[..MAX_HOPS * PAYLOAD_LEN];
+			let hmacs = &attribution_data[MAX_HOPS * PAYLOAD_LEN..];
 
-		let message = &encrypted_packet.data;
-		let payloads = &encrypted_packet.attribution_data.as_ref().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
-		let hmacs = &encrypted_packet.attribution_data.as_ref().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
+			let um = gen_um_from_shared_secret(shared_secret.as_ref());
+			let mut hmac = HmacEngine::<Sha256>::new(&um);
 
-		let um = gen_um_from_shared_secret(shared_secret.as_ref());
-		let mut hmac = HmacEngine::<Sha256>::new(&um);
+			hmac.input(&message);
+			hmac.input(&payloads[..(MAX_HOPS - route_hop_idx) * PAYLOAD_LEN]);
 
-		hmac.input(&message);
-		hmac.input(&payloads[..(MAX_HOPS - route_hop_idx) * PAYLOAD_LEN]);
+			let position: usize = MAX_HOPS - route_hop_idx - 1;
+			write_downstream_hmacs(position, MAX_HOPS, hmacs, &mut hmac);
 
-		let position: usize = MAX_HOPS - route_hop_idx - 1;
-		write_downstream_hmacs(position, MAX_HOPS, hmacs, &mut hmac);
+			let actual_hmac = &hmacs[route_hop_idx * HMAC_LEN..route_hop_idx*HMAC_LEN+HMAC_LEN];
+			let expected_hmac= &Hmac::from_engine(hmac).to_byte_array()[..HMAC_LEN];
 
-		let actual_hmac = &hmacs[route_hop_idx * HMAC_LEN..route_hop_idx*HMAC_LEN+HMAC_LEN];
-		let expected_hmac= &Hmac::from_engine(hmac).to_byte_array()[..HMAC_LEN];
+			if !fixed_time_eq(expected_hmac, actual_hmac)  {
+				res = Some(FailureLearnings {
+					network_update: None,
+					short_channel_id: Some(route_hop.short_channel_id),
+					payment_failed_permanently: false,
+					failed_within_blinded_path: false,
+				});
 
-		if !fixed_time_eq(expected_hmac, actual_hmac)  {
-			res = Some(FailureLearnings {
-				network_update: None,
-				short_channel_id: Some(route_hop.short_channel_id),
-			 	payment_failed_permanently: false,
-			 	failed_within_blinded_path: false,
-			});
+				log_debug!(logger, "Invalid HMAC in attributable data for node at pos {}", route_hop_idx);
 
-			// log_debug!(logger, "Invalid HMAC in onion failure packet at pos {}", route_hop_idx);
+				return;
+			}
 
-			return;
-		} else {
-			// log_debug!(logger, "Valid HMAC in onion failure packet at pos {}", route_hop_idx);
-		}
+			// Shift payloads left.
+			let payloads = &mut encrypted_packet.attribution_data.as_mut().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
+			payloads.copy_within(PAYLOAD_LEN.., 0);
 
-		// Shift payloads left.
-		let payloads = &mut encrypted_packet.attribution_data.as_mut().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
-		payloads.copy_within(PAYLOAD_LEN.., 0);
+			// Shift hmacs left.
+			let hmacs = &mut encrypted_packet.attribution_data.as_mut().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
+			let mut src_idx = MAX_HOPS;
+			let mut dest_idx = 1;
+			let mut copy_len = MAX_HOPS - 1;
 
-		// Shift hmacs left.
-		let hmacs = &mut encrypted_packet.attribution_data.as_mut().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
-		let mut src_idx = MAX_HOPS;
-		let mut dest_idx = 1;
-		let mut copy_len = MAX_HOPS - 1;
+			for i in 0..MAX_HOPS - 1 {
+				hmacs.copy_within(src_idx * HMAC_LEN .. (src_idx + copy_len) * HMAC_LEN, dest_idx * HMAC_LEN);
 
-		for i in 0..MAX_HOPS - 1 {
-			hmacs.copy_within(src_idx * HMAC_LEN .. (src_idx + copy_len) * HMAC_LEN, dest_idx * HMAC_LEN);
-
-			src_idx += copy_len;
-			dest_idx += copy_len + 1;
-			copy_len -= 1;
+				src_idx += copy_len;
+				dest_idx += copy_len + 1;
+				copy_len -= 1;
+			}
 		}
 
 		// Process decrypt result
