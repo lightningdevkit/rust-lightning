@@ -3703,13 +3703,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			} else {
 				log_trace!(logger, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
 				match &htlc.state {
-					&InboundHTLCState::LocalRemoved(ref reason) => {
-						if generated_by_local {
-							if let &InboundHTLCRemovalReason::Fulfill(preimage) = reason {
-								inbound_htlc_preimages.push(preimage);
-								value_to_self_msat_offset += htlc.amount_msat as i64;
-							}
-						}
+					&InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage)) => {
+						inbound_htlc_preimages.push(preimage);
+						value_to_self_msat_offset += htlc.amount_msat as i64;
 					},
 					_ => {},
 				}
@@ -3745,13 +3741,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			} else {
 				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
 				match htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
-						value_to_self_msat_offset -= htlc.amount_msat as i64;
-					},
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) |
+					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) |
 					OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_)) => {
-						if !generated_by_local {
-							value_to_self_msat_offset -= htlc.amount_msat as i64;
-						}
+						value_to_self_msat_offset -= htlc.amount_msat as i64;
 					},
 					_ => {},
 				}
