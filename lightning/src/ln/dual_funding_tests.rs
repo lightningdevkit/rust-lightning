@@ -12,7 +12,7 @@
 #[cfg(dual_funding)]
 use {
 	crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator},
-	crate::events::{Event, MessageSendEvent, MessageSendEventsProvider},
+	crate::events::{Event, MessageSendEvent},
 	crate::ln::chan_utils::{
 		make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
 		CounterpartyChannelTransactionParameters,
@@ -20,7 +20,7 @@ use {
 	crate::ln::channel::PendingV2Channel,
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
 	crate::ln::functional_test_utils::*,
-	crate::ln::msgs::ChannelMessageHandler,
+	crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler},
 	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete},
 	crate::ln::types::ChannelId,
 	crate::prelude::*,

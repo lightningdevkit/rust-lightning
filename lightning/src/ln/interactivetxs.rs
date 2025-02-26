@@ -21,10 +21,9 @@ use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Wei
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
-use crate::events::MessageSendEvent;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs;
-use crate::ln::msgs::{SerialId, TxSignatures};
+use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::ser::TransactionU16LenLimited;
