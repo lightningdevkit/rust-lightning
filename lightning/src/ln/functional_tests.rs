@@ -732,30 +732,13 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
 
-	// Get the TestChannelSigner for each channel, which will be used to (1) get the keys
-	// needed to sign the new commitment tx and (2) sign the new commitment tx.
-	let (local_revocation_basepoint, local_htlc_basepoint) = {
-		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let local_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
-		let chan_signer = local_chan.get_signer();
-		let pubkeys = chan_signer.as_ref().pubkeys(None, &secp_ctx);
-		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint)
-	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point) = {
+	let remote_point = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = remote_chan.get_signer();
-		let pubkeys = chan_signer.as_ref().pubkeys(None, &secp_ctx);
-		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
-		 )
+		chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap()
 	};
-
-	// Assemble the set of keys we can use for signatures for our commitment_signed message.
-	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
-		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	let res = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
@@ -765,12 +748,13 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
+			&remote_point,
 			push_sats,
 			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
-			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
 			&mut htlcs,
-			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable()
+			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable(),
+			&secp_ctx,
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(
 			&local_chan.funding.channel_transaction_parameters, &commitment_tx, Vec::new(),
@@ -1458,9 +1442,7 @@ pub fn test_fee_spike_violation_fails_htlc() {
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
-	// Get the TestChannelSigner for each channel, which will be used to (1) get the keys
-	// needed to sign the new commitment tx and (2) sign the new commitment tx.
-	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point) = {
+	let (local_secret, next_local_point) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
@@ -1468,24 +1450,16 @@ pub fn test_fee_spike_violation_fails_htlc() {
 		// Make the signer believe we validated another commitment, so we can release the secret
 		chan_signer.as_ecdsa().unwrap().get_enforcement_state().last_holder_commitment -= 1;
 
-		let pubkeys = chan_signer.as_ref().pubkeys(None, &secp_ctx);
-		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
+		 (chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
 		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap())
 	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point) = {
+	let remote_point = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let chan_signer = remote_chan.get_signer();
-		let pubkeys = chan_signer.as_ref().pubkeys(None, &secp_ctx);
-		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap())
+		chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap()
 	};
-
-	// Assemble the set of keys we can use for signatures for our commitment_signed message.
-	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
-		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
@@ -1508,12 +1482,13 @@ pub fn test_fee_spike_violation_fails_htlc() {
 		let local_chan_signer = local_chan.get_signer();
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
+			&remote_point,
 			95000,
 			local_chan_balance,
-			commit_tx_keys.clone(),
 			feerate_per_kw,
 			&mut vec![(accepted_htlc_info, ())],
-			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable()
+			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable(),
+			&secp_ctx,
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(
 			&local_chan.funding.channel_transaction_parameters, &commitment_tx, Vec::new(),

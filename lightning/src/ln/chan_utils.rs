@@ -1180,13 +1180,6 @@ impl HolderCommitmentTransaction {
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
 
-		let keys = TxCreationKeys {
-			per_commitment_point: dummy_key.clone(),
-			revocation_key: RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(dummy_key), &dummy_key),
-			broadcaster_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
-			countersignatory_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
-			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(&secp_ctx, &DelayedPaymentBasepoint::from(dummy_key), &dummy_key),
-		};
 		let channel_pubkeys = ChannelPublicKeys {
 			funding_pubkey: dummy_key.clone(),
 			revocation_basepoint: RevocationBasepoint::from(dummy_key),
@@ -1208,7 +1201,7 @@ impl HolderCommitmentTransaction {
 		for _ in 0..htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, keys, 0, htlcs, &channel_parameters.as_counterparty_broadcastable());
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, &dummy_key, 0, 0, 0, htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx);
 		htlcs.sort_by_key(|htlc| htlc.0.transaction_output_index);
 		HolderCommitmentTransaction {
 			inner,
@@ -1518,9 +1511,10 @@ impl CommitmentTransaction {
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
 	/// This is not exported to bindings users due to the generic though we likely should expose a version without
-	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
+		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
 
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters).unwrap();
@@ -1970,8 +1964,8 @@ pub fn get_commitment_transaction_number_obscure_factor(
 mod tests {
 	use super::{CounterpartyCommitmentSecrets, ChannelPublicKeys};
 	use crate::chain;
-	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersigner_keyed_anchor_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
-	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
+	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersigner_keyed_anchor_redeemscript, CommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use bitcoin::secp256k1::{self, PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::sign::{ChannelSigner, SignerProvider};
 	use bitcoin::{Network, Txid, ScriptBuf, CompressedPublicKey};
@@ -1986,11 +1980,12 @@ mod tests {
 
 	struct TestCommitmentTxBuilder {
 		commitment_number: u64,
-		keys: TxCreationKeys,
+		per_commitment_point: PublicKey,
 		feerate_per_kw: u32,
 		htlcs_with_aux: Vec<(HTLCOutputInCommitment, ())>,
 		channel_parameters: ChannelTransactionParameters,
 		counterparty_pubkeys: ChannelPublicKeys,
+		secp_ctx: Secp256k1::<secp256k1::All>,
 	}
 
 	impl TestCommitmentTxBuilder {
@@ -2015,28 +2010,23 @@ mod tests {
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 				channel_value_satoshis: 3000,
 			};
-			let directed_parameters = channel_parameters.as_holder_broadcastable();
-			let keys = TxCreationKeys::from_channel_static_keys(
-				&per_commitment_point, directed_parameters.broadcaster_pubkeys(),
-				directed_parameters.countersignatory_pubkeys(), &secp_ctx,
-			);
 			let htlcs_with_aux = Vec::new();
 
 			Self {
 				commitment_number: 0,
-				keys,
+				per_commitment_point,
 				feerate_per_kw: 1,
 				htlcs_with_aux,
 				channel_parameters,
 				counterparty_pubkeys,
+				secp_ctx,
 			}
 		}
 
 		fn build(&mut self, to_broadcaster_sats: u64, to_countersignatory_sats: u64) -> CommitmentTransaction {
 			CommitmentTransaction::new_with_auxiliary_htlc_data(
-				self.commitment_number, to_broadcaster_sats, to_countersignatory_sats,
-				self.keys.clone(), self.feerate_per_kw,
-				&mut self.htlcs_with_aux, &self.channel_parameters.as_holder_broadcastable()
+				self.commitment_number, &self.per_commitment_point, to_broadcaster_sats, to_countersignatory_sats, self.feerate_per_kw,
+				&mut self.htlcs_with_aux, &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
 			)
 		}
 	}
@@ -2084,7 +2074,7 @@ mod tests {
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		builder.htlcs_with_aux = vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())];
 		let tx = builder.build(3000, 0);
-		let keys = &builder.keys.clone();
+		let keys = tx.trust().keys();
 		assert_eq!(tx.built.transaction.output.len(), 3);
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
