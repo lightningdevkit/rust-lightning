@@ -56,8 +56,9 @@ use lightning::routing::router::{
 	InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router,
 };
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::PeerStorageKey;
-use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
+use lightning::sign::{
+	EntropySource, InMemorySigner, NodeSigner, PeerStorageKey, Recipient, SignerProvider,
+};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::errors::APIError;
