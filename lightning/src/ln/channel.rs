@@ -4273,28 +4273,63 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	/// Check that a balance value meets the channel reserve requirements or violates them (below reserve).
-	/// The channel value is an input as opposed to using from self, so that this can be used in case of splicing
-	/// to checks with new channel value (before being comitted to it).
+	/// Check a balance against a channel reserver requirement
 	#[cfg(splicing)]
-	pub fn check_balance_meets_reserve_requirements(&self, balance: u64, channel_value: u64) -> Result<(), ChannelError> {
+	pub fn check_balance_meets_reserve_requirement(balance: u64, channel_value: u64, dust_limit: u64) -> (bool, u64) {
+		let channel_reserve = get_v2_channel_reserve_satoshis(channel_value, dust_limit);
 		if balance == 0 {
-			return Ok(());
+			// 0 balance is fine
+			(true, channel_reserve)
+		} else {
+			((balance >= channel_reserve), channel_reserve)
 		}
-		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value, self.holder_dust_limit_satoshis);
-		if balance < holder_selected_channel_reserve_satoshis {
+	}
+
+	/// Check that post-splicing balance meets reserver requirements, but only if it met it pre-splice as well
+	#[cfg(splicing)]
+	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64, dust_limit: u64) -> (bool, u64) {
+		match Self::check_balance_meets_reserve_requirement(
+			post_balance, post_channel_value, dust_limit
+		) {
+			(true, channel_reserve) => (true, channel_reserve),
+			(false, channel_reserve) =>
+				// post is not OK, check pre
+				match Self::check_balance_meets_reserve_requirement(
+					pre_balance, pre_channel_value, dust_limit
+				) {
+					(true, _) =>
+						// pre OK, post not -> not
+						(false, channel_reserve),
+					(false, _) =>
+						// post not OK, but so was pre -> OK
+						(true, channel_reserve),
+				}
+		}
+	}
+
+	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
+	/// The channel value is an input as opposed to using from self, so that this can be used in case of splicing
+	/// to check with new channel value (before being comitted to it).
+	#[cfg(splicing)]
+	pub fn check_splice_balances_meet_v2_reserve_requirements(&self, self_balance_pre: u64, self_balance_post: u64, counterparty_balance_pre: u64, counterparty_balance_post: u64, channel_value_pre: u64, channel_value_post: u64) -> Result<(), ChannelError> {
+		let (is_ok, channel_reserve_self) = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
+			self_balance_pre, self_balance_post, channel_value_pre, channel_value_post,
+			self.holder_dust_limit_satoshis
+		);
+		if !is_ok {
 			return Err(ChannelError::Warn(format!(
-				"Balance below reserve mandated by holder, {} vs {}",
-				balance, holder_selected_channel_reserve_satoshis,
+				"Balance below reserve, mandated by holder, {} vs {}",
+				self_balance_post, channel_reserve_self,
 			)));
 		}
-		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value, self.counterparty_dust_limit_satoshis);
-		if balance < counterparty_selected_channel_reserve_satoshis {
+		let (is_ok, channel_reserve_cp) = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
+			counterparty_balance_pre, counterparty_balance_post, channel_value_pre, channel_value_post,
+			self.counterparty_dust_limit_satoshis
+		);
+		if !is_ok {
 			return Err(ChannelError::Warn(format!(
 				"Balance below reserve mandated by counterparty, {} vs {}",
-				balance, counterparty_selected_channel_reserve_satoshis,
+				counterparty_balance_post, channel_reserve_cp,
 			)));
 		}
 		Ok(())
@@ -8609,11 +8644,13 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let pre_channel_value = self.funding.get_value_satoshis();
 		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
-		let post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution);
-		// Early check for reserve requirement, assuming maximum balance of full channel value
+		let pre_balance_self = self.funding.value_to_self_msat;
+		let post_balance_self = PendingSplice::add_checked(pre_balance_self, our_funding_contribution);
+		let pre_balance_counterparty = pre_channel_value.saturating_sub(pre_balance_self);
+		let post_balance_counterparty = post_channel_value.saturating_sub(post_balance_self);
+		// Pre-check for reserve requirement
 		// This will also be checked later at tx_complete
-		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
-
+		let _res = self.context.check_splice_balances_meet_v2_reserve_requirements(pre_balance_self, post_balance_self, pre_balance_counterparty, post_balance_counterparty, pre_channel_value, post_channel_value)?;
 		Ok(())
 	}
 
