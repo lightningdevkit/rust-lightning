@@ -1110,13 +1110,6 @@ impl HolderCommitmentTransaction {
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
 
-		let keys = TxCreationKeys {
-			per_commitment_point: dummy_key.clone(),
-			revocation_key: RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(dummy_key), &dummy_key),
-			broadcaster_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
-			countersignatory_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
-			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(&secp_ctx, &DelayedPaymentBasepoint::from(dummy_key), &dummy_key),
-		};
 		let channel_pubkeys = ChannelPublicKeys {
 			funding_pubkey: dummy_key.clone(),
 			revocation_basepoint: RevocationBasepoint::from(dummy_key),
@@ -1136,7 +1129,7 @@ impl HolderCommitmentTransaction {
 		for _ in 0..nondust_htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new(0, 0, 0, keys, 0, nondust_htlcs.iter_mut(), &channel_parameters.as_counterparty_broadcastable());
+		let inner = CommitmentTransaction::new(0, &dummy_key.clone(), 0, 0, 0, nondust_htlcs.iter_mut(), &channel_parameters.as_counterparty_broadcastable(), &secp_ctx);
 		nondust_htlcs.sort_by_key(|htlc| htlc.transaction_output_index);
 		HolderCommitmentTransaction {
 			inner,
@@ -1443,9 +1436,10 @@ impl CommitmentTransaction {
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
 	/// This is not exported to bindings users due to the generic though we likely should expose a version without
-	pub fn new<'a>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, keys: TxCreationKeys, feerate_per_kw: u32, nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+	pub fn new<'a>(commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, feerate_per_kw: u32, nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
+		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
 
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let (outputs, nondust_htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, nondust_htlcs, channel_parameters).unwrap();
@@ -1896,8 +1890,8 @@ pub fn get_commitment_transaction_number_obscure_factor(
 mod tests {
 	use super::{CounterpartyCommitmentSecrets, ChannelPublicKeys};
 	use crate::chain;
-	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
-	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
+	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use bitcoin::secp256k1::{self, PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::sign::{ChannelSigner, SignerProvider};
 	use bitcoin::{Network, Txid, ScriptBuf, CompressedPublicKey};
@@ -1912,11 +1906,12 @@ mod tests {
 
 	struct TestCommitmentTxBuilder {
 		commitment_number: u64,
-		keys: TxCreationKeys,
+		per_commitment_point: PublicKey,
 		feerate_per_kw: u32,
 		nondust_htlcs: Vec<HTLCOutputInCommitment>,
 		channel_parameters: ChannelTransactionParameters,
 		counterparty_pubkeys: ChannelPublicKeys,
+		secp_ctx: Secp256k1::<secp256k1::All>,
 	}
 
 	impl TestCommitmentTxBuilder {
@@ -1927,13 +1922,10 @@ mod tests {
 			let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 			let signer = keys_provider.derive_channel_signer(3000, keys_provider.generate_channel_keys_id(false, 1_000_000, 0));
 			let counterparty_signer = keys_provider.derive_channel_signer(3000, keys_provider.generate_channel_keys_id(true, 1_000_000, 1));
-			let delayed_payment_base = &signer.pubkeys().delayed_payment_basepoint;
 			let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 			let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-			let htlc_basepoint = &signer.pubkeys().htlc_basepoint;
 			let holder_pubkeys = signer.pubkeys();
 			let counterparty_pubkeys = counterparty_signer.pubkeys().clone();
-			let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
 			let channel_parameters = ChannelTransactionParameters {
 				holder_pubkeys: holder_pubkeys.clone(),
 				holder_selected_contest_delay: 0,
@@ -1946,19 +1938,19 @@ mod tests {
 
 			Self {
 				commitment_number: 0,
-				keys,
+				per_commitment_point,
 				feerate_per_kw: 1,
 				nondust_htlcs,
 				channel_parameters,
 				counterparty_pubkeys,
+				secp_ctx,
 			}
 		}
 
 		fn build(&mut self, to_broadcaster_sats: u64, to_countersignatory_sats: u64) -> CommitmentTransaction {
 			CommitmentTransaction::new(
-				self.commitment_number, to_broadcaster_sats, to_countersignatory_sats,
-				self.keys.clone(), self.feerate_per_kw,
-				self.nondust_htlcs.iter_mut(), &self.channel_parameters.as_holder_broadcastable()
+				self.commitment_number, &self.per_commitment_point, to_broadcaster_sats, to_countersignatory_sats, self.feerate_per_kw,
+				self.nondust_htlcs.iter_mut(), &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
 			)
 		}
 	}
@@ -2006,7 +1998,7 @@ mod tests {
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		builder.nondust_htlcs = vec![received_htlc.clone(), offered_htlc.clone()];
 		let tx = builder.build(3000, 0);
-		let keys = &builder.keys.clone();
+		let keys = &tx.trust().keys();
 		assert_eq!(tx.built.transaction.output.len(), 3);
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());

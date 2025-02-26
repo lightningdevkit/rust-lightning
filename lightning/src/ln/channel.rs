@@ -3614,12 +3614,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
 			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
 		let tx = CommitmentTransaction::new(commitment_number,
+		                                    &keys.per_commitment_point,
 		                                    value_to_a as u64,
 		                                    value_to_b as u64,
-		                                    keys.clone(),
 		                                    feerate_per_kw,
 		                                    included_non_dust_htlcs.iter_mut().map(|(htlc, _)| htlc),
-		                                    &channel_parameters
+		                                    &channel_parameters,
+		                                    &self.secp_ctx,
 		);
 		let mut htlcs_included = included_non_dust_htlcs;
 		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
