@@ -1136,7 +1136,7 @@ impl HolderCommitmentTransaction {
 		for _ in 0..nondust_htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new(0, 0, 0, dummy_key.clone(), dummy_key.clone(), keys, 0, nondust_htlcs.iter_mut(), &channel_parameters.as_counterparty_broadcastable());
+		let inner = CommitmentTransaction::new(0, 0, 0, keys, 0, nondust_htlcs.iter_mut(), &channel_parameters.as_counterparty_broadcastable());
 		nondust_htlcs.sort_by_key(|htlc| htlc.transaction_output_index);
 		HolderCommitmentTransaction {
 			inner,
@@ -1443,12 +1443,12 @@ impl CommitmentTransaction {
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
 	/// This is not exported to bindings users due to the generic though we likely should expose a version without
-	pub fn new<'a>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+	pub fn new<'a>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, keys: TxCreationKeys, feerate_per_kw: u32, nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
 
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
-		let (outputs, nondust_htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, nondust_htlcs, channel_parameters, &broadcaster_funding_key, &countersignatory_funding_key).unwrap();
+		let (outputs, nondust_htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, nondust_htlcs, channel_parameters).unwrap();
 
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
@@ -1477,11 +1477,11 @@ impl CommitmentTransaction {
 		self
 	}
 
-	fn internal_rebuild_transaction(&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<BuiltCommitmentTransaction, ()> {
+	fn internal_rebuild_transaction(&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters) -> Result<BuiltCommitmentTransaction, ()> {
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
 
 		let mut nondust_htlcs = self.htlcs.clone();
-		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, nondust_htlcs.iter_mut(), channel_parameters, broadcaster_funding_key, countersignatory_funding_key)?;
+		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, nondust_htlcs.iter_mut(), channel_parameters)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
@@ -1505,8 +1505,10 @@ impl CommitmentTransaction {
 	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
 	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
 	// - building of a bitcoin transaction during a verify() call, in which case T is just ()
-	fn internal_build_outputs<'a>(keys: &TxCreationKeys, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
+	fn internal_build_outputs<'a>(keys: &TxCreationKeys, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
+		let broadcaster_funding_key = &channel_parameters.broadcaster_pubkeys().funding_pubkey;
+		let countersignatory_funding_key = &countersignatory_pubkeys.funding_pubkey;
 		let contest_delay = channel_parameters.contest_delay();
 
 		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
@@ -1680,14 +1682,14 @@ impl CommitmentTransaction {
 	///
 	/// An external validating signer must call this method before signing
 	/// or using the built transaction.
-	pub fn verify<T: secp256k1::Signing + secp256k1::Verification>(&self, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> Result<TrustedCommitmentTransaction, ()> {
+	pub fn verify<T: secp256k1::Signing + secp256k1::Verification>(&self, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<T>) -> Result<TrustedCommitmentTransaction, ()> {
 		// This is the only field of the key cache that we trust
 		let per_commitment_point = self.keys.per_commitment_point;
-		let keys = TxCreationKeys::from_channel_static_keys(&per_commitment_point, broadcaster_keys, countersignatory_keys, secp_ctx);
+		let keys = TxCreationKeys::from_channel_static_keys(&per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
 		if keys != self.keys {
 			return Err(());
 		}
-		let tx = self.internal_rebuild_transaction(&keys, channel_parameters, &broadcaster_keys.funding_pubkey, &countersignatory_keys.funding_pubkey)?;
+		let tx = self.internal_rebuild_transaction(&keys, channel_parameters)?;
 		if self.built.transaction != tx.transaction || self.built.txid != tx.txid {
 			return Err(());
 		}
@@ -1910,8 +1912,6 @@ mod tests {
 
 	struct TestCommitmentTxBuilder {
 		commitment_number: u64,
-		holder_funding_pubkey: PublicKey,
-		counterparty_funding_pubkey: PublicKey,
 		keys: TxCreationKeys,
 		feerate_per_kw: u32,
 		nondust_htlcs: Vec<HTLCOutputInCommitment>,
@@ -1946,8 +1946,6 @@ mod tests {
 
 			Self {
 				commitment_number: 0,
-				holder_funding_pubkey: holder_pubkeys.funding_pubkey,
-				counterparty_funding_pubkey: counterparty_pubkeys.funding_pubkey,
 				keys,
 				feerate_per_kw: 1,
 				nondust_htlcs,
@@ -1959,8 +1957,6 @@ mod tests {
 		fn build(&mut self, to_broadcaster_sats: u64, to_countersignatory_sats: u64) -> CommitmentTransaction {
 			CommitmentTransaction::new(
 				self.commitment_number, to_broadcaster_sats, to_countersignatory_sats,
-				self.holder_funding_pubkey.clone(),
-				self.counterparty_funding_pubkey.clone(),
 				self.keys.clone(), self.feerate_per_kw,
 				self.nondust_htlcs.iter_mut(), &self.channel_parameters.as_holder_broadcastable()
 			)
