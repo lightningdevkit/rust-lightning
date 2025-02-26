@@ -4095,39 +4095,32 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	/// Check a balance against a channel reserve requirement
-	#[cfg(splicing)]
-	pub fn check_balance_meets_reserve_requirement(balance: u64, channel_value: u64, dust_limit: u64) -> Result<(), u64> {
-		if balance == 0 {
-			// 0 balance is fine
-			Ok(())
-		} else {
-			let channel_reserve = get_v2_channel_reserve_satoshis(channel_value, dust_limit);
-			if balance >= channel_reserve {
-				Ok(())
-			} else {
-				Err(channel_reserve)
-			}
-		}
-	}
-
 	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well
 	#[cfg(splicing)]
 	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64, dust_limit: u64) -> Result<(), u64> {
-		match Self::check_balance_meets_reserve_requirement(
-			post_balance, post_channel_value, dust_limit
-		) {
-			Ok(_) => Ok(()),
-			Err(post_channel_reserve) =>
+		if post_balance == 0 {
+			// 0 balance is fine
+			Ok(())
+		} else {
+			let post_channel_reserve = get_v2_channel_reserve_satoshis(post_channel_value, dust_limit);
+			if post_balance >= post_channel_reserve {
+				Ok(())
+			} else {
 				// post is not OK, check pre
-				match Self::check_balance_meets_reserve_requirement(
-					pre_balance, pre_channel_value, dust_limit
-				) {
+				if pre_balance == 0 {
 					// pre OK, post not -> not
-					Ok(_) => Err(post_channel_reserve),
-					// post not OK, but so was pre -> OK
-					Err(_) => Ok(()),
+					Err(post_channel_reserve)
+				} else {
+					let pre_channel_reserve = get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
+					if pre_balance >= pre_channel_reserve {
+						// pre OK, post not -> not
+						Err(post_channel_reserve)
+					} else {
+						// post not OK, but so was pre -> OK
+						Ok(())
+					}
 				}
+			}
 		}
 	}
 
