@@ -1329,12 +1329,17 @@ impl HTLCFailReason {
 		Self(HTLCFailReasonRepr::LightningError { err: msg.reason.clone() })
 	}
 
+	/// Encrypted a failure packet using a shared secret.
+	///
+	/// For phantom nodes or inner Trampoline onions, a secondary_shared_secret can be passed, which
+	/// will be used to encrypt the failure packet before applying the outer encryption step using
+	/// incoming_packet_shared_secret.
 	pub(super) fn get_encrypted_failure_packet(
-		&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>,
+		&self, incoming_packet_shared_secret: &[u8; 32], secondary_shared_secret: &Option<[u8; 32]>,
 	) -> msgs::OnionErrorPacket {
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
-				if let Some(phantom_ss) = phantom_shared_secret {
+				if let Some(phantom_ss) = secondary_shared_secret {
 					let phantom_packet =
 						build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
 					let encrypted_phantom_packet =
