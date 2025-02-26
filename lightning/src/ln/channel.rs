@@ -40,7 +40,7 @@ use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{
-	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
+	CounterpartyCommitmentSecrets, HTLCOutputInCommitment, htlc_success_tx_weight,
 	htlc_timeout_tx_weight, ChannelPublicKeys, CommitmentTransaction,
 	HolderCommitmentTransaction, ChannelTransactionParameters,
 	CounterpartyChannelTransactionParameters, max_htlcs,
@@ -2045,8 +2045,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.funding().get_funding_redeemscript();
 
-		let keys = self.context().build_holder_transaction_keys(&self.funding(), holder_commitment_point.current_point());
-		let initial_commitment_tx = self.context().build_commitment_transaction(self.funding(), holder_commitment_point.transaction_number(), &keys, true, false, logger).tx;
+		let initial_commitment_tx = self.context().build_commitment_transaction(self.funding(), holder_commitment_point.transaction_number(), &holder_commitment_point.current_point(), true, false, logger).tx;
 		let trusted_tx = initial_commitment_tx.trust();
 		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
 		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.funding().get_value_satoshis());
@@ -2083,8 +2082,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			}
 		};
 		let context = self.context();
-		let counterparty_keys = context.build_remote_transaction_keys(self.funding());
-		let counterparty_initial_commitment_tx = context.build_commitment_transaction(self.funding(), context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let counterparty_initial_commitment_tx = context.build_commitment_transaction(self.funding(), context.cur_counterparty_commitment_transaction_number, &context.counterparty_cur_commitment_point.unwrap(), false, false, logger).tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 
@@ -3481,9 +3479,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	{
 		let funding_script = funding.get_funding_redeemscript();
 
-		let keys = self.build_holder_transaction_keys(funding, holder_commitment_point.current_point());
-
-		let commitment_stats = self.build_commitment_transaction(funding, holder_commitment_point.transaction_number(), &keys, true, false, logger);
+		let commitment_stats = self.build_commitment_transaction(funding, holder_commitment_point.transaction_number(), &holder_commitment_point.current_point(), true, false, logger);
 		let commitment_txid = {
 			let trusted_tx = commitment_stats.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
@@ -3551,19 +3547,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
+		let holder_keys = commitment_stats.tx.trust().keys();
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
 					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.channel_type,
-					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					&holder_keys.broadcaster_delayed_payment_key, &holder_keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.channel_type, &keys);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.channel_type, &holder_keys);
 				let htlc_sighashtype = if self.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
-					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
+					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
 					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.channel_id());
-				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
+				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &holder_keys.countersignatory_htlc_key.to_public_key()) {
 					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 				}
 				if !separate_nondust_htlc_sources {
@@ -3612,7 +3609,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// generated by the peer which proposed adding the HTLCs, and thus we need to understand both
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
-	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> CommitmentStats
+	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L) -> CommitmentStats
 		where L::Target: Logger
 	{
 		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
@@ -3814,7 +3811,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			if local { funding.channel_transaction_parameters.as_holder_broadcastable() }
 			else { funding.channel_transaction_parameters.as_counterparty_broadcastable() };
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-		                                                             &keys.per_commitment_point,
+		                                                             per_commitment_point,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
 		                                                             feerate_per_kw,
@@ -3838,32 +3835,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			inbound_htlc_preimages,
 			outbound_htlc_preimages,
 		}
-	}
-
-	#[inline]
-	/// Creates a set of keys for build_commitment_transaction to generate a transaction which our
-	/// counterparty will sign (ie DO NOT send signatures over a transaction created by this to
-	/// our counterparty!)
-	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
-	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, funding: &FundingScope, per_commitment_point: PublicKey) -> TxCreationKeys {
-		let delayed_payment_base = &funding.get_holder_pubkeys().delayed_payment_basepoint;
-		let htlc_basepoint = &funding.get_holder_pubkeys().htlc_basepoint;
-		let counterparty_pubkeys = funding.get_counterparty_pubkeys();
-
-		TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
-	}
-
-	#[inline]
-	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
-	/// will sign and send to our counterparty.
-	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
-	fn build_remote_transaction_keys(&self, funding: &FundingScope) -> TxCreationKeys {
-		let revocation_basepoint = &funding.get_holder_pubkeys().revocation_basepoint;
-		let htlc_basepoint = &funding.get_holder_pubkeys().htlc_basepoint;
-		let counterparty_pubkeys = funding.get_counterparty_pubkeys();
-
-		TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
 	}
 
 	pub fn get_feerate_sat_per_1000_weight(&self) -> u32 {
@@ -4648,9 +4619,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
-		let counterparty_keys = self.build_remote_transaction_keys(funding);
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(
-			funding, self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+			funding, self.cur_counterparty_commitment_transaction_number, &self.counterparty_cur_commitment_point.unwrap(), false, false, logger).tx;
 		match self.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
@@ -6363,8 +6333,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.context.get_pending_htlc_stats(Some(feerate_per_kw), dust_exposure_limiting_feerate);
-		let keys = self.context.build_holder_transaction_keys(&self.funding, self.holder_commitment_point.current_point());
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &keys, true, true, logger);
+		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &self.holder_commitment_point.current_point(), true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
@@ -6677,8 +6646,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 		}
 		let funding_signed = if self.context.signer_pending_funding && !self.funding.is_outbound() {
-			let counterparty_keys = self.context.build_remote_transaction_keys(&self.funding);
-			let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number + 1, &counterparty_keys, false, false, logger).tx;
+			let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number + 1, &self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger).tx;
 			self.context.get_funding_signed_msg(&self.funding.channel_transaction_parameters, logger, counterparty_initial_commitment_tx)
 		} else { None };
 		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
@@ -8751,8 +8719,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	-> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction)
 	where L::Target: Logger
 	{
-		let counterparty_keys = self.context.build_remote_transaction_keys(&self.funding);
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
+		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger);
 		let counterparty_commitment_tx = commitment_stats.tx;
 
 		#[cfg(any(test, fuzzing))]
@@ -8783,8 +8750,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(logger);
 
-		let counterparty_keys = self.context.build_remote_transaction_keys(&self.funding);
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
+		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger);
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
 
 		match &self.context.holder_signer {
@@ -8812,6 +8778,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						&counterparty_commitment_txid, encode::serialize_hex(&self.funding.get_funding_redeemscript()),
 						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
 
+					let counterparty_keys = commitment_stats.tx.trust().keys();
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
 							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
@@ -9268,8 +9235,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	/// Only allowed after [`FundingScope::channel_transaction_parameters`] is set.
 	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
-		let counterparty_keys = self.context.build_remote_transaction_keys(&self.funding);
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger).tx;
 		let signature = match &self.context.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
@@ -11833,7 +11799,7 @@ mod tests {
 		use bitcoin::secp256k1::Message;
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::types::payment::PaymentPreimage;
-		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
+		use crate::ln::channel::HTLCOutputInCommitment;
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 		use crate::util::logger::Logger;
@@ -11901,11 +11867,6 @@ mod tests {
 		// build_commitment_transaction.
 		let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-		let directed_params = chan.funding.channel_transaction_parameters.as_holder_broadcastable();
-		let keys = TxCreationKeys::from_channel_static_keys(
-			&per_commitment_point, directed_params.broadcaster_pubkeys(),
-			directed_params.countersignatory_pubkeys(), &secp_ctx,
-		);
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
@@ -11926,7 +11887,7 @@ mod tests {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
 			} ) => { {
 				let (commitment_tx, htlcs): (_, Vec<HTLCOutputInCommitment>) = {
-					let mut commitment_stats = chan.context.build_commitment_transaction(&chan.funding, 0xffffffffffff - 42, &keys, true, false, &logger);
+					let mut commitment_stats = chan.context.build_commitment_transaction(&chan.funding, 0xffffffffffff - 42, &per_commitment_point, true, false, &logger);
 
 					let htlcs = commitment_stats.htlcs_included.drain(..)
 						.filter_map(|(htlc, _)| if htlc.transaction_output_index.is_some() { Some(htlc) } else { None })
@@ -11974,6 +11935,7 @@ mod tests {
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = htlcs[$htlc_idx];
+					let keys = commitment_tx.trust().keys();
 					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
 						chan.funding.get_counterparty_selected_contest_delay().unwrap(),
 						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
