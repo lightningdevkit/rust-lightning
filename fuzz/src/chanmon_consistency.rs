@@ -52,9 +52,7 @@ use lightning::ln::channelmanager::{
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::{
-	ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
-};
+use lightning::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, Init, UpdateAddHTLC};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
@@ -383,15 +381,6 @@ impl SignerProvider for KeyProvider {
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
-	}
-
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
-		let mut reader = lightning::io::Cursor::new(buffer);
-
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
-		let state = self.make_enforcement_state_cell(inner.commitment_seed);
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

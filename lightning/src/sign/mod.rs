@@ -58,12 +58,10 @@ use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::types::payment::PaymentPreimage;
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use crate::util::ser::Writeable;
 use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
-use crate::io::{self, Error};
-use crate::ln::msgs::DecodeError;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
@@ -811,8 +809,7 @@ pub trait ChannelSigner {
 	///
 	/// This data is static, and will never change for a channel once set. For a given [`ChannelSigner`]
 	/// instance, LDK will call this method exactly once - either immediately after construction
-	/// (not including if done via [`SignerProvider::read_chan_signer`]) or when the funding
-	/// information has been generated.
+	/// or when the funding information has been generated.
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
@@ -982,21 +979,6 @@ pub trait SignerProvider {
 	fn derive_channel_signer(
 		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
 	) -> Self::EcdsaSigner;
-
-	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
-	/// This is only called during deserialization of other objects which contain
-	/// [`EcdsaChannelSigner`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
-	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
-	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
-	/// you've read all of the provided bytes to ensure no corruption occurred.
-	///
-	/// This method is slowly being phased out -- it will only be called when reading objects
-	/// written by LDK versions prior to 0.0.113.
-	///
-	/// [`Signer`]: Self::EcdsaSigner
-	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError>;
 
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
@@ -1789,74 +1771,6 @@ impl TaprootChannelSigner for InMemorySigner {
 	}
 }
 
-const SERIALIZATION_VERSION: u8 = 1;
-
-const MIN_SERIALIZATION_VERSION: u8 = 1;
-
-impl Writeable for InMemorySigner {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
-
-		self.funding_key.write(writer)?;
-		self.revocation_base_key.write(writer)?;
-		self.payment_key.write(writer)?;
-		self.delayed_payment_base_key.write(writer)?;
-		self.htlc_base_key.write(writer)?;
-		self.commitment_seed.write(writer)?;
-		self.channel_parameters.write(writer)?;
-		self.channel_value_satoshis.write(writer)?;
-		self.channel_keys_id.write(writer)?;
-
-		write_tlv_fields!(writer, {});
-
-		Ok(())
-	}
-}
-
-impl<ES: Deref> ReadableArgs<ES> for InMemorySigner
-where
-	ES::Target: EntropySource,
-{
-	fn read<R: io::Read>(reader: &mut R, entropy_source: ES) -> Result<Self, DecodeError> {
-		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
-
-		let funding_key = Readable::read(reader)?;
-		let revocation_base_key = Readable::read(reader)?;
-		let payment_key = Readable::read(reader)?;
-		let delayed_payment_base_key = Readable::read(reader)?;
-		let htlc_base_key = Readable::read(reader)?;
-		let commitment_seed = Readable::read(reader)?;
-		let counterparty_channel_data = Readable::read(reader)?;
-		let channel_value_satoshis = Readable::read(reader)?;
-		let secp_ctx = Secp256k1::signing_only();
-		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
-			&secp_ctx,
-			&funding_key,
-			&revocation_base_key,
-			&payment_key,
-			&delayed_payment_base_key,
-			&htlc_base_key,
-		);
-		let keys_id = Readable::read(reader)?;
-
-		read_tlv_fields!(reader, {});
-
-		Ok(InMemorySigner {
-			funding_key,
-			revocation_base_key,
-			payment_key,
-			delayed_payment_base_key,
-			htlc_base_key,
-			commitment_seed,
-			channel_value_satoshis,
-			holder_channel_pubkeys,
-			channel_parameters: counterparty_channel_data,
-			channel_keys_id: keys_id,
-			entropy_source: RandomBytes::new(entropy_source.get_secure_random_bytes()),
-		})
-	}
-}
-
 /// Simple implementation of [`EntropySource`], [`NodeSigner`], and [`SignerProvider`] that takes a
 /// 32-byte seed for use as a BIP 32 extended key and derives keys from that.
 ///
@@ -2295,10 +2209,6 @@ impl SignerProvider for KeysManager {
 		self.derive_channel_keys(channel_value_satoshis, &channel_keys_id)
 	}
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
-		InMemorySigner::read(&mut io::Cursor::new(reader), self)
-	}
-
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 		Ok(self.destination_script.clone())
 	}
@@ -2426,10 +2336,6 @@ impl SignerProvider for PhantomKeysManager {
 		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
 	) -> Self::EcdsaSigner {
 		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_id)
-	}
-
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
-		self.inner.read_chan_signer(reader)
 	}
 
 	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

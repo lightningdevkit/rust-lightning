@@ -75,9 +75,7 @@ use lightning_invoice::RawBolt11Invoice;
 
 use crate::io;
 use crate::prelude::*;
-use crate::sign::{
-	EntropySource, InMemorySigner, NodeSigner, RandomBytes, Recipient, SignerProvider,
-};
+use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient, SignerProvider};
 use crate::sync::{Arc, Mutex};
 use core::cell::RefCell;
 use core::mem;
@@ -368,13 +366,6 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32],
 	) -> Self::EcdsaSigner {
 		unreachable!();
-	}
-
-	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
-		let state = Arc::new(Mutex::new(EnforcementState::new()));
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
@@ -1578,15 +1569,6 @@ impl SignerProvider for TestKeysInterface {
 			signer.disable_op(op);
 		}
 		signer
-	}
-
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
-		let mut reader = io::Cursor::new(buffer);
-
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
-		let state = self.make_enforcement_state_cell(inner.commitment_seed);
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, self.disable_revocation_policy_check))
 	}
 
 	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

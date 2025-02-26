@@ -13488,8 +13488,8 @@ where
 	pub node_signer: NS,
 
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
-	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
-	/// signing data.
+	/// deserialization and [`SignerProvider::derive_channel_signer`] will be used to derive
+	/// per-Channel signing data.
 	pub signer_provider: SP,
 
 	/// The fee_estimator for use in the ChannelManager in the future.

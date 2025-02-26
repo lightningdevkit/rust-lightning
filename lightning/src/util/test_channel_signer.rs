@@ -31,14 +31,12 @@ use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Transaction;
 
-use crate::io::Error;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::HTLCDescriptor;
 use crate::types::features::ChannelTypeFeatures;
-use crate::util::ser::{Writeable, Writer};
 use bitcoin::secp256k1;
 #[cfg(taproot)]
 use bitcoin::secp256k1::All;
@@ -527,17 +525,6 @@ impl TaprootChannelSigner for TestChannelSigner {
 		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>,
 	) -> Result<secp256k1::schnorr::Signature, ()> {
 		todo!()
-	}
-}
-
-impl Writeable for TestChannelSigner {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		// TestChannelSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
-		// ([`EnforcementState`]). `inner` is serialized here and deserialized by
-		// [`SignerProvider::read_chan_signer`]. `state` is managed by [`SignerProvider`]
-		// and will be serialized as needed by the implementation of that trait.
-		self.inner.write(writer)?;
-		Ok(())
 	}
 }
 

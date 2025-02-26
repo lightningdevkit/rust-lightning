@@ -44,7 +44,6 @@ use lightning::ln::channelmanager::{
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::DecodeError;
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
@@ -63,7 +62,7 @@ use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, ReadableArgs, Writeable};
+use lightning::util::ser::{Readable, Writeable};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
 use lightning_invoice::RawBolt11Invoice;
@@ -520,13 +519,6 @@ impl SignerProvider for KeyProvider {
 			state,
 			false,
 		)
-	}
-
-	fn read_chan_signer(&self, mut data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
-		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
-		let state = Arc::new(Mutex::new(EnforcementState::new()));
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

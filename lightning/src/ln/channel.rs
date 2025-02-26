@@ -10297,7 +10297,6 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 	}
 }
 
-const MAX_ALLOC_SIZE: usize = 64*1024;
 impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)> for FundedChannel<SP>
 		where
 			ES::Target: EntropySource,
@@ -10329,21 +10328,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let channel_value_satoshis = Readable::read(reader)?;
 
 		let latest_monitor_update_id = Readable::read(reader)?;
-
-		let mut keys_data = None;
-		if ver <= 2 {
-			// Read the serialize signer bytes. We'll choose to deserialize them or not based on whether
-			// the `channel_keys_id` TLV is present below.
-			let keys_len: u32 = Readable::read(reader)?;
-			keys_data = Some(Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE)));
-			while keys_data.as_ref().unwrap().len() != keys_len as usize {
-				// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
-				let mut data = [0; 1024];
-				let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.as_ref().unwrap().len())];
-				reader.read_exact(read_slice)?;
-				keys_data.as_mut().unwrap().extend_from_slice(read_slice);
-			}
-		}
 
 		// Read the old serialization for shutdown_pubkey, preferring the TLV field later if set.
 		let mut shutdown_scriptpubkey = match <PublicKey as Readable>::read(reader) {
@@ -10641,10 +10625,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			}
 			(channel_keys_id, holder_signer)
 		} else {
-			// `keys_data` can be `None` if we had corrupted data.
-			let keys_data = keys_data.ok_or(DecodeError::InvalidValue)?;
-			let holder_signer = signer_provider.read_chan_signer(&keys_data)?;
-			(holder_signer.channel_keys_id(), holder_signer)
+			return Err(DecodeError::InvalidValue);
 		};
 
 		if let Some(preimages) = preimages_opt {
@@ -10931,7 +10912,7 @@ mod tests {
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
-	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::msgs::{ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::script::ShutdownScript;
 	use crate::ln::chan_utils::{self, htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
@@ -11002,8 +10983,6 @@ mod tests {
 		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 			self.signer.clone()
 		}
-
-		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> { panic!(); }
 
 		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();
