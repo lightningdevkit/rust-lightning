@@ -21,6 +21,7 @@ mod features;
 pub mod inbound_payment;
 pub mod msgs;
 pub mod onion_payment;
+pub mod our_peer_storage;
 pub mod peer_handler;
 pub mod script;
 pub mod types;

@@ -796,7 +796,7 @@ pub trait ChannelSigner {
 	fn channel_keys_id(&self) -> [u8; 32];
 }
 
-/// Represents Secret Key used for encrypting Peer Storage.
+/// Represents the secret key material used for encrypting Peer Storage.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PeerStorageKey {
 	/// Represents the key used to encrypt and decrypt Peer Storage.
