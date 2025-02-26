@@ -766,6 +766,8 @@ pub struct UpdateFailHTLC {
 	/// The HTLC ID
 	pub htlc_id: u64,
 	pub(crate) reason: Vec<u8>,
+
+	/// Optional field for the attribution data that allows the sender to pinpoint the failing node under all conditions
 	pub attribution_data: Option<[u8; ATTRIBUTION_DATA_LEN]>
 }
 /// An [`update_fail_malformed_htlc`] message to be sent to or received from a peer.

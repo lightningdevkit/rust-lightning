@@ -1329,24 +1329,6 @@ where
 	}
 }
 
-
-struct AttributableFailure {
-	failure_index: usize,
-
-	result: AttributableFailureResult,
-}
-
-struct AttributableFailureSuccess {
-	message: Vec<u8>,
-	hold_times: Vec<u32>,
-}
-
-enum AttributableFailureResult {
-	Success(AttributableFailureSuccess),
-	InvalidPayload,
-	InvalidHmac
-}
-
 #[derive(Clone)]// See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
