@@ -10712,7 +10712,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 						} else {
 							None
 						}
-					} else { 
+					} else {
 						None
 					}
 				);
@@ -11568,7 +11568,7 @@ mod tests {
 			htlc_id: 0,
 		};
 		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
-			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; ATTRIBUTION_DATA_LEN] }
+			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: Some([0; ATTRIBUTION_DATA_LEN]) }
 		};
 		let dummy_holding_cell_malformed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id, failure_code: INVALID_ONION_BLINDING, sha256_of_onion: [0; 32],

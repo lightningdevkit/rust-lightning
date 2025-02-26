@@ -16298,7 +16298,7 @@ use crate::ln::types::ChannelId;
 		let mut nodes = create_network(1, &node_cfg, &chanmgrs);
 
 		let dummy_failed_htlc = |htlc_id| {
-			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: [0; ATTRIBUTION_DATA_LEN] } }
+			HTLCForwardInfo::FailHTLC { htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: Some([0; ATTRIBUTION_DATA_LEN]) } }
 		};
 		let dummy_malformed_htlc = |htlc_id| {
 			HTLCForwardInfo::FailMalformedHTLC { htlc_id, failure_code: 0x4000, sha256_of_onion: [0; 32] }

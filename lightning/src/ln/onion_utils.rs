@@ -2396,7 +2396,7 @@ use crate::util::test_utils::TestLogger;
 			if mutated_index < data_len {
 				packet.data[mutated_index] ^= 1;
 			} else {
-				packet.attribution_data[mutated_index - data_len] ^= 1;
+				packet.attribution_data.as_mut().unwrap()[mutated_index - data_len] ^= 1;
 			}
 		};
 
