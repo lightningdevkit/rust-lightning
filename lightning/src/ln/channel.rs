@@ -8367,7 +8367,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// Initiate splicing
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, funding_feerate_perkw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, ChannelError> {
 		// Check if a splice has been initiated already.
 		// Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways.
@@ -8402,7 +8402,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		// Check that inputs are sufficient to cover our contribution
 		let sum_input: i64 = our_funding_inputs.into_iter().map(
-			|(txin, tx)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0)
+			|(txin, tx, _)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0)
 		).sum();
 		if sum_input < our_funding_contribution_satoshis {
 			return Err(ChannelError::Warn(format!(

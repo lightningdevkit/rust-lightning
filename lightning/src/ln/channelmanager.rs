@@ -31,6 +31,8 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence, TxIn};
+#[cfg(splicing)]
+use bitcoin::Weight;
 
 use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
@@ -4288,7 +4290,7 @@ where
 	#[cfg(splicing)]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, funding_feerate_perkw: u32, locktime: u32,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
