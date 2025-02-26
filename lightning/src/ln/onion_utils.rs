@@ -89,6 +89,14 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).to_byte_array()
 }
 
+#[inline]
+pub(super) fn gen_ammagext_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+	assert_eq!(shared_secret.len(), 32);
+	let mut hmac = HmacEngine::<Sha256>::new(&[0x61, 0x6d, 0x6d, 0x61, 0x67, 0x65, 0x78, 0x74]); // ammagext
+	hmac.input(&shared_secret);
+	Hmac::from_engine(hmac).to_byte_array()
+}
+
 #[cfg(test)]
 #[inline]
 pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
@@ -875,16 +883,20 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 /// Encrypts a failure packet. raw_packet can either be a
 /// msgs::DecodedOnionErrorPacket.encode() result or a msgs::OnionErrorPacket.data element.
 pub(super) fn encrypt_failure_packet(
-	shared_secret: &[u8], packet: &OnionErrorPacket
-) -> msgs::OnionErrorPacket {
-	let raw_packet = &packet.data;
+	shared_secret: &[u8], packet: &mut OnionErrorPacket
+) {
 	let ammag = gen_ammag_from_shared_secret(&shared_secret);
+	process_chacha(&ammag, &mut packet.data);
 
-	let mut packet_crypted = Vec::with_capacity(raw_packet.len());
-	packet_crypted.resize(raw_packet.len(), 0);
-	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-	chacha.process(&raw_packet, &mut packet_crypted[..]);
-	msgs::OnionErrorPacket { data: packet_crypted, attribution_data: packet.attribution_data } // TODO: Encrypt attribution_data
+	if let Some(ref mut attribution_data) = packet.attribution_data {
+		let ammagext = gen_ammagext_from_shared_secret(&shared_secret);
+		process_chacha(&ammagext, attribution_data);
+	}
+}
+
+pub(super) fn process_chacha(key: &[u8; 32], packet: &mut [u8]) {
+	let mut chacha = ChaCha20::new(key, &[0u8; 8]);
+	chacha.process_in_place(packet);
 }
 
 pub(super) fn build_failure_packet(
@@ -938,8 +950,10 @@ pub(super) fn build_first_hop_failure_packet(
 	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
 ) -> msgs::OnionErrorPacket {
 	let payload = [0; 4];
-	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data, &payload);
-	encrypt_failure_packet(shared_secret, &failure_packet)
+	let mut failure_packet = build_failure_packet(shared_secret, failure_type, failure_data, &payload);
+	encrypt_failure_packet(shared_secret, &mut failure_packet);
+
+	failure_packet
 }
 
 pub(crate) struct DecodedOnionFailure {
@@ -956,12 +970,12 @@ pub(crate) struct DecodedOnionFailure {
 /// Note that we always decrypt `packet` in-place here even if the deserialization into
 /// [`msgs::DecodedOnionErrorPacket`] ultimately fails.
 fn decrypt_onion_error_packet(
-	packet: &mut Vec<u8>, shared_secret: SharedSecret,
+	packet: &mut OnionErrorPacket, shared_secret: SharedSecret,
 ) -> Result<msgs::DecodedOnionErrorPacket, msgs::DecodeError> {
-	let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
-	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-	chacha.process_in_place(packet);
-	msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(packet))
+	// Decrypt the packet.
+	encrypt_failure_packet(shared_secret.as_ref(), packet);
+
+	msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet.data))
 }
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
@@ -1048,7 +1062,7 @@ where
 						// Actually parse the onion error data in tests so we can check that blinded hops fail
 						// back correctly.
 						let err_packet =
-							decrypt_onion_error_packet(&mut encrypted_packet.data, shared_secret)
+							decrypt_onion_error_packet(&mut encrypted_packet, shared_secret)
 								.unwrap();
 						error_code_ret = Some(u16::from_be_bytes(
 							err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
@@ -1070,7 +1084,7 @@ where
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
 
-		let decrypt_result = decrypt_onion_error_packet(&mut encrypted_packet.data, shared_secret);
+		let decrypt_result = decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
 
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 
@@ -1452,26 +1466,32 @@ impl HTLCFailReason {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
 				let payload = [1; 4];
 				if let Some(phantom_ss) = phantom_shared_secret {
-					let phantom_packet =
+					let mut phantom_packet =
 						build_failure_packet(phantom_ss, *failure_code, &data[..], &payload);
-					let encrypted_phantom_packet =
-						encrypt_failure_packet(phantom_ss, &phantom_packet);
+					encrypt_failure_packet(phantom_ss, &mut phantom_packet);
 					encrypt_failure_packet(
 						incoming_packet_shared_secret,
-						&encrypted_phantom_packet
-					)
+						&mut phantom_packet
+					);
+
+					phantom_packet
 				} else {
-					let packet = build_failure_packet(
+					let mut packet = build_failure_packet(
 						incoming_packet_shared_secret,
 						*failure_code,
 						&data[..],
 						&payload
 					);
-					encrypt_failure_packet(incoming_packet_shared_secret, &packet)
+					encrypt_failure_packet(incoming_packet_shared_secret, &mut packet);
+
+					packet
 				}
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
-				encrypt_failure_packet(incoming_packet_shared_secret, &err)
+				let mut err = err.clone();
+				encrypt_failure_packet(incoming_packet_shared_secret, &mut err);
+
+				err
 			},
 		}
 	}
@@ -2341,12 +2361,9 @@ use crate::util::test_utils::TestLogger;
 			for mutated_index in 0..1060+920 {
 				let decrypted_failure = test_attributable_failure_packet_onion_with_mutation(mutating_node, mutated_index);
 
-				// if let Some(chan_id) = decrypted_failure.short_channel_id {
-				// 	println!("Testing mutation {} on node {}: chan failure at {}", mutated_index, mutating_node, chan_id);
-				// }
-
-				assert!(decrypted_failure.onion_error_code == Some(16399) || decrypted_failure.short_channel_id.is_some());
-			}
+				assert!(decrypted_failure.onion_error_code == Some(16399) ||
+					decrypted_failure.short_channel_id == Some(4-mutating_node as u64));
+ 			}
 		}
 	}
 
@@ -2383,12 +2400,12 @@ use crate::util::test_utils::TestLogger;
 		let payload = [0, 0, 0, 1];
 
 		let onion_keys = build_test_onion_keys();
-		let onion_error =
+		let mut onion_error =
 			super::build_failure_packet(onion_keys[4].shared_secret.as_ref(), 0x400f, &failure_data, &payload);
 
 		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
 
-		let mut encrypted_packet = super::encrypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &onion_error);
+		super::encrypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &mut onion_error);
 		// assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[0]);
 
 		let mutate_packet = |packet: &mut OnionErrorPacket, mutated_index| {
@@ -2401,7 +2418,7 @@ use crate::util::test_utils::TestLogger;
 		};
 
 		if mutating_node == 0 {
-			mutate_packet(&mut encrypted_packet, mutated_index);
+			mutate_packet(&mut onion_error, mutated_index);
 	   	}
 
 		for idx in 1..5 {
@@ -2409,11 +2426,11 @@ use crate::util::test_utils::TestLogger;
 			let shared_secret = onion_keys[4 - idx].shared_secret.as_ref();
 
 			let payload = [0, 0, 0, (idx + 1) as u8];
-			process_failure_packet(&mut encrypted_packet, shared_secret, &payload);
-			encrypted_packet = super::encrypt_failure_packet(shared_secret, &encrypted_packet);
+			process_failure_packet(&mut onion_error, shared_secret, &payload);
+			super::encrypt_failure_packet(shared_secret, &mut onion_error);
 
 			if mutating_node == idx {
-				mutate_packet(&mut encrypted_packet, mutated_index);
+				mutate_packet(&mut onion_error, mutated_index);
 			}
 
 			// assert_eq!(encrypted_packet.data.to_lower_hex_string(), EXPECTED_MESSAGES[idx]);
@@ -2432,7 +2449,7 @@ use crate::util::test_utils::TestLogger;
 
 
 		// Assert that the original failure can be retrieved and that all hmacs check out.
-		let decrypted_failure = process_onion_failure(&ctx_full, &logger, &htlc_source, encrypted_packet);
+		let decrypted_failure = process_onion_failure(&ctx_full, &logger, &htlc_source, onion_error);
 
 		decrypted_failure
 

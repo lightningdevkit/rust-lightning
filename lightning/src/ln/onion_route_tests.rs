@@ -699,14 +699,14 @@ fn test_onion_failure() {
 			let mut hmac = HmacEngine::<Sha256>::new(&um);
 			hmac.input(&decoded_err_packet.encode()[32..]);
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
-			let onion_error = OnionErrorPacket{
+			let mut onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
 				attribution_data: Some([0; ATTRIBUTION_DATA_LEN]),
 			};
-			let failure = onion_utils::encrypt_failure_packet(
-				&onion_keys[1].shared_secret.as_ref(), &onion_error);
-			msg.reason = failure.data;
-			msg.attribution_data = failure.attribution_data;
+			onion_utils::encrypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &mut onion_error);
+			msg.reason = onion_error.data;
+			msg.attribution_data = onion_error.attribution_data;
 		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), false, None,
 		Some(NetworkUpdate::NodeFailure { node_id: route.paths[0].hops[1].pubkey, is_permanent: true }),
 		Some(channels[1].0.contents.short_channel_id), None);
@@ -728,12 +728,14 @@ fn test_onion_failure() {
 			let mut hmac = HmacEngine::<Sha256>::new(&um);
 			hmac.input(&decoded_err_packet.encode()[32..]);
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
-			let onion_error = OnionErrorPacket{
+			let mut onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
 				attribution_data: Some([0; ATTRIBUTION_DATA_LEN]),
 			};
-			let failure = onion_utils::encrypt_failure_packet(
-				&onion_keys[0].shared_secret.as_ref(), &onion_error);
+			onion_utils::encrypt_failure_packet(
+				&onion_keys[0].shared_secret.as_ref(), &mut onion_error);
+
+			// update msg?
 		}, || {}, true, Some(0x1000|7),
 		Some(NetworkUpdate::ChannelFailure {
 			short_channel_id: channels[1].0.contents.short_channel_id,
@@ -756,12 +758,14 @@ fn test_onion_failure() {
 			let mut hmac = HmacEngine::<Sha256>::new(&um);
 			hmac.input(&decoded_err_packet.encode()[32..]);
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
-			let onion_error = OnionErrorPacket{
+			let mut onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
 				attribution_data: Some([0; ATTRIBUTION_DATA_LEN]),
 			};
-			let failure = onion_utils::encrypt_failure_packet(
-				&onion_keys[1].shared_secret.as_ref(), &onion_error);
+			onion_utils::encrypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &mut onion_error);
+
+			// update msg?
 		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), true, Some(0x1000|7),
 		Some(NetworkUpdate::ChannelFailure {
 			short_channel_id: channels[1].0.contents.short_channel_id,
