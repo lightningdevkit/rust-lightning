@@ -72,7 +72,7 @@ fn test_v1_splice_in() {
 			splice_in_sats as i64,
 			funding_inputs,
 			funding_feerate_per_kw,
-			0, // locktime
+			None, // locktime
 		)
 		.unwrap();
 	// Extract the splice message from node0 to node1
@@ -82,7 +82,7 @@ fn test_v1_splice_in() {
 		acceptor_node.node.get_our_node_id()
 	);
 	assert_eq!(splice_init_msg.funding_contribution_satoshis, splice_in_sats as i64);
-	assert_eq!(splice_init_msg.funding_feerate_perkw, funding_feerate_per_kw);
+	assert_eq!(splice_init_msg.funding_feerate_per_kw, funding_feerate_per_kw);
 	assert_eq!(splice_init_msg.funding_pubkey.to_string(), expected_initiator_funding_key);
 	assert!(splice_init_msg.require_confirmed_inputs.is_none());
 

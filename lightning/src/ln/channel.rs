@@ -4590,38 +4590,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.channel_transaction_parameters = channel_transaction_parameters;
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
-
-	/// Get the splice message that can be sent during splice initiation.
-	#[cfg(splicing)]
-	pub fn get_splice_init(&self, our_funding_contribution_satoshis: i64,
-		funding_feerate_perkw: u32, locktime: u32,
-	) -> msgs::SpliceInit {
-		// Reuse the existing funding pubkey, in spite of the channel value changing
-		// (though at this point we don't know the new value yet, due tue the optional counterparty contribution)
-		// Note that channel_keys_id is supposed NOT to change
-		let funding_pubkey = self.get_holder_pubkeys().funding_pubkey.clone();
-		msgs::SpliceInit {
-			channel_id: self.channel_id,
-			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_feerate_perkw,
-			locktime,
-			funding_pubkey,
-			require_confirmed_inputs: None,
-		}
-	}
-
-	/// Get the splice_ack message that can be sent in response to splice initiation.
-	#[cfg(splicing)]
-	pub fn get_splice_ack(&self, our_funding_contribution_satoshis: i64) -> msgs::SpliceAck {
-		// Reuse the existing funding pubkey, in spite of the channel value changing
-		let funding_pubkey = self.get_holder_pubkeys().funding_pubkey;
-		msgs::SpliceAck {
-			channel_id: self.channel_id,
-			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_pubkey,
-			require_confirmed_inputs: None,
-		}
-	}
 }
 
 // Internal utility functions for channels
@@ -8364,59 +8332,70 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	/// Initiate splicing
+	/// Initiate splicing.
+	/// - our_funding_inputs: the inputs we contribute to the new funding transaction.
+	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>, funding_feerate_perkw: u32, locktime: u32,
-	) -> Result<msgs::SpliceInit, ChannelError> {
+		_our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
+		funding_feerate_per_kw: u32, locktime: u32,
+	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
-		// Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways.
+		// Note: only a single outstanding splice is supported (per spec)
 		if let Some(splice_info) = &self.pending_splice_pre {
-			return Err(ChannelError::Warn(format!(
-				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution
-			)));
+			return Err(APIError::APIMisuseError { err: format!(
+				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
+				self.context.channel_id(), splice_info.our_funding_contribution
+			)});
 		}
 
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Warn(format!("Cannot initiate splicing, as channel is not Ready")));
+		if !self.context.is_live() {
+			return Err(APIError::APIMisuseError { err: format!(
+				"Channel {} cannot be spliced, as channel is not live",
+				self.context.channel_id()
+			)});
 		}
 
-		let pre_channel_value = self.funding.get_value_satoshis();
-		// Sanity check: capacity cannot decrease below 0
-		if (pre_channel_value as i64).saturating_add(our_funding_contribution_satoshis) < 0 {
-			return Err(ChannelError::Warn(format!(
-				"Post-splicing channel value cannot be negative. It was {} + {}",
-				pre_channel_value, our_funding_contribution_satoshis
-			)));
-		}
+		// TODO(splicing): check for quiescence
 
 		if our_funding_contribution_satoshis < 0 {
-			return Err(ChannelError::Warn(format!(
-				"TODO(splicing): Splice-out not supported, only splice in, contribution {}",
-				our_funding_contribution_satoshis,
-			)));
+			return Err(APIError::APIMisuseError { err: format!(
+				"TODO(splicing): Splice-out not supported, only splice in; channel ID {}, contribution {}",
+				self.context.channel_id(), our_funding_contribution_satoshis,
+			)});
 		}
 
-		// Note: post-splice channel value is not yet known at this point, counterpary contribution is not known
+		// TODO(splicing): Once splice-out is supported, check that channel balance does not go below 0
+		// (or below channel reserve)
+
+		// Note: post-splice channel value is not yet known at this point, counterparty contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
-		// Check that inputs are sufficient to cover our contribution
-		let sum_input: i64 = our_funding_inputs.into_iter().map(
-			|(txin, tx, _)| tx.output.get(txin.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0)
-		).sum();
-		if sum_input < our_funding_contribution_satoshis {
-			return Err(ChannelError::Warn(format!(
-				"Provided inputs are insufficient for our contribution, {} {}",
-				sum_input, our_funding_contribution_satoshis,
-			)));
-		}
 
 		self.pending_splice_pre = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
 		});
 
-		let msg = self.context.get_splice_init(our_funding_contribution_satoshis, funding_feerate_perkw, locktime);
+		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
 		Ok(msg)
+	}
+
+	/// Get the splice message that can be sent during splice initiation.
+	#[cfg(splicing)]
+	pub fn get_splice_init(&self, our_funding_contribution_satoshis: i64,
+		funding_feerate_per_kw: u32, locktime: u32,
+	) -> msgs::SpliceInit {
+		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
+		// Note that channel_keys_id is supposed NOT to change
+		let funding_pubkey = self.context.get_holder_pubkeys().funding_pubkey.clone();
+		msgs::SpliceInit {
+			channel_id: self.context.channel_id,
+			funding_contribution_satoshis: our_funding_contribution_satoshis,
+			funding_feerate_per_kw,
+			locktime,
+			funding_pubkey,
+			require_confirmed_inputs: None,
+		}
 	}
 
 	/// Handle splice_init
@@ -8434,20 +8413,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not Ready")));
-		}
-
-		let pre_channel_value = self.funding.get_value_satoshis();
-		// Sanity check: capacity cannot decrease below 0
-		if (pre_channel_value as i64)
-			.saturating_add(their_funding_contribution_satoshis)
-			.saturating_add(our_funding_contribution_satoshis) < 0
-		{
-			return Err(ChannelError::Warn(format!(
-				"Post-splicing channel value cannot be negative. It was {} + {} + {}",
-				pre_channel_value, their_funding_contribution_satoshis, our_funding_contribution_satoshis,
-			)));
+		// - If it has received shutdown:
+		//   MUST send a warning and close the connection or send an error
+		//   and fail the channel.
+		if !self.context.is_live() {
+			return Err(ChannelError::Warn(format!("Splicing requested on a channel that is not live")));
 		}
 
 		if their_funding_contribution_satoshis.saturating_add(our_funding_contribution_satoshis) < 0 {
@@ -8457,18 +8427,33 @@ impl<SP: Deref> FundedChannel<SP> where
 			)));
 		}
 
-		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, their_funding_contribution_satoshis, our_funding_contribution_satoshis);
-		let post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution_satoshis);
-		// Early check for reserve requirement, assuming maximum balance of full channel value
-		// This will also be checked later at tx_complete
-		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
+		// TODO(splicing): Once splice acceptor can contribute, check that inputs are sufficient,
+		// similarly to the check in `splice_channel`.
+
+		// Note on channel reserve requirement pre-check: as the splice acceptor does not contribute,
+		// it can't go below reserve, therefore no pre-check is done here.
+		// TODO(splicing): Once splice acceptor can contribute, add reserve pre-check, similar to the one in `splice_ack`.
 
 		// TODO(splicing): Store msg.funding_pubkey
 		// TODO(splicing): Apply start of splice (splice_start)
 
-		let splice_ack_msg = self.context.get_splice_ack(our_funding_contribution_satoshis);
+		let splice_ack_msg = self.get_splice_ack(our_funding_contribution_satoshis);
 		// TODO(splicing): start interactive funding negotiation
 		Ok(splice_ack_msg)
+	}
+
+	/// Get the splice_ack message that can be sent in response to splice initiation.
+	#[cfg(splicing)]
+	pub fn get_splice_ack(&self, our_funding_contribution_satoshis: i64) -> msgs::SpliceAck {
+		// TODO(splicing): The exisiting pubkey is reused, but a new one should be generated. See #3542.
+		// Note that channel_keys_id is supposed NOT to change
+		let funding_pubkey = self.context.get_holder_pubkeys().funding_pubkey;
+		msgs::SpliceAck {
+			channel_id: self.context.channel_id,
+			funding_contribution_satoshis: our_funding_contribution_satoshis,
+			funding_pubkey,
+			require_confirmed_inputs: None,
+		}
 	}
 
 	/// Handle splice_ack
@@ -12890,7 +12875,7 @@ mod tests {
 		);
 	}
 
-	#[cfg(all(test, splicing))]
+	#[cfg(splicing)]
 	fn get_pre_and_post(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64) -> (u64, u64) {
 		use crate::ln::channel::PendingSplice;
 
@@ -12898,7 +12883,7 @@ mod tests {
 		(pre_channel_value, post_channel_value)
 	}
 
-	#[cfg(all(test, splicing))]
+	#[cfg(splicing)]
 	#[test]
 	fn test_splice_compute_post_value() {
 		{
