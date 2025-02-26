@@ -1016,6 +1016,8 @@ where
 	const NODE: u16 = 0x2000;
 	const UPDATE: u16 = 0x1000;
 
+	let mut hold_times: Vec<u32> = Vec::new();
+
 	// Handle packed channel/node updates for passing back for the route handler
 	let callback = |shared_secret, _, _, route_hop_opt: Option<&RouteHop>, route_hop_idx| {
 		if res.is_some() {
@@ -1118,6 +1120,12 @@ where
 
 				return;
 			}
+
+			// Record hold time.
+			let hold_time: u32 = u32::from_be_bytes(payloads[..PAYLOAD_LEN].try_into().unwrap());
+			hold_times.push(hold_time);
+
+			log_debug!(logger, "Htlc hold time at pos {}: {} ms", route_hop_idx, hold_time);
 
 			// Shift payloads left.
 			let payloads = &mut encrypted_packet.attribution_data.as_mut().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
@@ -1443,10 +1451,11 @@ impl HTLCFailReason {
 	pub(super) fn get_encrypted_failure_packet(
 		&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>,
 	) -> msgs::OnionErrorPacket {
-		let payload: [u8; 4] = [1; 4];
-
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
+				let hold_time: u32 = 100;
+				let payload: [u8; 4] = hold_time.to_be_bytes();
+
 				if let Some(phantom_ss) = phantom_shared_secret {
 					let mut phantom_packet =
 						build_failure_packet(phantom_ss, *failure_code, &data[..], &payload);
@@ -1471,6 +1480,10 @@ impl HTLCFailReason {
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
 				let mut err = err.clone();
+
+				// DEBUG: Use bogus hold time that differs per hop.
+				let hold_time: u32 = incoming_packet_shared_secret[0] as u32;
+				let payload: [u8; 4] = hold_time.to_be_bytes();
 
 				process_failure_packet(&mut err, incoming_packet_shared_secret, &payload);
 				encrypt_failure_packet(incoming_packet_shared_secret, &mut err);
