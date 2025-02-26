@@ -880,9 +880,7 @@ struct HTLCStats {
 /// An enum gathering stats on commitment transaction, either local or remote.
 struct CommitmentStats<'a> {
 	tx: CommitmentTransaction, // the transaction info
-	feerate_per_kw: u32, // the feerate included to build the transaction
 	total_fee_sat: u64, // the total fee included in the transaction
-	num_nondust_htlcs: usize,  // the number of HTLC outputs (dust HTLCs *non*-included)
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
 	local_balance_msat: u64, // local balance before fees *not* considering dust limits
 	remote_balance_msat: u64, // remote balance before fees *not* considering dust limits
@@ -3528,8 +3526,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
+		if msg.htlc_signatures.len() != commitment_stats.tx.htlcs().len() {
+			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.tx.htlcs().len())));
 		}
 
 		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
@@ -3552,7 +3550,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let holder_keys = commitment_stats.tx.trust().keys();
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.tx.feerate_per_kw(),
 					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.channel_type,
 					&holder_keys.broadcaster_delayed_payment_key, &holder_keys.revocation_key);
 
@@ -3809,8 +3807,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			to_countersignatory_value_sat = 0;
 		}
 
-		let num_nondust_htlcs = included_non_dust_htlcs.len();
-
 		let channel_parameters =
 			if local { funding.channel_transaction_parameters.as_holder_broadcastable() }
 			else { funding.channel_transaction_parameters.as_counterparty_broadcastable() };
@@ -3830,9 +3826,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		CommitmentStats {
 			tx,
-			feerate_per_kw,
 			total_fee_sat,
-			num_nondust_htlcs,
 			htlcs_included,
 			local_balance_msat: value_to_self_msat,
 			remote_balance_msat: value_to_remote_msat,
@@ -6338,7 +6332,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.context.get_pending_htlc_stats(Some(feerate_per_kw), dust_exposure_limiting_feerate);
 		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &self.holder_commitment_point.current_point(), true, true, logger);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.tx.htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
@@ -8737,7 +8731,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.context.get_channel_type()) * 1000;
+							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, counterparty_commitment_tx.htlcs().len(), self.context.get_channel_type()) * 1000;
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -8781,7 +8775,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					debug_assert_eq!(htlc_signatures.len(), commitment_stats.tx.htlcs().len());
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(commitment_stats.tx.htlcs()) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.tx.feerate_per_kw(), self.funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
