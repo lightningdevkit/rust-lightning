@@ -3758,14 +3758,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		let value_to_self_msat: i64 = (funding.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
-		assert!(value_to_self_msat >= 0);
-		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
-		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
-		// "violate" their reserve value by couting those against it. Thus, we have to convert
-		// everything to i64 before subtracting as otherwise we can overflow.
-		let value_to_remote_msat: i64 = (funding.get_value_satoshis() * 1000) as i64 - (funding.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
-		assert!(value_to_remote_msat >= 0);
+		// # Panics
+		//
+		// While we expect `value_to_self_msat_offset` to be negative in some cases, the value going
+		// to each party MUST be 0 or positive, even if all HTLCs pending in the commitment clear by
+		// failure.
+
+		// TODO: When MSRV >= 1.66.0, use u64::checked_add_signed
+		let mut value_to_self_msat = (funding.value_to_self_msat as i64 + value_to_self_msat_offset).try_into().unwrap();
+		let mut value_to_remote_msat = (funding.get_value_satoshis() * 1000).checked_sub(value_to_self_msat).unwrap();
+		value_to_self_msat = value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap();
+		value_to_remote_msat = value_to_remote_msat.checked_sub(remote_htlc_total_msat).unwrap();
 
 		#[cfg(debug_assertions)]
 		{
@@ -3776,33 +3779,40 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			} else {
 				funding.counterparty_max_commitment_tx_output.lock().unwrap()
 			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap() as i64);
-			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat as u64);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis as i64);
-			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
+			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat || value_to_self_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
+			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat);
+			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat || value_to_remote_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
+			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat);
 		}
+
+		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
+		// than or equal to the sum of `total_fee_sat` and `anchors_val`.
+		//
+		// This is because when the remote party sends an `update_fee` message, we build the new
+		// commitment transaction *before* checking whether the remote party's balance is enough to
+		// cover the total fee and the anchors.
 
 		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), &funding.channel_transaction_parameters.channel_type_features);
-		let anchors_val = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
+		let anchors_val = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 		let (value_to_self, value_to_remote) = if funding.is_outbound() {
-			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
+			((value_to_self_msat / 1000).saturating_sub(anchors_val).saturating_sub(total_fee_sat), value_to_remote_msat / 1000)
 		} else {
-			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - anchors_val - total_fee_sat as i64)
+			(value_to_self_msat / 1000, (value_to_remote_msat / 1000).saturating_sub(anchors_val).saturating_sub(total_fee_sat))
 		};
 
-		let mut value_to_a = if local { value_to_self } else { value_to_remote };
-		let mut value_to_b = if local { value_to_remote } else { value_to_self };
+		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
+		let mut to_countersignatory_value_sat = if local { value_to_remote } else { value_to_self };
 
-		if value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
-			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
+		if to_broadcaster_value_sat >= broadcaster_dust_limit_satoshis {
+			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, to_broadcaster_value_sat);
 		} else {
-			value_to_a = 0;
+			to_broadcaster_value_sat = 0;
 		}
 
-		if value_to_b >= (broadcaster_dust_limit_satoshis as i64) {
-			log_trace!(logger, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
+		if to_countersignatory_value_sat >= broadcaster_dust_limit_satoshis {
+			log_trace!(logger, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, to_countersignatory_value_sat);
 		} else {
-			value_to_b = 0;
+			to_countersignatory_value_sat = 0;
 		}
 
 		let num_nondust_htlcs = included_non_dust_htlcs.len();
@@ -3812,8 +3822,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			else { funding.channel_transaction_parameters.as_counterparty_broadcastable() };
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             per_commitment_point,
-		                                                             value_to_a as u64,
-		                                                             value_to_b as u64,
+		                                                             to_broadcaster_value_sat,
+		                                                             to_countersignatory_value_sat,
 		                                                             feerate_per_kw,
 		                                                             &mut included_non_dust_htlcs,
 		                                                             &channel_parameters,
@@ -3830,8 +3840,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			total_fee_sat,
 			num_nondust_htlcs,
 			htlcs_included,
-			local_balance_msat: value_to_self_msat as u64,
-			remote_balance_msat: value_to_remote_msat as u64,
+			local_balance_msat: value_to_self_msat,
+			remote_balance_msat: value_to_remote_msat,
 			inbound_htlc_preimages,
 			outbound_htlc_preimages,
 		}
