@@ -246,8 +246,8 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 /// Is expected to wrap a struct definition like
 /// ```ignore
 /// drop_legacy_field_definition!(Self {
-/// 	field1: $crate::_ignore_arg!(field1, option),
-/// 	field2: $crate::_ignore_arg!(field2, (legacy, u64, {})),
+/// 	field1: $crate::_init_tlv_based_struct_field!(field1, option),
+/// 	field2: $crate::_init_tlv_based_struct_field!(field2, (legacy, u64, {})),
 /// })
 /// ```
 /// and will drop fields defined like `field2` with a type starting with `legacy`.
@@ -277,7 +277,7 @@ pub fn drop_legacy_field_definition(expr: TokenStream) -> TokenStream {
 	for field in new_fields {
 		if let syn::Expr::Macro(syn::ExprMacro { mac, .. }) = &field.expr {
 			let macro_name = mac.path.segments.last().unwrap().ident.to_string();
-			let is_init = macro_name == "_ignore_arg";
+			let is_init = macro_name == "_init_tlv_based_struct_field";
 			// Skip `field_name` and `:`, giving us just the type's group
 			let ty_tokens = mac.tokens.clone().into_iter().skip(2).next();
 			if let Some(proc_macro2::TokenTree::Group(group)) = ty_tokens {
