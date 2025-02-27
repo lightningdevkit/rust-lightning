@@ -1817,6 +1817,7 @@ mod fuzzy_internal_msgs {
 		pub outgoing_cltv_value: u32,
 		pub multipath_trampoline_data: Option<FinalOnionHopData>,
 		pub trampoline_packet: TrampolineOnionPacket,
+		pub current_path_key: Option<PublicKey>
 	}
 
 	pub struct InboundOnionReceivePayload {
@@ -2974,7 +2975,18 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			return Err(DecodeError::InvalidValue)
 		}
 
-		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+		if let Some(trampoline_onion_packet) = trampoline_onion_packet {
+			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some()
+			{ return Err(DecodeError::InvalidValue) }
+			Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+				multipath_trampoline_data: payment_data,
+				trampoline_packet: trampoline_onion_packet,
+				current_path_key: intro_node_blinding_point
+			}))
+		} else if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
 			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
@@ -3035,16 +3047,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 				short_channel_id,
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
-			}))
-		} else if let Some(trampoline_onion_packet) = trampoline_onion_packet {
-			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
-				total_msat.is_some()
-			{ return Err(DecodeError::InvalidValue) }
-			Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
-				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
-				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
-				multipath_trampoline_data: payment_data,
-				trampoline_packet: trampoline_onion_packet,
 			}))
 		} else {
 			if encrypted_tlvs_opt.is_some() || total_msat.is_some() || invoice_request.is_some() {
