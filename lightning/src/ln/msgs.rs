@@ -1800,12 +1800,20 @@ mod fuzzy_internal_msgs {
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
-
+	use crate::routing::gossip::NodeId;
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 
 	pub struct InboundOnionForwardPayload {
 		pub short_channel_id: u64,
+		/// The value, in msat, of the payment after this hop's fee is deducted.
+		pub amt_to_forward: u64,
+		pub outgoing_cltv_value: u32,
+	}
+
+	#[allow(unused)]
+	pub struct InboundTrampolineForwardPayload {
+		pub outgoing_node_id: NodeId,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
 		pub amt_to_forward: u64,
 		pub outgoing_cltv_value: u32,
@@ -1856,6 +1864,10 @@ mod fuzzy_internal_msgs {
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
+
+		// These payloads should be seen inside an inner Trampoline onion
+		#[allow(unused)]
+		TrampolineForward(InboundTrampolineForwardPayload),
 	}
 
 	pub(crate) enum OutboundOnionPayload<'a> {
@@ -2940,6 +2952,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut encrypted_tlvs_opt: Option<WithoutLength<Vec<u8>>> = None;
 		let mut intro_node_blinding_point = None;
+		let mut outgoing_node_id: Option<NodeId> = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
@@ -2956,6 +2969,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			(8, payment_data, option),
 			(10, encrypted_tlvs_opt, option),
 			(12, intro_node_blinding_point, option),
+			(14, outgoing_node_id, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(20, trampoline_onion_packet, option),
@@ -3045,6 +3059,15 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			{ return Err(DecodeError::InvalidValue) }
 			Ok(Self::Forward(InboundOnionForwardPayload {
 				short_channel_id,
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+			}))
+		} else if let Some(outgoing_node_id) = outgoing_node_id {
+			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some() || invoice_request.is_some()
+			{ return Err(DecodeError::InvalidValue) }
+			Ok(Self::TrampolineForward(InboundTrampolineForwardPayload {
+				outgoing_node_id,
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 			}))
