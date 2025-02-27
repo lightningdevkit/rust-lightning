@@ -1128,11 +1128,11 @@ where
 			log_debug!(logger, "Htlc hold time at pos {}: {} ms", route_hop_idx, hold_time);
 
 			// Shift payloads left.
-			let payloads = &mut encrypted_packet.attribution_data.as_mut().unwrap()[..MAX_HOPS * PAYLOAD_LEN]; // XXX: This will break if we get an err from an unupgraded node
+			let payloads = &mut encrypted_packet.attribution_data.as_mut().unwrap()[..MAX_HOPS * PAYLOAD_LEN];
 			payloads.copy_within(PAYLOAD_LEN.., 0);
 
 			// Shift hmacs left.
-			let hmacs = &mut encrypted_packet.attribution_data.as_mut().unwrap()[MAX_HOPS * PAYLOAD_LEN..]; // XXX: This will break if we get an err from an unupgraded node
+			let hmacs = &mut encrypted_packet.attribution_data.as_mut().unwrap()[MAX_HOPS * PAYLOAD_LEN..];
 			let mut src_idx = MAX_HOPS;
 			let mut dest_idx = 1;
 			let mut copy_len = MAX_HOPS - 1;
