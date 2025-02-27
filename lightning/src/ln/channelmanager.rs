@@ -4479,7 +4479,32 @@ where
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
+			#[cfg(trampoline)]
+			onion_utils::Hop::TrampolineReceive { .. } => {
+				// OUR PAYMENT!
+				let current_height: u32 = self.best_block.read().unwrap().height;
+				match create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
+					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
+					current_height)
+				{
+					Ok(info) => {
+						// Note that we could obviously respond immediately with an update_fulfill_htlc
+						// message, however that would leak that we are the recipient of this payment, so
+						// instead we stay symmetric with the forwarding case, only responding (after a
+						// delay) once they've sent us a commitment_signed!
+						PendingHTLCStatus::Forward(info)
+					},
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
+				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
+					Ok(info) => PendingHTLCStatus::Forward(info),
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
+			#[cfg(trampoline)]
+			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
@@ -5895,7 +5920,7 @@ where
 														// of the onion.
 														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret }) => {
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, .. }) => {
 														let phantom_shared_secret = shared_secret.secret_bytes();
 														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 													},

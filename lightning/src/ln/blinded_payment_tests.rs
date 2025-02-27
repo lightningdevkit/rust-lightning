@@ -40,6 +40,9 @@ use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
 use crate::blinded_path::BlindedHop;
 
+#[cfg(trampoline)]
+use crate::routing::gossip::NodeId;
+
 pub fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
@@ -1754,4 +1757,148 @@ fn test_combined_trampoline_onion_creation_vectors() {
 	assert_eq!(outer_onion_packet_hex, "00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af");
 	assert_eq!(htlc_msat, 150_156_000);
 	assert_eq!(htlc_cltv, 800_060);
+}
+
+#[test]
+#[cfg(trampoline)]
+fn test_trampoline_inbound_payment_decoding() {
+	let secp_ctx = Secp256k1::new();
+	let session_priv = secret_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
+
+	let bob_secret = secret_from_hex("4242424242424242424242424242424242424242424242424242424242424242");
+	let bob_node_id = PublicKey::from_secret_key(&secp_ctx, &bob_secret);
+	let _bob_unblinded_tlvs = bytes_from_hex("011a0000000000000000000000000000000000000000000000000000020800000000000006c10a0800240000009627100c06000b69e505dc0e00fd023103123456");
+	let carol_secret = secret_from_hex("4343434343434343434343434343434343434343434343434343434343434343");
+	let carol_node_id = PublicKey::from_secret_key(&secp_ctx, &carol_secret);
+	let _carol_unblinded_tlvs = bytes_from_hex("020800000000000004510821031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0a0800300000006401f40c06000b69c105dc0e00");
+	let dave_secret = secret_from_hex("4444444444444444444444444444444444444444444444444444444444444444");
+	let dave_node_id = PublicKey::from_secret_key(&secp_ctx, &dave_secret);
+	let _dave_unblinded_tlvs = bytes_from_hex("01230000000000000000000000000000000000000000000000000000000000000000000000020800000000000002310a060090000000fa0c06000b699105dc0e00");
+	let eve_secret = secret_from_hex("4545454545454545454545454545454545454545454545454545454545454545");
+	let _eve_node_id = PublicKey::from_secret_key(&secp_ctx, &eve_secret);
+	let _eve_unblinded_tlvs = bytes_from_hex("011a00000000000000000000000000000000000000000000000000000604deadbeef0c06000b690105dc0e0f020000000000000000000000000000fdffff0206c1");
+
+	let path = Path {
+		hops: vec![
+			// Bob
+			RouteHop {
+				pubkey: bob_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+
+			// Carol
+			RouteHop {
+				pubkey: carol_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 150_153_000,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+		],
+		blinded_tail: Some(BlindedTail {
+			trampoline_hops: vec![
+				// Carol's pubkey
+				TrampolineHop {
+					pubkey: carol_node_id,
+					node_features: Features::empty(),
+					fee_msat: 2_500,
+					cltv_expiry_delta: 24,
+				},
+				// Dave's pubkey (the intro node needs to be duplicated)
+				TrampolineHop {
+					pubkey: dave_node_id,
+					node_features: Features::empty(),
+					fee_msat: 150_500, // incorporate both base and proportional fee
+					cltv_expiry_delta: 36,
+				}
+			],
+			hops: vec![
+				// Dave's blinded node id
+				BlindedHop {
+					blinded_node_id: pubkey_from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be"),
+					encrypted_payload: bytes_from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a"),
+				},
+				// Eve's blinded node id
+				BlindedHop {
+					blinded_node_id: pubkey_from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22"),
+					encrypted_payload: bytes_from_hex("bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c"),
+				}
+			],
+			blinding_point: pubkey_from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e"),
+			excess_final_cltv_expiry_delta: 0,
+			final_value_msat: 150_000_000
+		})
+	};
+
+	let payment_secret = PaymentSecret(secret_from_hex("7494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da").secret_bytes());
+
+	let amt_msat = 150_000_001;
+	let cur_height = 800_001;
+	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &recipient_onion_fields, cur_height, &PaymentHash([0; 32]), &None, None, [0; 32]).unwrap();
+
+	struct TestEcdhSigner {
+		node_secret: SecretKey,
+	}
+	impl NodeSigner for TestEcdhSigner {
+		fn ecdh(
+			&self, _recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+		) -> Result<SharedSecret, ()> {
+			let mut node_secret = self.node_secret.clone();
+			if let Some(tweak) = tweak {
+				node_secret = self.node_secret.mul_tweak(tweak).map_err(|_| ())?;
+			}
+			Ok(SharedSecret::new(other_key, &node_secret))
+		}
+		fn get_inbound_payment_key(&self) -> ExpandedKey { unreachable!() }
+		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
+		fn sign_invoice(
+			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
+		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn sign_bolt12_invoice(
+			&self, _invoice: &UnsignedBolt12Invoice,
+		) -> Result<schnorr::Signature, ()> { unreachable!() }
+		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
+	}
+	let logger = test_utils::TestLogger::with_id("".to_owned());
+
+	let bob_update_add = update_add_msg(111_000, 747_501, None, bob_onion);
+	let bob_node_signer = TestEcdhSigner { node_secret: bob_secret };
+
+	let (bob_peeled_onion, next_packet_details_opt) = onion_payment::decode_incoming_update_add_htlc_onion(
+		&bob_update_add, &bob_node_signer, &logger, &secp_ctx
+	).unwrap_or_else(|_| panic!());
+
+	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::Forward {
+		next_hop_data: msgs::InboundOnionForwardPayload {..}, next_hop_hmac, new_packet_bytes, ..
+	} = bob_peeled_onion {
+		(new_packet_bytes, next_hop_hmac)
+	} else { panic!() };
+
+	let carol_packet_details = next_packet_details_opt.unwrap();
+	let carol_onion = msgs::OnionPacket {
+		version: 0,
+		public_key: carol_packet_details.next_packet_pubkey,
+		hop_data: carol_packet_bytes,
+		hmac: carol_hmac,
+	};
+	let carol_update_add = update_add_msg(carol_packet_details.outgoing_amt_msat, carol_packet_details.outgoing_cltv_value, None, carol_onion);
+
+	let carol_node_signer = TestEcdhSigner { node_secret: carol_secret };
+	let (carol_peeled_onion, _) = onion_payment::decode_incoming_update_add_htlc_onion(
+		&carol_update_add, &carol_node_signer, &logger, &secp_ctx
+	).unwrap_or_else(|_| panic!());
+
+	let _carol_trampoline_update_add = if let onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, .. } = carol_peeled_onion {
+		assert_eq!(next_trampoline_hop_data.outgoing_node_id, NodeId::from_pubkey(&dave_node_id));
+	} else {
+		panic!();
+	};
 }
