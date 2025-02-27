@@ -548,8 +548,6 @@ impl TestChannelSigner {
 		commitment_tx
 			.verify(
 				&self.inner.get_channel_parameters().unwrap().as_counterparty_broadcastable(),
-				self.inner.counterparty_pubkeys().unwrap(),
-				self.inner.pubkeys(),
 				secp_ctx,
 			)
 			.expect("derived different per-tx keys or built transaction")
@@ -561,8 +559,6 @@ impl TestChannelSigner {
 		commitment_tx
 			.verify(
 				&self.inner.get_channel_parameters().unwrap().as_holder_broadcastable(),
-				self.inner.pubkeys(),
-				self.inner.counterparty_pubkeys().unwrap(),
 				secp_ctx,
 			)
 			.expect("derived different per-tx keys or built transaction")

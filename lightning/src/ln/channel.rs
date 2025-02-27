@@ -875,17 +875,20 @@ struct HTLCStats {
 	on_holder_tx_outbound_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
-/// An enum gathering stats on commitment transaction, either local or remote.
-struct CommitmentStats<'a> {
-	tx: CommitmentTransaction, // the transaction info
-	feerate_per_kw: u32, // the feerate included to build the transaction
-	total_fee_sat: u64, // the total fee included in the transaction
-	num_nondust_htlcs: usize,  // the number of HTLC outputs (dust HTLCs *non*-included)
+/// An enum gathering data on a commitment, either local or remote.
+struct CommitmentData<'a> {
+	stats: CommitmentStats,
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
-	local_balance_msat: u64, // local balance before fees *not* considering dust limits
-	remote_balance_msat: u64, // remote balance before fees *not* considering dust limits
 	outbound_htlc_preimages: Vec<PaymentPreimage>, // preimages for successful offered HTLCs since last commitment
 	inbound_htlc_preimages: Vec<PaymentPreimage>, // preimages for successful received HTLCs since last commitment
+}
+
+/// An enum gathering stats on commitment transaction, either local or remote.
+pub(crate) struct CommitmentStats {
+	pub(crate) tx: CommitmentTransaction, // the transaction info
+	pub(crate) total_fee_sat: u64, // the total fee included in the transaction
+	pub(crate) local_balance_msat: u64, // local balance before fees *not* considering dust limits
+	pub(crate) remote_balance_msat: u64, // remote balance before fees *not* considering dust limits
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -1993,8 +1996,8 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.context().get_funding_redeemscript();
 
-		let keys = self.context().build_holder_transaction_keys(holder_commitment_point.current_point());
-		let initial_commitment_tx = self.context().build_commitment_transaction(self.funding(), holder_commitment_point.transaction_number(), &keys, true, false, logger).tx;
+		let commitment_data = self.context().build_commitment_transaction(self.funding(), holder_commitment_point.transaction_number(), &holder_commitment_point.current_point(), true, false, logger);
+		let initial_commitment_tx = commitment_data.stats.tx;
 		let trusted_tx = initial_commitment_tx.trust();
 		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
 		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.funding().channel_value_satoshis);
@@ -2010,7 +2013,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 	fn initial_commitment_signed<L: Deref>(
 		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
-		counterparty_commitment_number: u64, best_block: BestBlock, signer_provider: &SP, logger: &L,
+		_counterparty_commitment_number: u64, best_block: BestBlock, signer_provider: &SP, logger: &L,
 	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError>
 	where
 		L::Target: Logger
@@ -2031,8 +2034,8 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 			}
 		};
 		let context = self.context();
-		let counterparty_keys = context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = context.build_commitment_transaction(self.funding(), context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let commitment_data = context.build_commitment_transaction(self.funding(), context.cur_counterparty_commitment_transaction_number, &context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+		let counterparty_initial_commitment_tx = commitment_data.stats.tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 
@@ -2088,14 +2091,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		                                          funding_redeemscript.clone(), self.funding().channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
-		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_bitcoin_tx.txid, Vec::new(),
-			counterparty_commitment_number,
-			context.counterparty_cur_commitment_point.unwrap(),
-			counterparty_initial_commitment_tx.feerate_per_kw(),
-			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
-			counterparty_initial_commitment_tx.to_countersignatory_value_sat(),
-			logger);
+		channel_monitor.provide_initial_counterparty_commitment_tx(Vec::new(), counterparty_initial_commitment_tx.clone(), logger);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
@@ -3438,16 +3434,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// generated by the peer which proposed adding the HTLCs, and thus we need to understand both
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
-	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> CommitmentStats
+	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L)
+		-> CommitmentData
 		where L::Target: Logger
 	{
-		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 		let num_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
-		let mut included_non_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(num_htlcs);
+
+		// This will contain all the htlcs included on the commitment transaction due to their state, both dust, and non-dust.
+		// Non-dust htlcs will come first, with their output indices populated, then dust htlcs, with their output indices set to `None`.
+		let mut htlcs_in_tx: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(num_htlcs);
 
 		let broadcaster_dust_limit_satoshis = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
-		let mut remote_htlc_total_msat = 0;
-		let mut local_htlc_total_msat = 0;
 		let mut value_to_self_msat_offset = 0;
 
 		let mut feerate_per_kw = self.feerate_per_kw;
@@ -3481,42 +3478,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		macro_rules! add_htlc_output {
-			($htlc: expr, $outbound: expr, $source: expr, $state_name: expr) => {
-				if $outbound == local { // "offered HTLC output"
-					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
-					let htlc_tx_fee = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-						0
-					} else {
-						feerate_per_kw as u64 * htlc_timeout_tx_weight(self.get_channel_type()) / 1000
-					};
-					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
-						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
-						included_non_dust_htlcs.push((htlc_in_tx, $source));
-					} else {
-						log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {} due to dust limit", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
-						included_dust_htlcs.push((htlc_in_tx, $source));
-					}
-				} else {
-					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
-					let htlc_tx_fee = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-						0
-					} else {
-						feerate_per_kw as u64 * htlc_success_tx_weight(self.get_channel_type()) / 1000
-					};
-					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
-						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
-						included_non_dust_htlcs.push((htlc_in_tx, $source));
-					} else {
-						log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, &$htlc.payment_hash, $htlc.amount_msat);
-						included_dust_htlcs.push((htlc_in_tx, $source));
-					}
-				}
-			}
-		}
-
+		// Read the state of htlcs and determine their inclusion in the commitment transaction
 		let mut inbound_htlc_preimages: Vec<PaymentPreimage> = Vec::new();
-
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				InboundHTLCState::RemoteAnnounced(_) => (!generated_by_local, "RemoteAnnounced"),
@@ -3527,18 +3490,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			};
 
 			if include {
-				add_htlc_output!(htlc, false, None, state_name);
-				remote_htlc_total_msat += htlc.amount_msat;
+				log_trace!(logger, "   ...including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
+				let htlc = get_htlc_in_commitment!(htlc, !local);
+				htlcs_in_tx.push((htlc, None));
 			} else {
 				log_trace!(logger, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
 				match &htlc.state {
-					&InboundHTLCState::LocalRemoved(ref reason) => {
-						if generated_by_local {
-							if let &InboundHTLCRemovalReason::Fulfill(preimage) = reason {
-								inbound_htlc_preimages.push(preimage);
-								value_to_self_msat_offset += htlc.amount_msat as i64;
-							}
-						}
+					&InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage)) => {
+						inbound_htlc_preimages.push(preimage);
+						value_to_self_msat_offset += htlc.amount_msat as i64;
 					},
 					_ => {},
 				}
@@ -3547,7 +3507,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 
 		let mut outbound_htlc_preimages: Vec<PaymentPreimage> = Vec::new();
-
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				OutboundHTLCState::LocalAnnounced(_) => (generated_by_local, "LocalAnnounced"),
@@ -3569,32 +3528,28 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 
 			if include {
-				add_htlc_output!(htlc, true, Some(&htlc.source), state_name);
-				local_htlc_total_msat += htlc.amount_msat;
+				log_trace!(logger, "   ...including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
+				let htlc_in_tx = get_htlc_in_commitment!(htlc, local);
+				htlcs_in_tx.push((htlc_in_tx, Some(&htlc.source)));
 			} else {
 				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, &htlc.payment_hash, htlc.amount_msat, state_name);
 				match htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
-						value_to_self_msat_offset -= htlc.amount_msat as i64;
-					},
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) |
+					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) |
 					OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_)) => {
-						if !generated_by_local {
-							value_to_self_msat_offset -= htlc.amount_msat as i64;
-						}
+						value_to_self_msat_offset -= htlc.amount_msat as i64;
 					},
 					_ => {},
 				}
 			}
 		}
 
-		let value_to_self_msat: i64 = (funding.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
-		assert!(value_to_self_msat >= 0);
-		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
-		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
-		// "violate" their reserve value by couting those against it. Thus, we have to convert
-		// everything to i64 before subtracting as otherwise we can overflow.
-		let value_to_remote_msat: i64 = (funding.channel_value_satoshis * 1000) as i64 - (funding.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
-		assert!(value_to_remote_msat >= 0);
+		// TODO: When MSRV >= 1.66.0, use u64::checked_add_signed
+		let value_to_self_with_offset_msat = u64::try_from(funding.value_to_self_msat as i64 + value_to_self_msat_offset).unwrap();
+
+		use crate::sign::tx_builder::{TxBuilder, SpecTxBuilder};
+		let stats = TxBuilder::build_commitment_transaction(&SpecTxBuilder {}, local, commitment_number, per_commitment_point, &self.channel_transaction_parameters, &self.secp_ctx,
+			funding.channel_value_satoshis, value_to_self_with_offset_msat, htlcs_in_tx.iter_mut().map(|(htlc, _)| htlc), feerate_per_kw, broadcaster_dust_limit_satoshis, logger);
 
 		#[cfg(debug_assertions)]
 		{
@@ -3605,97 +3560,27 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			} else {
 				funding.counterparty_max_commitment_tx_output.lock().unwrap()
 			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap() as i64);
-			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat as u64);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis as i64);
-			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
+			debug_assert!(broadcaster_max_commitment_tx_output.0 <= stats.local_balance_msat || stats.local_balance_msat / 1000 >= funding.counterparty_selected_channel_reserve_satoshis.unwrap());
+			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, stats.local_balance_msat);
+			debug_assert!(broadcaster_max_commitment_tx_output.1 <= stats.remote_balance_msat || stats.remote_balance_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
+			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, stats.remote_balance_msat);
 		}
 
-		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), &self.channel_transaction_parameters.channel_type_features);
-		let anchors_val = if self.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
-		let (value_to_self, value_to_remote) = if self.is_outbound() {
-			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
-		} else {
-			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - anchors_val - total_fee_sat as i64)
-		};
+		htlcs_in_tx.sort_unstable_by(|(htlc_a, _), (htlc_b, _)| {
+			match (htlc_a.transaction_output_index, htlc_b.transaction_output_index) {
+				// `None` is smaller than `Some`, but we want `Some` ordered before `None` in the vector
+				(None, Some(_)) => cmp::Ordering::Greater,
+				(Some(_), None) => cmp::Ordering::Less,
+				(l, r) => cmp::Ord::cmp(&l, &r),
+			}
+		});
 
-		let mut value_to_a = if local { value_to_self } else { value_to_remote };
-		let mut value_to_b = if local { value_to_remote } else { value_to_self };
-		let (funding_pubkey_a, funding_pubkey_b) = if local {
-			(self.get_holder_pubkeys().funding_pubkey, self.get_counterparty_pubkeys().funding_pubkey)
-		} else {
-			(self.get_counterparty_pubkeys().funding_pubkey, self.get_holder_pubkeys().funding_pubkey)
-		};
-
-		if value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
-			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
-		} else {
-			value_to_a = 0;
-		}
-
-		if value_to_b >= (broadcaster_dust_limit_satoshis as i64) {
-			log_trace!(logger, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
-		} else {
-			value_to_b = 0;
-		}
-
-		let num_nondust_htlcs = included_non_dust_htlcs.len();
-
-		let channel_parameters =
-			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
-			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
-		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-		                                                             value_to_a as u64,
-		                                                             value_to_b as u64,
-		                                                             funding_pubkey_a,
-		                                                             funding_pubkey_b,
-		                                                             keys.clone(),
-		                                                             feerate_per_kw,
-		                                                             &mut included_non_dust_htlcs,
-		                                                             &channel_parameters
-		);
-		let mut htlcs_included = included_non_dust_htlcs;
-		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
-		htlcs_included.sort_unstable_by_key(|h| h.0.transaction_output_index.unwrap());
-		htlcs_included.append(&mut included_dust_htlcs);
-
-		CommitmentStats {
-			tx,
-			feerate_per_kw,
-			total_fee_sat,
-			num_nondust_htlcs,
-			htlcs_included,
-			local_balance_msat: value_to_self_msat as u64,
-			remote_balance_msat: value_to_remote_msat as u64,
+		CommitmentData {
+			stats,
+			htlcs_included: htlcs_in_tx,
 			inbound_htlc_preimages,
 			outbound_htlc_preimages,
 		}
-	}
-
-	#[inline]
-	/// Creates a set of keys for build_commitment_transaction to generate a transaction which our
-	/// counterparty will sign (ie DO NOT send signatures over a transaction created by this to
-	/// our counterparty!)
-	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
-	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, per_commitment_point: PublicKey) -> TxCreationKeys {
-		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
-		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
-		let counterparty_pubkeys = self.get_counterparty_pubkeys();
-
-		TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
-	}
-
-	#[inline]
-	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
-	/// will sign and send to our counterparty.
-	/// If an Err is returned, it is a ChannelError::Close (for get_funding_created)
-	fn build_remote_transaction_keys(&self) -> TxCreationKeys {
-		let revocation_basepoint = &self.get_holder_pubkeys().revocation_basepoint;
-		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
-		let counterparty_pubkeys = self.get_counterparty_pubkeys();
-
-		TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -4491,9 +4376,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
-		let counterparty_keys = self.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.build_commitment_transaction(
-			funding, self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let commitment_data = self.build_commitment_transaction(
+			funding, self.cur_counterparty_commitment_transaction_number, &self.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+		let counterparty_initial_commitment_tx = commitment_data.stats.tx;
 		match self.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
@@ -5494,9 +5379,8 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.holder_commitment_point.current_point());
-
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &keys, true, false, logger);
+		let commitment_data = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &self.holder_commitment_point.current_point(), true, false, logger);
+		let commitment_stats = commitment_data.stats;
 		let commitment_txid = {
 			let trusted_tx = commitment_stats.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
@@ -5511,7 +5395,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 			bitcoin_tx.txid
 		};
-		let mut htlcs_cloned: Vec<_> = commitment_stats.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
+		let mut htlcs_cloned: Vec<_> = commitment_data.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
 
 		// If our counterparty updated the channel fee in this commitment transaction, check that
 		// they can actually afford the new fee now.
@@ -5543,8 +5427,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
+		if msg.htlc_signatures.len() != commitment_stats.tx.htlcs().len() {
+			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.tx.htlcs().len())));
 		}
 
 		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
@@ -5564,19 +5448,20 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
+		let holder_keys = TxCreationKeys::from_channel_static_keys(&self.holder_commitment_point.current_point(), self.context.get_holder_pubkeys(), self.context.get_counterparty_pubkeys(), &self.context.secp_ctx);
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.tx.feerate_per_kw(),
 					self.context.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.context.channel_type,
-					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					&holder_keys.broadcaster_delayed_payment_key, &holder_keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &keys);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &holder_keys);
 				let htlc_sighashtype = if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
-					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
+					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
 					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.context.channel_id());
-				if let Err(_) = self.context.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
+				if let Err(_) = self.context.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &holder_keys.countersignatory_htlc_key.to_public_key()) {
 					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 				}
 				if !separate_nondust_htlc_sources {
@@ -5601,7 +5486,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.counterparty_funding_pubkey()
 		);
 
-		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
+		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_data.outbound_htlc_preimages)
 			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
 		// Update state now that we've passed all the can-fail calls...
@@ -6258,10 +6143,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.context.get_pending_htlc_stats(Some(feerate_per_kw), dust_exposure_limiting_feerate);
-		let keys = self.context.build_holder_transaction_keys(self.holder_commitment_point.current_point());
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &keys, true, true, logger);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
+		let commitment_data = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &self.holder_commitment_point.current_point(), true, true, logger);
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.stats.tx.htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
+		let holder_balance_msat = commitment_data.stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
@@ -6572,8 +6456,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 		}
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
-			let counterparty_keys = self.context.build_remote_transaction_keys();
-			let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number + 1, &counterparty_keys, false, false, logger).tx;
+			let commitment_data = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number + 1, &self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+			let counterparty_initial_commitment_tx = commitment_data.stats.tx;
 			self.context.get_funding_signed_msg(logger, counterparty_initial_commitment_tx)
 		} else { None };
 		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
@@ -8496,6 +8380,8 @@ impl<SP: Deref> FundedChannel<SP> where
 				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
+				// This is everything we need, but we still provide all the above fields for downgrades
+				commitment_tx: Some(counterparty_commitment_tx),
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
@@ -8507,9 +8393,8 @@ impl<SP: Deref> FundedChannel<SP> where
 	-> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction)
 	where L::Target: Logger
 	{
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
-		let counterparty_commitment_tx = commitment_stats.tx;
+		let commitment_data = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger);
+		let counterparty_commitment_tx = commitment_data.stats.tx;
 
 		#[cfg(any(test, fuzzing))]
 		{
@@ -8522,14 +8407,14 @@ impl<SP: Deref> FundedChannel<SP> where
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.context.get_channel_type()) * 1000;
+							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, counterparty_commitment_tx.htlcs().len(), self.context.get_channel_type()) * 1000;
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
 			}
 		}
 
-		(commitment_stats.htlcs_included, counterparty_commitment_tx)
+		(commitment_data.htlcs_included, counterparty_commitment_tx)
 	}
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
@@ -8539,8 +8424,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(logger);
 
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
+		let commitment_data = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger);
+		let commitment_stats = commitment_data.stats;
+		let htlcs_included = commitment_data.htlcs_included;
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
 
 		match &self.context.holder_signer {
@@ -8548,15 +8434,15 @@ impl<SP: Deref> FundedChannel<SP> where
 				let (signature, htlc_signatures);
 
 				{
-					let mut htlcs = Vec::with_capacity(commitment_stats.htlcs_included.len());
-					for &(ref htlc, _) in commitment_stats.htlcs_included.iter() {
+					let mut htlcs = Vec::with_capacity(htlcs_included.len());
+					for &(ref htlc, _) in htlcs_included.iter() {
 						htlcs.push(htlc);
 					}
 
 					let res = ecdsa.sign_counterparty_commitment(
 							&commitment_stats.tx,
-							commitment_stats.inbound_htlc_preimages,
-							commitment_stats.outbound_htlc_preimages,
+							commitment_data.inbound_htlc_preimages,
+							commitment_data.outbound_htlc_preimages,
 							&self.context.secp_ctx,
 						).map_err(|_| ChannelError::Ignore("Failed to get signatures for new commitment_signed".to_owned()))?;
 					signature = res.0;
@@ -8566,10 +8452,11 @@ impl<SP: Deref> FundedChannel<SP> where
 						encode::serialize_hex(&commitment_stats.tx.trust().built_transaction().transaction),
 						&counterparty_commitment_txid, encode::serialize_hex(&self.context.get_funding_redeemscript()),
 						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
-
+					
+					let counterparty_keys = TxCreationKeys::from_channel_static_keys(&self.context.counterparty_cur_commitment_point.unwrap(), self.context.get_counterparty_pubkeys(), self.context.get_holder_pubkeys(), &self.context.secp_ctx);
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.context.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.tx.feerate_per_kw(), self.context.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
@@ -8583,7 +8470,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					batch: None,
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
-				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
+				}, (counterparty_commitment_txid, htlcs_included)))
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -9022,8 +8909,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 	/// Only allowed after [`ChannelContext::channel_transaction_parameters`] is set.
 	fn get_funding_created_msg<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
-		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		let commitment_data = self.context.build_commitment_transaction(&self.funding, self.context.cur_counterparty_commitment_transaction_number, &self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger);
+		let counterparty_initial_commitment_tx = commitment_data.stats.tx;
 		let signature = match &self.context.holder_signer {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
@@ -11684,12 +11571,12 @@ mod tests {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
 			} ) => { {
 				let (commitment_tx, htlcs): (_, Vec<HTLCOutputInCommitment>) = {
-					let mut commitment_stats = chan.context.build_commitment_transaction(&chan.funding, 0xffffffffffff - 42, &keys, true, false, &logger);
+					let mut commitment_data = chan.context.build_commitment_transaction(&chan.funding, 0xffffffffffff - 42, &per_commitment_point, true, false, &logger);
 
-					let htlcs = commitment_stats.htlcs_included.drain(..)
+					let htlcs = commitment_data.htlcs_included.drain(..)
 						.filter_map(|(htlc, _)| if htlc.transaction_output_index.is_some() { Some(htlc) } else { None })
 						.collect();
-					(commitment_stats.tx, htlcs)
+					(commitment_data.stats.tx, htlcs)
 				};
 				let trusted_tx = commitment_tx.trust();
 				let unsigned_tx = trusted_tx.built_transaction();
