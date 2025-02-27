@@ -4,7 +4,7 @@ use bitcoin::transaction::Transaction;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::ln::chan_utils::{
 	ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
@@ -227,7 +227,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Signs a channel announcement message with our funding key proving it comes from one of the
-	/// channel participants.
+	/// channel participants. The `funding_key_tweak`, if set, must be added to the funding secret
+	/// key prior to signing in order to arrive at the key found in the 2-of-2 multisig.
 	///
 	/// Channel announcements also require a signature from each node's network key. Our node
 	/// signature is computed through [`NodeSigner::sign_gossip_message`].
@@ -238,7 +239,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`NodeSigner::sign_gossip_message`]: crate::sign::NodeSigner::sign_gossip_message
 	fn sign_channel_announcement_with_funding_key(
-		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, msg: &UnsignedChannelAnnouncement, funding_key_tweak: Option<Scalar>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 
 	/// Signs the input of a splicing funding transaction with our funding key.
