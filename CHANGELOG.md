@@ -1,3 +1,39 @@
+# 0.1.1 - Jan 28, 2025 - "Onchain Matters"
+
+## API Updates
+ * A `ChannelManager::send_payment_with_route` was (re-)added, with semantics
+   similar to `ChannelManager::send_payment` (rather than like the pre-0.1
+   `send_payent_with_route`, #3534).
+ * `RawBolt11Invoice::{to,from}_raw` were added (#3549).
+
+## Bug Fixes
+ * HTLCs which were forwarded where the inbound edge times out within the next
+   three blocks will have the inbound HTLC failed backwards irrespective of the
+   status of the outbound HTLC. This avoids the peer force-closing the channel
+   (and claiming the inbound edge HTLC on-chain) even if we have not yet managed
+   to claim the outbound edge on chain (#3556).
+ * On restart, replay of `Event::SpendableOutput`s could have caused
+   `OutputSweeper` to generate double-spending transactions, making it unable to
+   claim any delayed claims. This was resolved by retaining old claims for more
+   than four weeks after they are claimed on-chain to detect replays (#3559).
+ * Fixed the additional feerate we will pay each time we RBF on-chain claims to
+   match the Bitcoin Core policy (1 sat/vB) instead of 16 sats/vB (#3457).
+ * Fixed a cased where a custom `Router` which returns an invalid `Route`,
+   provided to `ChannelManager`, can result in an outbound payment remaining
+   pending forever despite no HTLCs being pending (#3531).
+
+## Security
+0.1.1 fixes a denial-of-service vulnerability allowing channel counterparties to
+cause force-closure of unrelated channels.
+ * If a malicious channel counterparty force-closes a channel, broadcasting a
+   revoked commitment transaction while the channel at closure time included
+   multiple non-dust forwarded outbound HTLCs with identical payment hashes and
+   amounts, failure to fail the HTLCs backwards could cause the channels on
+   which we recieved the corresponding inbound HTLCs to be force-closed. Note
+   that we'll receive, at a minimum, the malicious counterparty's reserve value
+   when they broadcast the stale commitment (#3556). Thanks to Matt Morehouse for
+   reporting this issue.
+
 # 0.1 - Jan 15, 2025 - "Human Readable Version Numbers"
 
 The LDK 0.1 release represents an important milestone for the LDK project. While
