@@ -2122,6 +2122,18 @@ mod fuzzy_internal_msgs {
 			multipath_trampoline_data: Option<FinalOnionHopData>,
 			trampoline_packet: TrampolineOnionPacket,
 		},
+		/// This is used for Trampoline hops that are not the blinded path intro hop.
+		/// We would only ever construct this variant when we are a Trampoline node forwarding a
+		/// payment along a blinded path.
+		#[allow(unused)]
+		BlindedTrampolineEntrypoint {
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			multipath_trampoline_data: Option<FinalOnionHopData>,
+			trampoline_packet: TrampolineOnionPacket,
+			/// The blinding point this hop needs to use for its Trampoline onion.
+			current_path_key: PublicKey
+		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
 			payment_metadata: Option<&'a Vec<u8>>,
@@ -3053,6 +3065,18 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(8, multipath_trampoline_data, option),
+					(20, trampoline_packet, required)
+				});
+			},
+			Self::BlindedTrampolineEntrypoint {
+				amt_to_forward, outgoing_cltv_value, current_path_key,
+				ref multipath_trampoline_data, ref trampoline_packet
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(8, multipath_trampoline_data, option),
+					(12, current_path_key, required),
 					(20, trampoline_packet, required)
 				});
 			},
