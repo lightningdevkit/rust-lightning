@@ -1363,7 +1363,7 @@ mod tests {
 		for i in 0..3 {
 			let preimage = PaymentPreimage([i; 32]);
 			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
-			htlcs.push((
+			htlcs.push(
 				HTLCOutputInCommitment {
 					offered: true,
 					amount_msat: 10000,
@@ -1371,8 +1371,7 @@ mod tests {
 					payment_hash: hash,
 					transaction_output_index: Some(i as u32),
 				},
-				(),
-			));
+			);
 		}
 		let holder_commit = HolderCommitmentTransaction::dummy(&mut htlcs);
 		let mut tx_handler = OnchainTxHandler::new(
@@ -1400,7 +1399,7 @@ mod tests {
 		// Request claiming of each HTLC on the holder's commitment, with current block height 1.
 		let holder_commit_txid = tx_handler.get_unsigned_holder_commitment_tx().compute_txid();
 		let mut requests = Vec::new();
-		for (htlc, _) in htlcs {
+		for htlc in htlcs {
 			requests.push(PackageTemplate::build_package(
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),

@@ -3454,21 +3454,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// information to rebuild it
 		if let Some((their_per_commitment_point, feerate_per_kw, to_broadcaster_value,
 					to_countersignatory_value)) = self.initial_counterparty_commitment_info {
-			let htlc_outputs = vec![];
+			let mut htlc_outputs = Vec::new();
 
 			let commitment_tx = self.build_counterparty_commitment_tx(INITIAL_COMMITMENT_NUMBER,
 				&their_per_commitment_point, to_broadcaster_value, to_countersignatory_value,
-				feerate_per_kw, htlc_outputs);
+				feerate_per_kw, htlc_outputs.iter_mut());
 			Some(commitment_tx)
 		} else {
 			self.initial_counterparty_commitment_tx.clone()
 		}
 	}
 
-	fn build_counterparty_commitment_tx(
+	fn build_counterparty_commitment_tx<'a>(
 		&self, commitment_number: u64, their_per_commitment_point: &PublicKey,
 		to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32,
-		mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>
+		nondust_htlcs: impl Iterator<Item = &'a mut HTLCOutputInCommitment>,
 	) -> CommitmentTransaction {
 		let broadcaster_keys = &self.onchain_tx_handler.channel_transaction_parameters
 			.counterparty_parameters.as_ref().unwrap().pubkeys;
@@ -3482,9 +3482,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let channel_parameters =
 			&self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
 
-		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
+		CommitmentTransaction::new(commitment_number,
 			to_broadcaster_value, to_countersignatory_value, broadcaster_funding_key,
-			countersignatory_funding_key, keys, feerate_per_kw, &mut nondust_htlcs,
+			countersignatory_funding_key, keys, feerate_per_kw, nondust_htlcs,
 			channel_parameters)
 	}
 
@@ -3499,13 +3499,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					to_countersignatory_value_sat: Some(to_countersignatory_value),
 					commitment_tx: None } => {
 
-					let nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
-						htlc.transaction_output_index.map(|_| (htlc.clone(), None))
-					}).collect::<Vec<_>>();
+					let mut nondust_htlcs = htlc_outputs.iter().filter_map(|(htlc, _)| {
+						htlc.transaction_output_index.map(|_| htlc)
+					}).cloned().collect::<Vec<_>>();
 
 					let commitment_tx = self.build_counterparty_commitment_tx(commitment_number,
 							&their_per_commitment_point, to_broadcaster_value,
-							to_countersignatory_value, feerate_per_kw, nondust_htlcs);
+							to_countersignatory_value, feerate_per_kw, nondust_htlcs.iter_mut());
 
 					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
 
@@ -5387,13 +5387,13 @@ mod tests {
 				{
 					let mut res = Vec::new();
 					for (idx, preimage) in $preimages_slice.iter().enumerate() {
-						res.push((HTLCOutputInCommitment {
+						res.push(HTLCOutputInCommitment {
 							offered: true,
 							amount_msat: 0,
 							cltv_expiry: 0,
 							payment_hash: preimage.1.clone(),
 							transaction_output_index: Some(idx as u32),
-						}, ()));
+						});
 					}
 					res
 				}
@@ -5401,7 +5401,7 @@ mod tests {
 		}
 		macro_rules! preimages_slice_to_htlc_outputs {
 			($preimages_slice: expr) => {
-				preimages_slice_to_htlcs!($preimages_slice).into_iter().map(|(htlc, _)| (htlc, None)).collect()
+				preimages_slice_to_htlcs!($preimages_slice).into_iter().map(|htlc| (htlc, None)).collect()
 			}
 		}
 		let dummy_sig = crate::crypto::utils::sign(&secp_ctx,
@@ -5463,7 +5463,7 @@ mod tests {
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
+			htlcs.into_iter().map(|htlc| (htlc, Some(dummy_sig), None)).collect()).unwrap();
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
@@ -5501,7 +5501,7 @@ mod tests {
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..5]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
+			htlcs.into_iter().map(|htlc| (htlc, Some(dummy_sig), None)).collect()).unwrap();
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 12);
@@ -5512,7 +5512,7 @@ mod tests {
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..3]);
 		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(&mut htlcs);
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx,
-			htlcs.into_iter().map(|(htlc, _)| (htlc, Some(dummy_sig), None)).collect()).unwrap();
+			htlcs.into_iter().map(|htlc| (htlc, Some(dummy_sig), None)).collect()).unwrap();
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);

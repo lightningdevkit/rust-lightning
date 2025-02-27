@@ -760,15 +760,15 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
-		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
-		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+		let mut htlcs: Vec<HTLCOutputInCommitment> = vec![];
+		let commitment_tx = CommitmentTransaction::new(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			push_sats,
 			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
-			&mut htlcs,
+			htlcs.iter_mut(),
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
@@ -1504,14 +1504,14 @@ fn test_fee_spike_violation_fails_htlc() {
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
-		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+		let commitment_tx = CommitmentTransaction::new(
 			commitment_number,
 			95000,
 			local_chan_balance,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			feerate_per_kw,
-			&mut vec![(accepted_htlc_info, ())],
+			vec![accepted_htlc_info].iter_mut(),
 			&local_chan.context.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
 		local_chan_signer.as_ecdsa().unwrap().sign_counterparty_commitment(&commitment_tx, Vec::new(), Vec::new(), &secp_ctx).unwrap()
