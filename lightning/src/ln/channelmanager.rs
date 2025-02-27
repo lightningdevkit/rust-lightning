@@ -54,8 +54,6 @@ use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
-#[cfg(trampoline)]
-use crate::routing::gossip::NodeId;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, RouteParametersConfig, Router, FixedRouter, Route};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
@@ -181,7 +179,7 @@ pub enum PendingHTLCRouting {
 		/// do with the HTLC.
 		onion_packet: msgs::TrampolineOnionPacket,
 		/// The node ID of the Trampoline node which we need to route this HTLC to.
-		node_id: NodeId,
+		node_id: PublicKey,
 		/// Set if this HTLC is being forwarded within a blinded path.
 		blinded: Option<BlindedForward>,
 		/// The absolute CLTV of the inbound HTLC
@@ -4492,7 +4490,32 @@ where
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
+			#[cfg(trampoline)]
+			onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => {
+				// OUR PAYMENT!
+				let current_height: u32 = self.best_block.read().unwrap().height;
+				match create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
+					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
+					current_height)
+				{
+					Ok(info) => {
+						// Note that we could obviously respond immediately with an update_fulfill_htlc
+						// message, however that would leak that we are the recipient of this payment, so
+						// instead we stay symmetric with the forwarding case, only responding (after a
+						// delay) once they've sent us a commitment_signed!
+						PendingHTLCStatus::Forward(info)
+					},
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
+				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
+					Ok(info) => PendingHTLCStatus::Forward(info),
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
+			#[cfg(trampoline)]
+			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
@@ -5908,7 +5931,7 @@ where
 														// of the onion.
 														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret }) => {
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, .. }) => {
 														let phantom_shared_secret = shared_secret.secret_bytes();
 														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 													},

@@ -2127,7 +2127,6 @@ mod fuzzy_internal_msgs {
 	}
 
 	#[cfg(trampoline)]
-	#[cfg_attr(trampoline, allow(unused))]
 	pub struct InboundTrampolineForwardPayload {
 		pub next_trampoline: PublicKey,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
@@ -2136,7 +2135,6 @@ mod fuzzy_internal_msgs {
 	}
 
 	#[cfg(trampoline)]
-	#[cfg_attr(trampoline, allow(unused))]
 	pub struct InboundTrampolineBlindedForwardPayload {
 		pub next_trampoline: PublicKey,
 		pub payment_relay: PaymentRelay,
@@ -2147,7 +2145,6 @@ mod fuzzy_internal_msgs {
 	}
 
 	#[cfg(trampoline)]
-	#[cfg_attr(trampoline, allow(unused))]
 	pub enum InboundTrampolinePayload {
 		Forward(InboundTrampolineForwardPayload),
 		BlindedForward(InboundTrampolineBlindedForwardPayload),

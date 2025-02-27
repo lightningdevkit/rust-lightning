@@ -1458,6 +1458,32 @@ pub(crate) enum Hop {
 		/// Bytes of the onion packet we're forwarding.
 		new_packet_bytes: [u8; ONION_DATA_LEN],
 	},
+	/// This onion was received via Trampoline, and needs to be forwarded to a subsequent Trampoline
+	/// node.
+	#[cfg(trampoline)]
+	TrampolineForward {
+		#[allow(unused)]
+		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
+		outer_shared_secret: SharedSecret,
+		incoming_trampoline_public_key: PublicKey,
+		trampoline_shared_secret: SharedSecret,
+		next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload,
+		next_trampoline_hop_hmac: [u8; 32],
+		new_trampoline_packet_bytes: Vec<u8>,
+	},
+	/// This onion was received via Trampoline, and needs to be forwarded to a subsequent Trampoline
+	/// node.
+	#[allow(unused)]
+	#[cfg(trampoline)]
+	TrampolineBlindedForward {
+		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
+		outer_shared_secret: SharedSecret,
+		incoming_trampoline_public_key: PublicKey,
+		trampoline_shared_secret: SharedSecret,
+		next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload,
+		next_trampoline_hop_hmac: [u8; 32],
+		new_trampoline_packet_bytes: Vec<u8>,
+	},
 	/// This onion payload needs to be forwarded to a next-hop.
 	BlindedForward {
 		/// Onion payload data used in forwarding the payment.
@@ -1485,6 +1511,26 @@ pub(crate) enum Hop {
 		/// Shared secret that was used to decrypt hop_data.
 		shared_secret: SharedSecret,
 	},
+	/// This onion payload was for us, not for forwarding to a next-hop, and it was sent to us via
+	/// Trampoline. Contains information for verifying the incoming payment.
+	#[allow(unused)]
+	#[cfg(trampoline)]
+	TrampolineReceive {
+		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
+		outer_shared_secret: SharedSecret,
+		trampoline_hop_data: msgs::InboundOnionReceivePayload,
+		trampoline_shared_secret: SharedSecret,
+	},
+	/// This onion payload was for us, not for forwarding to a next-hop, and it was sent to us via
+	/// Trampoline. Contains information for verifying the incoming payment.
+	#[allow(unused)]
+	#[cfg(trampoline)]
+	TrampolineBlindedReceive {
+		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
+		outer_shared_secret: SharedSecret,
+		trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload,
+		trampoline_shared_secret: SharedSecret,
+	},
 }
 
 impl Hop {
@@ -1505,8 +1551,16 @@ impl Hop {
 		match self {
 			Hop::Forward { shared_secret, .. } => shared_secret,
 			Hop::BlindedForward { shared_secret, .. } => shared_secret,
+			#[cfg(trampoline)]
+			Hop::TrampolineForward { outer_shared_secret, .. } => outer_shared_secret,
+			#[cfg(trampoline)]
+			Hop::TrampolineBlindedForward { outer_shared_secret, .. } => outer_shared_secret,
 			Hop::Receive { shared_secret, .. } => shared_secret,
 			Hop::BlindedReceive { shared_secret, .. } => shared_secret,
+			#[cfg(trampoline)]
+			Hop::TrampolineReceive { outer_shared_secret, .. } => outer_shared_secret,
+			#[cfg(trampoline)]
+			Hop::TrampolineBlindedReceive { outer_shared_secret, .. } => outer_shared_secret,
 		}
 	}
 }
@@ -1517,7 +1571,15 @@ pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
 	Malformed { err_msg: &'static str, err_code: u16 },
 	/// We failed to decode the onion payload.
-	Relay { err_msg: &'static str, err_code: u16, shared_secret: SharedSecret },
+	///
+	/// If the payload we failed to decode belonged to a Trampoline onion, following the successful
+	/// decoding of the outer onion, the trampoline_shared_secret field should be set.
+	Relay {
+		err_msg: &'static str,
+		err_code: u16,
+		shared_secret: SharedSecret,
+		trampoline_shared_secret: Option<SharedSecret>,
+	},
 }
 
 pub(crate) fn decode_next_payment_hop<NS: Deref>(
@@ -1541,7 +1603,7 @@ where
 		hop_data,
 		hmac_bytes,
 		Some(payment_hash),
-		(blinding_point, node_signer),
+		(blinding_point, &(*node_signer)),
 	);
 	match decoded_hop {
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
@@ -1572,6 +1634,7 @@ where
 						err_msg: "Final Node OnionHopData provided for us as an intermediary node",
 						err_code: 0x4000 | 22,
 						shared_secret,
+						trampoline_shared_secret: None,
 					})
 				},
 			}
@@ -1582,6 +1645,97 @@ where
 			},
 			msgs::InboundOnionPayload::BlindedReceive(hop_data) => {
 				Ok(Hop::BlindedReceive { shared_secret, hop_data })
+			},
+			#[cfg(trampoline)]
+			msgs::InboundOnionPayload::TrampolineEntrypoint(hop_data) => {
+				let incoming_trampoline_public_key = hop_data.trampoline_packet.public_key;
+				let trampoline_blinded_node_id_tweak = hop_data.current_path_key.map(|bp| {
+					let blinded_tlvs_ss =
+						node_signer.ecdh(recipient, &bp, None).unwrap().secret_bytes();
+					let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+					hmac.input(blinded_tlvs_ss.as_ref());
+					Scalar::from_be_bytes(Hmac::from_engine(hmac).to_byte_array()).unwrap()
+				});
+				let trampoline_shared_secret = node_signer
+					.ecdh(
+						recipient,
+						&incoming_trampoline_public_key,
+						trampoline_blinded_node_id_tweak.as_ref(),
+					)
+					.unwrap()
+					.secret_bytes();
+				let decoded_trampoline_hop: Result<
+					(msgs::InboundTrampolinePayload, Option<([u8; 32], Vec<u8>)>),
+					_,
+				> = decode_next_hop(
+					trampoline_shared_secret,
+					&hop_data.trampoline_packet.hop_data,
+					hop_data.trampoline_packet.hmac,
+					Some(payment_hash),
+					(blinding_point, node_signer),
+				);
+				match decoded_trampoline_hop {
+					Ok((
+						msgs::InboundTrampolinePayload::Forward(trampoline_hop_data),
+						Some((next_trampoline_hop_hmac, new_trampoline_packet_bytes)),
+					)) => Ok(Hop::TrampolineForward {
+						outer_hop_data: hop_data,
+						outer_shared_secret: shared_secret,
+						incoming_trampoline_public_key,
+						trampoline_shared_secret: SharedSecret::from_bytes(
+							trampoline_shared_secret,
+						),
+						next_trampoline_hop_data: trampoline_hop_data,
+						next_trampoline_hop_hmac,
+						new_trampoline_packet_bytes,
+					}),
+					Ok((
+						msgs::InboundTrampolinePayload::BlindedForward(trampoline_hop_data),
+						Some((next_trampoline_hop_hmac, new_trampoline_packet_bytes)),
+					)) => Ok(Hop::TrampolineBlindedForward {
+						outer_hop_data: hop_data,
+						outer_shared_secret: shared_secret,
+						incoming_trampoline_public_key,
+						trampoline_shared_secret: SharedSecret::from_bytes(
+							trampoline_shared_secret,
+						),
+						next_trampoline_hop_data: trampoline_hop_data,
+						next_trampoline_hop_hmac,
+						new_trampoline_packet_bytes,
+					}),
+					Ok((msgs::InboundTrampolinePayload::Receive(trampoline_hop_data), None)) => {
+						Ok(Hop::TrampolineReceive {
+							outer_hop_data: hop_data,
+							outer_shared_secret: shared_secret,
+							trampoline_hop_data,
+							trampoline_shared_secret: SharedSecret::from_bytes(
+								trampoline_shared_secret,
+							),
+						})
+					},
+					Ok((
+						msgs::InboundTrampolinePayload::BlindedReceive(trampoline_hop_data),
+						None,
+					)) => Ok(Hop::TrampolineBlindedReceive {
+						outer_hop_data: hop_data,
+						outer_shared_secret: shared_secret,
+						trampoline_hop_data,
+						trampoline_shared_secret: SharedSecret::from_bytes(
+							trampoline_shared_secret,
+						),
+					}),
+					Ok((_, None)) => Err(OnionDecodeErr::Malformed {
+						err_msg: "Non-final Trampoline onion data provided to us as last hop",
+						// todo: find more suitable error code
+						err_code: 0x4000 | 22,
+					}),
+					Ok((_, Some(_))) => Err(OnionDecodeErr::Malformed {
+						err_msg: "Final Trampoline onion data provided to us as intermediate hop",
+						// todo: find more suitable error code
+						err_code: 0x4000 | 22,
+					}),
+					Err(e) => Err(e),
+				}
 			},
 			_ => {
 				if blinding_point.is_some() {
@@ -1594,6 +1748,7 @@ where
 					err_msg: "Intermediate Node OnionHopData provided for us as a final node",
 					err_code: 0x4000 | 22,
 					shared_secret,
+					trampoline_shared_secret: None,
 				})
 			},
 		},
@@ -1742,6 +1897,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 				err_msg: "Unable to decode our hop data",
 				err_code: error_code,
 				shared_secret: SharedSecret::from_bytes(shared_secret),
+				trampoline_shared_secret: None,
 			});
 		},
 		Ok(msg) => {
@@ -1751,6 +1907,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 					err_msg: "Unable to decode our hop data",
 					err_code: 0x4000 | 22,
 					shared_secret: SharedSecret::from_bytes(shared_secret),
+					trampoline_shared_secret: None,
 				});
 			}
 			if hmac == [0; 32] {
