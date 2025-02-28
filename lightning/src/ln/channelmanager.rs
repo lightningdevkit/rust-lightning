@@ -4469,9 +4469,8 @@ where
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			onion_utils::Hop::Forward { next_hop_hmac, new_packet_bytes, .. } | onion_utils::Hop::BlindedForward { next_hop_hmac, new_packet_bytes, .. } => {
-				match create_fwd_pending_htlc_info(msg, decoded_hop, next_hop_hmac,
-					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
+			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
+				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
