@@ -570,6 +570,21 @@ pub(crate) enum PaymentSendFailure {
 	},
 }
 
+/// An error when attempting to pay a [`Bolt11Invoice`].
+///
+/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
+#[derive(Debug)]
+pub enum Bolt11PaymentError {
+	/// Incorrect amount was provided to ChannelManager::pay_for_bolt11_invoice.
+	/// This happens when an amount is specified when [`Bolt11Invoice`] already contains
+	/// an amount, or vice versa.
+	///
+	/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
+	InvalidAmount,
+	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
+	SendingFailed(RetryableSendFailure),
+}
+
 /// An error when attempting to pay a [`Bolt12Invoice`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Bolt12PaymentError {
