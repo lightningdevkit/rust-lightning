@@ -31,7 +31,7 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
-use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, TrampolineForwardTlvs, UnauthenticatedReceiveTlvs};
 use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -729,7 +729,7 @@ pub struct UpdateFulfillHTLC {
 /// A [`peer_storage`] message that can be sent to or received from a peer.
 ///
 /// This message is used to distribute backup data to peers.
-/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]  
+/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]
 /// to recover critical information, such as channel states, for fund recovery.
 ///
 /// [`peer_storage`] is used to send our own encrypted backup data to a peer.
@@ -744,7 +744,7 @@ pub struct PeerStorage {
 /// A [`peer_storage_retrieval`] message that can be sent to or received from a peer.
 ///
 /// This message is sent to peers for whom we store backup data.
-/// If we receive this message, it indicates that the peer had stored our backup data.  
+/// If we receive this message, it indicates that the peer had stored our backup data.
 /// This data can be used for fund recovery in case of data loss.
 ///
 /// [`peer_storage_retrieval`] is used to send the most recent backup of the peer.
@@ -1800,7 +1800,7 @@ mod fuzzy_internal_msgs {
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
-
+	use crate::routing::gossip::NodeId;
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 
@@ -1809,6 +1809,23 @@ mod fuzzy_internal_msgs {
 		/// The value, in msat, of the payment after this hop's fee is deducted.
 		pub amt_to_forward: u64,
 		pub outgoing_cltv_value: u32,
+	}
+
+	#[allow(unused)]
+	pub struct InboundTrampolineForwardPayload {
+		pub outgoing_node_id: NodeId,
+		/// The value, in msat, of the payment after this hop's fee is deducted.
+		pub amt_to_forward: u64,
+		pub outgoing_cltv_value: u32,
+	}
+
+	#[allow(unused)]
+	pub struct InboundTrampolineEntrypointPayload {
+		pub amt_to_forward: u64,
+		pub outgoing_cltv_value: u32,
+		pub multipath_trampoline_data: Option<FinalOnionHopData>,
+		pub trampoline_packet: TrampolineOnionPacket,
+		pub current_path_key: Option<PublicKey>
 	}
 
 	pub struct InboundOnionReceivePayload {
@@ -1827,6 +1844,17 @@ mod fuzzy_internal_msgs {
 		pub intro_node_blinding_point: Option<PublicKey>,
 		pub next_blinding_override: Option<PublicKey>,
 	}
+
+	#[allow(unused)]
+	pub struct InboundTrampolineBlindedForwardPayload {
+		pub outgoing_node_id: NodeId,
+		pub payment_relay: PaymentRelay,
+		pub payment_constraints: PaymentConstraints,
+		pub features: BlindedHopFeatures,
+		pub intro_node_blinding_point: Option<PublicKey>,
+		pub next_blinding_override: Option<PublicKey>,
+	}
+
 	pub struct InboundOnionBlindedReceivePayload {
 		pub sender_intended_htlc_amt_msat: u64,
 		pub total_msat: u64,
@@ -1842,9 +1870,17 @@ mod fuzzy_internal_msgs {
 
 	pub enum InboundOnionPayload {
 		Forward(InboundOnionForwardPayload),
+		#[allow(unused)]
+		TrampolineEntrypoint(InboundTrampolineEntrypointPayload),
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
+
+		// These payloads should be seen inside an inner Trampoline onion
+		#[allow(unused)]
+		TrampolineForward(InboundTrampolineForwardPayload),
+		#[allow(unused)]
+		TrampolineBlindedForward(InboundTrampolineBlindedForwardPayload),
 	}
 
 	pub(crate) enum OutboundOnionPayload<'a> {
@@ -1859,6 +1895,18 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			multipath_trampoline_data: Option<FinalOnionHopData>,
 			trampoline_packet: TrampolineOnionPacket,
+		},
+		/// This is used for Trampoline hops that are not the blinded path intro hop.
+		/// We would only ever construct this variant when we are a Trampoline node forwarding a
+		/// payment along a blinded path.
+		#[allow(unused)]
+		BlindedTrampolineEntrypoint {
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			multipath_trampoline_data: Option<FinalOnionHopData>,
+			trampoline_packet: TrampolineOnionPacket,
+			/// The blinding point this hope needs to use for its Trampoline onion.
+			current_path_key: PublicKey
 		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
@@ -2794,6 +2842,18 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 					(20, trampoline_packet, required)
 				});
 			},
+			Self::BlindedTrampolineEntrypoint {
+				amt_to_forward, outgoing_cltv_value, current_path_key,
+				ref multipath_trampoline_data, ref trampoline_packet
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(8, multipath_trampoline_data, option),
+					(12, current_path_key, required),
+					(20, trampoline_packet, required)
+				});
+			},
 			Self::Receive {
 				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
 				cltv_expiry_height, ref custom_tlvs,
@@ -2905,9 +2965,11 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut encrypted_tlvs_opt: Option<WithoutLength<Vec<u8>>> = None;
 		let mut intro_node_blinding_point = None;
+		let mut outgoing_node_id: Option<NodeId> = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		let mut trampoline_onion_packet: Option<TrampolineOnionPacket> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
 
@@ -2920,8 +2982,10 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			(8, payment_data, option),
 			(10, encrypted_tlvs_opt, option),
 			(12, intro_node_blinding_point, option),
+			(14, outgoing_node_id, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(20, trampoline_onion_packet, option),
 			(77_777, invoice_request, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
@@ -2938,7 +3002,18 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			return Err(DecodeError::InvalidValue)
 		}
 
-		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+		if let Some(trampoline_onion_packet) = trampoline_onion_packet {
+			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some()
+			{ return Err(DecodeError::InvalidValue) }
+			Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+				multipath_trampoline_data: payment_data,
+				trampoline_packet: trampoline_onion_packet,
+				current_path_key: intro_node_blinding_point
+			}))
+		} else if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
 			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
@@ -2959,6 +3034,23 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 					}
 					Ok(Self::BlindedForward(InboundOnionBlindedForwardPayload {
 						short_channel_id,
+						payment_relay,
+						payment_constraints,
+						features,
+						intro_node_blinding_point,
+						next_blinding_override,
+					}))
+				},
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::TrampolineForward(TrampolineForwardTlvs {
+					outgoing_node_id, payment_relay, payment_constraints, features, next_blinding_override
+				})} => {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
+						keysend_preimage.is_some() || invoice_request.is_some()
+					{
+						return Err(DecodeError::InvalidValue)
+					}
+					Ok(Self::TrampolineBlindedForward(InboundTrampolineBlindedForwardPayload {
+						outgoing_node_id,
 						payment_relay,
 						payment_constraints,
 						features,
@@ -2997,6 +3089,15 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			{ return Err(DecodeError::InvalidValue) }
 			Ok(Self::Forward(InboundOnionForwardPayload {
 				short_channel_id,
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+			}))
+		} else if let Some(outgoing_node_id) = outgoing_node_id {
+			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some() || invoice_request.is_some()
+			{ return Err(DecodeError::InvalidValue) }
+			Ok(Self::TrampolineForward(InboundTrampolineForwardPayload {
+				outgoing_node_id,
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 			}))

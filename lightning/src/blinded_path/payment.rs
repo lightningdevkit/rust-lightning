@@ -297,6 +297,25 @@ pub struct ForwardTlvs {
 	pub next_blinding_override: Option<PublicKey>,
 }
 
+/// Data to construct a [`BlindedHop`] for forwarding a Trampoline payment.
+#[derive(Clone, Debug)]
+pub struct TrampolineForwardTlvs {
+	/// The node id to which the trampoline node must find a route.
+	pub outgoing_node_id: NodeId,
+	/// Payment parameters for relaying over [`Self::outgoing_node_id`].
+	pub payment_relay: PaymentRelay,
+	/// Payment constraints for relaying over [`Self::outgoing_node_id`].
+	pub payment_constraints: PaymentConstraints,
+	/// Supported and required features when relaying a payment onion containing this object's
+	/// corresponding [`BlindedHop::encrypted_payload`].
+	///
+	/// [`BlindedHop::encrypted_payload`]: crate::blinded_path::BlindedHop::encrypted_payload
+	pub features: BlindedHopFeatures,
+	/// Set if this [`BlindedPaymentPath`] is concatenated to another, to indicate the
+	/// [`BlindedPaymentPath::blinding_point`] of the appended blinded path.
+	pub next_blinding_override: Option<PublicKey>,
+}
+
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
 ///
@@ -344,6 +363,9 @@ impl UnauthenticatedReceiveTlvs {
 pub(crate) enum BlindedPaymentTlvs {
 	/// This blinded payment data is for a forwarding node.
 	Forward(ForwardTlvs),
+	/// This blinded payment data is for a forwarding Trampoline node.
+	#[allow(unused)]
+	TrampolineForward(TrampolineForwardTlvs),
 	/// This blinded payment data is for the receiving node.
 	Receive(ReceiveTlvs),
 }

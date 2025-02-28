@@ -57,7 +57,7 @@ use crate::types::features::Bolt11InvoiceFeatures;
 #[cfg(trampoline)]
 use crate::routing::gossip::NodeId;
 use crate::routing::router::{BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, RouteParametersConfig, Router};
-use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
+use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
@@ -4287,11 +4287,15 @@ where
 			// we don't allow forwards outbound over them.
 			return Err(("Refusing to forward to a private channel based on our config.", 0x4000 | 10));
 		}
-		if chan.context.get_channel_type().supports_scid_privacy() && next_packet.outgoing_scid != chan.context.outbound_scid_alias() {
-			// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
-			// "refuse to forward unless the SCID alias was used", so we pretend
-			// we don't have the channel here.
-			return Err(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10));
+		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
+			if chan.context.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
+				// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
+				// "refuse to forward unless the SCID alias was used", so we pretend
+				// we don't have the channel here.
+				return Err(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10));
+			}
+		} else {
+			return Err(("Cannot forward by Node ID without SCID.", 0x4000 | 10));
 		}
 
 		// Note that we could technically not return an error yet here and just hope
@@ -4343,7 +4347,13 @@ where
 	fn can_forward_htlc(
 		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
 	) -> Result<(), (&'static str, u16)> {
-		match self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut FundedChannel<SP>| {
+		let outgoing_scid = match next_packet_details.outgoing_connector {
+			HopConnector::ShortChannelId(scid) => scid,
+			HopConnector::Trampoline(_) => {
+				return Err(("Cannot forward by Node ID without SCID.", 0x4000 | 10));
+			}
+		};
+		match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
 			self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
 		}) {
 			Some(Ok(())) => {},
@@ -4352,8 +4362,8 @@ where
 				// If we couldn't find the channel info for the scid, it may be a phantom or
 				// intercept forward.
 				if (self.default_configuration.accept_intercept_htlcs &&
-					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, next_packet_details.outgoing_scid, &self.chain_hash)) ||
-					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, next_packet_details.outgoing_scid, &self.chain_hash)
+					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)) ||
+					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)
 				{} else {
 					return Err(("Don't have available channel for forwarding as requested.", 0x4000 | 10));
 				}
@@ -4450,15 +4460,9 @@ where
 		}
 		match decoded_hop {
 			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } => {
-				let inbound_onion_payload = match decoded_hop {
-					onion_utils::Hop::Receive { hop_data, .. } => msgs::InboundOnionPayload::Receive(hop_data),
-					onion_utils::Hop::BlindedReceive { hop_data, .. } => msgs::InboundOnionPayload::BlindedReceive(hop_data),
-					_ => unreachable!()
-				};
-
 				// OUR PAYMENT!
 				let current_height: u32 = self.best_block.read().unwrap().height;
-				match create_recv_pending_htlc_info(inbound_onion_payload, shared_secret, msg.payment_hash,
+				match create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
 					current_height)
 				{
@@ -4466,22 +4470,39 @@ where
 						// Note that we could obviously respond immediately with an update_fulfill_htlc
 						// message, however that would leak that we are the recipient of this payment, so
 						// instead we stay symmetric with the forwarding case, only responding (after a
-						// delay) once they've send us a commitment_signed!
+						// delay) once they've sent us a commitment_signed!
 						PendingHTLCStatus::Forward(info)
 					},
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes, .. } => {
-				match create_fwd_pending_htlc_info(msg, msgs::InboundOnionPayload::Forward(next_hop_data), next_hop_hmac,
-					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
+			#[cfg(trampoline)]
+			onion_utils::Hop::TrampolineReceive { .. } => {
+				// OUR PAYMENT!
+				let current_height: u32 = self.best_block.read().unwrap().height;
+				match create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
+					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
+					current_height)
+				{
+					Ok(info) => {
+						// Note that we could obviously respond immediately with an update_fulfill_htlc
+						// message, however that would leak that we are the recipient of this payment, so
+						// instead we stay symmetric with the forwarding case, only responding (after a
+						// delay) once they've sent us a commitment_signed!
+						PendingHTLCStatus::Forward(info)
+					},
+					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
+			},
+			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
+				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			onion_utils::Hop::BlindedForward { next_hop_data, next_hop_hmac, new_packet_bytes, .. } => {
-				match create_fwd_pending_htlc_info(msg, msgs::InboundOnionPayload::BlindedForward(next_hop_data), next_hop_hmac,
-					new_packet_bytes, shared_secret, next_packet_pubkey_opt) {
+			#[cfg(trampoline)]
+			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
+				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
@@ -5718,7 +5739,12 @@ where
 				};
 
 				let is_intro_node_blinded_forward = next_hop.is_intro_node_blinded_forward();
-				let outgoing_scid_opt = next_packet_details_opt.as_ref().map(|d| d.outgoing_scid);
+				let outgoing_scid_opt = next_packet_details_opt.as_ref().and_then(|d| {
+					match d.outgoing_connector {
+						HopConnector::ShortChannelId(scid) => { Some(scid) }
+						HopConnector::Trampoline(_) => { None }
+					}
+				});
 				let shared_secret = next_hop.shared_secret().secret_bytes();
 
 				// Process the HTLC on the incoming channel.
@@ -5891,19 +5917,14 @@ where
 														// of the onion.
 														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret }) => {
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, .. }) => {
 														let phantom_shared_secret = shared_secret.secret_bytes();
 														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 													},
 												};
-												let (inbound_onion_payload, shared_secret) = match next_hop {
-													onion_utils::Hop::Receive { hop_data, shared_secret } => (msgs::InboundOnionPayload::Receive(hop_data), shared_secret),
-													onion_utils::Hop::BlindedReceive { hop_data, shared_secret } => (msgs::InboundOnionPayload::BlindedReceive(hop_data), shared_secret),
-													_ => panic!()
-												};
-												let phantom_shared_secret = shared_secret.secret_bytes();
+												let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
 												let current_height: u32 = self.best_block.read().unwrap().height;
-												match create_recv_pending_htlc_info(inbound_onion_payload,
+												match create_recv_pending_htlc_info(next_hop,
 													incoming_shared_secret, payment_hash, outgoing_amt_msat,
 													outgoing_cltv_value, Some(phantom_shared_secret), false, None,
 													current_height)
@@ -14832,6 +14853,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -14839,6 +14861,7 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, AcceptChannel, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::ln::onion_utils;
 	use crate::ln::outbound_payment::Retry;
 	use crate::prelude::*;
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
@@ -15055,8 +15078,8 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-	
-		// Since we do not send peer storage, we manually simulate receiving a dummy 
+
+		// Since we do not send peer storage, we manually simulate receiving a dummy
 		// `PeerStorage` from the channel partner.
 		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
 
@@ -15929,17 +15952,20 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 		let sender_intended_amt_msat = 100;
 		let extra_fee_msat = 10;
-		let hop_data = msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
-			sender_intended_htlc_amt_msat: 100,
-			cltv_expiry_height: 42,
-			payment_metadata: None,
-			keysend_preimage: None,
-			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]),
-				total_msat: sender_intended_amt_msat,
-			}),
-			custom_tlvs: Vec::new(),
-		});
+		let hop_data = onion_utils::Hop::Receive {
+			hop_data: msgs::InboundOnionReceivePayload {
+				sender_intended_htlc_amt_msat: 100,
+				cltv_expiry_height: 42,
+				payment_metadata: None,
+				keysend_preimage: None,
+				payment_data: Some(msgs::FinalOnionHopData {
+					payment_secret: PaymentSecret([0; 32]),
+					total_msat: sender_intended_amt_msat,
+				}),
+				custom_tlvs: Vec::new(),
+			},
+			shared_secret: SharedSecret::from_bytes([0; 32]),
+		};
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
@@ -15952,17 +15978,20 @@ mod tests {
 		} else { panic!(); }
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
-		let hop_data = msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
-			sender_intended_htlc_amt_msat: 100,
-			cltv_expiry_height: 42,
-			payment_metadata: None,
-			keysend_preimage: None,
-			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]),
-				total_msat: sender_intended_amt_msat,
-			}),
-			custom_tlvs: Vec::new(),
-		});
+		let hop_data = onion_utils::Hop::Receive {
+			hop_data: msgs::InboundOnionReceivePayload { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
+				sender_intended_htlc_amt_msat: 100,
+				cltv_expiry_height: 42,
+				payment_metadata: None,
+				keysend_preimage: None,
+				payment_data: Some(msgs::FinalOnionHopData {
+					payment_secret: PaymentSecret([0; 32]),
+					total_msat: sender_intended_amt_msat,
+				}),
+				custom_tlvs: Vec::new(),
+			},
+			shared_secret: SharedSecret::from_bytes([0; 32]),
+		};
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
@@ -15977,17 +16006,20 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
-		let result = create_recv_pending_htlc_info(msgs::InboundOnionPayload::Receive(msgs::InboundOnionReceivePayload {
-			sender_intended_htlc_amt_msat: 100,
-			cltv_expiry_height: 22,
-			payment_metadata: None,
-			keysend_preimage: None,
-			payment_data: Some(msgs::FinalOnionHopData {
-				payment_secret: PaymentSecret([0; 32]),
-				total_msat: 100,
-			}),
-			custom_tlvs: Vec::new(),
-		}), [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
+		let result = create_recv_pending_htlc_info(onion_utils::Hop::Receive {
+			hop_data: msgs::InboundOnionReceivePayload {
+				sender_intended_htlc_amt_msat: 100,
+				cltv_expiry_height: 22,
+				payment_metadata: None,
+				keysend_preimage: None,
+				payment_data: Some(msgs::FinalOnionHopData {
+					payment_secret: PaymentSecret([0; 32]),
+					total_msat: 100,
+				}),
+				custom_tlvs: Vec::new(),
+			},
+			shared_secret: SharedSecret::from_bytes([0; 32]),
+		}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334
