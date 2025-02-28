@@ -37,6 +37,7 @@ use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
+use crate::offers::invoice::Bolt12Invoice;
 
 use bitcoin::WPubkeyHash;
 use bitcoin::amount::Amount;
@@ -2305,7 +2306,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 		check_added_monitors(node, 1);
 	}
 	let expected_payment_id = match events[0] {
-		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
+		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat, .. } => {
 			assert_eq!(expected_payment_preimage, *payment_preimage);
 			assert_eq!(expected_payment_hash, *payment_hash);
 			assert!(amount_msat.is_some());
@@ -3119,10 +3120,11 @@ pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) {
 	}
 }
 
-pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_preimage: PaymentPreimage) {
+pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_preimage: PaymentPreimage) -> Option<Bolt12Invoice> {
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(origin_node, &[expected_route], our_payment_preimage)
 	);
+	None
 }
 
 pub const TEST_FINAL_CLTV: u32 = 70;
