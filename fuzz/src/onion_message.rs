@@ -15,7 +15,8 @@ use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::async_payments::{
-	AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
+	AsyncPaymentsMessageHandler, HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ReleaseHeldHtlc,
+	ServeStaticInvoice, StaticInvoicePersisted,
 };
 use lightning::onion_message::messenger::{
 	CustomOnionMessageHandler, Destination, MessageRouter, MessageSendInstructions,
@@ -121,6 +122,29 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 struct TestAsyncPaymentsMessageHandler {}
 
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
+	fn handle_offer_paths_request(
+		&self, _message: OfferPathsRequest, _context: AsyncPaymentsContext,
+		responder: Option<Responder>,
+	) -> Option<(OfferPaths, ResponseInstruction)> {
+		let responder = match responder {
+			Some(resp) => resp,
+			None => return None,
+		};
+		Some((OfferPaths { paths: Vec::new() }, responder.respond()))
+	}
+	fn handle_offer_paths(
+		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
+	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
+		None
+	}
+	fn handle_serve_static_invoice(
+		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
+	) {
+	}
+	fn handle_static_invoice_persisted(
+		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
+	) {
+	}
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		responder: Option<Responder>,

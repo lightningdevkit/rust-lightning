@@ -317,7 +317,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let nodes_0_serialized = nodes[0].node.encode();
 		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan.2).encode();
 
-		reload_node!(nodes[0], *nodes[0].node.get_current_default_configuration(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+		reload_node!(nodes[0], nodes[0].node.get_current_default_configuration().clone(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 	}
 
 	if reorg_after_reload {
@@ -793,7 +793,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	}
 	let persister;
 	let new_chain_monitor;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config.clone())]);
 	let nodes_1_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
