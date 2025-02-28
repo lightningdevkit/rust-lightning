@@ -3461,7 +3461,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let broadcaster_keys = &self.onchain_tx_handler.channel_transaction_parameters
 			.counterparty_parameters.as_ref().unwrap().pubkeys;
 		let countersignatory_keys =
-			&self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys;
+			self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.as_ref();
 
 		let broadcaster_funding_key = broadcaster_keys.funding_pubkey;
 		let countersignatory_funding_key = countersignatory_keys.funding_pubkey;
@@ -5136,7 +5136,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		if onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() &&
 			counterparty_payment_script.is_p2wpkh()
 		{
-			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_point;
+			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.as_ref().payment_point;
 			counterparty_payment_script =
 				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_p2wsh();
 		}
@@ -5235,7 +5235,7 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint, RevocationKey};
-	use crate::ln::chan_utils::{self,HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
+	use crate::ln::chan_utils::{self,HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
@@ -5415,7 +5415,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_pubkeys: HolderChannelPublicKeys::from(keys.holder_channel_pubkeys.clone()),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
@@ -5667,7 +5667,7 @@ mod tests {
 		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
-			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_pubkeys: HolderChannelPublicKeys::from(keys.holder_channel_pubkeys.clone()),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {

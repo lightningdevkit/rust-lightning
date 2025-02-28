@@ -40,7 +40,7 @@ use bitcoin::secp256k1;
 #[cfg(taproot)]
 use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
-use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 #[cfg(taproot)]
 use musig2::types::{PartialSignature, PublicNonce};
 
@@ -466,9 +466,10 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_channel_announcement_with_funding_key(
-		&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, msg: &msgs::UnsignedChannelAnnouncement, funding_key_tweak: Option<Scalar>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
+		self.inner.sign_channel_announcement_with_funding_key(msg, funding_key_tweak, secp_ctx)
 	}
 
 	fn sign_splicing_funding_input(
@@ -559,7 +560,7 @@ impl TestChannelSigner {
 			.verify(
 				&channel_parameters.as_counterparty_broadcastable(),
 				channel_parameters.counterparty_pubkeys().unwrap(),
-				&channel_parameters.holder_pubkeys,
+				channel_parameters.holder_pubkeys.as_ref(),
 				secp_ctx,
 			)
 			.expect("derived different per-tx keys or built transaction")
@@ -572,7 +573,7 @@ impl TestChannelSigner {
 		commitment_tx
 			.verify(
 				&channel_parameters.as_holder_broadcastable(),
-				&channel_parameters.holder_pubkeys,
+				channel_parameters.holder_pubkeys.as_ref(),
 				channel_parameters.counterparty_pubkeys().unwrap(),
 				secp_ctx,
 			)

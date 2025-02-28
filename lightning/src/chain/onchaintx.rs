@@ -665,7 +665,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					}
 
 					// We'll locate an anchor output we can spend within the commitment transaction.
-					let funding_pubkey = &self.channel_transaction_parameters.holder_pubkeys.funding_pubkey;
+					let funding_pubkey =
+						&self.channel_transaction_parameters.holder_pubkeys.as_ref().funding_pubkey;
 					match chan_utils::get_anchor_output(&tx.0, funding_pubkey) {
 						// An anchor output was found, so we should yield a funding event externally.
 						Some((idx, _)) => {
@@ -1290,7 +1291,7 @@ mod tests {
 	use crate::chain::transaction::OutPoint;
 	use crate::ln::chan_utils::{
 		ChannelPublicKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters,
-		HTLCOutputInCommitment, HolderCommitmentTransaction,
+		HTLCOutputInCommitment, HolderChannelPublicKeys, HolderCommitmentTransaction,
 	};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 	use crate::ln::functional_test_utils::create_dummy_block;
@@ -1344,7 +1345,7 @@ mod tests {
 		// Use non-anchor channels so that HTLC-Timeouts are broadcast immediately instead of sent
 		// to the user for external funding.
 		let chan_params = ChannelTransactionParameters {
-			holder_pubkeys: signer.holder_channel_pubkeys.clone(),
+			holder_pubkeys: HolderChannelPublicKeys::from(signer.holder_channel_pubkeys.clone()),
 			holder_selected_contest_delay: 66,
 			is_outbound_from_holder: true,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {

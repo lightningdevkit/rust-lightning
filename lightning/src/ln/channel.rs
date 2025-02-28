@@ -42,7 +42,7 @@ use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo,
 use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{
 	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
-	htlc_timeout_tx_weight, ChannelPublicKeys, CommitmentTransaction,
+	htlc_timeout_tx_weight, ChannelPublicKeys, HolderChannelPublicKeys, CommitmentTransaction,
 	HolderCommitmentTransaction, ChannelTransactionParameters,
 	CounterpartyChannelTransactionParameters, MAX_HTLCS,
 	get_commitment_transaction_number_obscure_factor,
@@ -1694,7 +1694,7 @@ impl FundingScope {
 	}
 
 	fn get_holder_pubkeys(&self) -> &ChannelPublicKeys {
-		&self.channel_transaction_parameters.holder_pubkeys
+		self.channel_transaction_parameters.holder_pubkeys.as_ref()
 	}
 
 	pub fn get_counterparty_selected_contest_delay(&self) -> Option<u16> {
@@ -2586,7 +2586,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			channel_transaction_parameters: ChannelTransactionParameters {
-				holder_pubkeys: pubkeys,
+				holder_pubkeys: HolderChannelPublicKeys::from(pubkeys),
 				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
 				is_outbound_from_holder: false,
 				counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
@@ -2823,7 +2823,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			channel_transaction_parameters: ChannelTransactionParameters {
-				holder_pubkeys: pubkeys,
+				holder_pubkeys: HolderChannelPublicKeys::from(pubkeys),
 				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
@@ -8160,7 +8160,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		};
 		match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				let our_bitcoin_sig = match ecdsa.sign_channel_announcement_with_funding_key(&announcement, &self.context.secp_ctx) {
+				let funding_key_tweak =
+					self.funding.channel_transaction_parameters.holder_pubkeys.funding_key_tweak;
+				let our_bitcoin_sig = match ecdsa.sign_channel_announcement_with_funding_key(
+					&announcement, funding_key_tweak, &self.context.secp_ctx,
+				) {
 					Err(_) => {
 						log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
 						return None;
@@ -8201,8 +8205,11 @@ impl<SP: Deref> FundedChannel<SP> where
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
 			match &self.context.holder_signer {
 				ChannelSignerType::Ecdsa(ecdsa) => {
-					let our_bitcoin_sig = ecdsa.sign_channel_announcement_with_funding_key(&announcement, &self.context.secp_ctx)
-						.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
+					let funding_key_tweak =
+						self.funding.channel_transaction_parameters.holder_pubkeys.funding_key_tweak;
+					let our_bitcoin_sig = ecdsa.sign_channel_announcement_with_funding_key(
+						&announcement, funding_key_tweak, &self.context.secp_ctx,
+					).map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 					Ok(msgs::ChannelAnnouncement {
 						node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
 						node_signature_2: if were_node_one { their_node_sig } else { our_node_sig },
@@ -10738,7 +10745,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			},
 		};
 		let is_v2_established = channel_id.is_v2_channel_id(
-			&channel_parameters.holder_pubkeys.revocation_basepoint,
+			&channel_parameters.holder_pubkeys.as_ref().revocation_basepoint,
 			&channel_parameters.counterparty_parameters.as_ref()
 				.expect("Persisted channel must have counterparty parameters").pubkeys.revocation_basepoint);
 

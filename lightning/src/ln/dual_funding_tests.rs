@@ -14,7 +14,7 @@ use {
 	crate::events::{Event, MessageSendEvent, MessageSendEventsProvider},
 	crate::ln::chan_utils::{
 		make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
-		CounterpartyChannelTransactionParameters,
+		CounterpartyChannelTransactionParameters, HolderChannelPublicKeys,
 	},
 	crate::ln::channel::PendingV2Channel,
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
@@ -155,7 +155,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 			},
 			selected_contest_delay: accept_channel_v2_msg.common_fields.to_self_delay,
 		}),
-		holder_pubkeys: ChannelPublicKeys {
+		holder_pubkeys: HolderChannelPublicKeys::from(ChannelPublicKeys {
 			funding_pubkey: open_channel_v2_msg.common_fields.funding_pubkey,
 			revocation_basepoint: RevocationBasepoint(
 				open_channel_v2_msg.common_fields.revocation_basepoint,
@@ -165,7 +165,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 				open_channel_v2_msg.common_fields.delayed_payment_basepoint,
 			),
 			htlc_basepoint: HtlcBasepoint(open_channel_v2_msg.common_fields.htlc_basepoint),
-		},
+		}),
 		holder_selected_contest_delay: open_channel_v2_msg.common_fields.to_self_delay,
 		is_outbound_from_holder: true,
 		funding_outpoint,

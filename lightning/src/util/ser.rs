@@ -36,7 +36,7 @@ use bitcoin::secp256k1::constants::{
 };
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
-use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::{consensus, Witness};
 
@@ -1153,6 +1153,24 @@ impl Readable for SecretKey {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
+	}
+}
+
+impl Writeable for Scalar {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_be_bytes().write(w)
+	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		32
+	}
+}
+
+impl Readable for Scalar {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Scalar::from_be_bytes(buf).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 
