@@ -10296,13 +10296,13 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 	}
 }
 
-impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)> for FundedChannel<SP>
+impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
 		where
 			ES::Target: EntropySource,
 			SP::Target: SignerProvider
 {
-	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)) -> Result<Self, DecodeError> {
-		let (entropy_source, signer_provider, serialized_height, our_supported_features) = args;
+	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures)) -> Result<Self, DecodeError> {
+		let (entropy_source, signer_provider, our_supported_features) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		if ver <= 2 {
@@ -10537,20 +10537,20 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// Prior to supporting channel type negotiation, all of our channels were static_remotekey
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
-		let mut channel_creation_height = Some(serialized_height);
+		let mut channel_creation_height = 0u32;
 		let mut preimages_opt: Option<Vec<Option<PaymentPreimage>>> = None;
 
 		// If we read an old Channel, for simplicity we just treat it as "we never sent an
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
-		let mut announcement_sigs_state = Some(AnnouncementSigsState::NotSent);
+		let mut announcement_sigs_state = AnnouncementSigsState::NotSent;
 		let mut latest_inbound_scid_alias = None;
-		let mut outbound_scid_alias = None;
+		let mut outbound_scid_alias = 0u64;
 		let mut channel_pending_event_emitted = None;
 		let mut channel_ready_event_emitted = None;
 		let mut funding_tx_broadcast_safe_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
-		let mut channel_keys_id: Option<[u8; 32]> = None;
+		let mut channel_keys_id = [0u8; 32];
 		let mut temporary_channel_id: Option<ChannelId> = None;
 		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
@@ -10573,7 +10573,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
-		let mut config = Some(LegacyChannelConfig::default());
+		let mut config = LegacyChannelConfig::default();
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -10581,21 +10581,21 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(2, channel_type, option),
 			(3, counterparty_selected_channel_reserve_satoshis, option),
 			(4, holder_selected_channel_reserve_satoshis, option),
-			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
+			(5, config, required),
 			(6, holder_max_htlc_value_in_flight_msat, option),
 			(7, shutdown_scriptpubkey, option),
 			(8, blocked_monitor_updates, optional_vec),
 			(9, target_closing_feerate_sats_per_kw, option),
 			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
-			(13, channel_creation_height, option),
+			(13, channel_creation_height, required),
 			(15, preimages_opt, optional_vec),
-			(17, announcement_sigs_state, option),
+			(17, announcement_sigs_state, required),
 			(19, latest_inbound_scid_alias, option),
-			(21, outbound_scid_alias, option),
+			(21, outbound_scid_alias, required),
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
-			(27, channel_keys_id, option),
+			(27, channel_keys_id, required),
 			(28, holder_max_accepted_htlcs, option),
 			(29, temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
@@ -10612,12 +10612,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(53, funding_tx_broadcast_safe_event_emitted, option),
 		});
 
-		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
-			let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
-			(channel_keys_id, holder_signer)
-		} else {
-			return Err(DecodeError::InvalidValue);
-		};
+		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		if let Some(preimages) = preimages_opt {
 			let mut iter = preimages.into_iter();
@@ -10761,7 +10756,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			context: ChannelContext {
 				user_id,
 
-				config: config.unwrap(),
+				config,
 
 				prev_config: None,
 
@@ -10772,7 +10767,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				channel_id,
 				temporary_channel_id,
 				channel_state,
-				announcement_sigs_state: announcement_sigs_state.unwrap(),
+				announcement_sigs_state,
 				secp_ctx,
 
 				latest_monitor_update_id,
@@ -10822,7 +10817,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				funding_tx_confirmed_in,
 				funding_tx_confirmation_height,
 				short_channel_id,
-				channel_creation_height: channel_creation_height.unwrap(),
+				channel_creation_height,
 
 				counterparty_dust_limit_satoshis,
 				holder_dust_limit_satoshis,
@@ -10855,7 +10850,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				latest_inbound_scid_alias,
 				// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
-				outbound_scid_alias: outbound_scid_alias.unwrap_or(0),
+				outbound_scid_alias,
 
 				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(false),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
@@ -11564,7 +11559,7 @@ mod tests {
 		let mut s = crate::io::Cursor::new(&encoded_chan);
 		let mut reader = crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan = FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, 0, &features)).unwrap();
+		let decoded_chan = FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features)).unwrap();
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
