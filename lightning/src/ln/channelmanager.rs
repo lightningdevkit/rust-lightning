@@ -8553,6 +8553,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if let Some(signing_session) = signing_session_opt {
+					panic!("TODO Fix commitment handling, execution should get to here");
 					let (commitment_signed, funding_ready_for_sig_event_opt) = chan_entry
 						.get_mut()
 						.funding_tx_constructed(signing_session, &self.logger)
