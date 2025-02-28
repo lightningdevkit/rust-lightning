@@ -10642,8 +10642,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// ChannelTransactionParameters may have had an empty features set upon deserialization.
 		// To account for that, we're proactively setting/overriding the field here.
 		channel_parameters.channel_type_features = chan_features.clone();
-		// ChannelTransactionParameters::channel_value_satoshis defaults to 0 prior to version 0.2.
-		channel_parameters.channel_value_satoshis = channel_value_satoshis;
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
