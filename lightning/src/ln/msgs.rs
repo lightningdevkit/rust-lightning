@@ -31,7 +31,7 @@ use bitcoin::{secp256k1, Witness};
 use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
-use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, TrampolineForwardTlvs, UnauthenticatedReceiveTlvs};
 use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -1844,6 +1844,17 @@ mod fuzzy_internal_msgs {
 		pub intro_node_blinding_point: Option<PublicKey>,
 		pub next_blinding_override: Option<PublicKey>,
 	}
+
+	#[allow(unused)]
+	pub struct InboundTrampolineBlindedForwardPayload {
+		pub outgoing_node_id: NodeId,
+		pub payment_relay: PaymentRelay,
+		pub payment_constraints: PaymentConstraints,
+		pub features: BlindedHopFeatures,
+		pub intro_node_blinding_point: Option<PublicKey>,
+		pub next_blinding_override: Option<PublicKey>,
+	}
+
 	pub struct InboundOnionBlindedReceivePayload {
 		pub sender_intended_htlc_amt_msat: u64,
 		pub total_msat: u64,
@@ -1868,6 +1879,8 @@ mod fuzzy_internal_msgs {
 		// These payloads should be seen inside an inner Trampoline onion
 		#[allow(unused)]
 		TrampolineForward(InboundTrampolineForwardPayload),
+		#[allow(unused)]
+		TrampolineBlindedForward(InboundTrampolineBlindedForwardPayload),
 	}
 
 	pub(crate) enum OutboundOnionPayload<'a> {
@@ -3021,6 +3034,23 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 					}
 					Ok(Self::BlindedForward(InboundOnionBlindedForwardPayload {
 						short_channel_id,
+						payment_relay,
+						payment_constraints,
+						features,
+						intro_node_blinding_point,
+						next_blinding_override,
+					}))
+				},
+				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::TrampolineForward(TrampolineForwardTlvs {
+					outgoing_node_id, payment_relay, payment_constraints, features, next_blinding_override
+				})} => {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
+						keysend_preimage.is_some() || invoice_request.is_some()
+					{
+						return Err(DecodeError::InvalidValue)
+					}
+					Ok(Self::TrampolineBlindedForward(InboundTrampolineBlindedForwardPayload {
+						outgoing_node_id,
 						payment_relay,
 						payment_constraints,
 						features,
