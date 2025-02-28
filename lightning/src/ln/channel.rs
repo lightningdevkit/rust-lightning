@@ -2032,7 +2032,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	fn received_msg(&self) -> &'static str;
 
 	fn check_counterparty_commitment_signature<L: Deref>(
-		&self, sig: &Signature, holder_commitment_point: &mut HolderCommitmentPoint, logger: &L
+		&self, sig: &Signature, holder_commitment_point: &HolderCommitmentPoint, logger: &L
 	) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.funding().get_funding_redeemscript();
 
