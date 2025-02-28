@@ -10305,22 +10305,17 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let (entropy_source, signer_provider, serialized_height, our_supported_features) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
+		if ver <= 2 {
+			return Err(DecodeError::InvalidValue);
+		}
+
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We read
 		// the low bytes now and the high bytes later.
 		let user_id_low: u64 = Readable::read(reader)?;
 
-		let mut config = Some(LegacyChannelConfig::default());
-		if ver == 1 {
-			// Read the old serialization of the ChannelConfig from version 0.0.98.
-			config.as_mut().unwrap().options.forwarding_fee_proportional_millionths = Readable::read(reader)?;
-			config.as_mut().unwrap().options.cltv_expiry_delta = Readable::read(reader)?;
-			config.as_mut().unwrap().announce_for_forwarding = Readable::read(reader)?;
-			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
-		} else {
-			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
-			let mut _val: u64 = Readable::read(reader)?;
-		}
+		// Read the 8 bytes of backwards-compatibility ChannelConfig data.
+		let mut _val: u64 = Readable::read(reader)?;
 
 		let channel_id: ChannelId = Readable::read(reader)?;
 		let channel_state = ChannelState::from_u32(Readable::read(reader)?).map_err(|_| DecodeError::InvalidValue)?;
@@ -10577,6 +10572,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut cur_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
+
+		let mut config = Some(LegacyChannelConfig::default());
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
