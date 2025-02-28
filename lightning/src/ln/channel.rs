@@ -52,7 +52,7 @@ use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator, fee_for_weight};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LatestHolderCommitmentTXInfo, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
@@ -5494,22 +5494,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(channel_monitor)
 	}
 
-	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	fn validate_commitment_signed<L: Deref>(&self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<LatestHolderCommitmentTXInfo, ChannelError>
 		where L::Target: Logger
 	{
-		if self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::WarnAndDisconnect("Got commitment_signed message while quiescent".to_owned()));
-		}
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::close("Got commitment signed message when channel was not in an operational state".to_owned()));
-		}
-		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close("Peer sent commitment_signed when we needed a channel_reestablish".to_owned()));
-		}
-		if self.context.channel_state.is_both_sides_shutdown() && self.context.last_sent_closing_fee.is_some() {
-			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
-		}
-
 		let funding_script = self.funding.get_funding_redeemscript();
 
 		let keys = self.context.build_holder_transaction_keys(&self.funding, self.holder_commitment_point.current_point());
@@ -5622,6 +5609,31 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
 			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
+		Ok(LatestHolderCommitmentTXInfo {
+			commitment_tx: holder_commitment_tx,
+			htlc_outputs: htlcs_and_sigs,
+			nondust_htlc_sources,
+		})
+	}
+
+	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+		where L::Target: Logger
+	{
+		if self.context.channel_state.is_quiescent() {
+			return Err(ChannelError::WarnAndDisconnect("Got commitment_signed message while quiescent".to_owned()));
+		}
+		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
+			return Err(ChannelError::close("Got commitment signed message when channel was not in an operational state".to_owned()));
+		}
+		if self.context.channel_state.is_peer_disconnected() {
+			return Err(ChannelError::close("Peer sent commitment_signed when we needed a channel_reestablish".to_owned()));
+		}
+		if self.context.channel_state.is_both_sides_shutdown() && self.context.last_sent_closing_fee.is_some() {
+			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
+		}
+
+		let commitment_tx_info = self.validate_commitment_signed(msg, logger)?;
+
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
 		if let &mut Some((_, ref mut update_state)) = &mut self.context.pending_update_fee {
@@ -5661,13 +5673,16 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
+		let LatestHolderCommitmentTXInfo {
+			commitment_tx, htlc_outputs, nondust_htlc_sources,
+		} = commitment_tx_info;
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx: holder_commitment_tx,
-				htlc_outputs: htlcs_and_sigs,
+				commitment_tx,
+				htlc_outputs,
 				claimed_htlcs,
 				nondust_htlc_sources,
 			}],
