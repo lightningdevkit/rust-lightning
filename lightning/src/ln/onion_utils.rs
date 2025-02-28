@@ -1058,6 +1058,17 @@ where
 				Err(_) => {
 					log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey);
 
+					let network_update = Some(NetworkUpdate::NodeFailure {
+						node_id: route_hop.pubkey,
+						is_permanent: true,
+					});
+					let short_channel_id = Some(route_hop.short_channel_id);
+					res = Some(FailureLearnings {
+						network_update,
+						short_channel_id,
+						payment_failed_permanently: is_from_final_node,
+						failed_within_blinded_path: false,
+					});
 					return;
 				},
 			};
@@ -2176,7 +2187,7 @@ mod tests {
 		let packet = vec![1u8; 292];
 
 		// In the current protocol, it is unfortunately not possible to identify the failure source.
-		let logger = TestLogger::new();
+		let logger: TestLogger = TestLogger::new();
 		let decrypted_failure = test_failure_attribution(&logger, &packet);
 		assert_eq!(decrypted_failure.short_channel_id, None);
 
@@ -2185,6 +2196,31 @@ mod tests {
 			"Non-attributable failure encountered",
 			1,
 		);
+	}
+
+	#[test]
+	fn test_unreadable_failure_packet_onion() {
+		// Create a failure packet with a valid hmac but unreadable failure message.
+		let onion_keys: Vec<OnionKeys> = build_test_onion_keys();
+		let shared_secret = onion_keys[0].shared_secret.as_ref();
+		let um = gen_um_from_shared_secret(&shared_secret);
+
+		// The failure message is a single 0 byte.
+		let mut packet = [0u8; 33];
+
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+		hmac.input(&packet[32..]);
+		let hmac = Hmac::from_engine(hmac).to_byte_array();
+		packet[..32].copy_from_slice(&hmac);
+
+		let packet = encrypt_failure_packet(shared_secret, &packet);
+
+		// For the unreadable failure, it is still expected that the failing channel can be identified.
+		let logger: TestLogger = TestLogger::new();
+		let decrypted_failure = test_failure_attribution(&logger, &packet.data);
+		assert_eq!(decrypted_failure.short_channel_id, Some(0));
+
+		logger.assert_log_contains("lightning::ln::onion_utils", "Unreadable failure", 1);
 	}
 
 	#[test]
