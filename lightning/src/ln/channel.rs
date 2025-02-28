@@ -1534,6 +1534,7 @@ impl<SP: Deref> Channel<SP> where
 				res
 			},
 			_ => {
+				self.phase = phase;
 				debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
 				Err(ChannelError::close("Got a commitment_signed message for an unfunded V1 channel!".into()))
 			}
