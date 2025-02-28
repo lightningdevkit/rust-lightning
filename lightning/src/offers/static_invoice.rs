@@ -22,6 +22,7 @@ use crate::offers::invoice::{
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
+#[cfg(async_payments)]
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
@@ -33,7 +34,7 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
-use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, Iterable, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::constants::ChainHash;
@@ -175,6 +176,14 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	#[cfg(test)]
 	invoice_builder_methods_test_common!(self, Self, self.invoice, Self, self, mut);
 }
+
+impl PartialEq for StaticInvoice {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for StaticInvoice {}
 
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
 pub struct UnsignedStaticInvoice {
@@ -379,6 +388,19 @@ impl StaticInvoice {
 		self.signature
 	}
 
+	/// Whether the [`Offer`] that this invoice is based on is expired.
+	#[cfg(feature = "std")]
+	pub fn is_offer_expired(&self) -> bool {
+		self.contents.is_expired()
+	}
+
+	/// Whether the [`Offer`] that this invoice is based on is expired, given the current time as
+	/// duration since the Unix epoch.
+	pub fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.contents.is_offer_expired_no_std(duration_since_epoch)
+	}
+
+	#[cfg(async_payments)]
 	pub(crate) fn from_same_offer(&self, invreq: &InvoiceRequest) -> bool {
 		let invoice_offer_tlv_stream =
 			Offer::tlv_stream_iter(&self.bytes).map(|tlv_record| tlv_record.record_bytes);
@@ -394,7 +416,6 @@ impl InvoiceContents {
 		self.offer.is_expired()
 	}
 
-	#[cfg(not(feature = "std"))]
 	fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
 		self.offer.is_expired_no_std(duration_since_epoch)
 	}
@@ -511,6 +532,10 @@ impl InvoiceContents {
 		is_expired(self.created_at(), self.relative_expiry())
 	}
 
+	fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.created_at().saturating_add(self.relative_expiry()) < duration_since_epoch
+	}
+
 	fn fallbacks(&self) -> Vec<Address> {
 		let chain = self.chain();
 		self.fallbacks
@@ -525,6 +550,13 @@ impl InvoiceContents {
 
 	fn signing_pubkey(&self) -> PublicKey {
 		self.signing_pubkey
+	}
+}
+
+impl Readable for StaticInvoice {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 
