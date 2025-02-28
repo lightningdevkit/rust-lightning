@@ -1764,7 +1764,10 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use crate::io;
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::msgs;
 	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
@@ -1773,6 +1776,7 @@ mod tests {
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
+	use crate::util::test_utils::TestLogger;
 
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
@@ -1785,40 +1789,95 @@ mod tests {
 		SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap()
 	}
 
+	fn build_test_path() -> Path {
+		Path {
+			hops: vec![
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 1,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 2,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 3,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 4,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+			],
+			blinded_tail: None,
+		}
+	}
+
 	fn build_test_onion_keys() -> Vec<OnionKeys> {
 		// Keys from BOLT 4, used in both test vector tests
 		let secp_ctx = Secp256k1::new();
 
-		let route = Route {
-			paths: vec![Path { hops: vec![
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-			], blinded_tail: None }],
-			route_params: None,
-		};
+		let path = build_test_path();
+		let route = Route { paths: vec![path], route_params: None };
 
 		let onion_keys =
 			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key())
@@ -2078,6 +2137,22 @@ mod tests {
 		);
 		let hex = "9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d";
 		assert_eq!(onion_packet_5.data, <Vec<u8>>::from_hex(hex).unwrap());
+
+		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
+		let ctx_full = Secp256k1::new();
+		let path = build_test_path();
+		let htlc_source = HTLCSource::OutboundRoute {
+			path,
+			session_priv: get_test_session_key(),
+			first_hop_htlc_msat: 0,
+			payment_id: PaymentId([1; 32]),
+		};
+
+		// Assert that the original failure can be retrieved and that all hmacs check out.
+		let decrypted_failure =
+			process_onion_failure(&ctx_full, &logger, &htlc_source, onion_packet_5.data);
+
+		assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
 	}
 
 	struct RawOnionHopData {
