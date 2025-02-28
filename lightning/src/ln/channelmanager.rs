@@ -13634,7 +13634,7 @@ where
 		let mut close_background_events = Vec::new();
 		for _ in 0..channel_count {
 			let mut channel: FundedChannel<SP> = FundedChannel::read(reader, (
-				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
+				&args.entropy_source, &args.signer_provider, &provided_channel_type_features(&args.default_config)
 			))?;
 			let logger = WithChannelContext::from(&args.logger, &channel.context, None);
 			let channel_id = channel.context.channel_id();
