@@ -1044,22 +1044,32 @@ where
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
 
-		let err_packet = match decrypt_onion_error_packet(&mut encrypted_packet, shared_secret) {
-			Ok(p) => p,
-			Err(_) => return,
-		};
+		let decrypt_result = decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
+
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
-		hmac.input(&err_packet.encode()[32..]);
+		hmac.input(&encrypted_packet[32..]);
 
-		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &err_packet.hmac) {
+		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &encrypted_packet[..32]) {
 			return;
 		}
+
+		let err_packet = match decrypt_result {
+			Ok(p) => p,
+			Err(_) => {
+				log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey);
+
+				return;
+			}
+		};
+
 		let error_code_slice = match err_packet.failuremsg.get(0..2) {
 			Some(s) => s,
 			None => {
 				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
 				// in question
+				log_warn!(logger, "Missing error code in failure from {}", route_hop.pubkey);
+
 				let network_update = Some(NetworkUpdate::NodeFailure {
 					node_id: route_hop.pubkey,
 					is_permanent: true,
@@ -1219,6 +1229,12 @@ where
 	} else {
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
+		log_warn!(
+			logger,
+			"Non-attributable failure encountered on route {}",
+			path.hops.iter().map(|h| h.pubkey.to_string()).collect::<Vec<_>>().join("->")
+		);
+
 		DecodedOnionFailure {
 			network_update: None,
 			short_channel_id: None,
@@ -2153,6 +2169,54 @@ mod tests {
 			process_onion_failure(&ctx_full, &logger, &htlc_source, onion_packet_5.data);
 
 		assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
+	}
+
+	#[test]
+	fn test_non_attributable_failure_packet_onion() {
+		// Create a failure packet with bogus data.
+		let packet = vec![1u8; 292];
+
+		// In the current protocol, it is unfortunately not possible to identify the failure source.
+		let decrypted_failure = test_failure_attribution(&packet);
+		assert_eq!(decrypted_failure.short_channel_id, None);
+	}
+
+	#[test]
+	fn test_missing_error_code() {
+		// Create a failure packet with a valid hmac and structure, but no error code.
+		let onion_keys: Vec<OnionKeys> = build_test_onion_keys();
+		let shared_secret = onion_keys[0].shared_secret.as_ref();
+		let um = gen_um_from_shared_secret(&shared_secret);
+
+		let failuremsg = vec![1];
+		let pad = Vec::new();
+		let mut packet = msgs::DecodedOnionErrorPacket { hmac: [0; 32], failuremsg, pad };
+
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+		hmac.input(&packet.encode()[32..]);
+		packet.hmac = Hmac::from_engine(hmac).to_byte_array();
+
+		let packet = encrypt_failure_packet(shared_secret, &packet.encode()[..]);
+
+		let decrypted_failure = test_failure_attribution(&packet.data);
+		assert_eq!(decrypted_failure.short_channel_id, Some(0));
+	}
+
+	fn test_failure_attribution(packet: &[u8]) -> DecodedOnionFailure {
+		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
+		let ctx_full = Secp256k1::new();
+		let path = build_test_path();
+		let htlc_source = HTLCSource::OutboundRoute {
+			path,
+			session_priv: get_test_session_key(),
+			first_hop_htlc_msat: 0,
+			payment_id: PaymentId([1; 32]),
+		};
+
+		let decrypted_failure =
+			process_onion_failure(&ctx_full, &logger, &htlc_source, packet.into());
+
+		decrypted_failure
 	}
 
 	struct RawOnionHopData {
