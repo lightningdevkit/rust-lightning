@@ -6,7 +6,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::blinded_path::message::{
-	AsyncPaymentsContext, BlindedMessagePath, MessageContext, OffersContext,
+	AsyncPaymentsContext, BlindedMessagePath, MessageContext, OffersContext, ReceiveTlvs,
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::inbound_payment::ExpandedKey;
@@ -100,7 +100,7 @@ impl MessageRouter for TestMessageRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
+		&self, _recipient: PublicKey, _recipient_tlvs: ReceiveTlvs, _peers: Vec<PublicKey>,
 		_secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		unreachable!()
@@ -112,7 +112,7 @@ struct TestOffersMessageHandler {}
 impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(
 		&self, _message: OffersMessage, _context: Option<OffersContext>,
-		_responder: Option<Responder>,
+		_custom_data: Option<Vec<u8>>, _responder: Option<Responder>,
 	) -> Option<(OffersMessage, ResponseInstruction)> {
 		None
 	}
@@ -161,7 +161,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(
 		&self, message: Self::CustomMessage, _context: Option<Vec<u8>>,
-		responder: Option<Responder>,
+		_custom_data: Option<Vec<u8>>, responder: Option<Responder>,
 	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		match responder {
 			Some(responder) => Some((message, responder.respond())),
