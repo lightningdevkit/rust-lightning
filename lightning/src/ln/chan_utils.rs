@@ -30,7 +30,7 @@ use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::sign::EntropySource;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
-use crate::util::ser::{Readable, RequiredWrapper, Writeable, Writer};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
 
 use bitcoin::locktime::absolute::LockTime;
@@ -882,7 +882,9 @@ pub struct ChannelTransactionParameters {
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
 	/// This channel's type, as negotiated during channel open. For old objects where this field
 	/// wasn't serialized, it will default to static_remote_key at deserialization.
-	pub channel_type_features: ChannelTypeFeatures
+	pub channel_type_features: ChannelTypeFeatures,
+	/// The value locked in the channel, denominated in satoshis.
+	pub channel_value_satoshis: u64,
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
@@ -929,8 +931,20 @@ impl ChannelTransactionParameters {
 		}
 	}
 
+	pub(crate) fn make_funding_redeemscript(&self) -> ScriptBuf {
+		make_funding_redeemscript(
+			&self.holder_pubkeys.funding_pubkey,
+			&self.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey
+		)
+	}
+
+	/// Returns the counterparty's pubkeys.
+	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
+		self.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
+	}
+
 	#[cfg(test)]
-	pub fn test_dummy() -> Self {
+	pub fn test_dummy(channel_value_satoshis: u64) -> Self {
 		let dummy_keys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
 			revocation_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
@@ -950,6 +964,7 @@ impl ChannelTransactionParameters {
 				txid: Txid::from_byte_array([42; 32]), index: 0
 			}),
 			channel_type_features: ChannelTypeFeatures::empty(),
+			channel_value_satoshis,
 		}
 	}
 }
@@ -970,13 +985,14 @@ impl Writeable for ChannelTransactionParameters {
 			(8, self.funding_outpoint, option),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
+			(13, self.channel_value_satoshis, required),
 		});
 		Ok(())
 	}
 }
 
-impl Readable for ChannelTransactionParameters {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+impl ReadableArgs<u64> for ChannelTransactionParameters {
+	fn read<R: io::Read>(reader: &mut R, read_args: u64) -> Result<Self, DecodeError> {
 		let mut holder_pubkeys = RequiredWrapper(None);
 		let mut holder_selected_contest_delay = RequiredWrapper(None);
 		let mut is_outbound_from_holder = RequiredWrapper(None);
@@ -984,6 +1000,7 @@ impl Readable for ChannelTransactionParameters {
 		let mut funding_outpoint = None;
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut channel_value_satoshis = None;
 
 		read_tlv_fields!(reader, {
 			(0, holder_pubkeys, required),
@@ -993,7 +1010,13 @@ impl Readable for ChannelTransactionParameters {
 			(8, funding_outpoint, option),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
+			(13, channel_value_satoshis, option),
 		});
+
+		let channel_value_satoshis = channel_value_satoshis.unwrap_or(read_args);
+		if channel_value_satoshis != read_args {
+			return Err(DecodeError::InvalidValue);
+		}
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
@@ -1005,7 +1028,8 @@ impl Readable for ChannelTransactionParameters {
 			is_outbound_from_holder: is_outbound_from_holder.0.unwrap(),
 			counterparty_parameters,
 			funding_outpoint,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
+			channel_value_satoshis,
 		})
 	}
 }
@@ -1105,7 +1129,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 
 impl HolderCommitmentTransaction {
 	#[cfg(test)]
-	pub fn dummy(htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
+	pub fn dummy(channel_value_satoshis: u64, htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -1131,6 +1155,7 @@ impl HolderCommitmentTransaction {
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis,
 		};
 		let mut counterparty_htlc_sigs = Vec::new();
 		for _ in 0..htlcs.len() {
@@ -1926,8 +1951,8 @@ mod tests {
 			let seed = [42; 32];
 			let network = Network::Testnet;
 			let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-			let signer = keys_provider.derive_channel_signer(3000, keys_provider.generate_channel_keys_id(false, 1_000_000, 0));
-			let counterparty_signer = keys_provider.derive_channel_signer(3000, keys_provider.generate_channel_keys_id(true, 1_000_000, 1));
+			let signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(false, 0));
+			let counterparty_signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(true, 1));
 			let delayed_payment_base = &signer.pubkeys().delayed_payment_basepoint;
 			let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 			let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
@@ -1942,6 +1967,7 @@ mod tests {
 				counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
 				funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+				channel_value_satoshis: 3000,
 			};
 			let htlcs_with_aux = Vec::new();
 

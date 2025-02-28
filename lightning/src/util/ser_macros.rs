@@ -29,6 +29,9 @@ macro_rules! _encode_tlv {
 		BigSize($field.serialized_length() as u64).write($stream)?;
 		$field.write($stream)?;
 	};
+	($stream: expr, $type: expr, $field: expr, (required: $trait: ident $(, $read_arg: expr)?) $(, $self: ident)?) => {
+		$crate::_encode_tlv!($stream, $type, $field, required);
+	};
 	($stream: expr, $type: expr, $field: expr, required_vec $(, $self: ident)?) => {
 		$crate::_encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
@@ -184,6 +187,9 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			.write(&mut $len)
 			.expect("No in-memory data may fail to serialize");
 		$len.0 += field_len;
+	};
+	($len: expr, $type: expr, $field: expr, (required: $trait: ident $(, $read_arg: expr)?) $(, $self: ident)?) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};
 	($len: expr, $type: expr, $field: expr, required_vec $(, $self: ident)?) => {
 		let field = $crate::util::ser::WithoutLength(&$field);
@@ -800,6 +806,9 @@ macro_rules! _init_tlv_based_struct_field {
 	};
 	($field: ident, required) => {
 		$field.0.unwrap()
+	};
+	($field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_based_struct_field!($field, required)
 	};
 	($field: ident, required_vec) => {
 		$field

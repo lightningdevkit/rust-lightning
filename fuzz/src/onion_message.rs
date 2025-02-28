@@ -10,7 +10,7 @@ use lightning::blinded_path::message::{
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
+use lightning::ln::msgs::{self, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
@@ -253,19 +253,11 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
-		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 		unreachable!()
 	}
 
-	fn derive_channel_signer(
-		&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner {
-		unreachable!()
-	}
-
-	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
+	fn derive_channel_signer(&self, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		unreachable!()
 	}
 

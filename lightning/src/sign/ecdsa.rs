@@ -15,7 +15,7 @@ use crate::types::payment::PaymentPreimage;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::sign::{ChannelSigner, HTLCDescriptor};
+use crate::sign::{ChannelSigner, ChannelTransactionParameters, HTLCDescriptor};
 
 /// A trait to sign Lightning channel transactions as described in
 /// [BOLT 3](https://github.com/lightning/bolts/blob/master/03-transactions.md).
@@ -53,7 +53,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_counterparty_commitment(
-		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
 		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
 	/// Creates a signature for a holder's commitment transaction.
@@ -74,7 +75,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Same as [`sign_holder_commitment`], but exists only for tests to get access to holder
 	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
@@ -84,7 +86,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// This method is *not* async as it is intended only for testing purposes.
 	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
-		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Create a signature for the given input in a transaction spending an HTLC transaction output
 	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
@@ -109,7 +112,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_output(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Create a signature for the given input in a transaction spending a commitment transaction
@@ -139,8 +143,9 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_htlc(
-		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, justice_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Computes the signature for a commitment transaction's HTLC output used as an input within
 	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
@@ -189,8 +194,9 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_counterparty_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
-		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, htlc_tx: &Transaction,
+		input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Create a signature for a (proposed) closing transaction.
 	///
@@ -203,7 +209,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_closing_transaction(
-		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Computes the signature for a commitment transaction's anchor output used as an
 	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
@@ -216,7 +223,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
+		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 	/// Signs a channel announcement message with our funding key proving it comes from one of the
 	/// channel participants.
@@ -246,7 +254,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
 	/// closed.
 	fn sign_splicing_funding_input(
-		&self, tx: &Transaction, input_index: usize, input_value: u64,
-		secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
+		input_index: usize, input_value: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 }

@@ -1022,10 +1022,11 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 
 			let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 			let mut chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-			let context = chan_lock.channel_by_id.get_mut(&chan_id).map(|chan| chan.context_mut()).unwrap();
+			let channel = chan_lock.channel_by_id.get_mut(&chan_id).unwrap();
+			let (funding, context) = channel.funding_and_context_mut();
 
 			let signer = context.get_mut_signer().as_mut_ecdsa().unwrap();
-			let signature = signer.sign_closing_transaction(&closing_tx_2, &Secp256k1::new()).unwrap();
+			let signature = signer.sign_closing_transaction(&funding.channel_transaction_parameters, &closing_tx_2, &Secp256k1::new()).unwrap();
 			node_1_closing_signed_2.signature = signature;
 			node_1_closing_signed_2
 		};

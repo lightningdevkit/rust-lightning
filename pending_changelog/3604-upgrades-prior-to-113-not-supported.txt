@@ -1,0 +1,2 @@
+## API Updates (0.2)
+ * Upgrading from versions prior to 0.0.113 is no longer supported (#3604).

@@ -52,9 +52,7 @@ use lightning::ln::channelmanager::{
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::{
-	ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
-};
+use lightning::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, Init, UpdateAddHTLC};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
@@ -356,16 +354,12 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
-		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed) as u8;
 		[id; 32]
 	}
 
-	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner {
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let id = channel_keys_id[0];
 		#[rustfmt::skip]
@@ -377,21 +371,11 @@ impl SignerProvider for KeyProvider {
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_secret[31]]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_secret[31]]).unwrap(),
 			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_secret[31]],
-			channel_value_satoshis,
 			channel_keys_id,
 			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
-	}
-
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
-		let mut reader = lightning::io::Cursor::new(buffer);
-
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
-		let state = self.make_enforcement_state_cell(inner.commitment_seed);
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

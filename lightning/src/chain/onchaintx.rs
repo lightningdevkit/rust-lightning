@@ -25,7 +25,7 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use crate::chain::chaininterface::{ConfirmationTarget, compute_feerate_sat_per_1000_weight};
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::ln::msgs::DecodeError;
 use crate::types::payment::PaymentPreimage;
 use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
@@ -368,7 +368,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let prev_holder_commitment = Readable::read(reader)?;
 		let _prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>> = Readable::read(reader)?;
 
-		let channel_parameters = Readable::read(reader)?;
+		let channel_parameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
 
 		// Read the serialized signer bytes, but don't deserialize them, as we'll obtain our signer
 		// by re-deriving the private key material.
@@ -383,8 +383,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			bytes_read += bytes_to_read;
 		}
 
-		let mut signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
-		signer.provide_channel_parameters(&channel_parameters);
+		let signer = signer_provider.derive_channel_signer(channel_keys_id);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -1188,7 +1187,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 
 	pub(crate) fn get_maybe_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> MaybeSignedTransaction {
-		let tx = self.signer.sign_holder_commitment(&self.holder_commitment, &self.secp_ctx)
+		let tx = self.signer.sign_holder_commitment(&self.channel_transaction_parameters, &self.holder_commitment, &self.secp_ctx)
 			.map(|sig| self.holder_commitment.add_holder_sig(funding_redeemscript, sig))
 			.unwrap_or_else(|_| self.get_unsigned_holder_commitment_tx().clone());
 		MaybeSignedTransaction(tx)
@@ -1196,7 +1195,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let sig = self.signer.unsafe_sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
+		let sig = self.signer.unsafe_sign_holder_commitment(&self.channel_transaction_parameters, &self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
@@ -1315,7 +1314,6 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
-			0,
 			[0; 32],
 			[0; 32],
 		);
@@ -1355,6 +1353,7 @@ mod tests {
 			}),
 			funding_outpoint: Some(funding_outpoint),
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis: 0,
 		};
 
 		// Create an OnchainTxHandler for a commitment containing HTLCs with CLTV expiries of 0, 1,
@@ -1374,7 +1373,7 @@ mod tests {
 				(),
 			));
 		}
-		let holder_commit = HolderCommitmentTransaction::dummy(&mut htlcs);
+		let holder_commit = HolderCommitmentTransaction::dummy(1000000, &mut htlcs);
 		let mut tx_handler = OnchainTxHandler::new(
 			1000000,
 			[0; 32],

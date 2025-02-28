@@ -44,7 +44,6 @@ use lightning::ln::channelmanager::{
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::DecodeError;
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
@@ -63,7 +62,7 @@ use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, ReadableArgs, Writeable};
+use lightning::util::ser::{Readable, Writeable};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
 use lightning_invoice::RawBolt11Invoice;
@@ -427,9 +426,7 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
-		&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	fn generate_channel_keys_id(&self, inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		self.signer_state
 			.borrow_mut()
@@ -437,9 +434,7 @@ impl SignerProvider for KeyProvider {
 		[ctr; 32]
 	}
 
-	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
-	) -> Self::EcdsaSigner {
+	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
@@ -476,7 +471,6 @@ impl SignerProvider for KeyProvider {
 						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 						0, 0, 0, 0, 0, 6, ctr,
 					],
-					channel_value_satoshis,
 					channel_keys_id,
 					channel_keys_id,
 				)
@@ -512,7 +506,6 @@ impl SignerProvider for KeyProvider {
 						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 						0, 0, 0, 0, 0, 12, ctr,
 					],
-					channel_value_satoshis,
 					channel_keys_id,
 					channel_keys_id,
 				)
@@ -520,13 +513,6 @@ impl SignerProvider for KeyProvider {
 			state,
 			false,
 		)
-	}
-
-	fn read_chan_signer(&self, mut data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
-		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
-		let state = Arc::new(Mutex::new(EnforcementState::new()));
-
-		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
