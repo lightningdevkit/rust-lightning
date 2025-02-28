@@ -21,7 +21,7 @@ use crate::sign::{NodeSigner, Recipient, SignerProvider, SpendableOutputDescript
 use bitcoin;
 use bitcoin::absolute::LockTime;
 use bitcoin::secp256k1::All;
-use bitcoin::{secp256k1, ScriptBuf, Transaction, TxOut};
+use bitcoin::{secp256k1, ScriptBuf, Transaction, TxOut, Txid};
 use lightning_invoice::RawBolt11Invoice;
 #[cfg(taproot)]
 use musig2::types::{PartialSignature, PublicNonce};
@@ -154,8 +154,10 @@ delegate!(DynSigner, EcdsaChannelSigner, inner,
 		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>,
 	fn sign_closing_transaction(, channel_parameters: &ChannelTransactionParameters,
 		closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>,
-	fn sign_channel_announcement_with_funding_key(, msg: &UnsignedChannelAnnouncement,
-		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>,
+	fn sign_channel_announcement_with_funding_key(,
+		channel_parameters: &ChannelTransactionParameters, msg: &UnsignedChannelAnnouncement,
+		secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()>,
 	fn sign_holder_anchor_input(, channel_parameters: &ChannelTransactionParameters,
 		anchor_tx: &Transaction, input: usize,
 		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>,
@@ -177,7 +179,9 @@ delegate!(DynSigner, ChannelSigner,
 		holder_tx: &HolderCommitmentTransaction,
 		preimages: Vec<PaymentPreimage>
 	) -> Result<(), ()>,
-	fn pubkeys(,) -> &ChannelPublicKeys,
+	fn pubkeys(,
+		splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> ChannelPublicKeys,
 	fn channel_keys_id(,) -> [u8; 32],
 	fn validate_counterparty_revocation(, idx: u64, secret: &SecretKey) -> Result<(), ()>
 );

@@ -880,6 +880,17 @@ pub struct ChannelTransactionParameters {
 	pub counterparty_parameters: Option<CounterpartyChannelTransactionParameters>,
 	/// The late-bound funding outpoint
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
+	/// The parent funding txid for a channel that has been spliced.
+	///
+	/// If a channel was funded with transaction A, and later spliced with transaction B, this field
+	/// tracks the txid of transaction A.
+	///
+	/// See [`compute_funding_key_tweak`] and [`ChannelSigner::pubkeys`] for more context on how
+	/// this may be used.
+	///
+	/// [`compute_funding_key_tweak`]: crate::sign::compute_funding_key_tweak
+	/// [`ChannelSigner::pubkeys`]: crate::sign::ChannelSigner::pubkeys
+	pub splice_parent_funding_txid: Option<Txid>,
 	/// This channel's type, as negotiated during channel open. For old objects where this field
 	/// wasn't serialized, it will default to static_remote_key at deserialization.
 	pub channel_type_features: ChannelTypeFeatures,
@@ -963,6 +974,7 @@ impl ChannelTransactionParameters {
 			funding_outpoint: Some(chain::transaction::OutPoint {
 				txid: Txid::from_byte_array([42; 32]), index: 0
 			}),
+			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::empty(),
 			channel_value_satoshis,
 		}
@@ -985,6 +997,7 @@ impl Writeable for ChannelTransactionParameters {
 			(8, self.funding_outpoint, option),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
+			(12, self.splice_parent_funding_txid, option),
 			(13, self.channel_value_satoshis, required),
 		});
 		Ok(())
@@ -998,6 +1011,7 @@ impl ReadableArgs<u64> for ChannelTransactionParameters {
 		let mut is_outbound_from_holder = RequiredWrapper(None);
 		let mut counterparty_parameters = None;
 		let mut funding_outpoint = None;
+		let mut splice_parent_funding_txid = None;
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
 		let mut channel_value_satoshis = None;
@@ -1010,6 +1024,7 @@ impl ReadableArgs<u64> for ChannelTransactionParameters {
 			(8, funding_outpoint, option),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
+			(12, splice_parent_funding_txid, option),
 			(13, channel_value_satoshis, option),
 		});
 
@@ -1028,6 +1043,7 @@ impl ReadableArgs<u64> for ChannelTransactionParameters {
 			is_outbound_from_holder: is_outbound_from_holder.0.unwrap(),
 			counterparty_parameters,
 			funding_outpoint,
+			splice_parent_funding_txid,
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
 			channel_value_satoshis,
 		})
@@ -1154,6 +1170,7 @@ impl HolderCommitmentTransaction {
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
+			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis,
 		};
@@ -1953,22 +1970,25 @@ mod tests {
 			let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 			let signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(false, 0));
 			let counterparty_signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(true, 1));
-			let delayed_payment_base = &signer.pubkeys().delayed_payment_basepoint;
 			let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 			let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-			let htlc_basepoint = &signer.pubkeys().htlc_basepoint;
-			let holder_pubkeys = signer.pubkeys();
-			let counterparty_pubkeys = counterparty_signer.pubkeys().clone();
-			let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
+			let holder_pubkeys = signer.pubkeys(None, &secp_ctx);
+			let counterparty_pubkeys = counterparty_signer.pubkeys(None, &secp_ctx).clone();
 			let channel_parameters = ChannelTransactionParameters {
 				holder_pubkeys: holder_pubkeys.clone(),
 				holder_selected_contest_delay: 0,
 				is_outbound_from_holder: false,
 				counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
 				funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
+				splice_parent_funding_txid: None,
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 				channel_value_satoshis: 3000,
 			};
+			let directed_parameters = channel_parameters.as_holder_broadcastable();
+			let keys = TxCreationKeys::from_channel_static_keys(
+				&per_commitment_point, directed_parameters.broadcaster_pubkeys(),
+				directed_parameters.countersignatory_pubkeys(), &secp_ctx,
+			);
 			let htlcs_with_aux = Vec::new();
 
 			Self {

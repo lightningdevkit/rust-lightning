@@ -169,6 +169,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		holder_selected_contest_delay: open_channel_v2_msg.common_fields.to_self_delay,
 		is_outbound_from_holder: true,
 		funding_outpoint,
+		splice_parent_funding_txid: None,
 		channel_type_features,
 		channel_value_satoshis: funding_satoshis,
 	};

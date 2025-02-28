@@ -1352,6 +1352,7 @@ mod tests {
 				selected_contest_delay: 67,
 			}),
 			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis: 0,
 		};
