@@ -10304,6 +10304,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)) -> Result<Self, DecodeError> {
 		let (entropy_source, signer_provider, serialized_height, our_supported_features) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+		if ver <= 2 {
+			return Err(DecodeError::UnknownVersion);
+		}
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We read
@@ -10311,13 +10314,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let user_id_low: u64 = Readable::read(reader)?;
 
 		let mut config = Some(LegacyChannelConfig::default());
-		if ver == 1 {
-			// Read the old serialization of the ChannelConfig from version 0.0.98.
-			config.as_mut().unwrap().options.forwarding_fee_proportional_millionths = Readable::read(reader)?;
-			config.as_mut().unwrap().options.cltv_expiry_delta = Readable::read(reader)?;
-			config.as_mut().unwrap().announce_for_forwarding = Readable::read(reader)?;
-			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
-		} else {
+		{
 			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
 			let mut _val: u64 = Readable::read(reader)?;
 		}
@@ -10481,11 +10478,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let holder_dust_limit_satoshis = Readable::read(reader)?;
 		let counterparty_max_htlc_value_in_flight_msat = Readable::read(reader)?;
 		let mut counterparty_selected_channel_reserve_satoshis = None;
-		if ver == 1 {
-			// Read the old serialization from version 0.0.98.
-			counterparty_selected_channel_reserve_satoshis = Some(Readable::read(reader)?);
-		} else {
-			// Read the 8 bytes of backwards-compatibility data.
+		{
+			// Read the 8 bytes of backwards-compatibility counterparty_selected_channel_reserve_satoshis data.
 			let _dummy: u64 = Readable::read(reader)?;
 		}
 		let counterparty_htlc_minimum_msat = Readable::read(reader)?;
@@ -10493,11 +10487,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
 
 		let mut minimum_depth = None;
-		if ver == 1 {
-			// Read the old serialization from version 0.0.98.
-			minimum_depth = Some(Readable::read(reader)?);
-		} else {
-			// Read the 4 bytes of backwards-compatibility data.
+		{
+			// Read the 4 bytes of backwards-compatibility minimum_depth data.
 			let _dummy: u32 = Readable::read(reader)?;
 		}
 
