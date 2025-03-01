@@ -28,7 +28,6 @@ pub mod types;
 // TODO: These modules were moved from lightning-invoice and need to be better integrated into this
 // crate now:
 pub mod invoice_utils;
-pub mod bolt11_payment;
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
