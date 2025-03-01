@@ -725,7 +725,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	Arc<L>,
 	IgnoringMessageHandler,
 	Arc<KeysManager>,
-	Arc<ChainMonitor<Arc<M>, Arc<C>, Arc<T>, Arc<F>, Arc<L>, Arc<KeysManager>>>,
+	IgnoringMessageHandler,
 >;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
