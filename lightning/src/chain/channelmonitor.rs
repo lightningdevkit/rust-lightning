@@ -529,6 +529,14 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 );
 
+/// Partial data from ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo used to simplify the
+/// return type of `ChannelContext::validate_commitment_signed`.
+pub(crate) struct LatestHolderCommitmentTXInfo {
+	pub commitment_tx: HolderCommitmentTransaction,
+	pub htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+	pub nondust_htlc_sources: Vec<HTLCSource>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
