@@ -21,7 +21,7 @@ use crate::prelude::*;
 use crate::ln::msgs::DecodeError;
 
 /// [`OurPeerStorage`] is used to store channel information that allows for the creation of a
-/// PeerStorage backup. It includes versioning and timestamping for comparison between
+/// `peer_storage` backup. It includes versioning and timestamping for comparison between
 /// instances of [`OurPeerStorage`].
 ///
 /// This structure is designed to serialize channel data for backup and supports encryption
@@ -84,7 +84,7 @@ impl OurPeerStorage {
 		self.ser_channels.clone()
 	}
 
-	/// Encrypt [`OurPeerStorage`] using the `key` and return a Vec<u8> containing the result.
+	/// Encrypt [`OurPeerStorage`] using the `key` and return a `Vec<u8>` containing the result.
 	pub fn encrypt_our_peer_storage(&self, key: [u8; 32]) -> Vec<u8> {
 		let n = 0u64;
 		let mut peer_storage = VecWriter(Vec::new());
