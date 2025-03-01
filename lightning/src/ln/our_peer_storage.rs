@@ -77,6 +77,7 @@ impl OurPeerStorage {
 		self.ser_channels.clone()
 	}
 
+	/// Get `block_height` field from [`OurPeerStorage`]
 	pub fn get_block_height(&self) -> u32 {
 		self.block_height
 	}
