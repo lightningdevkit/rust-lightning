@@ -56,22 +56,15 @@ use crate::ln::msgs::DecodeError;
 #[derive(PartialEq)]
 pub struct OurPeerStorage {
 	version: u8,
-	timestamp: u32,
+	// If the block height is 0, OurPeerStorage doesn't have any channels backed up.
+	block_height: u32,
 	ser_channels: Vec<u8>,
 }
 
 impl OurPeerStorage {
 	/// Returns a [`OurPeerStorage`] with version 1 and current timestamp.
 	pub fn new() -> Self {
-		let duration_since_epoch = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("Time must be > 1970");
-
-		Self {
-			version: 1,
-			timestamp: duration_since_epoch.as_secs() as u32,
-			ser_channels: Vec::new(),
-		}
+		Self { version: 1, block_height: 0u32, ser_channels: Vec::new() }
 	}
 
 	/// Stubs a channel inside [`OurPeerStorage`]
@@ -82,6 +75,10 @@ impl OurPeerStorage {
 	/// Get `ser_channels` field from [`OurPeerStorage`]
 	pub fn get_ser_channels(&self) -> Vec<u8> {
 		self.ser_channels.clone()
+	}
+
+	pub fn get_block_height(&self) -> u32 {
+		self.block_height
 	}
 
 	/// Encrypt [`OurPeerStorage`] using the `key` and return a `Vec<u8>` containing the result.
@@ -135,7 +132,7 @@ impl OurPeerStorage {
 impl Writeable for OurPeerStorage {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		write_ver_prefix!(writer, self.version, 1);
-		self.timestamp.write(writer)?;
+		self.block_height.write(writer)?;
 		self.ser_channels.write(writer)?;
 		Ok(())
 	}
@@ -144,10 +141,10 @@ impl Writeable for OurPeerStorage {
 impl Readable for OurPeerStorage {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let ver = read_ver_prefix!(reader, 1u8);
-		let timestamp: u32 = Readable::read(reader)?;
+		let block_height: u32 = Readable::read(reader)?;
 		let ser_channels = <Vec<u8> as Readable>::read(reader)?;
 
-		let ps = OurPeerStorage { version: ver, timestamp, ser_channels };
+		let ps = OurPeerStorage { version: ver, block_height, ser_channels };
 		Ok(ps)
 	}
 }

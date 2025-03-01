@@ -712,6 +712,7 @@ where C::Target: chain::Filter,
 {
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
+		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage` and update [`OurPeerStorage::block_height`] accordingly.
 
 		self.pending_send_only_events.lock().unwrap().push(events::MessageSendEvent::SendPeerStorage { node_id: their_node_id
 			, msg: msgs::PeerStorage { data: self.our_peer_storage.lock().unwrap().encrypt_our_peer_storage(self.our_peerstorage_encryption_key) } })

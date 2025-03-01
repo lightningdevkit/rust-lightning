@@ -8309,7 +8309,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match OurPeerStorage::decrypt_our_peer_storage(&mut res, cyphertext_with_key.as_slice()) {
 			Ok(()) => {
 				// Decryption successful, the plaintext is now stored in `res`.
-				log_debug!(logger, "Received a peer storage from peer {}", log_pubkey!(counterparty_node_id));
 			}
 			Err(_) => {
 				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
@@ -8319,6 +8318,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), ChannelId([0; 32])));
 			}
 		}
+		let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::bitcoin::io::Cursor::new(res)).unwrap();
+
+		if our_peer_storage.get_block_height() == 0 {
+			log_debug!(logger, "Received a peer storage from peer {} with 0 channels.", log_pubkey!(counterparty_node_id));
+		}
+
 		Ok(())
 	}
 
