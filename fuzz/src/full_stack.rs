@@ -75,6 +75,7 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
+use lightning::util::dyn_signer::DynSigner;
 use std::cell::RefCell;
 use std::cmp;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -439,7 +440,7 @@ impl SignerProvider for KeyProvider {
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
 		TestChannelSigner::new_with_revoked(
-			if inbound {
+			DynSigner::new(if inbound {
 				InMemorySigner::new(
 					&secp_ctx,
 					SecretKey::from_slice(&[
@@ -509,7 +510,7 @@ impl SignerProvider for KeyProvider {
 					channel_keys_id,
 					channel_keys_id,
 				)
-			},
+			}),
 			state,
 			false,
 		)

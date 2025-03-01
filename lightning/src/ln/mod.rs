@@ -58,9 +58,9 @@ mod blinded_payment_tests;
 #[cfg(all(test, async_payments))]
 #[allow(unused_mut)]
 mod async_payments_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
-mod functional_tests;
+pub mod functional_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod max_payment_path_len_tests;
