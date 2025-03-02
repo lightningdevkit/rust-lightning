@@ -28,7 +28,6 @@ use crate::ln::msgs::{ChannelMessageHandler, Init, LightningError, SocketAddress
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
-use crate::chain::chainmonitor::ChainMonitor;
 use crate::ln::wire::{Encode, Type};
 use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
 use crate::onion_message::dns_resolution::{DNSResolverMessageHandler, DNSResolverMessage, DNSSECProof, DNSSECQuery};
@@ -51,6 +50,7 @@ use core::ops::Deref;
 use core::convert::Infallible;
 #[cfg(not(c_bindings))]
 use {
+	crate::chain::chainmonitor::ChainMonitor,
 	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger},
 	crate::routing::gossip::{NetworkGraph, P2PGossipSync},
