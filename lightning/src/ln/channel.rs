@@ -6831,7 +6831,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		log_trace!(logger, "Regenerating latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
-		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger).map(|(cu, _)| cu) {
+		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
 			if self.context.signer_pending_commitment_update {
 				log_trace!(logger, "Commitment update generated: clearing signer_pending_commitment_update");
 				self.context.signer_pending_commitment_update = false;
@@ -8745,7 +8745,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
 	/// generation when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
+	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<msgs::CommitmentSigned, ChannelError> where L::Target: Logger {
 		// Get the fee tests from `build_commitment_no_state_update`
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(logger);
@@ -8758,11 +8758,6 @@ impl<SP: Deref> FundedChannel<SP> where
 				let (signature, htlc_signatures);
 
 				{
-					let mut htlcs = Vec::with_capacity(commitment_stats.htlcs_included.len());
-					for &(ref htlc, _) in commitment_stats.htlcs_included.iter() {
-						htlcs.push(htlc);
-					}
-
 					let res = ecdsa.sign_counterparty_commitment(
 							&self.funding.channel_transaction_parameters,
 							&commitment_stats.tx,
@@ -8779,7 +8774,8 @@ impl<SP: Deref> FundedChannel<SP> where
 						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
 
 					let counterparty_keys = commitment_stats.tx.trust().keys();
-					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
+					debug_assert_eq!(htlc_signatures.len(), commitment_stats.tx.htlcs().len());
+					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(commitment_stats.tx.htlcs()) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
 							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
@@ -8788,14 +8784,14 @@ impl<SP: Deref> FundedChannel<SP> where
 					}
 				}
 
-				Ok((msgs::CommitmentSigned {
+				Ok(msgs::CommitmentSigned {
 					channel_id: self.context.channel_id,
 					signature,
 					htlc_signatures,
 					batch: None,
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
-				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
+				})
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -11886,14 +11882,8 @@ mod tests {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $opt_anchors: expr, {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
 			} ) => { {
-				let (commitment_tx, htlcs): (_, Vec<HTLCOutputInCommitment>) = {
-					let mut commitment_stats = chan.context.build_commitment_transaction(&chan.funding, 0xffffffffffff - 42, &per_commitment_point, true, false, &logger);
-
-					let htlcs = commitment_stats.htlcs_included.drain(..)
-						.filter_map(|(htlc, _)| if htlc.transaction_output_index.is_some() { Some(htlc) } else { None })
-						.collect();
-					(commitment_stats.tx, htlcs)
-				};
+				let commitment_stats = chan.context.build_commitment_transaction(&chan.funding, 0xffffffffffff - 42, &per_commitment_point, true, false, &logger);
+				let commitment_tx = commitment_stats.tx;
 				let trusted_tx = commitment_tx.trust();
 				let unsigned_tx = trusted_tx.built_transaction();
 				let redeemscript = chan.funding.get_funding_redeemscript();
@@ -11908,10 +11898,10 @@ mod tests {
 				counterparty_htlc_sigs.clear(); // Don't warn about excess mut for no-HTLC calls
 				$({
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
-					per_htlc.push((htlcs[$htlc_idx].clone(), Some(remote_signature)));
+					per_htlc.push((commitment_tx.htlcs()[$htlc_idx].clone(), Some(remote_signature)));
 					counterparty_htlc_sigs.push(remote_signature);
 				})*
-				assert_eq!(htlcs.len(), per_htlc.len());
+				assert_eq!(commitment_tx.htlcs().len(), per_htlc.len());
 
 				let holder_commitment_tx = HolderCommitmentTransaction::new(
 					commitment_tx.clone(),
@@ -11934,7 +11924,7 @@ mod tests {
 					log_trace!(logger, "verifying htlc {}", $htlc_idx);
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
-					let ref htlc = htlcs[$htlc_idx];
+					let ref htlc = commitment_tx.htlcs()[$htlc_idx];
 					let keys = commitment_tx.trust().keys();
 					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
 						chan.funding.get_counterparty_selected_contest_delay().unwrap(),
