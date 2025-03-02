@@ -74,7 +74,7 @@ impl TrackedSpendableOutput {
 
 	/// Returns whether the output is spent in the given transaction.
 	pub fn is_spent_in(&self, tx: &Transaction) -> bool {
-		let prev_outpoint = self.descriptor.outpoint().into_bitcoin_outpoint();
+		let prev_outpoint = self.descriptor.spendable_outpoint().into_bitcoin_outpoint();
 		tx.input.iter().any(|input| input.previous_output == prev_outpoint)
 	}
 }
