@@ -5,7 +5,7 @@
 #![allow(unused_macros)]
 
 use lightning::chain::Filter;
-use lightning::sign::EntropySource;
+use lightning::sign::{EntropySource, NodeSigner};
 
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
@@ -130,6 +130,7 @@ pub(crate) struct Node {
 				>,
 			>,
 			Arc<KeysManager>,
+			Arc<test_utils::TestSendingOnlyMessageHandler>,
 		>,
 	>,
 	pub(crate) liquidity_manager:
@@ -430,6 +431,7 @@ pub(crate) fn create_liquidity_node(
 		logger.clone(),
 		fee_estimator.clone(),
 		kv_store.clone(),
+		keys_manager.get_peer_storage_key(),
 	));
 	let best_block = BestBlock::from_network(network);
 	let chain_params = ChainParameters { network, best_block };
@@ -465,6 +467,7 @@ pub(crate) fn create_liquidity_node(
 		chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new(
 			ChainHash::using_genesis_block(Network::Testnet),
 		)),
+		send_only_message_handler: Arc::new(test_utils::TestSendingOnlyMessageHandler::new()),
 		route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: Arc::clone(&liquidity_manager),

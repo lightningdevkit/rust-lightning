@@ -1087,7 +1087,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager, NodeSigner};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1210,6 +1210,7 @@ mod tests {
 				Arc<test_utils::TestLogger>,
 				IgnoringMessageHandler,
 				Arc<KeysManager>,
+				IgnoringMessageHandler,
 			>,
 		>,
 		chain_monitor: Arc<ChainMonitor>,
@@ -1570,6 +1571,7 @@ mod tests {
 				logger.clone(),
 				fee_estimator.clone(),
 				kv_store.clone(),
+				keys_manager.get_peer_storage_key(),
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
@@ -1623,6 +1625,7 @@ mod tests {
 				route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
 				onion_message_handler: messenger.clone(),
 				custom_message_handler: IgnoringMessageHandler {},
+				send_only_message_handler: IgnoringMessageHandler {},
 			};
 			let peer_manager = Arc::new(PeerManager::new(
 				msg_handler,
