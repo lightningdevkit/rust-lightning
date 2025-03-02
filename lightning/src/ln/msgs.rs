@@ -32,6 +32,8 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
+#[cfg(trampoline)]
+use crate::blinded_path::payment::{BlindedTrampolineTlvs, TrampolineForwardTlvs};
 use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -2074,6 +2076,7 @@ mod fuzzy_internal_msgs {
 	}
 
 	#[cfg(trampoline)]
+	#[cfg_attr(trampoline, allow(unused))]
 	pub struct InboundTrampolineEntrypointPayload {
 		pub amt_to_forward: u64,
 		pub outgoing_cltv_value: u32,
@@ -2116,9 +2119,39 @@ mod fuzzy_internal_msgs {
 	pub enum InboundOnionPayload {
 		Forward(InboundOnionForwardPayload),
 		#[cfg(trampoline)]
+		#[cfg_attr(trampoline, allow(unused))]
 		TrampolineEntrypoint(InboundTrampolineEntrypointPayload),
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
+		BlindedReceive(InboundOnionBlindedReceivePayload),
+	}
+
+	#[cfg(trampoline)]
+	#[cfg_attr(trampoline, allow(unused))]
+	pub struct InboundTrampolineForwardPayload {
+		pub next_trampoline: PublicKey,
+		/// The value, in msat, of the payment after this hop's fee is deducted.
+		pub amt_to_forward: u64,
+		pub outgoing_cltv_value: u32,
+	}
+
+	#[cfg(trampoline)]
+	#[cfg_attr(trampoline, allow(unused))]
+	pub struct InboundTrampolineBlindedForwardPayload {
+		pub next_trampoline: PublicKey,
+		pub payment_relay: PaymentRelay,
+		pub payment_constraints: PaymentConstraints,
+		pub features: BlindedHopFeatures,
+		pub intro_node_blinding_point: Option<PublicKey>,
+		pub next_blinding_override: Option<PublicKey>,
+	}
+
+	#[cfg(trampoline)]
+	#[cfg_attr(trampoline, allow(unused))]
+	pub enum InboundTrampolinePayload {
+		Forward(InboundTrampolineForwardPayload),
+		BlindedForward(InboundTrampolineBlindedForwardPayload),
+		Receive(InboundOnionReceivePayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
 	}
 
@@ -3358,6 +3391,134 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		}
 	}
 }
+
+#[cfg(trampoline)]
+impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload where NS::Target: NodeSigner {
+	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
+		let (update_add_blinding_point, node_signer) = args;
+
+		let mut amt = None;
+		let mut cltv_value = None;
+		let mut payment_data: Option<FinalOnionHopData> = None;
+		let mut encrypted_tlvs_opt: Option<WithoutLength<Vec<u8>>> = None;
+		let mut intro_node_blinding_point = None;
+		let mut next_trampoline: Option<PublicKey> = None;
+		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
+		let mut total_msat = None;
+		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		let mut invoice_request: Option<InvoiceRequest> = None;
+		let mut custom_tlvs = Vec::new();
+
+		let tlv_len = BigSize::read(r)?;
+		let mut rd = FixedLengthReader::new(r, tlv_len.0);
+		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
+			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
+			(8, payment_data, option),
+			(10, encrypted_tlvs_opt, option),
+			(12, intro_node_blinding_point, option),
+			(14, next_trampoline, option),
+			(16, payment_metadata, option),
+			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(77_777, invoice_request, option),
+			// See https://github.com/lightning/blips/blob/master/blip-0003.md
+			(5482373484, keysend_preimage, option)
+		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if msg_type < 1 << 16 { return Ok(false) }
+			let mut value = Vec::new();
+			msg_reader.read_to_limit(&mut value, u64::MAX)?;
+			custom_tlvs.push((msg_type, value));
+			Ok(true)
+		});
+
+		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+			return Err(DecodeError::InvalidValue)
+		}
+
+		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+			if next_trampoline.is_some() || payment_data.is_some() || payment_metadata.is_some() {
+				return Err(DecodeError::InvalidValue)
+			}
+			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
+			let enc_tlvs_ss = node_signer.ecdh(Recipient::Node, &blinding_point, None)
+				.map_err(|_| DecodeError::InvalidValue)?;
+			let rho = onion_utils::gen_rho_from_shared_secret(&enc_tlvs_ss.secret_bytes());
+			let mut s = Cursor::new(&enc_tlvs);
+			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
+			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
+				ChaChaPolyReadAdapter { readable: BlindedTrampolineTlvs::Forward(TrampolineForwardTlvs {
+					next_trampoline, payment_relay, payment_constraints, features, next_blinding_override
+				})} => {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
+						keysend_preimage.is_some() || invoice_request.is_some()
+					{
+						return Err(DecodeError::InvalidValue)
+					}
+					Ok(Self::BlindedForward(InboundTrampolineBlindedForwardPayload {
+						next_trampoline,
+						payment_relay,
+						payment_constraints,
+						features,
+						intro_node_blinding_point,
+						next_blinding_override,
+					}))
+				},
+				ChaChaPolyReadAdapter { readable: BlindedTrampolineTlvs::Receive(receive_tlvs) } => {
+					let ReceiveTlvs { tlvs, authentication: (hmac, nonce) } = receive_tlvs;
+					let expanded_key = node_signer.get_inbound_payment_key();
+					if tlvs.verify_for_offer_payment(hmac, nonce, &expanded_key).is_err() {
+						return Err(DecodeError::InvalidValue);
+					}
+
+					let UnauthenticatedReceiveTlvs {
+						payment_secret, payment_constraints, payment_context,
+					} = tlvs;
+					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+					Ok(Self::BlindedReceive(InboundOnionBlindedReceivePayload {
+						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
+						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
+						payment_secret,
+						payment_constraints,
+						payment_context,
+						intro_node_blinding_point,
+						keysend_preimage,
+						invoice_request,
+						custom_tlvs,
+					}))
+				},
+			}
+		} else if let Some(next_trampoline) = next_trampoline {
+			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
+				total_msat.is_some() || invoice_request.is_some()
+			{ return Err(DecodeError::InvalidValue) }
+			Ok(Self::Forward(InboundTrampolineForwardPayload {
+				next_trampoline,
+				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
+				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+			}))
+		} else {
+			if encrypted_tlvs_opt.is_some() || total_msat.is_some() || invoice_request.is_some() {
+				return Err(DecodeError::InvalidValue)
+			}
+			if let Some(data) = &payment_data {
+				if data.total_msat > MAX_VALUE_MSAT {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
+			Ok(Self::Receive(InboundOnionReceivePayload {
+				payment_data,
+				payment_metadata: payment_metadata.map(|w| w.0),
+				keysend_preimage,
+				sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+				cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
+				custom_tlvs,
+			}))
+		}
+	}
+}
+
 
 impl Writeable for Ping {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

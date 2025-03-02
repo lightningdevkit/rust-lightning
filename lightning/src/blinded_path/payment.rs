@@ -297,6 +297,26 @@ pub struct ForwardTlvs {
 	pub next_blinding_override: Option<PublicKey>,
 }
 
+/// Data to construct a [`BlindedHop`] for forwarding a Trampoline payment.
+#[cfg(trampoline)]
+#[derive(Clone, Debug)]
+pub struct TrampolineForwardTlvs {
+	/// The node id to which the trampoline node must find a route.
+	pub next_trampoline: PublicKey,
+	/// Payment parameters for relaying over [`Self::next_trampoline`].
+	pub payment_relay: PaymentRelay,
+	/// Payment constraints for relaying over [`Self::next_trampoline`].
+	pub payment_constraints: PaymentConstraints,
+	/// Supported and required features when relaying a payment onion containing this object's
+	/// corresponding [`BlindedHop::encrypted_payload`].
+	///
+	/// [`BlindedHop::encrypted_payload`]: crate::blinded_path::BlindedHop::encrypted_payload
+	pub features: BlindedHopFeatures,
+	/// Set if this [`BlindedPaymentPath`] is concatenated to another, to indicate the
+	/// [`BlindedPaymentPath::blinding_point`] of the appended blinded path.
+	pub next_blinding_override: Option<PublicKey>,
+}
+
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
 /// may not be valid if received by another lightning implementation.
 ///
@@ -344,6 +364,17 @@ impl UnauthenticatedReceiveTlvs {
 pub(crate) enum BlindedPaymentTlvs {
 	/// This blinded payment data is for a forwarding node.
 	Forward(ForwardTlvs),
+	/// This blinded payment data is for the receiving node.
+	Receive(ReceiveTlvs),
+}
+
+/// Data to construct a [`BlindedHop`] for sending a Trampoline payment over.
+///
+/// [`BlindedHop`]: crate::blinded_path::BlindedHop
+#[cfg(trampoline)]
+pub(crate) enum BlindedTrampolineTlvs {
+	/// This blinded payment data is for a forwarding node.
+	Forward(TrampolineForwardTlvs),
 	/// This blinded payment data is for the receiving node.
 	Receive(ReceiveTlvs),
 }
@@ -549,6 +580,47 @@ impl Readable for BlindedPaymentTlvs {
 				return Err(DecodeError::InvalidValue);
 			}
 			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
+				tlvs: UnauthenticatedReceiveTlvs {
+					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
+					payment_constraints: payment_constraints.0.unwrap(),
+					payment_context: payment_context.ok_or(DecodeError::InvalidValue)?,
+				},
+				authentication: authentication.ok_or(DecodeError::InvalidValue)?,
+			}))
+		}
+	}
+}
+
+#[cfg(trampoline)]
+impl Readable for BlindedTrampolineTlvs {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_tlv_stream!(r, {
+			(8, next_blinding_override, option),
+			(10, payment_relay, option),
+			(12, payment_constraints, required),
+			(14, next_trampoline, option),
+			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
+			(65536, payment_secret, option),
+			(65537, payment_context, option),
+			(65539, authentication, option),
+		});
+
+		if let Some(next_trampoline) = next_trampoline {
+			if payment_secret.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+			Ok(BlindedTrampolineTlvs::Forward(TrampolineForwardTlvs {
+				next_trampoline,
+				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
+				payment_constraints: payment_constraints.0.unwrap(),
+				next_blinding_override,
+				features: features.unwrap_or_else(BlindedHopFeatures::empty),
+			}))
+		} else {
+			if payment_relay.is_some() || features.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+			Ok(BlindedTrampolineTlvs::Receive(ReceiveTlvs {
 				tlvs: UnauthenticatedReceiveTlvs {
 					payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 					payment_constraints: payment_constraints.0.unwrap(),
