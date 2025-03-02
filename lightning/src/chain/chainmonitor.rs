@@ -734,6 +734,12 @@ where
 			monitor.block_connected(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
+
+		// Send peer storage everytime a new block arrives.
+		for node_id in self.get_peer_node_ids() {
+			self.send_peer_storage(node_id);
+		}
+
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
 	}
