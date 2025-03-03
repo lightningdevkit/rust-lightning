@@ -719,7 +719,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
 				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
-					default_config: *self.node.get_current_default_configuration(),
+					default_config: self.node.get_current_default_configuration().clone(),
 					entropy_source: self.keys_manager,
 					node_signer: self.keys_manager,
 					signer_provider: self.keys_manager,
@@ -1184,6 +1184,8 @@ macro_rules! reload_node {
 		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
+		$node.onion_messenger.set_async_payments_handler(&$new_channelmanager);
+		// $node.onion_messenger.set_dns_resolver_handler(&$new_channelmanager);
 	};
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		reload_node!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
@@ -3971,7 +3973,7 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 		let temp_chan_id = funding_node.node.create_channel(
 			other_node.node.get_our_node_id(), *channel_value_satoshis, *push_msat, *user_channel_id,
 			None,
-			*override_config,
+			override_config.clone(),
 		).unwrap();
 		let open_channel_msg = get_event_msg!(funding_node, MessageSendEvent::SendOpenChannel, other_node.node.get_our_node_id());
 		other_node.node.handle_open_channel(funding_node.node.get_our_node_id(), &open_channel_msg);

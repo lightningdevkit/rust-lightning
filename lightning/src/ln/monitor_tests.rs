@@ -171,7 +171,7 @@ fn archive_fully_resolved_monitors() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut user_config = test_default_channel_config();
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
@@ -315,7 +315,7 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
@@ -459,7 +459,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
@@ -862,7 +862,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
@@ -1359,7 +1359,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
@@ -1645,7 +1645,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
@@ -1946,7 +1946,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
@@ -2236,7 +2236,7 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config), Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone()), Some(user_config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
@@ -2401,7 +2401,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, _, chan_id, funding_tx) = create_chan_between_nodes_with_value(
@@ -2533,7 +2533,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(
@@ -2731,7 +2731,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
 	let bob_deserialized;
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -3032,7 +3032,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let mut user_config = test_default_channel_config();
 	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	user_config.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config.clone())]);
 	let node_deserialized;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -3120,7 +3120,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		user_config.manually_accept_inbound_channels = true;
 	}
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config), Some(user_config)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
