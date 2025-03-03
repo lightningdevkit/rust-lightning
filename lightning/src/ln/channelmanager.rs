@@ -13763,8 +13763,8 @@ where
 					// claim.
 					// Note that a `ChannelMonitor` is created with `update_id` 0 and after we
 					// provide it with a closure update its `update_id` will be at 1.
-					if !monitor.offchain_closed() || monitor.get_latest_update_id() > 1 {
-						should_queue_fc_update = !monitor.offchain_closed();
+					if !monitor.no_further_updates_allowed() || monitor.get_latest_update_id() > 1 {
+						should_queue_fc_update = !monitor.no_further_updates_allowed();
 						let mut latest_update_id = monitor.get_latest_update_id();
 						if should_queue_fc_update {
 							latest_update_id += 1;
