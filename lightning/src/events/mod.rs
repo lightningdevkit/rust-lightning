@@ -23,6 +23,7 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use crate::offers::OfferInvoice;
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -955,7 +956,7 @@ pub enum Event {
 		/// payment hash. A third party can verify that the payment was made by
 		/// showing the invoice and confirming that the payment hash matches
 		/// the hash of the payment preimage.
-		bolt12_invoice: Option<Bolt12Invoice>,
+		bolt12_invoice: Option<OfferInvoice>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
