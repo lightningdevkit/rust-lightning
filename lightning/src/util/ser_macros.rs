@@ -646,7 +646,7 @@ macro_rules! _decode_tlv_stream_range {
 	} }
 }
 
-/// Implements [`Readable`]/[`Writeable`] for a message struct that may include non-TLV and
+/// Implements [`LengthReadable`]/[`Writeable`] for a message struct that may include non-TLV and
 /// TLV-encoded parts.
 ///
 /// This is useful to implement a [`CustomMessageReader`].
@@ -672,7 +672,7 @@ macro_rules! _decode_tlv_stream_range {
 /// });
 /// ```
 ///
-/// [`Readable`]: crate::util::ser::Readable
+/// [`LengthReadable`]: crate::util::ser::LengthReadable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`CustomMessageReader`]: crate::ln::wire::CustomMessageReader
 #[macro_export]
@@ -685,8 +685,10 @@ macro_rules! impl_writeable_msg {
 				Ok(())
 			}
 		}
-		impl $crate::util::ser::Readable for $st {
-			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
+		impl $crate::util::ser::LengthReadable for $st {
+			fn read_from_fixed_length_buffer<R: $crate::util::ser::LengthLimitedRead>(
+				r: &mut R
+			) -> Result<Self, $crate::ln::msgs::DecodeError> {
 				$(let $field = $crate::util::ser::Readable::read(r)?;)*
 				$($crate::_init_tlv_field_var!($tlvfield, $fieldty);)*
 				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
@@ -1368,7 +1370,7 @@ mod tests {
 	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
 	use crate::util::ser::{
-		HighZeroBytesDroppedBigSize, MaybeReadable, Readable, VecWriter, Writeable,
+		HighZeroBytesDroppedBigSize, LengthReadable, MaybeReadable, Readable, VecWriter, Writeable,
 	};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
@@ -1814,10 +1816,10 @@ mod tests {
 	#[test]
 	fn impl_writeable_msg_empty() {
 		let msg = EmptyMsg {};
-		let mut encoded_msg = msg.encode();
+		let encoded_msg = msg.encode();
 		assert!(encoded_msg.is_empty());
-		let mut encoded_msg_stream = Cursor::new(&mut encoded_msg);
-		let decoded_msg: EmptyMsg = Readable::read(&mut encoded_msg_stream).unwrap();
+		let decoded_msg: EmptyMsg =
+			LengthReadable::read_from_fixed_length_buffer(&mut &encoded_msg[..]).unwrap();
 		assert_eq!(msg, decoded_msg);
 	}
 

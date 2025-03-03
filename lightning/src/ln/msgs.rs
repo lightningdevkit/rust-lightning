@@ -2330,7 +2330,7 @@ impl LengthReadable for TrampolineOnionPacket {
 		let public_key = Readable::read(r)?;
 
 		let mut rd = FixedLengthReader::new(r, hop_data_len);
-		let hop_data = WithoutLength::<Vec<u8>>::read(&mut rd)?.0;
+		let hop_data = WithoutLength::<Vec<u8>>::read_from_fixed_length_buffer(&mut rd)?.0;
 
 		let hmac = Readable::read(r)?;
 
@@ -3937,7 +3937,7 @@ mod tests {
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket, InboundOnionForwardPayload, InboundOnionReceivePayload};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
+	use crate::util::ser::{BigSize, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hex::FromHex;
@@ -4876,7 +4876,7 @@ mod tests {
 		let encoded_value = closing_signed.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
-		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
+		assert_eq!(msgs::ClosingSigned::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap(), closing_signed);
 
 		let closing_signed_with_range = msgs::ClosingSigned {
 			channel_id: ChannelId::from_bytes([2; 32]),
@@ -4890,7 +4890,7 @@ mod tests {
 		let encoded_value_with_range = closing_signed_with_range.encode();
 		let target_value_with_range = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a011000000000deadbeef1badcafe01234567").unwrap();
 		assert_eq!(encoded_value_with_range, target_value_with_range);
-		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value_with_range)).unwrap(),
+		assert_eq!(msgs::ClosingSigned::read_from_fixed_length_buffer(&mut &target_value_with_range[..]).unwrap(),
 			closing_signed_with_range);
 	}
 
@@ -5054,7 +5054,7 @@ mod tests {
 		let encoded_value = init_msg.encode();
 		let target_value = <Vec<u8>>::from_hex("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8").unwrap();
 		assert_eq!(encoded_value, target_value);
-		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(), init_msg);
+		assert_eq!(msgs::Init::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap(), init_msg);
 	}
 
 	#[test]
@@ -5289,9 +5289,10 @@ mod tests {
 		assert_eq!(encoded_trampoline_packet.len(), 716);
 
 		{ // verify that a codec round trip works
-			let mut reader = Cursor::new(&encoded_trampoline_packet);
-			let mut trampoline_packet_reader = FixedLengthReader::new(&mut reader, encoded_trampoline_packet.len() as u64);
-			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read_from_fixed_length_buffer(&mut trampoline_packet_reader).unwrap();
+			let decoded_trampoline_packet: TrampolineOnionPacket =
+				<TrampolineOnionPacket as LengthReadable>::read_from_fixed_length_buffer(
+					&mut &encoded_trampoline_packet[..]
+				).unwrap();
 			assert_eq!(decoded_trampoline_packet.encode(), encoded_trampoline_packet);
 		}
 
@@ -5417,7 +5418,7 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		query_channel_range = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 		assert_eq!(query_channel_range.first_blocknum, 100000);
 		assert_eq!(query_channel_range.number_of_blocks, 1500);
 	}
@@ -5501,7 +5502,7 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		reply_short_channel_ids_end = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 		assert_eq!(reply_short_channel_ids_end.chain_hash, expected_chain_hash);
 		assert_eq!(reply_short_channel_ids_end.full_information, true);
 	}
@@ -5518,7 +5519,9 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		gossip_timestamp_filter = LengthReadable::read_from_fixed_length_buffer(
+			&mut &target_value[..]
+		).unwrap();
 		assert_eq!(gossip_timestamp_filter.chain_hash, expected_chain_hash);
 		assert_eq!(gossip_timestamp_filter.first_timestamp, 1590000000);
 		assert_eq!(gossip_timestamp_filter.timestamp_range, 0xffff_ffff);
