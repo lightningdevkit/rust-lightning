@@ -931,15 +931,11 @@ pub(crate) struct DecodedOnionFailure {
 	pub(crate) onion_error_data: Option<Vec<u8>>,
 }
 
-/// Note that we always decrypt `packet` in-place here even if the deserialization into
-/// [`msgs::DecodedOnionErrorPacket`] ultimately fails.
-fn decrypt_onion_error_packet(
-	packet: &mut Vec<u8>, shared_secret: SharedSecret,
-) -> Result<msgs::DecodedOnionErrorPacket, msgs::DecodeError> {
+/// Decrypt the error packet in-place.
+fn decrypt_onion_error_packet(packet: &mut Vec<u8>, shared_secret: SharedSecret) {
 	let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
 	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 	chacha.process_in_place(packet);
-	msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(packet))
 }
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
@@ -1021,9 +1017,11 @@ where
 					{
 						// Actually parse the onion error data in tests so we can check that blinded hops fail
 						// back correctly.
-						let err_packet =
-							decrypt_onion_error_packet(&mut encrypted_packet, shared_secret)
-								.unwrap();
+						decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
+						let err_packet = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(
+							&encrypted_packet,
+						))
+						.unwrap();
 						error_code_ret = Some(u16::from_be_bytes(
 							err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
 						));
@@ -1044,10 +1042,12 @@ where
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
 
-		let err_packet = match decrypt_onion_error_packet(&mut encrypted_packet, shared_secret) {
-			Ok(p) => p,
-			Err(_) => return,
-		};
+		decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
+		let err_packet =
+			match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&encrypted_packet)) {
+				Ok(p) => p,
+				Err(_) => return,
+			};
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
 		hmac.input(&err_packet.encode()[32..]);
