@@ -1028,9 +1028,7 @@ macro_rules! impl_readable_for_vec_with_element_length_prefix {
 				for _ in 0..len.0 {
 					let elem_len: CollectionLength = Readable::read(r)?;
 					let mut elem_reader = FixedLengthReader::new(r, elem_len.0);
-					if let Some(val) = MaybeReadable::read(&mut elem_reader)? {
-						ret.push(val);
-					}
+					ret.push(LengthReadable::read_from_fixed_length_buffer(&mut elem_reader)?);
 				}
 				Ok(ret)
 			}

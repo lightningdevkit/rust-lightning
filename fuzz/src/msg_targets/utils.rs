@@ -49,15 +49,16 @@ macro_rules! test_msg {
 #[macro_export]
 macro_rules! test_msg_simple {
 	($MsgType: path, $data: ident) => {{
-		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::lightning::io::Cursor::new($data);
-		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+		use lightning::util::ser::{LengthReadable, Writeable};
+		if let Ok(msg) =
+			<$MsgType as LengthReadable>::read_from_fixed_length_buffer(&mut &$data[..])
+		{
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();
 			assert_eq!(msg.serialized_length(), w.0.len());
 
 			let msg =
-				<$MsgType as Readable>::read(&mut ::lightning::io::Cursor::new(&w.0)).unwrap();
+				<$MsgType as LengthReadable>::read_from_fixed_length_buffer(&mut &w.0[..]).unwrap();
 			let mut w_two = VecWriter(Vec::new());
 			msg.write(&mut w_two).unwrap();
 			assert_eq!(&w.0[..], &w_two.0[..]);

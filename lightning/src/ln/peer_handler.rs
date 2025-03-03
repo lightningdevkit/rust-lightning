@@ -1541,8 +1541,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									try_potential_handleerror!(peer,
 										peer.channel_encryptor.decrypt_message(&mut peer.pending_read_buffer[..]));
 
-									let mut reader = io::Cursor::new(&peer.pending_read_buffer[..peer.pending_read_buffer.len() - 16]);
-									let message_result = wire::read(&mut reader, &*self.message_handler.custom_message_handler);
+									let message_result = wire::read(
+										&mut &peer.pending_read_buffer[..peer.pending_read_buffer.len() - 16],
+										&*self.message_handler.custom_message_handler
+									);
 
 									// Reset read buffer
 									if peer.pending_read_buffer.capacity() > 8192 { peer.pending_read_buffer = Vec::new(); }
