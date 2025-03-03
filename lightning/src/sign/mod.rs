@@ -534,7 +534,7 @@ impl SpendableOutputDescriptor {
 	}
 
 	/// Returns the outpoint of the spendable output.
-	pub fn outpoint(&self) -> OutPoint {
+	pub fn spendable_outpoint(&self) -> OutPoint {
 		match self {
 			Self::StaticOutput { outpoint, .. } => *outpoint,
 			Self::StaticPaymentOutput(descriptor) => descriptor.outpoint,
