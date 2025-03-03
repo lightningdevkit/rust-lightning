@@ -5647,6 +5647,20 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let commitment_tx_info = self.context.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)?;
 
+		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
+			// We only fail to advance our commitment point/number if we're currently
+			// waiting for our signer to unblock and provide a commitment point.
+			// During post-funding channel operation, we only advance our point upon
+			// receiving a commitment_signed, and our counterparty cannot send us
+			// another commitment signed until we've provided a new commitment point
+			// in revoke_and_ack, which requires unblocking our signer and completing
+			// the advance to the next point. This should be unreachable since
+			// a new commitment_signed should fail at our signature checks in
+			// validate_commitment_signed.
+			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
+			return Err(ChannelError::close("Failed to advance our commitment point".to_owned()));
+		}
+
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
 		if let &mut Some((_, ref mut update_state)) = &mut self.context.pending_update_fee {
@@ -5702,18 +5716,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
-			// We only fail to advance our commitment point/number if we're currently
-			// waiting for our signer to unblock and provide a commitment point.
-			// During post-funding channel operation, we only advance our point upon
-			// receiving a commitment_signed, and our counterparty cannot send us
-			// another commitment signed until we've provided a new commitment point
-			// in revoke_and_ack, which requires unblocking our signer and completing
-			// the advance to the next point. This should be unreachable since
-			// a new commitment_signed should fail at our signature checks above.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
-			return Err(ChannelError::close("Failed to advance our commitment point".to_owned()));
-		}
 		self.context.expecting_peer_commitment_signed = false;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
