@@ -10851,6 +10851,75 @@ where
 		})
 	}
 
+	/// Compute the channel balances (local & remote, in msats) by taking into account fees,
+	/// anchor values, and dust limits.
+	/// Pending HTLCs are not taken into account, this method should be used when there is no such,
+	/// e.g. in quiescence state
+	#[cfg(splicing)]
+	fn compute_balances_less_fees(
+		&self, channel_value_sats: u64, value_to_self_msat: u64, is_local: bool,
+	) -> (u64, u64) {
+		// We should get here only when there are no pending HTLCs, as they are not taken into account
+		debug_assert!(self.context.pending_inbound_htlcs.is_empty());
+		debug_assert!(self.context.pending_outbound_htlcs.is_empty());
+
+		let feerate_per_kw = self.context.feerate_per_kw;
+
+		// compute 'raw' counterparty balance
+		let value_to_remote_msat: i64 =
+			((channel_value_sats * 1000) as i64).saturating_sub(value_to_self_msat as i64);
+		debug_assert!(value_to_remote_msat >= 0);
+
+		let total_fee_sats = SpecTxBuilder {}.commit_tx_fee_sat(
+			feerate_per_kw,
+			0,
+			&self.funding.channel_transaction_parameters.channel_type_features,
+		);
+		let anchors_val_sats = if self
+			.funding
+			.channel_transaction_parameters
+			.channel_type_features
+			.supports_anchors_zero_fee_htlc_tx()
+		{
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
+		} else {
+			0
+		} as i64;
+
+		// consider fees and anchor values
+		let (mut new_value_to_self_msat, mut new_value_to_remote_msat) = if self
+			.funding
+			.is_outbound()
+		{
+			(
+				value_to_self_msat as i64 - anchors_val_sats * 1000 - total_fee_sats as i64 * 1000,
+				value_to_remote_msat,
+			)
+		} else {
+			(
+				value_to_self_msat as i64,
+				value_to_remote_msat - anchors_val_sats * 1000 - total_fee_sats as i64 * 1000,
+			)
+		};
+
+		// consider dust limit
+		let broadcaster_dust_limit_sats = if is_local {
+			self.context.holder_dust_limit_satoshis
+		} else {
+			self.context.counterparty_dust_limit_satoshis
+		} as i64;
+		if new_value_to_self_msat < (broadcaster_dust_limit_sats * 1000) {
+			new_value_to_self_msat = 0;
+		}
+		debug_assert!(new_value_to_self_msat >= 0);
+		if new_value_to_remote_msat < (broadcaster_dust_limit_sats * 1000) {
+			new_value_to_remote_msat = 0;
+		}
+		debug_assert!(new_value_to_remote_msat >= 0);
+
+		(new_value_to_self_msat as u64, new_value_to_remote_msat as u64)
+	}
+
 	/// Handle splice_ack
 	#[cfg(splicing)]
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
@@ -10908,25 +10977,29 @@ where
 
 		// Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
-		let pre_channel_value = self.funding.get_value_satoshis();
-		let post_channel_value = self.funding.compute_post_splice_value(
+		let pre_channel_value_sats = self.funding.get_value_satoshis();
+		let post_channel_value_sats = self.funding.compute_post_splice_value(
 			our_funding_contribution_satoshis,
 			their_funding_contribution_satoshis,
 		);
-		let pre_balance_self = self.funding.value_to_self_msat;
-		let post_balance_self =
-			PendingSplice::add_checked(pre_balance_self, our_funding_contribution_satoshis);
-		let pre_balance_counterparty = pre_channel_value.saturating_sub(pre_balance_self);
-		let post_balance_counterparty = post_channel_value.saturating_sub(post_balance_self);
+		let pre_balance_self_msat = self.funding.value_to_self_msat;
+		let post_balance_self_msat = PendingSplice::add_checked(
+			pre_balance_self_msat,
+			our_funding_contribution_satoshis * 1000,
+		);
+		let (pre_balance_self_less_fees_msat, pre_balance_counterparty_less_fees_msat) =
+			self.compute_balances_less_fees(pre_channel_value_sats, pre_balance_self_msat, true);
+		let (post_balance_self_less_fees_msat, post_balance_counterparty_less_fees_msat) =
+			self.compute_balances_less_fees(post_channel_value_sats, post_balance_self_msat, true);
 		// Pre-check for reserve requirement
 		// This will also be checked later at tx_complete
 		let _res = self.check_splice_balances_meet_v2_reserve_requirements(
-			pre_balance_self,
-			post_balance_self,
-			pre_balance_counterparty,
-			post_balance_counterparty,
-			pre_channel_value,
-			post_channel_value,
+			pre_balance_self_less_fees_msat,
+			post_balance_self_less_fees_msat,
+			pre_balance_counterparty_less_fees_msat,
+			post_balance_counterparty_less_fees_msat,
+			pre_channel_value_sats,
+			post_channel_value_sats,
 		)?;
 
 		log_info!(
