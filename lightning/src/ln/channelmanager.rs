@@ -3015,7 +3015,7 @@ macro_rules! handle_error {
 /// Note that this step can be skipped if the channel was never opened (through the creation of a
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
 macro_rules! locked_close_channel {
-	($self: ident, $peer_state: expr, $channel_context: expr, $channel_funding: expr, $shutdown_res_mut: expr) => {{
+	($self: ident, $peer_state: expr, $channel_context: expr, $shutdown_res_mut: expr) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
 			handle_new_monitor_update!($self, funding_txo, update, $peer_state,
 				$channel_context, REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER);
@@ -3063,7 +3063,7 @@ macro_rules! convert_channel_err {
 				let logger = WithChannelContext::from(&$self.logger, &$context, None);
 				log_error!(logger, "Closing channel {} due to close-required error: {}", $channel_id, msg);
 				let mut shutdown_res = $context.force_shutdown($funding, true, reason);
-				locked_close_channel!($self, $peer_state, $context, $funding, &mut shutdown_res);
+				locked_close_channel!($self, $peer_state, $context, &mut shutdown_res);
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
 				(true, err)
@@ -3128,7 +3128,7 @@ macro_rules! remove_channel_entry {
 	($self: ident, $peer_state: expr, $entry: expr, $shutdown_res_mut: expr) => {
 		{
 			let channel = $entry.remove_entry().1;
-			locked_close_channel!($self, $peer_state, &channel.context(), channel.funding(), $shutdown_res_mut);
+			locked_close_channel!($self, $peer_state, &channel.context(), $shutdown_res_mut);
 			channel
 		}
 	}
@@ -4077,7 +4077,7 @@ where
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
 						let mut close_res = chan.force_shutdown(false, ClosureReason::FundingBatchClosure);
-						locked_close_channel!(self, &mut *peer_state, chan.context(), chan.funding(), close_res);
+						locked_close_channel!(self, &mut *peer_state, chan.context(), close_res);
 						shutdown_results.push(close_res);
 					}
 				}
@@ -5376,7 +5376,7 @@ where
 						.map(|(mut chan, mut peer_state)| {
 							let closure_reason = ClosureReason::ProcessingError { err: e.clone() };
 							let mut close_res = chan.force_shutdown(false, closure_reason);
-							locked_close_channel!(self, peer_state, chan.context(), chan.funding(), close_res);
+							locked_close_channel!(self, peer_state, chan.context(), close_res);
 							shutdown_results.push(close_res);
 							peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
 								node_id: counterparty_node_id,
@@ -6624,8 +6624,8 @@ where
 										"Force-closing pending channel with ID {} for not establishing in a timely manner",
 										context.channel_id());
 									let mut close_res = chan.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
-									let (funding, context) = chan.funding_and_context_mut();
-									locked_close_channel!(self, peer_state, context, funding, close_res);
+									let context = chan.context_mut();
+									locked_close_channel!(self, peer_state, context, close_res);
 									shutdown_channels.push(close_res);
 									pending_msg_events.push(MessageSendEvent::HandleError {
 										node_id: context.get_counterparty_node_id(),
@@ -9625,10 +9625,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				};
 				if let Some(mut shutdown_result) = shutdown_result {
 					let context = &chan.context();
-					let funding = chan.funding();
 					let logger = WithChannelContext::from(&self.logger, context, None);
 					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
-					locked_close_channel!(self, peer_state, context, funding, shutdown_result);
+					locked_close_channel!(self, peer_state, context, shutdown_result);
 					shutdown_results.push(shutdown_result);
 					false
 				} else {
@@ -9670,7 +9669,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									}
 									debug_assert_eq!(shutdown_result_opt.is_some(), funded_chan.is_shutdown());
 									if let Some(mut shutdown_result) = shutdown_result_opt {
-										locked_close_channel!(self, peer_state, &funded_chan.context, &funded_chan.funding, shutdown_result);
+										locked_close_channel!(self, peer_state, &funded_chan.context, shutdown_result);
 										shutdown_results.push(shutdown_result);
 									}
 									if let Some(tx) = tx_opt {
@@ -11012,8 +11011,8 @@ where
 					}
 					// Clean up for removal.
 					let mut close_res = chan.force_shutdown(false, ClosureReason::DisconnectedPeer);
-					let (funding, context) = chan.funding_and_context_mut();
-					locked_close_channel!(self, peer_state, &context, funding, close_res);
+					let context = chan.context_mut();
+					locked_close_channel!(self, peer_state, &context, close_res);
 					failed_channels.push(close_res);
 					false
 				});
@@ -11583,7 +11582,7 @@ where
 								// reorged out of the main chain. Close the channel.
 								let reason_message = format!("{}", reason);
 								let mut close_res = funded_channel.context.force_shutdown(&funded_channel.funding, true, reason);
-								locked_close_channel!(self, peer_state, &funded_channel.context, &funded_channel.funding, close_res);
+								locked_close_channel!(self, peer_state, &funded_channel.context, close_res);
 								failed_channels.push(close_res);
 								if let Ok(update) = self.get_channel_update_for_broadcast(&funded_channel) {
 									let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
