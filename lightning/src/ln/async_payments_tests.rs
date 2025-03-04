@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::blinded_path::message::{MessageContext, OffersContext};
+use crate::blinded_path::message::{MessageContext, OffersContext, ReceiveTlvs};
 use crate::blinded_path::payment::PaymentContext;
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
@@ -106,11 +106,18 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 	always_online_counterparty: &Node, recipient: &Node, relative_expiry: Option<Duration>,
 	secp_ctx: &Secp256k1<T>,
 ) -> (Offer, StaticInvoice) {
+	let recipient_tlvs = ReceiveTlvs {
+		context: Some(MessageContext::Offers(OffersContext::InvoiceRequest {
+			nonce: Nonce([42; 16]),
+		})),
+		custom_data: None,
+	};
+
 	let blinded_paths_to_always_online_node = always_online_counterparty
 		.message_router
 		.create_blinded_paths(
 			always_online_counterparty.node.get_our_node_id(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			recipient_tlvs,
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -212,11 +219,18 @@ fn static_invoice_unknown_required_features() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
+	let recipient_tlvs = ReceiveTlvs {
+		context: Some(MessageContext::Offers(OffersContext::InvoiceRequest {
+			nonce: Nonce([42; 16]),
+		})),
+		custom_data: None,
+	};
+
 	let blinded_paths_to_always_online_node = nodes[1]
 		.message_router
 		.create_blinded_paths(
 			nodes[1].node.get_our_node_id(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			recipient_tlvs,
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -765,6 +779,7 @@ fn reject_bad_payment_secret() {
 							// We don't reach the point of checking the invreq nonce due to the invalid payment secret
 							offer_nonce: Nonce([i; Nonce::LENGTH]),
 						}),
+						None,
 						u32::MAX,
 					)
 					.unwrap();
@@ -819,11 +834,18 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
+	let recipient_tlvs = ReceiveTlvs {
+		context: Some(MessageContext::Offers(OffersContext::InvoiceRequest {
+			nonce: Nonce([42; 16]),
+		})),
+		custom_data: None,
+	};
+
 	let blinded_paths_to_always_online_node = nodes[1]
 		.message_router
 		.create_blinded_paths(
 			nodes[1].node.get_our_node_id(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			recipient_tlvs,
 			Vec::new(),
 			&secp_ctx,
 		)

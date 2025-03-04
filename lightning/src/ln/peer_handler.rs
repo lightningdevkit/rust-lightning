@@ -146,7 +146,7 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _custom_data: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
 		None
 	}
 }
@@ -165,11 +165,11 @@ impl DNSResolverMessageHandler for IgnoringMessageHandler {
 	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
 		None
 	}
-	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
+	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext, _custom_data: Option<Vec<u8>>) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	fn handle_custom_message(&self, _message: Infallible, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
+	fn handle_custom_message(&self, _message: Infallible, _context: Option<Vec<u8>>, _custom_data: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
