@@ -164,7 +164,9 @@ mod test {
 	use lightning::events::{Event, PaymentPurpose};
 	use lightning::ln::channelmanager::{PaymentId, Retry};
 	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::msgs::{ChannelMessageHandler, Init, OnionMessageHandler};
+	use lightning::ln::msgs::{
+		BaseMessageHandler, ChannelMessageHandler, Init, OnionMessageHandler,
+	};
 	use lightning::ln::peer_handler::IgnoringMessageHandler;
 	use lightning::onion_message::dns_resolution::{HumanReadableName, OMNameResolver};
 	use lightning::onion_message::messenger::{

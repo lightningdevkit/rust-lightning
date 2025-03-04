@@ -42,7 +42,7 @@ use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
+use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, MessageSendEvent, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::inbound_payment;
@@ -63,7 +63,7 @@ use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htl
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
-use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
@@ -1411,8 +1411,8 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// considered as they are also in [`Self::in_flight_monitor_updates`]).
 	closed_channel_monitor_update_ids: BTreeMap<ChannelId, u64>,
 	/// The peer is currently connected (i.e. we've seen a
-	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
-	/// [`ChannelMessageHandler::peer_disconnected`].
+	/// [`BaseMessageHandler::peer_connected`] and no corresponding
+	/// [`BaseMessageHandler::peer_disconnected`].
 	pub is_connected: bool,
 	/// Holds the peer storage data for the channel partner on a per-peer basis.
 	peer_storage: Vec<u8>,
@@ -1670,7 +1670,7 @@ where
 ///
 /// Additionally, it implements the following traits:
 /// - [`ChannelMessageHandler`] to handle off-chain channel activity from peers
-/// - [`MessageSendEventsProvider`] to similarly send such messages to peers
+/// - [`BaseMessageHandler`] to handle peer dis/connection and send messages to peers
 /// - [`OffersMessageHandler`] for BOLT 12 message handling and sending
 /// - [`EventsProvider`] to generate user-actionable [`Event`]s
 /// - [`chain::Listen`] and [`chain::Confirm`] for notification of on-chain activity
@@ -1771,8 +1771,8 @@ where
 /// The following is required for [`ChannelManager`] to function properly:
 /// - Handle messages from peers using its [`ChannelMessageHandler`] implementation (typically
 ///   called by [`PeerManager::read_event`] when processing network I/O)
-/// - Send messages to peers obtained via its [`MessageSendEventsProvider`] implementation
-///   (typically initiated when [`PeerManager::process_events`] is called)
+/// - Process peer connections and send messages to peers obtained via its [`BaseMessageHandler`]
+///   implementation (typically initiated when [`PeerManager::process_events`] is called)
 /// - Feed on-chain activity using either its [`chain::Listen`] or [`chain::Confirm`] implementation
 ///   as documented by those traits
 /// - Perform any periodic channel and payment checks by calling [`timer_tick_occurred`] roughly
@@ -2390,7 +2390,7 @@ where
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`create_refund_builder`]: Self::create_refund_builder
 /// [`request_refund_payment`]: Self::request_refund_payment
-/// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
+/// [`peer_disconnected`]: msgs::BaseMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
 /// [`funding_transaction_generated`]: Self::funding_transaction_generated
 /// [`BlockHash`]: bitcoin::hash_types::BlockHash
@@ -11056,7 +11056,7 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11068,6 +11068,219 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	fn provided_node_features(&self) -> NodeFeatures {
+		provided_node_features(&self.default_configuration)
+	}
+
+	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
+		provided_init_features(&self.default_configuration)
+	}
+
+	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
+			self, || NotifyOption::SkipPersistHandleEvents);
+		let mut failed_channels = Vec::new();
+		let mut per_peer_state = self.per_peer_state.write().unwrap();
+		let remove_peer = {
+			log_debug!(
+				WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
+				"Marking channels with {} disconnected and generating channel_updates.",
+				log_pubkey!(counterparty_node_id)
+			);
+			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+				peer_state.channel_by_id.retain(|_, chan| {
+					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+					if chan.peer_disconnected_is_resumable(&&logger) {
+						return true;
+					}
+					// Clean up for removal.
+					let mut close_res = chan.force_shutdown(false, ClosureReason::DisconnectedPeer);
+					let (funding, context) = chan.funding_and_context_mut();
+					locked_close_channel!(self, peer_state, &context, funding, close_res);
+					failed_channels.push(close_res);
+					false
+				});
+				// Note that we don't bother generating any events for pre-accept channels -
+				// they're not considered "channels" yet from the PoV of our events interface.
+				peer_state.inbound_channel_request_by_id.clear();
+				pending_msg_events.retain(|msg| {
+					match msg {
+						// V1 Channel Establishment
+						&events::MessageSendEvent::SendAcceptChannel { .. } => false,
+						&events::MessageSendEvent::SendOpenChannel { .. } => false,
+						&events::MessageSendEvent::SendFundingCreated { .. } => false,
+						&events::MessageSendEvent::SendFundingSigned { .. } => false,
+						// V2 Channel Establishment
+						&events::MessageSendEvent::SendAcceptChannelV2 { .. } => false,
+						&events::MessageSendEvent::SendOpenChannelV2 { .. } => false,
+						// Common Channel Establishment
+						&events::MessageSendEvent::SendChannelReady { .. } => false,
+						&events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+						// Quiescence
+						&events::MessageSendEvent::SendStfu { .. } => false,
+						// Splicing
+						&events::MessageSendEvent::SendSpliceInit { .. } => false,
+						&events::MessageSendEvent::SendSpliceAck { .. } => false,
+						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
+						// Interactive Transaction Construction
+						&events::MessageSendEvent::SendTxAddInput { .. } => false,
+						&events::MessageSendEvent::SendTxAddOutput { .. } => false,
+						&events::MessageSendEvent::SendTxRemoveInput { .. } => false,
+						&events::MessageSendEvent::SendTxRemoveOutput { .. } => false,
+						&events::MessageSendEvent::SendTxComplete { .. } => false,
+						&events::MessageSendEvent::SendTxSignatures { .. } => false,
+						&events::MessageSendEvent::SendTxInitRbf { .. } => false,
+						&events::MessageSendEvent::SendTxAckRbf { .. } => false,
+						&events::MessageSendEvent::SendTxAbort { .. } => false,
+						// Channel Operations
+						&events::MessageSendEvent::UpdateHTLCs { .. } => false,
+						&events::MessageSendEvent::SendRevokeAndACK { .. } => false,
+						&events::MessageSendEvent::SendClosingSigned { .. } => false,
+						&events::MessageSendEvent::SendShutdown { .. } => false,
+						&events::MessageSendEvent::SendChannelReestablish { .. } => false,
+						&events::MessageSendEvent::HandleError { .. } => false,
+						// Gossip
+						&events::MessageSendEvent::SendChannelAnnouncement { .. } => false,
+						&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+						// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
+						// This check here is to ensure exhaustivity.
+						&events::MessageSendEvent::BroadcastChannelUpdate { .. } => {
+							debug_assert!(false, "This event shouldn't have been here");
+							false
+						},
+						&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
+						&events::MessageSendEvent::SendChannelUpdate { .. } => false,
+						&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
+						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
+						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
+						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+
+						// Peer Storage
+						&events::MessageSendEvent::SendPeerStorage { .. } => false,
+						&events::MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
+					}
+				});
+				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
+				peer_state.is_connected = false;
+				peer_state.ok_to_remove(true)
+			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
+		};
+		if remove_peer {
+			per_peer_state.remove(&counterparty_node_id);
+		}
+		mem::drop(per_peer_state);
+
+		for failure in failed_channels.drain(..) {
+			self.finish_close_channel(failure);
+		}
+	}
+
+	fn peer_connected(&self, counterparty_node_id: PublicKey, init_msg: &msgs::Init, inbound: bool) -> Result<(), ()> {
+		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
+		if !init_msg.features.supports_static_remote_key() {
+			log_debug!(logger, "Peer {} does not support static remote key, disconnecting", log_pubkey!(counterparty_node_id));
+			return Err(());
+		}
+
+		let mut res = Ok(());
+
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			// If we have too many peers connected which don't have funded channels, disconnect the
+			// peer immediately (as long as it doesn't have funded channels). If we have a bunch of
+			// unfunded channels taking up space in memory for disconnected peers, we still let new
+			// peers connect, but we'll reject new channels from them.
+			let connected_peers_without_funded_channels = self.peers_without_funded_channels(|node| node.is_connected);
+			let inbound_peer_limited = inbound && connected_peers_without_funded_channels >= MAX_NO_CHANNEL_PEERS;
+
+			{
+				let mut peer_state_lock = self.per_peer_state.write().unwrap();
+				match peer_state_lock.entry(counterparty_node_id.clone()) {
+					hash_map::Entry::Vacant(e) => {
+						if inbound_peer_limited {
+							res = Err(());
+							return NotifyOption::SkipPersistNoEvents;
+						}
+						e.insert(Mutex::new(PeerState {
+							channel_by_id: new_hash_map(),
+							inbound_channel_request_by_id: new_hash_map(),
+							latest_features: init_msg.features.clone(),
+							pending_msg_events: Vec::new(),
+							in_flight_monitor_updates: BTreeMap::new(),
+							monitor_update_blocked_actions: BTreeMap::new(),
+							actions_blocking_raa_monitor_updates: BTreeMap::new(),
+							closed_channel_monitor_update_ids: BTreeMap::new(),
+							is_connected: true,
+							peer_storage: Vec::new(),
+						}));
+					},
+					hash_map::Entry::Occupied(e) => {
+						let mut peer_state = e.get().lock().unwrap();
+						peer_state.latest_features = init_msg.features.clone();
+
+						let best_block_height = self.best_block.read().unwrap().height;
+						if inbound_peer_limited &&
+							Self::unfunded_channel_count(&*peer_state, best_block_height) ==
+							peer_state.channel_by_id.len()
+						{
+							res = Err(());
+							return NotifyOption::SkipPersistNoEvents;
+						}
+
+						debug_assert!(!peer_state.is_connected, "A peer shouldn't be connected twice");
+						peer_state.is_connected = true;
+					},
+				}
+			}
+
+			log_debug!(logger, "Generating channel_reestablish events for {}", log_pubkey!(counterparty_node_id));
+
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+
+				if !peer_state.peer_storage.is_empty() {
+					pending_msg_events.push(events::MessageSendEvent::SendPeerStorageRetrieval {
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::PeerStorageRetrieval {
+							data: peer_state.peer_storage.clone()
+						},
+					});
+				}
+
+				for (_, chan) in peer_state.channel_by_id.iter_mut() {
+					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
+						ReconnectionMsg::Reestablish(msg) =>
+							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) =>
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) =>
+							pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+								node_id: chan.context().get_counterparty_node_id(),
+								msg,
+							}),
+						ReconnectionMsg::None => {},
+					}
+				}
+			}
+
+			return NotifyOption::SkipPersistHandleEvents;
+			//TODO: Also re-broadcast announcement_signatures
+		});
+		res
+	}
+
 	/// Returns `MessageSendEvent`s strictly ordered per-peer, in the order they were generated.
 	/// The returned array will contain `MessageSendEvent`s for different peers if
 	/// `MessageSendEvent`s to more than one peer exists, but `MessageSendEvent`s to the same peer
@@ -11871,211 +12084,6 @@ where
 		});
 	}
 
-	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
-		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
-			self, || NotifyOption::SkipPersistHandleEvents);
-		let mut failed_channels = Vec::new();
-		let mut per_peer_state = self.per_peer_state.write().unwrap();
-		let remove_peer = {
-			log_debug!(
-				WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
-				"Marking channels with {} disconnected and generating channel_updates.",
-				log_pubkey!(counterparty_node_id)
-			);
-			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				let pending_msg_events = &mut peer_state.pending_msg_events;
-				peer_state.channel_by_id.retain(|_, chan| {
-					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-					if chan.peer_disconnected_is_resumable(&&logger) {
-						return true;
-					}
-					// Clean up for removal.
-					let mut close_res = chan.force_shutdown(false, ClosureReason::DisconnectedPeer);
-					let (funding, context) = chan.funding_and_context_mut();
-					locked_close_channel!(self, peer_state, &context, funding, close_res);
-					failed_channels.push(close_res);
-					false
-				});
-				// Note that we don't bother generating any events for pre-accept channels -
-				// they're not considered "channels" yet from the PoV of our events interface.
-				peer_state.inbound_channel_request_by_id.clear();
-				pending_msg_events.retain(|msg| {
-					match msg {
-						// V1 Channel Establishment
-						&events::MessageSendEvent::SendAcceptChannel { .. } => false,
-						&events::MessageSendEvent::SendOpenChannel { .. } => false,
-						&events::MessageSendEvent::SendFundingCreated { .. } => false,
-						&events::MessageSendEvent::SendFundingSigned { .. } => false,
-						// V2 Channel Establishment
-						&events::MessageSendEvent::SendAcceptChannelV2 { .. } => false,
-						&events::MessageSendEvent::SendOpenChannelV2 { .. } => false,
-						// Common Channel Establishment
-						&events::MessageSendEvent::SendChannelReady { .. } => false,
-						&events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
-						// Quiescence
-						&events::MessageSendEvent::SendStfu { .. } => false,
-						// Splicing
-						&events::MessageSendEvent::SendSpliceInit { .. } => false,
-						&events::MessageSendEvent::SendSpliceAck { .. } => false,
-						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
-						// Interactive Transaction Construction
-						&events::MessageSendEvent::SendTxAddInput { .. } => false,
-						&events::MessageSendEvent::SendTxAddOutput { .. } => false,
-						&events::MessageSendEvent::SendTxRemoveInput { .. } => false,
-						&events::MessageSendEvent::SendTxRemoveOutput { .. } => false,
-						&events::MessageSendEvent::SendTxComplete { .. } => false,
-						&events::MessageSendEvent::SendTxSignatures { .. } => false,
-						&events::MessageSendEvent::SendTxInitRbf { .. } => false,
-						&events::MessageSendEvent::SendTxAckRbf { .. } => false,
-						&events::MessageSendEvent::SendTxAbort { .. } => false,
-						// Channel Operations
-						&events::MessageSendEvent::UpdateHTLCs { .. } => false,
-						&events::MessageSendEvent::SendRevokeAndACK { .. } => false,
-						&events::MessageSendEvent::SendClosingSigned { .. } => false,
-						&events::MessageSendEvent::SendShutdown { .. } => false,
-						&events::MessageSendEvent::SendChannelReestablish { .. } => false,
-						&events::MessageSendEvent::HandleError { .. } => false,
-						// Gossip
-						&events::MessageSendEvent::SendChannelAnnouncement { .. } => false,
-						&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
-						// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
-						// This check here is to ensure exhaustivity.
-						&events::MessageSendEvent::BroadcastChannelUpdate { .. } => {
-							debug_assert!(false, "This event shouldn't have been here");
-							false
-						},
-						&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
-						&events::MessageSendEvent::SendChannelUpdate { .. } => false,
-						&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
-						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
-						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
-						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
-
-						// Peer Storage
-						&events::MessageSendEvent::SendPeerStorage { .. } => false,
-						&events::MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
-					}
-				});
-				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
-				peer_state.is_connected = false;
-				peer_state.ok_to_remove(true)
-			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
-		};
-		if remove_peer {
-			per_peer_state.remove(&counterparty_node_id);
-		}
-		mem::drop(per_peer_state);
-
-		for failure in failed_channels.drain(..) {
-			self.finish_close_channel(failure);
-		}
-	}
-
-	fn peer_connected(&self, counterparty_node_id: PublicKey, init_msg: &msgs::Init, inbound: bool) -> Result<(), ()> {
-		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
-		if !init_msg.features.supports_static_remote_key() {
-			log_debug!(logger, "Peer {} does not support static remote key, disconnecting", log_pubkey!(counterparty_node_id));
-			return Err(());
-		}
-
-		let mut res = Ok(());
-
-		PersistenceNotifierGuard::optionally_notify(self, || {
-			// If we have too many peers connected which don't have funded channels, disconnect the
-			// peer immediately (as long as it doesn't have funded channels). If we have a bunch of
-			// unfunded channels taking up space in memory for disconnected peers, we still let new
-			// peers connect, but we'll reject new channels from them.
-			let connected_peers_without_funded_channels = self.peers_without_funded_channels(|node| node.is_connected);
-			let inbound_peer_limited = inbound && connected_peers_without_funded_channels >= MAX_NO_CHANNEL_PEERS;
-
-			{
-				let mut peer_state_lock = self.per_peer_state.write().unwrap();
-				match peer_state_lock.entry(counterparty_node_id.clone()) {
-					hash_map::Entry::Vacant(e) => {
-						if inbound_peer_limited {
-							res = Err(());
-							return NotifyOption::SkipPersistNoEvents;
-						}
-						e.insert(Mutex::new(PeerState {
-							channel_by_id: new_hash_map(),
-							inbound_channel_request_by_id: new_hash_map(),
-							latest_features: init_msg.features.clone(),
-							pending_msg_events: Vec::new(),
-							in_flight_monitor_updates: BTreeMap::new(),
-							monitor_update_blocked_actions: BTreeMap::new(),
-							actions_blocking_raa_monitor_updates: BTreeMap::new(),
-							closed_channel_monitor_update_ids: BTreeMap::new(),
-							is_connected: true,
-							peer_storage: Vec::new(),
-						}));
-					},
-					hash_map::Entry::Occupied(e) => {
-						let mut peer_state = e.get().lock().unwrap();
-						peer_state.latest_features = init_msg.features.clone();
-
-						let best_block_height = self.best_block.read().unwrap().height;
-						if inbound_peer_limited &&
-							Self::unfunded_channel_count(&*peer_state, best_block_height) ==
-							peer_state.channel_by_id.len()
-						{
-							res = Err(());
-							return NotifyOption::SkipPersistNoEvents;
-						}
-
-						debug_assert!(!peer_state.is_connected, "A peer shouldn't be connected twice");
-						peer_state.is_connected = true;
-					},
-				}
-			}
-
-			log_debug!(logger, "Generating channel_reestablish events for {}", log_pubkey!(counterparty_node_id));
-
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				let pending_msg_events = &mut peer_state.pending_msg_events;
-
-				if !peer_state.peer_storage.is_empty() {
-					pending_msg_events.push(events::MessageSendEvent::SendPeerStorageRetrieval {
-						node_id: counterparty_node_id.clone(),
-						msg: msgs::PeerStorageRetrieval {
-							data: peer_state.peer_storage.clone()
-						},
-					});
-				}
-
-				for (_, chan) in peer_state.channel_by_id.iter_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
-						ReconnectionMsg::Reestablish(msg) =>
-							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-								node_id: chan.context().get_counterparty_node_id(),
-								msg,
-							}),
-						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) =>
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-								node_id: chan.context().get_counterparty_node_id(),
-								msg,
-							}),
-						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) =>
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
-								node_id: chan.context().get_counterparty_node_id(),
-								msg,
-							}),
-						ReconnectionMsg::None => {},
-					}
-				}
-			}
-
-			return NotifyOption::SkipPersistHandleEvents;
-			//TODO: Also re-broadcast announcement_signatures
-		});
-		res
-	}
-
 	fn handle_error(&self, counterparty_node_id: PublicKey, msg: &msgs::ErrorMessage) {
 		match &msg.data as &str {
 			"cannot co-op close channel w/ active htlcs"|
@@ -12182,14 +12190,6 @@ where
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
 			let _ = self.force_close_channel_with_peer(&msg.channel_id, &counterparty_node_id, Some(&msg.data), true);
 		}
-	}
-
-	fn provided_node_features(&self) -> NodeFeatures {
-		provided_node_features(&self.default_configuration)
-	}
-
-	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
-		provided_init_features(&self.default_configuration)
 	}
 
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
@@ -14836,12 +14836,12 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
-	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+	use crate::events::{Event, HTLCDestination, MessageSendEvent, ClosureReason};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{create_recv_pending_htlc_info, inbound_payment, ChannelConfigOverrides, HTLCForwardInfo, InterceptId, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{self, AcceptChannel, ErrorAction};
+	use crate::ln::msgs::{self, AcceptChannel, BaseMessageHandler, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::ln::outbound_payment::Retry;
 	use crate::prelude::*;
@@ -16320,10 +16320,10 @@ pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
 	use crate::sign::{KeysManager, InMemorySigner};
-	use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use crate::events::{Event, MessageSendEvent};
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{ChannelMessageHandler, Init};
+	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;

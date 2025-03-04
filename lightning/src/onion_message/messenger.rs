@@ -32,8 +32,8 @@ use crate::blinded_path::message::{
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
-use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
-use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
+use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, ReplayEvent};
+use crate::ln::msgs::{self, BaseMessageHandler, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -1806,6 +1806,78 @@ impl<
 		APH: Deref,
 		DRH: Deref,
 		CMH: Deref,
+	> BaseMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	L::Target: Logger,
+	NL::Target: NodeIdLookUp,
+	MR::Target: MessageRouter,
+	OMH::Target: OffersMessageHandler,
+	APH::Target: AsyncPaymentsMessageHandler,
+	DRH::Target: DNSResolverMessageHandler,
+	CMH::Target: CustomOnionMessageHandler,
+{
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_onion_messages_optional();
+		features | self.dns_resolver_handler.provided_node_features()
+	}
+
+	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_onion_messages_optional();
+		features
+	}
+
+	fn peer_connected(
+		&self, their_node_id: PublicKey, init: &msgs::Init, _inbound: bool,
+	) -> Result<(), ()> {
+		if init.features.supports_onion_messages() {
+			{
+				let mut message_recipients = self.message_recipients.lock().unwrap();
+				message_recipients
+					.entry(their_node_id)
+					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
+					.mark_connected();
+			}
+			if self.intercept_messages_for_offline_peers {
+				let mut pending_peer_connected_events =
+					self.pending_peer_connected_events.lock().unwrap();
+				pending_peer_connected_events
+					.push(Event::OnionMessagePeerConnected { peer_node_id: their_node_id });
+				self.event_notifier.notify();
+			}
+		} else {
+			self.message_recipients.lock().unwrap().remove(&their_node_id);
+		}
+
+		Ok(())
+	}
+
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		match self.message_recipients.lock().unwrap().remove(&their_node_id) {
+			Some(OnionMessageRecipient::ConnectedPeer(..)) => {},
+			Some(_) => debug_assert!(false),
+			None => {},
+		}
+	}
+
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		Vec::new()
+	}
+}
+
+impl<
+		ES: Deref,
+		NS: Deref,
+		L: Deref,
+		NL: Deref,
+		MR: Deref,
+		OMH: Deref,
+		APH: Deref,
+		DRH: Deref,
+		CMH: Deref,
 	> OnionMessageHandler for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 where
 	ES::Target: EntropySource,
@@ -1972,39 +2044,6 @@ where
 		}
 	}
 
-	fn peer_connected(
-		&self, their_node_id: PublicKey, init: &msgs::Init, _inbound: bool,
-	) -> Result<(), ()> {
-		if init.features.supports_onion_messages() {
-			{
-				let mut message_recipients = self.message_recipients.lock().unwrap();
-				message_recipients
-					.entry(their_node_id)
-					.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
-					.mark_connected();
-			}
-			if self.intercept_messages_for_offline_peers {
-				let mut pending_peer_connected_events =
-					self.pending_peer_connected_events.lock().unwrap();
-				pending_peer_connected_events
-					.push(Event::OnionMessagePeerConnected { peer_node_id: their_node_id });
-				self.event_notifier.notify();
-			}
-		} else {
-			self.message_recipients.lock().unwrap().remove(&their_node_id);
-		}
-
-		Ok(())
-	}
-
-	fn peer_disconnected(&self, their_node_id: PublicKey) {
-		match self.message_recipients.lock().unwrap().remove(&their_node_id) {
-			Some(OnionMessageRecipient::ConnectedPeer(..)) => {},
-			Some(_) => debug_assert!(false),
-			None => {},
-		}
-	}
-
 	fn timer_tick_occurred(&self) {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 
@@ -2023,18 +2062,6 @@ where
 				*ticks += 1;
 			}
 		}
-	}
-
-	fn provided_node_features(&self) -> NodeFeatures {
-		let mut features = NodeFeatures::empty();
-		features.set_onion_messages_optional();
-		features | self.dns_resolver_handler.provided_node_features()
-	}
-
-	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
-		let mut features = InitFeatures::empty();
-		features.set_onion_messages_optional();
-		features
 	}
 
 	// Before returning any messages to send for the peer, this method will see if any messages were

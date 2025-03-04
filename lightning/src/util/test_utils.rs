@@ -28,6 +28,7 @@ use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
+use crate::ln::msgs::BaseMessageHandler;
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
@@ -1041,24 +1042,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
-	fn peer_disconnected(&self, their_node_id: PublicKey) {
-		self.conn_tracker.peer_disconnected(their_node_id)
-	}
-	fn peer_connected(
-		&self, their_node_id: PublicKey, _msg: &msgs::Init, _inbound: bool,
-	) -> Result<(), ()> {
-		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
-		// bother re-generating the expected Init message in all tests.
-		self.conn_tracker.peer_connected(their_node_id)
-	}
 	fn handle_error(&self, _their_node_id: PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
-	}
-	fn provided_node_features(&self) -> NodeFeatures {
-		channelmanager::provided_node_features(&UserConfig::default())
-	}
-	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
-		channelmanager::provided_init_features(&UserConfig::default())
 	}
 
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
@@ -1122,7 +1107,23 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn message_received(&self) {}
 }
 
-impl events::MessageSendEventsProvider for TestChannelMessageHandler {
+impl msgs::BaseMessageHandler for TestChannelMessageHandler {
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		self.conn_tracker.peer_disconnected(their_node_id)
+	}
+	fn peer_connected(
+		&self, their_node_id: PublicKey, _msg: &msgs::Init, _inbound: bool,
+	) -> Result<(), ()> {
+		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
+		// bother re-generating the expected Init message in all tests.
+		self.conn_tracker.peer_connected(their_node_id)
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		channelmanager::provided_node_features(&UserConfig::default())
+	}
+	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
+		channelmanager::provided_init_features(&UserConfig::default())
+	}
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		Self::MESSAGE_FETCH_COUNTER.with(|val| val.fetch_add(1, Ordering::AcqRel));
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -1244,6 +1245,36 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		None
 	}
 
+	fn handle_reply_channel_range(
+		&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange,
+	) -> Result<(), msgs::LightningError> {
+		Ok(())
+	}
+
+	fn handle_reply_short_channel_ids_end(
+		&self, _their_node_id: PublicKey, _msg: msgs::ReplyShortChannelIdsEnd,
+	) -> Result<(), msgs::LightningError> {
+		Ok(())
+	}
+
+	fn handle_query_channel_range(
+		&self, _their_node_id: PublicKey, _msg: msgs::QueryChannelRange,
+	) -> Result<(), msgs::LightningError> {
+		Ok(())
+	}
+
+	fn handle_query_short_channel_ids(
+		&self, _their_node_id: PublicKey, _msg: msgs::QueryShortChannelIds,
+	) -> Result<(), msgs::LightningError> {
+		Ok(())
+	}
+
+	fn processing_queue_high(&self) -> bool {
+		false
+	}
+}
+
+impl BaseMessageHandler for TestRoutingMessageHandler {
 	fn peer_connected(
 		&self, their_node_id: PublicKey, init_msg: &msgs::Init, _inbound: bool,
 	) -> Result<(), ()> {
@@ -1284,30 +1315,6 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		self.conn_tracker.peer_disconnected(their_node_id);
 	}
 
-	fn handle_reply_channel_range(
-		&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange,
-	) -> Result<(), msgs::LightningError> {
-		Ok(())
-	}
-
-	fn handle_reply_short_channel_ids_end(
-		&self, _their_node_id: PublicKey, _msg: msgs::ReplyShortChannelIdsEnd,
-	) -> Result<(), msgs::LightningError> {
-		Ok(())
-	}
-
-	fn handle_query_channel_range(
-		&self, _their_node_id: PublicKey, _msg: msgs::QueryChannelRange,
-	) -> Result<(), msgs::LightningError> {
-		Ok(())
-	}
-
-	fn handle_query_short_channel_ids(
-		&self, _their_node_id: PublicKey, _msg: msgs::QueryShortChannelIds,
-	) -> Result<(), msgs::LightningError> {
-		Ok(())
-	}
-
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
 		features.set_gossip_queries_optional();
@@ -1320,12 +1327,6 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		features
 	}
 
-	fn processing_queue_high(&self) -> bool {
-		false
-	}
-}
-
-impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();

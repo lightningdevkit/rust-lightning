@@ -13,7 +13,7 @@
 
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
-use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
+use crate::events::{Event, HTLCDestination, MessageSendEvent, PathFailure, PaymentFailureReason};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
@@ -23,7 +23,10 @@ use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameter
 use crate::types::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::functional_test_utils::test_default_channel_config;
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate, FinalOnionHopData, OutboundOnionPayload, OutboundTrampolinePayload};
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, ChannelUpdate, FinalOnionHopData,
+	OutboundOnionPayload, OutboundTrampolinePayload,
+};
 use crate::ln::wire::Encode;
 use crate::util::ser::{Writeable, Writer, BigSize};
 use crate::util::test_utils;

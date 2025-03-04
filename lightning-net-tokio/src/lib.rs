@@ -684,12 +684,6 @@ mod tests {
 		) -> Option<NodeAnnouncement> {
 			None
 		}
-		fn peer_connected(
-			&self, _their_node_id: PublicKey, _init_msg: &Init, _inbound: bool,
-		) -> Result<(), ()> {
-			Ok(())
-		}
-		fn peer_disconnected(&self, _their_node_id: PublicKey) {}
 		fn handle_reply_channel_range(
 			&self, _their_node_id: PublicKey, _msg: ReplyChannelRange,
 		) -> Result<(), LightningError> {
@@ -709,12 +703,6 @@ mod tests {
 			&self, _their_node_id: PublicKey, _msg: QueryShortChannelIds,
 		) -> Result<(), LightningError> {
 			Ok(())
-		}
-		fn provided_node_features(&self) -> NodeFeatures {
-			NodeFeatures::empty()
-		}
-		fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
-			InitFeatures::empty()
 		}
 		fn processing_queue_high(&self) -> bool {
 			false
@@ -766,35 +754,39 @@ mod tests {
 			&self, _their_node_id: PublicKey, _msg: PeerStorageRetrieval,
 		) {
 		}
+		fn handle_channel_reestablish(&self, _their_node_id: PublicKey, _msg: &ChannelReestablish) {
+		}
+		fn handle_error(&self, _their_node_id: PublicKey, _msg: &ErrorMessage) {}
+		fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
+			Some(vec![ChainHash::using_genesis_block(Network::Testnet)])
+		}
+		fn message_received(&self) {}
+	}
+	impl BaseMessageHandler for MsgHandler {
 		fn peer_disconnected(&self, their_node_id: PublicKey) {
 			if their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);
-				self.pubkey_disconnected.clone().try_send(()).unwrap();
+				// This method is called twice as we're two message handlers. `try_send` will fail
+				// the second time.
+				let _ = self.pubkey_disconnected.clone().try_send(());
 			}
 		}
 		fn peer_connected(
 			&self, their_node_id: PublicKey, _init_msg: &Init, _inbound: bool,
 		) -> Result<(), ()> {
 			if their_node_id == self.expected_pubkey {
-				self.pubkey_connected.clone().try_send(()).unwrap();
+				// This method is called twice as we're two message handlers. `try_send` will fail
+				// the second time.
+				let _ = self.pubkey_connected.clone().try_send(());
 			}
 			Ok(())
 		}
-		fn handle_channel_reestablish(&self, _their_node_id: PublicKey, _msg: &ChannelReestablish) {
-		}
-		fn handle_error(&self, _their_node_id: PublicKey, _msg: &ErrorMessage) {}
 		fn provided_node_features(&self) -> NodeFeatures {
 			NodeFeatures::empty()
 		}
 		fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 			InitFeatures::empty()
 		}
-		fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
-			Some(vec![ChainHash::using_genesis_block(Network::Testnet)])
-		}
-		fn message_received(&self) {}
-	}
-	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 			let mut ret = Vec::new();
 			mem::swap(&mut *self.msg_events.lock().unwrap(), &mut ret);

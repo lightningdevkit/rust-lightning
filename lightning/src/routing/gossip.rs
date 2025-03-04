@@ -21,10 +21,10 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
 
-use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+use crate::events::MessageSendEvent;
 use crate::ln::msgs;
 use crate::ln::msgs::{
-	ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement,
+	BaseMessageHandler, ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement,
 };
 use crate::ln::msgs::{
 	DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress,
@@ -602,112 +602,6 @@ where
 		None
 	}
 
-	/// Initiates a stateless sync of routing gossip information with a peer
-	/// using [`gossip_queries`]. The default strategy used by this implementation
-	/// is to sync the full block range with several peers.
-	///
-	/// We should expect one or more [`reply_channel_range`] messages in response
-	/// to our [`query_channel_range`]. Each reply will enqueue a [`query_scid`] message
-	/// to request gossip messages for each channel. The sync is considered complete
-	/// when the final [`reply_scids_end`] message is received, though we are not
-	/// tracking this directly.
-	///
-	/// [`gossip_queries`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#query-messages
-	/// [`reply_channel_range`]: msgs::ReplyChannelRange
-	/// [`query_channel_range`]: msgs::QueryChannelRange
-	/// [`query_scid`]: msgs::QueryShortChannelIds
-	/// [`reply_scids_end`]: msgs::ReplyShortChannelIdsEnd
-	fn peer_connected(
-		&self, their_node_id: PublicKey, init_msg: &Init, _inbound: bool,
-	) -> Result<(), ()> {
-		// We will only perform a sync with peers that support gossip_queries.
-		if !init_msg.features.supports_gossip_queries() {
-			// Don't disconnect peers for not supporting gossip queries. We may wish to have
-			// channels with peers even without being able to exchange gossip.
-			return Ok(());
-		}
-
-		// The lightning network's gossip sync system is completely broken in numerous ways.
-		//
-		// Given no broadly-available set-reconciliation protocol, the only reasonable approach is
-		// to do a full sync from the first few peers we connect to, and then receive gossip
-		// updates from all our peers normally.
-		//
-		// Originally, we could simply tell a peer to dump us the entire gossip table on startup,
-		// wasting lots of bandwidth but ensuring we have the full network graph. After the initial
-		// dump peers would always send gossip and we'd stay up-to-date with whatever our peer has
-		// seen.
-		//
-		// In order to reduce the bandwidth waste, "gossip queries" were introduced, allowing you
-		// to ask for the SCIDs of all channels in your peer's routing graph, and then only request
-		// channel data which you are missing. Except there was no way at all to identify which
-		// `channel_update`s you were missing, so you still had to request everything, just in a
-		// very complicated way with some queries instead of just getting the dump.
-		//
-		// Later, an option was added to fetch the latest timestamps of the `channel_update`s to
-		// make efficient sync possible, however it has yet to be implemented in lnd, which makes
-		// relying on it useless.
-		//
-		// After gossip queries were introduced, support for receiving a full gossip table dump on
-		// connection was removed from several nodes, making it impossible to get a full sync
-		// without using the "gossip queries" messages.
-		//
-		// Once you opt into "gossip queries" the only way to receive any gossip updates that a
-		// peer receives after you connect, you must send a `gossip_timestamp_filter` message. This
-		// message, as the name implies, tells the peer to not forward any gossip messages with a
-		// timestamp older than a given value (not the time the peer received the filter, but the
-		// timestamp in the update message, which is often hours behind when the peer received the
-		// message).
-		//
-		// Obnoxiously, `gossip_timestamp_filter` isn't *just* a filter, but its also a request for
-		// your peer to send you the full routing graph (subject to the filter). Thus, in order to
-		// tell a peer to send you any updates as it sees them, you have to also ask for the full
-		// routing graph to be synced. If you set a timestamp filter near the current time, peers
-		// will simply not forward any new updates they see to you which were generated some time
-		// ago (which is not uncommon). If you instead set a timestamp filter near 0 (or two weeks
-		// ago), you will always get the full routing graph from all your peers.
-		//
-		// Most lightning nodes today opt to simply turn off receiving gossip data which only
-		// propagated some time after it was generated, and, worse, often disable gossiping with
-		// several peers after their first connection. The second behavior can cause gossip to not
-		// propagate fully if there are cuts in the gossiping subgraph.
-		//
-		// In an attempt to cut a middle ground between always fetching the full graph from all of
-		// our peers and never receiving gossip from peers at all, we send all of our peers a
-		// `gossip_timestamp_filter`, with the filter time set either two weeks ago or an hour ago.
-		//
-		// For non-`std` builds, we bury our head in the sand and do a full sync on each connection.
-		#[allow(unused_mut, unused_assignments)]
-		let mut gossip_start_time = 0;
-		#[allow(unused)]
-		let should_sync = self.should_request_full_sync();
-		#[cfg(feature = "std")]
-		{
-			gossip_start_time = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs();
-			if should_sync {
-				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
-			} else {
-				gossip_start_time -= 60 * 60; // an hour ago
-			}
-		}
-
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(MessageSendEvent::SendGossipTimestampFilter {
-			node_id: their_node_id.clone(),
-			msg: GossipTimestampFilter {
-				chain_hash: self.network_graph.chain_hash,
-				first_timestamp: gossip_start_time as u32, // 2106 issue!
-				timestamp_range: u32::max_value(),
-			},
-		});
-		Ok(())
-	}
-
-	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
-
 	fn handle_reply_channel_range(
 		&self, _their_node_id: PublicKey, _msg: ReplyChannelRange,
 	) -> Result<(), LightningError> {
@@ -855,6 +749,123 @@ where
 		})
 	}
 
+	fn processing_queue_high(&self) -> bool {
+		self.network_graph.pending_checks.too_many_checks_pending()
+	}
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref> BaseMessageHandler
+	for P2PGossipSync<G, U, L>
+where
+	U::Target: UtxoLookup,
+	L::Target: Logger,
+{
+	/// Initiates a stateless sync of routing gossip information with a peer
+	/// using [`gossip_queries`]. The default strategy used by this implementation
+	/// is to sync the full block range with several peers.
+	///
+	/// We should expect one or more [`reply_channel_range`] messages in response
+	/// to our [`query_channel_range`]. Each reply will enqueue a [`query_scid`] message
+	/// to request gossip messages for each channel. The sync is considered complete
+	/// when the final [`reply_scids_end`] message is received, though we are not
+	/// tracking this directly.
+	///
+	/// [`gossip_queries`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#query-messages
+	/// [`reply_channel_range`]: msgs::ReplyChannelRange
+	/// [`query_channel_range`]: msgs::QueryChannelRange
+	/// [`query_scid`]: msgs::QueryShortChannelIds
+	/// [`reply_scids_end`]: msgs::ReplyShortChannelIdsEnd
+	fn peer_connected(
+		&self, their_node_id: PublicKey, init_msg: &Init, _inbound: bool,
+	) -> Result<(), ()> {
+		// We will only perform a sync with peers that support gossip_queries.
+		if !init_msg.features.supports_gossip_queries() {
+			// Don't disconnect peers for not supporting gossip queries. We may wish to have
+			// channels with peers even without being able to exchange gossip.
+			return Ok(());
+		}
+
+		// The lightning network's gossip sync system is completely broken in numerous ways.
+		//
+		// Given no broadly-available set-reconciliation protocol, the only reasonable approach is
+		// to do a full sync from the first few peers we connect to, and then receive gossip
+		// updates from all our peers normally.
+		//
+		// Originally, we could simply tell a peer to dump us the entire gossip table on startup,
+		// wasting lots of bandwidth but ensuring we have the full network graph. After the initial
+		// dump peers would always send gossip and we'd stay up-to-date with whatever our peer has
+		// seen.
+		//
+		// In order to reduce the bandwidth waste, "gossip queries" were introduced, allowing you
+		// to ask for the SCIDs of all channels in your peer's routing graph, and then only request
+		// channel data which you are missing. Except there was no way at all to identify which
+		// `channel_update`s you were missing, so you still had to request everything, just in a
+		// very complicated way with some queries instead of just getting the dump.
+		//
+		// Later, an option was added to fetch the latest timestamps of the `channel_update`s to
+		// make efficient sync possible, however it has yet to be implemented in lnd, which makes
+		// relying on it useless.
+		//
+		// After gossip queries were introduced, support for receiving a full gossip table dump on
+		// connection was removed from several nodes, making it impossible to get a full sync
+		// without using the "gossip queries" messages.
+		//
+		// Once you opt into "gossip queries" the only way to receive any gossip updates that a
+		// peer receives after you connect, you must send a `gossip_timestamp_filter` message. This
+		// message, as the name implies, tells the peer to not forward any gossip messages with a
+		// timestamp older than a given value (not the time the peer received the filter, but the
+		// timestamp in the update message, which is often hours behind when the peer received the
+		// message).
+		//
+		// Obnoxiously, `gossip_timestamp_filter` isn't *just* a filter, but its also a request for
+		// your peer to send you the full routing graph (subject to the filter). Thus, in order to
+		// tell a peer to send you any updates as it sees them, you have to also ask for the full
+		// routing graph to be synced. If you set a timestamp filter near the current time, peers
+		// will simply not forward any new updates they see to you which were generated some time
+		// ago (which is not uncommon). If you instead set a timestamp filter near 0 (or two weeks
+		// ago), you will always get the full routing graph from all your peers.
+		//
+		// Most lightning nodes today opt to simply turn off receiving gossip data which only
+		// propagated some time after it was generated, and, worse, often disable gossiping with
+		// several peers after their first connection. The second behavior can cause gossip to not
+		// propagate fully if there are cuts in the gossiping subgraph.
+		//
+		// In an attempt to cut a middle ground between always fetching the full graph from all of
+		// our peers and never receiving gossip from peers at all, we send all of our peers a
+		// `gossip_timestamp_filter`, with the filter time set either two weeks ago or an hour ago.
+		//
+		// For non-`std` builds, we bury our head in the sand and do a full sync on each connection.
+		#[allow(unused_mut, unused_assignments)]
+		let mut gossip_start_time = 0;
+		#[allow(unused)]
+		let should_sync = self.should_request_full_sync();
+		#[cfg(feature = "std")]
+		{
+			gossip_start_time = SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("Time must be > 1970")
+				.as_secs();
+			if should_sync {
+				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
+			} else {
+				gossip_start_time -= 60 * 60; // an hour ago
+			}
+		}
+
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(MessageSendEvent::SendGossipTimestampFilter {
+			node_id: their_node_id.clone(),
+			msg: GossipTimestampFilter {
+				chain_hash: self.network_graph.chain_hash,
+				first_timestamp: gossip_start_time as u32, // 2106 issue!
+				timestamp_range: u32::max_value(),
+			},
+		});
+		Ok(())
+	}
+
+	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
+
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
 		features.set_gossip_queries_optional();
@@ -867,17 +878,6 @@ where
 		features
 	}
 
-	fn processing_queue_high(&self) -> bool {
-		self.network_graph.pending_checks.too_many_checks_pending()
-	}
-}
-
-impl<G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref> MessageSendEventsProvider
-	for P2PGossipSync<G, U, L>
-where
-	U::Target: UtxoLookup,
-	L::Target: Logger,
-{
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2711,10 +2711,10 @@ impl ReadOnlyNetworkGraph<'_> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+	use crate::events::MessageSendEvent;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channelmanager;
-	use crate::ln::msgs::SocketAddress;
+	use crate::ln::msgs::{BaseMessageHandler, SocketAddress};
 	use crate::ln::msgs::{
 		ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, QueryChannelRange,
 		QueryShortChannelIds, ReplyChannelRange, RoutingMessageHandler,
