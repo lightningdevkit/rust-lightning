@@ -12,10 +12,11 @@
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
+use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination};
-use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, RAACommitmentOrder};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
@@ -27,6 +28,7 @@ use crate::util::config::UserConfig;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
+use types::payment::{PaymentHash, PaymentPreimage};
 
 use crate::prelude::*;
 
@@ -504,7 +506,6 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 #[cfg(feature = "std")]
 fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, not_stale: bool) {
-	use crate::routing::router::{RouteParameters, PaymentParameters};
 	use crate::ln::channelmanager::Retry;
 	use crate::util::string::UntrustedString;
 	// When we get a data_loss_protect proving we're behind, we immediately panic as the
@@ -1285,4 +1286,74 @@ fn test_reload_partial_funding_batch() {
 
 	// Ensure the channels don't exist anymore.
 	assert!(nodes[0].node.list_channels().is_empty());
+}
+
+#[test]
+fn test_htlc_localremoved_persistence() {
+	// Tests that if we fail an htlc back (update_fail_htlc message) and then restart the node, the node will resend the
+	// exact same fail message.
+	let chanmon_cfgs: Vec<TestChanMonCfg> = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let persister;
+	let chain_monitor;
+	let deserialized_chanmgr;
+
+	// Send a keysend payment that fails because of a preimage mismatch.
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let payee_pubkey = nodes[1].node.get_our_node_id();
+
+	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::for_keysend(payee_pubkey, 40, false), 10_000);
+	let route = find_route(
+		&nodes[0], &route_params
+	).unwrap();
+
+	let test_preimage = PaymentPreimage([42; 32]);
+	let mismatch_payment_hash = PaymentHash([43; 32]);
+	let session_privs = nodes[0].node.test_add_new_pending_payment(mismatch_payment_hash,
+		RecipientOnionFields::spontaneous_empty(), PaymentId(mismatch_payment_hash.0), &route).unwrap();
+	nodes[0].node.test_send_payment_internal(&route, mismatch_payment_hash,
+		RecipientOnionFields::spontaneous_empty(), Some(test_preimage), PaymentId(mismatch_payment_hash.0), None, session_privs).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash: mismatch_payment_hash }]);
+	check_added_monitors(&nodes[1], 1);
+
+	// Save the update_fail_htlc message for later comparison.
+	let msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	let htlc_fail_msg = msgs.update_fail_htlcs[0].clone();
+
+	// Reload nodes.
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+
+	let monitor_encoded = get_monitor!(nodes[1], _chan.3).encode();
+	reload_node!(nodes[1], nodes[1].node.encode(), &[&monitor_encoded], persister, chain_monitor, deserialized_chanmgr);
+
+	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 1);
+	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+	nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+
+	// Assert that same failure message is resent after reload.
+	let msgs = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	let htlc_fail_msg_after_reload = msgs.2.unwrap().update_fail_htlcs[0].clone();
+	assert_eq!(htlc_fail_msg, htlc_fail_msg_after_reload);
 }
