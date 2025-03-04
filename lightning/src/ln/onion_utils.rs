@@ -931,15 +931,11 @@ pub(crate) struct DecodedOnionFailure {
 	pub(crate) onion_error_data: Option<Vec<u8>>,
 }
 
-/// Note that we always decrypt `packet` in-place here even if the deserialization into
-/// [`msgs::DecodedOnionErrorPacket`] ultimately fails.
-fn decrypt_onion_error_packet(
-	packet: &mut Vec<u8>, shared_secret: SharedSecret,
-) -> Result<msgs::DecodedOnionErrorPacket, msgs::DecodeError> {
+/// Decrypt the error packet in-place.
+fn decrypt_onion_error_packet(packet: &mut Vec<u8>, shared_secret: SharedSecret) {
 	let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
 	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 	chacha.process_in_place(packet);
-	msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(packet))
 }
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
@@ -1021,9 +1017,11 @@ where
 					{
 						// Actually parse the onion error data in tests so we can check that blinded hops fail
 						// back correctly.
-						let err_packet =
-							decrypt_onion_error_packet(&mut encrypted_packet, shared_secret)
-								.unwrap();
+						decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
+						let err_packet = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(
+							&encrypted_packet,
+						))
+						.unwrap();
 						error_code_ret = Some(u16::from_be_bytes(
 							err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
 						));
@@ -1044,22 +1042,44 @@ where
 		let amt_to_forward = htlc_msat - route_hop.fee_msat;
 		htlc_msat = amt_to_forward;
 
-		let err_packet = match decrypt_onion_error_packet(&mut encrypted_packet, shared_secret) {
-			Ok(p) => p,
-			Err(_) => return,
-		};
+		decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
+
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
-		hmac.input(&err_packet.encode()[32..]);
+		hmac.input(&encrypted_packet[32..]);
 
-		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &err_packet.hmac) {
+		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &encrypted_packet[..32]) {
 			return;
 		}
+
+		let err_packet =
+			match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&encrypted_packet)) {
+				Ok(p) => p,
+				Err(_) => {
+					log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey);
+
+					let network_update = Some(NetworkUpdate::NodeFailure {
+						node_id: route_hop.pubkey,
+						is_permanent: true,
+					});
+					let short_channel_id = Some(route_hop.short_channel_id);
+					res = Some(FailureLearnings {
+						network_update,
+						short_channel_id,
+						payment_failed_permanently: is_from_final_node,
+						failed_within_blinded_path: false,
+					});
+					return;
+				},
+			};
+
 		let error_code_slice = match err_packet.failuremsg.get(0..2) {
 			Some(s) => s,
 			None => {
 				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
 				// in question
+				log_warn!(logger, "Missing error code in failure from {}", route_hop.pubkey);
+
 				let network_update = Some(NetworkUpdate::NodeFailure {
 					node_id: route_hop.pubkey,
 					is_permanent: true,
@@ -1219,6 +1239,12 @@ where
 	} else {
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
+		log_warn!(
+			logger,
+			"Non-attributable failure encountered on route {}",
+			path.hops.iter().map(|h| h.pubkey.to_string()).collect::<Vec<_>>().join("->")
+		);
+
 		DecodedOnionFailure {
 			network_update: None,
 			short_channel_id: None,
@@ -1764,7 +1790,10 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use crate::io;
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::msgs;
 	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
@@ -1773,6 +1802,7 @@ mod tests {
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
+	use crate::util::test_utils::TestLogger;
 
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
@@ -1785,40 +1815,95 @@ mod tests {
 		SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap()
 	}
 
+	fn build_test_path() -> Path {
+		Path {
+			hops: vec![
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 1,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 2,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 3,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(
+						&<Vec<u8>>::from_hex(
+							"02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145",
+						)
+						.unwrap()[..],
+					)
+					.unwrap(),
+					channel_features: ChannelFeatures::empty(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 4,
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
+				},
+			],
+			blinded_tail: None,
+		}
+	}
+
 	fn build_test_onion_keys() -> Vec<OnionKeys> {
 		// Keys from BOLT 4, used in both test vector tests
 		let secp_ctx = Secp256k1::new();
 
-		let route = Route {
-			paths: vec![Path { hops: vec![
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-					RouteHop {
-						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
-					},
-			], blinded_tail: None }],
-			route_params: None,
-		};
+		let path = build_test_path();
+		let route = Route { paths: vec![path], route_params: None };
 
 		let onion_keys =
 			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key())
@@ -2078,6 +2163,108 @@ mod tests {
 		);
 		let hex = "9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d";
 		assert_eq!(onion_packet_5.data, <Vec<u8>>::from_hex(hex).unwrap());
+
+		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
+		let ctx_full = Secp256k1::new();
+		let path = build_test_path();
+		let htlc_source = HTLCSource::OutboundRoute {
+			path,
+			session_priv: get_test_session_key(),
+			first_hop_htlc_msat: 0,
+			payment_id: PaymentId([1; 32]),
+		};
+
+		// Assert that the original failure can be retrieved and that all hmacs check out.
+		let decrypted_failure =
+			process_onion_failure(&ctx_full, &logger, &htlc_source, onion_packet_5.data);
+
+		assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
+	}
+
+	#[test]
+	fn test_non_attributable_failure_packet_onion() {
+		// Create a failure packet with bogus data.
+		let packet = vec![1u8; 292];
+
+		// In the current protocol, it is unfortunately not possible to identify the failure source.
+		let logger: TestLogger = TestLogger::new();
+		let decrypted_failure = test_failure_attribution(&logger, &packet);
+		assert_eq!(decrypted_failure.short_channel_id, None);
+
+		logger.assert_log_contains(
+			"lightning::ln::onion_utils",
+			"Non-attributable failure encountered",
+			1,
+		);
+	}
+
+	#[test]
+	fn test_unreadable_failure_packet_onion() {
+		// Create a failure packet with a valid hmac but unreadable failure message.
+		let onion_keys: Vec<OnionKeys> = build_test_onion_keys();
+		let shared_secret = onion_keys[0].shared_secret.as_ref();
+		let um = gen_um_from_shared_secret(&shared_secret);
+
+		// The failure message is a single 0 byte.
+		let mut packet = [0u8; 33];
+
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+		hmac.input(&packet[32..]);
+		let hmac = Hmac::from_engine(hmac).to_byte_array();
+		packet[..32].copy_from_slice(&hmac);
+
+		let packet = encrypt_failure_packet(shared_secret, &packet);
+
+		// For the unreadable failure, it is still expected that the failing channel can be identified.
+		let logger: TestLogger = TestLogger::new();
+		let decrypted_failure = test_failure_attribution(&logger, &packet.data);
+		assert_eq!(decrypted_failure.short_channel_id, Some(0));
+
+		logger.assert_log_contains("lightning::ln::onion_utils", "Unreadable failure", 1);
+	}
+
+	#[test]
+	fn test_missing_error_code() {
+		// Create a failure packet with a valid hmac and structure, but no error code.
+		let onion_keys: Vec<OnionKeys> = build_test_onion_keys();
+		let shared_secret = onion_keys[0].shared_secret.as_ref();
+		let um = gen_um_from_shared_secret(&shared_secret);
+
+		let failuremsg = vec![1];
+		let pad = Vec::new();
+		let mut packet = msgs::DecodedOnionErrorPacket { hmac: [0; 32], failuremsg, pad };
+
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+		hmac.input(&packet.encode()[32..]);
+		packet.hmac = Hmac::from_engine(hmac).to_byte_array();
+
+		let packet = encrypt_failure_packet(shared_secret, &packet.encode()[..]);
+
+		let logger = TestLogger::new();
+		let decrypted_failure = test_failure_attribution(&logger, &packet.data);
+		assert_eq!(decrypted_failure.short_channel_id, Some(0));
+
+		logger.assert_log_contains(
+			"lightning::ln::onion_utils",
+			"Missing error code in failure",
+			1,
+		);
+	}
+
+	fn test_failure_attribution(logger: &TestLogger, packet: &[u8]) -> DecodedOnionFailure {
+		let ctx_full = Secp256k1::new();
+		let path = build_test_path();
+		let htlc_source = HTLCSource::OutboundRoute {
+			path,
+			session_priv: get_test_session_key(),
+			first_hop_htlc_msat: 0,
+			payment_id: PaymentId([1; 32]),
+		};
+
+		let decrypted_failure =
+			process_onion_failure(&ctx_full, &logger, &htlc_source, packet.into());
+
+		decrypted_failure
 	}
 
 	struct RawOnionHopData {
