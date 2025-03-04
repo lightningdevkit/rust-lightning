@@ -4670,7 +4670,6 @@ where
 	///
 	/// LDK will not automatically retry this payment, though it may be manually re-sent after an
 	/// [`Event::PaymentFailed`] is generated.
-	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn send_payment_with_route(
 		&self, mut route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId

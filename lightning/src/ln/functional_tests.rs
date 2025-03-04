@@ -66,7 +66,7 @@ use crate::ln::chan_utils::CommitmentTransaction;
 use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
 
 #[xtest(feature = "_externalize_tests")]
-fn test_channel_resumption_fail_post_funding() {
+pub fn test_channel_resumption_fail_post_funding() {
 	// If we fail to exchange funding with a peer prior to it disconnecting we'll resume the
 	// channel open on reconnect, however if we do exchange funding we do not currently support
 	// replaying it and here test that the channel closes.
@@ -2899,7 +2899,7 @@ pub fn claim_htlc_outputs() {
 //
 // This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
 #[xtest(feature = "_externalize_tests")]
-fn test_multiple_package_conflicts() {
+pub fn test_multiple_package_conflicts() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut user_cfg = test_default_channel_config();
@@ -5047,7 +5047,7 @@ pub fn test_static_spendable_outputs_timeout_tx() {
 	check_spends!(spend_txn[2], node_txn[0], commitment_tx[0]); // All outputs
 }
 
-pub fn do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(split_tx: bool) {
+fn do_test_static_spendable_outputs_justice_tx_revoked_commitment_tx(split_tx: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -10603,7 +10603,7 @@ pub fn test_max_dust_htlc_exposure() {
 }
 
 #[xtest(feature = "_externalize_tests")]
-fn test_nondust_htlc_excess_fees_are_dust() {
+pub fn test_nondust_htlc_excess_fees_are_dust() {
 	// Test that the excess transaction fees paid in nondust HTLCs count towards our dust limit
 	const DEFAULT_FEERATE: u32 = 253;
 	const HIGH_FEERATE: u32 = 275;
@@ -11943,7 +11943,7 @@ pub fn test_manual_funding_abandon() {
 }
 
 #[xtest(feature = "_externalize_tests")]
-fn test_funding_signed_event() {
+pub fn test_funding_signed_event() {
 	let mut cfg = UserConfig::default();
 	cfg.channel_handshake_config.minimum_depth = 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
