@@ -854,10 +854,7 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
 /// best chain) upon deserializing the object!
 pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
-	#[cfg(test)]
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
-	#[cfg(not(test))]
-	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
 impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
@@ -965,9 +962,9 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// Obviously Correct (tm) if we just keep track of them explicitly.
 	outputs_to_watch: HashMap<Txid, Vec<(u32, ScriptBuf)>>,
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub onchain_tx_handler: OnchainTxHandler<Signer>,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	onchain_tx_handler: OnchainTxHandler<Signer>,
 
 	// This is set when the Channel[Manager] generated a ChannelMonitorUpdate which indicated the
@@ -1818,7 +1815,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
 	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
 	/// revoked commitment transaction.
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
 		let mut inner = self.inner.lock().unwrap();
@@ -2132,7 +2129,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().counterparty_payment_script = script;
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn do_mut_signer_call<F: FnMut(&mut Signer) -> ()>(&self, mut f: F) {
 		let mut inner = self.inner.lock().unwrap();
 		f(&mut inner.onchain_tx_handler.signer);
@@ -2773,7 +2770,7 @@ macro_rules! fail_unbroadcast_htlcs {
 // witness length match (ie is 136 bytes long). We generate one here which we also use in some
 // in-line tests later.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
 	use bitcoin::opcodes;
 	let mut ret = [opcodes::all::OP_NOP.to_u8(); 136];
@@ -2785,7 +2782,7 @@ pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
 	Vec::from(&ret[..])
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 pub fn deliberately_bogus_accepted_htlc_witness() -> Vec<Vec<u8>> {
 	vec![Vec::new(), Vec::new(), Vec::new(), Vec::new(), deliberately_bogus_accepted_htlc_witness_program().into()].into()
 }
@@ -3947,7 +3944,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	/// Note that this includes possibly-locktimed-in-the-future transactions!
 	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(
 		&mut self, logger: &WithChannelMonitor<L>
@@ -5289,7 +5286,7 @@ mod tests {
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, broadcast_tx)], conf_height);
 
-		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<InMemorySigner>)>::read(
+		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<_>)>::read(
 						&mut io::Cursor::new(&get_monitor!(nodes[1], channel.2).encode()),
 						(&nodes[1].keys_manager.backing, &nodes[1].keys_manager.backing)).unwrap();
 

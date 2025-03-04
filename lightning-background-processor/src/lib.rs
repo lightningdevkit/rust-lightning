@@ -2550,6 +2550,8 @@ mod tests {
 				failure: PathFailure::OnPath { network_update: None },
 				path: path.clone(),
 				short_channel_id: Some(scored_scid),
+				error_code: None,
+				error_data: None,
 			});
 			let event = $receive.expect("PaymentPathFailed not handled within deadline");
 			match event {
@@ -2567,6 +2569,8 @@ mod tests {
 				failure: PathFailure::OnPath { network_update: None },
 				path: path.clone(),
 				short_channel_id: None,
+				error_code: None,
+				error_data: None,
 			});
 			let event = $receive.expect("PaymentPathFailed not handled within deadline");
 			match event {

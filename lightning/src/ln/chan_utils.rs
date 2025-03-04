@@ -176,9 +176,9 @@ impl HTLCClaim {
 	}
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "_test_utils")))]
 const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
 pub(crate) fn commitment_tx_base_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {

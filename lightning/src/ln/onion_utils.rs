@@ -925,9 +925,9 @@ pub(crate) struct DecodedOnionFailure {
 	pub(crate) short_channel_id: Option<u64>,
 	pub(crate) payment_failed_permanently: bool,
 	pub(crate) failed_within_blinded_path: bool,
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) onion_error_code: Option<u16>,
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) onion_error_data: Option<Vec<u8>>,
 }
 
@@ -1231,9 +1231,9 @@ where
 			short_channel_id,
 			payment_failed_permanently,
 			failed_within_blinded_path,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: error_code_ret,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: error_packet_ret,
 		}
 	} else {
@@ -1250,9 +1250,9 @@ where
 			short_channel_id: None,
 			payment_failed_permanently: is_from_final_node,
 			failed_within_blinded_path: false,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
 		}
 	}
@@ -1408,9 +1408,9 @@ impl HTLCFailReason {
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
 						failed_within_blinded_path: false,
-						#[cfg(test)]
+						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_code: Some(*failure_code),
-						#[cfg(test)]
+						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
 					}
 				} else {

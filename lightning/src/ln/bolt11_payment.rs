@@ -88,6 +88,7 @@ fn params_from_invoice(
 mod tests {
 	use super::*;
 	use crate::routing::router::Payee;
+	use crate::sign::{NodeSigner, Recipient};
 	use crate::types::payment::PaymentSecret;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -178,8 +179,6 @@ mod tests {
 		let (payment_hash, payment_secret) =
 			nodes[1].node.create_inbound_payment(None, 7200, None).unwrap();
 
-		let secp_ctx = Secp256k1::new();
-		let node_secret = nodes[1].keys_manager.backing.get_node_secret_key();
 		let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
@@ -189,8 +188,11 @@ mod tests {
 			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(50_000)
 			.payment_metadata(payment_metadata.clone())
-			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &node_secret))
+			.build_raw()
 			.unwrap();
+		let sig = nodes[1].keys_manager.backing.sign_invoice(&invoice, Recipient::Node).unwrap();
+		let invoice = invoice.sign::<_, ()>(|_| Ok(sig)).unwrap();
+		let invoice = Bolt11Invoice::from_signed(invoice).unwrap();
 
 		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
 		nodes[0]

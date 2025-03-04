@@ -2324,8 +2324,8 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Reset our RNG counters to mirror the RNG output from when this test was written.
-	nodes[0].keys_manager.backing.inner.entropy_source.set_counter(0x1_0000_0004);
-	nodes[1].keys_manager.backing.inner.entropy_source.set_counter(0x1_0000_0004);
+	nodes[0].keys_manager.backing.inner.set_counter(0x1_0000_0004);
+	nodes[1].keys_manager.backing.inner.set_counter(0x1_0000_0004);
 
 	// Open a channel, lock in an HTLC, and immediately broadcast the commitment transaction. This
 	// ensures that the HTLC timeout package is held until we reach its expiration height.

@@ -13,6 +13,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ext-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Install Rust stable toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
+          rustup override set stable
+      - name: Run externalized tests
+        run: |
+          cd ext-functional-test-demo
+          cargo test --verbose --color always
+          cargo test --verbose --color always --features test-broken
   build:
     strategy:
       fail-fast: false
