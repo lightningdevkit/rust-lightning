@@ -10419,6 +10419,65 @@ where
 		Ok(splice_ack_msg)
 	}
 
+	/// Compute the channel balances (local & remote) by taking into account fees, anchor values, and dust limits.
+	#[cfg(splicing)]
+	fn compute_balances_less_fees(
+		&self, channel_value_sats: u64, value_to_self_msat: u64, is_local: bool,
+	) -> (u64, u64) {
+		let feerate_per_kw = self.context.feerate_per_kw;
+
+		// compute 'raw' counterparty balance
+		let value_to_remote_msat: i64 =
+			((channel_value_sats * 1000) as i64).saturating_sub(value_to_self_msat as i64);
+		debug_assert!(value_to_remote_msat >= 0);
+
+		let total_fee_sat = commit_tx_fee_sat(
+			feerate_per_kw,
+			0,
+			&self.funding.channel_transaction_parameters.channel_type_features,
+		);
+		let anchors_val = if self
+			.funding
+			.channel_transaction_parameters
+			.channel_type_features
+			.supports_anchors_zero_fee_htlc_tx()
+		{
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
+		} else {
+			0
+		} as i64;
+
+		// consider fees and anchor values
+		let (mut value_to_self, mut value_to_remote) = if self.funding.is_outbound() {
+			(
+				(value_to_self_msat as i64) / 1000 - anchors_val - total_fee_sat as i64,
+				value_to_remote_msat / 1000,
+			)
+		} else {
+			(
+				(value_to_self_msat as i64) / 1000,
+				value_to_remote_msat / 1000 - anchors_val - total_fee_sat as i64,
+			)
+		};
+
+		// consider dust limit
+		let broadcaster_dust_limit_satoshis = if is_local {
+			self.context.holder_dust_limit_satoshis
+		} else {
+			self.context.counterparty_dust_limit_satoshis
+		} as i64;
+		if value_to_self < broadcaster_dust_limit_satoshis {
+			value_to_self = 0;
+		}
+		debug_assert!(value_to_self >= 0);
+		if value_to_remote < broadcaster_dust_limit_satoshis {
+			value_to_remote = 0;
+		}
+		debug_assert!(value_to_remote >= 0);
+
+		(value_to_self as u64, value_to_remote as u64)
+	}
+
 	/// Handle splice_ack
 	#[cfg(splicing)]
 	pub fn splice_ack(&mut self, msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
@@ -10435,14 +10494,28 @@ where
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 
 		let pre_channel_value = self.funding.get_value_satoshis();
-		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
+		let post_channel_value = PendingSplice::compute_post_value(
+			pre_channel_value,
+			our_funding_contribution,
+			their_funding_contribution_satoshis,
+		);
 		let pre_balance_self = self.funding.value_to_self_msat;
-		let post_balance_self = PendingSplice::add_checked(pre_balance_self, our_funding_contribution);
-		let pre_balance_counterparty = pre_channel_value.saturating_sub(pre_balance_self);
-		let post_balance_counterparty = post_channel_value.saturating_sub(post_balance_self);
+		let post_balance_self =
+			PendingSplice::add_checked(pre_balance_self, our_funding_contribution);
+		let (pre_balance_self_less_fees, pre_balance_counterparty_less_fees) =
+			self.compute_balances_less_fees(pre_channel_value, pre_balance_self, true);
+		let (post_balance_self_less_fees, post_balance_counterparty_less_fees) =
+			self.compute_balances_less_fees(post_channel_value, post_balance_self, true);
 		// Pre-check for reserve requirement
 		// This will also be checked later at tx_complete
-		let _res = self.context.check_splice_balances_meet_v2_reserve_requirements(pre_balance_self, post_balance_self, pre_balance_counterparty, post_balance_counterparty, pre_channel_value, post_channel_value)?;
+		let _res = self.context.check_splice_balances_meet_v2_reserve_requirements(
+			pre_balance_self_less_fees,
+			post_balance_self_less_fees,
+			pre_balance_counterparty_less_fees,
+			post_balance_counterparty_less_fees,
+			pre_channel_value,
+			post_channel_value,
+		)?;
 		Ok(())
 	}
 
