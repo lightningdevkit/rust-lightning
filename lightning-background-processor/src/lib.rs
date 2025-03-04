@@ -1083,11 +1083,14 @@ mod tests {
 		IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 	};
 	use lightning::ln::types::ChannelId;
+	use lightning::offers::flow::OffersMessageFlow;
 	use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{
+		ChangeDestinationSource, InMemorySigner, KeysManager, NodeSigner, Recipient,
+	};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1150,6 +1153,18 @@ mod tests {
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
 				Arc<KeysManager>,
+			>,
+		>,
+		Arc<
+			OffersMessageFlow<
+				Arc<KeysManager>,
+				Arc<
+					DefaultMessageRouter<
+						Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+						Arc<test_utils::TestLogger>,
+						Arc<KeysManager>,
+					>,
+				>,
 			>,
 		>,
 		Arc<test_utils::TestLogger>,
@@ -1559,6 +1574,14 @@ mod tests {
 				network_graph.clone(),
 				Arc::clone(&keys_manager),
 			));
+			let flow = Arc::new(OffersMessageFlow::new(
+				network,
+				msg_router.clone(),
+				keys_manager.get_node_id(Recipient::Node).unwrap(),
+				genesis_block.header.time,
+				keys_manager.get_inbound_payment_key(),
+				keys_manager.clone(),
+			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store =
 				Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
@@ -1579,6 +1602,7 @@ mod tests {
 				tx_broadcaster.clone(),
 				router.clone(),
 				msg_router.clone(),
+				flow.clone(),
 				logger.clone(),
 				keys_manager.clone(),
 				keys_manager.clone(),

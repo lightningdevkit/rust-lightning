@@ -47,6 +47,7 @@ use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFun
 // construct one themselves.
 use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
+use crate::offers::flow::{Flow, OffersMessageFlow};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 use crate::ln::channel::PendingV2Channel;
@@ -1348,11 +1349,11 @@ impl Readable for Option<RAAMonitorUpdateBlockingAction> {
 }
 
 /// State we hold per-peer.
-pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
+pub(crate) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// `channel_id` -> `Channel`
 	///
 	/// Holds all channels where the peer is the counterparty.
-	pub(super) channel_by_id: HashMap<ChannelId, Channel<SP>>,
+	pub(crate) channel_by_id: HashMap<ChannelId, Channel<SP>>,
 	/// `temporary_channel_id` -> `InboundChannelRequest`.
 	///
 	/// When manual channel acceptance is enabled, this holds all unaccepted inbound channels where
@@ -1361,7 +1362,7 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// the channel is rejected, then the entry is simply removed.
 	pub(super) inbound_channel_request_by_id: HashMap<ChannelId, InboundChannelRequest>,
 	/// The latest `InitFeatures` we heard from the peer.
-	latest_features: InitFeatures,
+	pub(crate) latest_features: InitFeatures,
 	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -1528,6 +1529,14 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		Arc<L>,
 		Arc<KeysManager>,
 	>>,
+	Arc<OffersMessageFlow<
+		Arc<KeysManager>,
+		Arc<DefaultMessageRouter<
+			Arc<NetworkGraph<Arc<L>>>,
+			Arc<L>,
+			Arc<KeysManager>,
+		>>,
+	>>,
 	Arc<L>
 >;
 
@@ -1563,6 +1572,14 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 			&'f NetworkGraph<&'g L>,
 			&'g L,
 			&'c KeysManager,
+		>,
+		&'i OffersMessageFlow<
+			&'c KeysManager,
+			&'i DefaultMessageRouter<
+				&'f NetworkGraph<&'g L>,
+				&'g L,
+				&'c KeysManager,
+			>,
 		>,
 		&'g L
 	>;
@@ -1606,16 +1623,20 @@ pub trait AChannelManager {
 	type MessageRouter: MessageRouter + ?Sized;
 	/// A type that may be dereferenced to [`Self::MessageRouter`].
 	type MR: Deref<Target = Self::MessageRouter>;
+	/// A type implementing [`MessageRouter`].
+	type Flow: Flow + ?Sized;
+	/// A type that may be dereferenced to [`Self::MessageRouter`].
+	type FW: Deref<Target = Self::Flow>;
 	/// A type implementing [`Logger`].
 	type Logger: Logger + ?Sized;
 	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
 	/// Returns a reference to the actual [`ChannelManager`] object.
-	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::MR, Self::L>;
+	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::MR, Self::FW, Self::L>;
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> AChannelManager
-for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> AChannelManager
+for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -1625,6 +1646,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	type Watch = M::Target;
@@ -1644,9 +1666,11 @@ where
 	type R = R;
 	type MessageRouter = MR::Target;
 	type MR = MR;
+	type Flow = FW::Target;
+	type FW = FW;
 	type Logger = L::Target;
 	type L = L;
-	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> { self }
+	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L> { self }
 }
 
 /// A lightning node's channel state machine and payment management logic, which facilitates
@@ -1725,6 +1749,7 @@ where
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
 /// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
+/// #	  flow: &lightning::offers::flow::OffersMessageFlow<&ES, &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>>,
 /// #     logger: &L,
 /// #     entropy_source: &ES,
 /// #     node_signer: &dyn lightning::sign::NodeSigner,
@@ -1740,7 +1765,7 @@ where
 /// };
 /// let default_config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
-///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
+///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, flow, logger,
 ///     entropy_source, node_signer, signer_provider, default_config, params, current_timestamp,
 /// );
 ///
@@ -1748,10 +1773,10 @@ where
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, default_config, channel_monitors.iter().collect(),
+///     router, message_router, flow, logger, default_config, channel_monitors.iter().collect(),
 /// );
 /// let (block_hash, channel_manager) =
-///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2437,7 +2462,7 @@ where
 //               |
 //               |__`pending_background_events`
 //
-pub struct ChannelManager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
+pub struct ChannelManager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -2447,6 +2472,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	default_configuration: UserConfig,
@@ -2456,6 +2482,8 @@ where
 	tx_broadcaster: T,
 	router: R,
 	message_router: MR,
+
+	pub(crate) flow: FW,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -3533,7 +3561,7 @@ macro_rules! process_events_body {
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -3543,6 +3571,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
@@ -3563,7 +3592,7 @@ where
 	/// [`block_disconnected`]: chain::Listen::block_disconnected
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	pub fn new(
-		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, flow: FW, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
 		params: ChainParameters, current_timestamp: u32,
 	) -> Self {
@@ -3578,6 +3607,7 @@ where
 			tx_broadcaster,
 			router,
 			message_router,
+			flow,
 
 			best_block: RwLock::new(params.best_block),
 
@@ -8031,7 +8061,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-		    .ok_or_else(|| {
+			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
 					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
@@ -10081,18 +10111,15 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	pub fn create_offer_builder(
 		&$self, absolute_expiry: Option<Duration>
 	) -> Result<$builder, Bolt12SemanticError> {
-		let node_id = $self.get_our_node_id();
-		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
-		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::InvoiceRequest { nonce };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
+		let path = $self.flow.create_blinded_paths_using_absolute_expiry($self.peer_for_blinded_path(), context, absolute_expiry)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-			.chain_hash($self.chain_hash)
+
+		let builder = $self.flow.create_offer_builder(nonce)?
 			.path(path);
 
 		let builder = match absolute_expiry {
@@ -10154,23 +10181,16 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
 		retry_strategy: Retry, route_params_config: RouteParametersConfig
 	) -> Result<$builder, Bolt12SemanticError> {
-		let node_id = $self.get_our_node_id();
-		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
-		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
+		let path = $self.flow.create_blinded_paths_using_absolute_expiry($self.peer_for_blinded_path(), context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		let builder = RefundBuilder::deriving_signing_pubkey(
-			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
-		)?
-			.chain_hash($self.chain_hash)
-			.absolute_expiry(absolute_expiry)
-			.path(path);
+		let builder = $self.flow.create_refund_builder(amount_msats, absolute_expiry, payment_id, nonce)?
+			.path(path);	
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
 
@@ -10190,9 +10210,9 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 /// Sending multiple requests increases the chances of successful delivery in case some
 /// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
 /// even if multiple invoices are received.
-const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
+pub(crate) const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -10202,6 +10222,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	#[cfg(not(c_bindings))]
@@ -10230,15 +10251,10 @@ where
 			return Err(Bolt12SemanticError::MissingPaths)
 		}
 
-		let node_id = self.get_our_node_id();
-		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
-		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let mut builder = OfferBuilder::deriving_signing_pubkey(
-			node_id, expanded_key, nonce, secp_ctx
-		).chain_hash(self.chain_hash);
+		let mut builder = self.flow.create_offer_builder(nonce)?;
 
 		for path in message_paths_to_always_online_node {
 			builder = builder.path(path);
@@ -10378,44 +10394,23 @@ where
 	) -> Result<(), Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
-		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let builder: InvoiceRequestBuilder<secp256k1::All> = offer
-			.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?
-			.into();
-		let builder = builder.chain_hash(self.chain_hash)?;
-
-		let builder = match quantity {
-			None => builder,
-			Some(quantity) => builder.quantity(quantity)?,
-		};
-		let builder = match amount_msats {
-			None => builder,
-			Some(amount_msats) => builder.amount_msats(amount_msats)?,
-		};
-		let builder = match payer_note {
-			None => builder,
-			Some(payer_note) => builder.payer_note(payer_note),
-		};
-		let builder = match human_readable_name {
-			None => builder,
-			Some(hrn) => builder.sourced_from_human_readable_name(hrn),
-		};
+		let builder = self.flow.create_invoice_request_builder(offer, nonce, quantity, amount_msats, payer_note, human_readable_name, payment_id)?;
 		let invoice_request = builder.build_and_sign()?;
 
 		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
 		let context = MessageContext::Offers(
 			OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }
 		);
-		let reply_paths = self.create_blinded_paths(context)
+		let reply_paths = self.flow.create_blinded_paths(self.peer_for_blinded_path(), context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		create_pending_payment(&invoice_request, nonce)?;
 
-		self.enqueue_invoice_request(invoice_request, reply_paths)
+		self.flow.enqueue_invoice_request(invoice_request, reply_paths)
 	}
 
 	fn enqueue_invoice_request(
@@ -10500,19 +10495,7 @@ where
 				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-				#[cfg(feature = "std")]
-				let builder = refund.respond_using_derived_keys(
-					payment_paths, payment_hash, expanded_key, entropy
-				)?;
-				#[cfg(not(feature = "std"))]
-				let created_at = Duration::from_secs(
-					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
-				);
-				#[cfg(not(feature = "std"))]
-				let builder = refund.respond_using_derived_keys_no_std(
-					payment_paths, payment_hash, created_at, expanded_key, entropy
-				)?;
-				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
+				let builder = self.flow.create_invoice_builder(refund, payment_paths, payment_hash)?;
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
 				let nonce = Nonce::from_entropy_source(entropy);
@@ -10520,33 +10503,10 @@ where
 				let context = MessageContext::Offers(OffersContext::InboundPayment {
 					payment_hash: invoice.payment_hash(), nonce, hmac
 				});
-				let reply_paths = self.create_blinded_paths(context)
+				let reply_paths = self.flow.create_blinded_paths(self.peer_for_blinded_path(), context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-				if refund.paths().is_empty() {
-					for reply_path in reply_paths {
-						let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-							destination: Destination::Node(refund.payer_signing_pubkey()),
-							reply_path,
-						};
-						let message = OffersMessage::Invoice(invoice.clone());
-						pending_offers_messages.push((message, instructions));
-					}
-				} else {
-					reply_paths
-						.iter()
-						.flat_map(|reply_path| refund.paths().iter().map(move |path| (path, reply_path)))
-						.take(OFFERS_MESSAGE_REQUEST_LIMIT)
-						.for_each(|(path, reply_path)| {
-							let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-								destination: Destination::BlindedPath(path.clone()),
-								reply_path: reply_path.clone(),
-							};
-							let message = OffersMessage::Invoice(invoice.clone());
-							pending_offers_messages.push((message, instructions));
-						});
-				}
+				self.flow.enqueue_invoice(invoice.clone(), refund, reply_paths)?;
 
 				Ok(invoice)
 			},
@@ -10602,22 +10562,10 @@ where
 	) -> Result<(), ()> {
 		let (onion_message, context) =
 			self.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
-		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
+		let reply_paths = self.flow.create_blinded_paths(self.peer_for_blinded_path(), MessageContext::DNSResolver(context))?;
 		let expiration = StaleExpiration::TimerTicks(1);
 		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats)?;
-		let message_params = dns_resolvers
-			.iter()
-			.flat_map(|destination| reply_paths.iter().map(move |path| (path, destination)))
-			.take(OFFERS_MESSAGE_REQUEST_LIMIT);
-		for (reply_path, destination) in message_params {
-			self.pending_dns_onion_messages.lock().unwrap().push((
-				DNSResolverMessage::DNSSECQuery(onion_message.clone()),
-				MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: destination.clone(),
-					reply_path: reply_path.clone(),
-				},
-			));
-		}
+		self.flow.enqueue_dns_onion_message(onion_message, dns_resolvers, reply_paths).map_err(|_| ())?;
 		Ok(())
 	}
 
@@ -10798,6 +10746,23 @@ where
 		self.message_router
 			.create_compact_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
+	}
+
+	fn peer_for_blinded_path(&self) -> Vec<MessageForwardNode> {
+		self.per_peer_state.read().unwrap()
+			.iter()
+			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
+			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
+			.map(|(node_id, peer)| MessageForwardNode {
+				node_id: *node_id,
+				short_channel_id: peer.channel_by_id
+					.iter()
+					.filter(|(_, channel)| channel.context().is_usable())
+					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
+					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+			})
+			.collect::<Vec<_>>()
 	}
 
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
@@ -11053,7 +11018,8 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> MessageSendEventsProvider
+	for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11063,6 +11029,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	/// Returns `MessageSendEvent`s strictly ordered per-peer, in the order they were generated.
@@ -11129,7 +11096,8 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> EventsProvider
+	for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11139,6 +11107,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	/// Processes events that must be periodically handled.
@@ -11151,7 +11120,8 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> chain::Listen
+	for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11161,6 +11131,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -11194,7 +11165,8 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> chain::Confirm
+	for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11204,6 +11176,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -11327,7 +11300,7 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11337,6 +11310,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
@@ -11612,8 +11586,8 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-	ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+	ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11623,6 +11597,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannel) {
@@ -12304,8 +12279,8 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+	OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12315,6 +12290,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn handle_message(
@@ -12532,12 +12508,14 @@ where
 	}
 
 	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
+		let mut messages = core::mem::take(&mut *self.pending_offers_messages.lock().unwrap());
+		messages.extend(self.flow.get_and_clear_pending_offers_messages());
+		messages
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+	AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12547,6 +12525,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn handle_held_htlc_available(
@@ -12587,13 +12566,15 @@ where
 	}
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
+		let mut messages = core::mem::take(&mut *self.pending_async_payments_messages.lock().unwrap());
+		messages.extend(self.flow.get_and_clear_pending_async_messages());
+		messages
 	}
 }
 
 #[cfg(feature = "dnssec")]
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12603,6 +12584,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn handle_dnssec_query(
@@ -12651,12 +12633,14 @@ where
 	}
 
 	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
-		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
+		let mut messages = core::mem::take(&mut *self.pending_dns_onion_messages.lock().unwrap());
+		messages.extend(self.flow.get_and_clear_pending_dns_messages());
+		messages
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+	NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12666,6 +12650,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
@@ -13152,7 +13137,7 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13162,6 +13147,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -13470,7 +13456,7 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
-pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
+pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13480,6 +13466,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	/// A cryptographically secure source of entropy.
@@ -13516,6 +13503,8 @@ where
 	/// The [`MessageRouter`] used for constructing [`BlindedMessagePath`]s for [`Offer`]s,
 	/// [`Refund`]s, and any reply paths.
 	pub message_router: MR,
+	/// Implement Offers utilities
+	pub flow: FW,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: L,
@@ -13537,8 +13526,8 @@ where
 	pub channel_monitors: HashMap<ChannelId, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 }
 
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-		ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, FW, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13548,6 +13537,7 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
@@ -13555,13 +13545,13 @@ where
 	/// populate a HashMap directly from C.
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
-		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
+		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, flow: FW, logger: L,
 		default_config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor,
-			tx_broadcaster, router, message_router, logger, default_config,
+			tx_broadcaster, router, message_router, flow, logger, default_config,
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| { (monitor.channel_id(), monitor) })
 			),
@@ -13571,8 +13561,8 @@ where
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>> for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, FW, L>> for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13582,16 +13572,17 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
-	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, FW, L>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>> for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, FW: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, FW, L>> for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, FW, L>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13601,9 +13592,10 @@ where
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	MR::Target: MessageRouter,
+	FW::Target: Flow,
 	L::Target: Logger,
 {
-	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>) -> Result<Self, DecodeError> {
+	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, FW, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
@@ -14591,6 +14583,7 @@ where
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
 			message_router: args.message_router,
+			flow: args.flow,
 
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 

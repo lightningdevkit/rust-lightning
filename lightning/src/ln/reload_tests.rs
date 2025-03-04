@@ -9,6 +9,8 @@
 
 //! Functional tests which test for correct behavior across node restarts.
 
+use std::sync::Arc;
+
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
@@ -421,7 +423,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	if let Err(msgs::DecodeError::DangerousValue) =
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, Arc<TestOffersMessageFlow>, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		entropy_source: keys_manager,
 		node_signer: keys_manager,
@@ -429,6 +431,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		fee_estimator: &fee_estimator,
 		router: &nodes[0].router,
 		message_router: &nodes[0].message_router,
+		flow: nodes[0].flow.clone(),
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
@@ -439,7 +442,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let (_, nodes_0_deserialized_tmp) =
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, Arc<TestOffersMessageFlow>, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		entropy_source: keys_manager,
 		node_signer: keys_manager,
@@ -447,6 +450,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		fee_estimator: &fee_estimator,
 		router: nodes[0].router,
 		message_router: &nodes[0].message_router,
+		flow: nodes[0].flow.clone(),
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,

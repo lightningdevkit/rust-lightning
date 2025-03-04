@@ -16,6 +16,7 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
+use crate::offers::flow::OffersMessageFlow;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::types::features::InitFeatures;
@@ -26,7 +27,7 @@ use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::onion_message::messenger::OnionMessenger;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
-use crate::sign::{EntropySource, RandomBytes};
+use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient};
 use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
@@ -406,6 +407,7 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'chan_mon_cfg test_utils::TestFeeEstimator,
 	&'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	Arc<TestOffersMessageFlow<'node_cfg, 'chan_mon_cfg>>,
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
@@ -435,6 +437,11 @@ type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	IgnoringMessageHandler,
 >;
 
+pub type TestOffersMessageFlow<'node_cfg, 'chan_mon_cfg> = OffersMessageFlow<
+	&'node_cfg test_utils::TestKeysInterface,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+>;
+
 /// For use with [`OnionMessenger`] otherwise `test_restored_packages_retry` will fail. This is
 /// because that test uses older serialized data produced by calling [`EntropySource`] in a specific
 /// manner. Using the same [`EntropySource`] with [`OnionMessenger`] would introduce another call,
@@ -452,6 +459,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub fee_estimator: &'chan_mon_cfg test_utils::TestFeeEstimator,
 	pub router: &'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
 	pub message_router: &'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	pub flow: Arc<TestOffersMessageFlow<'node_cfg, 'chan_mon_cfg,>>,
 	pub chain_monitor: &'node_cfg test_utils::TestChainMonitor<'chan_mon_cfg>,
 	pub keys_manager: &'chan_mon_cfg test_utils::TestKeysInterface,
 	pub node: &'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
@@ -606,6 +614,7 @@ pub trait NodeHolder {
 		<Self::CM as AChannelManager>::F,
 		<Self::CM as AChannelManager>::R,
 		<Self::CM as AChannelManager>::MR,
+		<Self::CM as AChannelManager>::FW,
 		<Self::CM as AChannelManager>::L>;
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor>;
 }
@@ -620,6 +629,7 @@ impl<H: NodeHolder> NodeHolder for &H {
 		<Self::CM as AChannelManager>::F,
 		<Self::CM as AChannelManager>::R,
 		<Self::CM as AChannelManager>::MR,
+		<Self::CM as AChannelManager>::FW,
 		<Self::CM as AChannelManager>::L> { (*self).node() }
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { (*self).chain_monitor() }
 }
@@ -714,7 +724,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let scorer = RwLock::new(test_utils::TestScorer::new());
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, Arc<TestOffersMessageFlow>, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: *self.node.get_current_default_configuration(),
 					entropy_source: self.keys_manager,
 					node_signer: self.keys_manager,
@@ -722,6 +732,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					fee_estimator: &test_utils::TestFeeEstimator::new(253),
 					router: &test_utils::TestRouter::new(Arc::clone(&network_graph), &self.logger, &scorer),
 					message_router: &test_utils::TestMessageRouter::new(network_graph, self.keys_manager),
+					flow: self.flow.clone(),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -1150,6 +1161,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 			fee_estimator: node.fee_estimator,
 			router: node.router,
 			message_router: node.message_router,
+			flow: node.flow.clone(),
 			chain_monitor: node.chain_monitor,
 			tx_broadcaster: node.tx_broadcaster,
 			logger: node.logger,
@@ -3322,7 +3334,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config
 }
 
-pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<&'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'b>, &'a test_utils::TestMessageRouter<'b>, &'b test_utils::TestLogger>> {
+pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<&'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'b>, &'a test_utils::TestMessageRouter<'b>, Arc<TestOffersMessageFlow<'a, 'b>>, &'b test_utils::TestLogger>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let network = Network::Testnet;
@@ -3331,7 +3343,8 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 			network,
 			best_block: BestBlock::from_network(network),
 		};
-		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, &cfgs[i].router, &cfgs[i].message_router, cfgs[i].logger, cfgs[i].keys_manager,
+		let flow = Arc::new(TestOffersMessageFlow::new(network, &cfgs[i].message_router, cfgs[i].keys_manager.get_node_id(Recipient::Node).unwrap(), genesis_block.header.time, cfgs[i].keys_manager.get_inbound_payment_key(), cfgs[i].keys_manager));
+		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, &cfgs[i].router, &cfgs[i].message_router, flow, cfgs[i].logger, cfgs[i].keys_manager,
 			cfgs[i].keys_manager, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { test_default_channel_config() }, params, genesis_block.header.time);
 		chanmgrs.push(node);
 	}
@@ -3339,11 +3352,14 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 	chanmgrs
 }
 
-pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestRouter, &'c test_utils::TestMessageRouter, &'c test_utils::TestLogger>>) -> Vec<Node<'a, 'b, 'c>> {
+pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestRouter, &'c test_utils::TestMessageRouter, Arc<TestOffersMessageFlow<'b, 'c>>, &'c test_utils::TestLogger>>) -> Vec<Node<'a, 'b, 'c>> {
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
+
+	let network = Network::Testnet;
+	let genesis_block = bitcoin::constants::genesis_block(network);
 
 	for i in 0..node_count {
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
@@ -3359,12 +3375,16 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 			&cfgs[i].message_router, &chan_mgrs[i], &chan_mgrs[i], IgnoringMessageHandler {},
 			IgnoringMessageHandler {},
 		);
+
+		let flow = Arc::new(TestOffersMessageFlow::new(network, &cfgs[i].message_router, cfgs[i].keys_manager.get_node_id(Recipient::Node).unwrap(), genesis_block.header.time, cfgs[i].keys_manager.get_inbound_payment_key(), &cfgs[i].keys_manager));
+
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
 			fee_estimator: cfgs[i].fee_estimator, router: &cfgs[i].router,
-			message_router: &cfgs[i].message_router, chain_monitor: &cfgs[i].chain_monitor,
+			message_router: &cfgs[i].message_router, flow,
+			chain_monitor: &cfgs[i].chain_monitor,
 			keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i],
 			network_graph: cfgs[i].network_graph.as_ref(), gossip_sync,
 			node_seed: cfgs[i].node_seed, onion_messenger, network_chan_count: chan_count.clone(),

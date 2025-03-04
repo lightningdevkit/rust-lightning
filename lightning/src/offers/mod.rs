@@ -14,6 +14,7 @@
 
 #[macro_use]
 pub mod offer;
+pub mod flow;
 
 pub mod invoice;
 pub mod invoice_error;
