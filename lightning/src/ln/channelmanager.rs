@@ -8548,7 +8548,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
-				if let Some(signing_session) = signing_session_opt {
+				if let Some(_signing_session) = signing_session_opt {
+					panic!("TODO Fix commitment handling, execution should get to here");
+					/*
 					let (commitment_signed, funding_ready_for_sig_event_opt) = chan_entry
 						.get_mut()
 						.funding_tx_constructed(signing_session, &self.logger)
@@ -8568,6 +8570,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							update_fee: None,
 						},
 					});
+					*/
 				}
 				Ok(())
 			},
