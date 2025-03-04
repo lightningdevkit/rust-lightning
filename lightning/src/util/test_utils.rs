@@ -21,14 +21,13 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events;
 use crate::events::bump_transaction::{Utxo, WalletSource};
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
-use crate::ln::msgs::BaseMessageHandler;
+use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent};
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
@@ -914,7 +913,7 @@ impl ConnectionTracker {
 }
 
 pub struct TestChannelMessageHandler {
-	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
+	pub pending_events: Mutex<Vec<MessageSendEvent>>,
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
 	pub conn_tracker: ConnectionTracker,
 	chain_hash: ChainHash,
@@ -1124,7 +1123,7 @@ impl msgs::BaseMessageHandler for TestChannelMessageHandler {
 	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
 		channelmanager::provided_init_features(&UserConfig::default())
 	}
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		Self::MESSAGE_FETCH_COUNTER.with(|val| val.fetch_add(1, Ordering::AcqRel));
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
@@ -1187,7 +1186,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 pub struct TestRoutingMessageHandler {
 	pub chan_upds_recvd: AtomicUsize,
 	pub chan_anns_recvd: AtomicUsize,
-	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
+	pub pending_events: Mutex<Vec<MessageSendEvent>>,
 	pub request_full_sync: AtomicBool,
 	pub announcement_available_for_sync: AtomicBool,
 	pub conn_tracker: ConnectionTracker,
@@ -1299,7 +1298,7 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 		}
 
 		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::MessageSendEvent::SendGossipTimestampFilter {
+		pending_events.push(MessageSendEvent::SendGossipTimestampFilter {
 			node_id: their_node_id.clone(),
 			msg: msgs::GossipTimestampFilter {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
@@ -1327,7 +1326,7 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 		features
 	}
 
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		core::mem::swap(&mut ret, &mut pending_events);

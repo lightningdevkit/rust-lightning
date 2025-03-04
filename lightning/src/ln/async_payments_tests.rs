@@ -11,12 +11,14 @@ use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::payment::PaymentContext;
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::events::{Event, HTLCDestination, MessageSendEvent, PaymentFailureReason};
+use crate::events::{Event, HTLCDestination, PaymentFailureReason};
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, OnionMessageHandler};
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, OnionMessageHandler,
+};
 use crate::ln::offers_tests;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::PendingOutboundPayment;

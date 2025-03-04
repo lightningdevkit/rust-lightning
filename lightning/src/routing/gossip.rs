@@ -21,7 +21,6 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
 
-use crate::events::MessageSendEvent;
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement,
@@ -31,7 +30,8 @@ use crate::ln::msgs::{
 	MAX_VALUE_MSAT,
 };
 use crate::ln::msgs::{
-	QueryChannelRange, QueryShortChannelIds, ReplyChannelRange, ReplyShortChannelIdsEnd,
+	MessageSendEvent, QueryChannelRange, QueryShortChannelIds, ReplyChannelRange,
+	ReplyShortChannelIdsEnd,
 };
 use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
@@ -2711,10 +2711,9 @@ impl ReadOnlyNetworkGraph<'_> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-	use crate::events::MessageSendEvent;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channelmanager;
-	use crate::ln::msgs::{BaseMessageHandler, SocketAddress};
+	use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent, SocketAddress};
 	use crate::ln::msgs::{
 		ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, QueryChannelRange,
 		QueryShortChannelIds, ReplyChannelRange, RoutingMessageHandler,

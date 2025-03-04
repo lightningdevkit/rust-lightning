@@ -13,13 +13,13 @@
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
-use crate::events::{Event, MessageSendEvent, HTLCDestination, ClosureReason};
+use crate::events::{Event, HTLCDestination, ClosureReason};
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
 use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::script::ShutdownScript;
 use crate::util::test_utils;

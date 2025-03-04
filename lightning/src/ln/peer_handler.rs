@@ -20,11 +20,10 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::blinded_path::message::{AsyncPaymentsContext, DNSResolverContext, OffersContext};
 use crate::sign::{NodeSigner, Recipient};
-use crate::events::MessageSendEvent;
 use crate::ln::types::ChannelId;
 use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, LightningError, SocketAddress, MessageSendEvent, OnionMessageHandler, RoutingMessageHandler};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
@@ -2813,7 +2812,6 @@ mod tests {
 	use super::*;
 
 	use crate::sign::{NodeSigner, Recipient};
-	use crate::events;
 	use crate::io;
 	use crate::ln::types::ChannelId;
 	use crate::types::features::{InitFeatures, NodeFeatures};
@@ -3101,7 +3099,7 @@ mod tests {
 						if peers[0].read_event(&mut fd_a, &b_data).is_err() { break; }
 
 						cfgs[0].chan_handler.pending_events.lock().unwrap()
-							.push(crate::events::MessageSendEvent::SendShutdown {
+							.push(MessageSendEvent::SendShutdown {
 								node_id: peers[1].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
@@ -3109,7 +3107,7 @@ mod tests {
 								},
 							});
 						cfgs[1].chan_handler.pending_events.lock().unwrap()
-							.push(crate::events::MessageSendEvent::SendShutdown {
+							.push(MessageSendEvent::SendShutdown {
 								node_id: peers[0].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
@@ -3207,7 +3205,7 @@ mod tests {
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
-		cfgs[0].chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
+		cfgs[0].chan_handler.pending_events.lock().unwrap().push(MessageSendEvent::HandleError {
 			node_id: their_id,
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		});
@@ -3230,7 +3228,7 @@ mod tests {
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
 		let msg = msgs::Shutdown { channel_id: ChannelId::from_bytes([42; 32]), scriptpubkey: bitcoin::ScriptBuf::new() };
-		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
+		a_chan_handler.pending_events.lock().unwrap().push(MessageSendEvent::SendShutdown {
 			node_id: their_id, msg: msg.clone()
 		});
 		peers[0].message_handler.chan_handler = &a_chan_handler;

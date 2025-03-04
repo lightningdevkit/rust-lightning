@@ -14,7 +14,7 @@
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::sign::EntropySource;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, PathFailure, PaymentFailureReason, PaymentPurpose};
+use crate::events::{ClosureReason, Event, HTLCDestination, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
@@ -22,7 +22,7 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::chan_utils;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::ln::onion_utils;
 use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, ProbeSendFailure, Retry, RetryableSendFailure};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};

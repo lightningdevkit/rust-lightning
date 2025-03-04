@@ -42,7 +42,7 @@ use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, MessageSendEvent, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
+use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::inbound_payment;
@@ -63,7 +63,7 @@ use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htl
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MessageSendEvent};
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
@@ -3001,7 +3001,7 @@ macro_rules! handle_error {
 					$self.finish_close_channel(shutdown_res);
 					if let Some(update) = update_option {
 						let mut pending_broadcast_messages = $self.pending_broadcast_messages.lock().unwrap();
-						pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
 						});
 					}
@@ -3011,7 +3011,7 @@ macro_rules! handle_error {
 
 				if let msgs::ErrorAction::IgnoreError = err.action {
 				} else {
-					msg_event = Some(events::MessageSendEvent::HandleError {
+					msg_event = Some(MessageSendEvent::HandleError {
 						node_id: $counterparty_node_id,
 						action: err.action.clone()
 					});
@@ -3164,7 +3164,7 @@ macro_rules! remove_channel_entry {
 
 macro_rules! send_channel_ready {
 	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
-		$pending_msg_events.push(events::MessageSendEvent::SendChannelReady {
+		$pending_msg_events.push(MessageSendEvent::SendChannelReady {
 			node_id: $channel.context.get_counterparty_node_id(),
 			msg: $channel_ready_msg,
 		});
@@ -3242,7 +3242,7 @@ macro_rules! handle_monitor_update_completion {
 			// channels, but there's no reason not to just inform our counterparty of our fees
 			// now.
 			if let Ok(msg) = $self.get_channel_update_for_unicast($chan) {
-				Some(events::MessageSendEvent::SendChannelUpdate {
+				Some(MessageSendEvent::SendChannelUpdate {
 					node_id: counterparty_node_id,
 					msg,
 				})
@@ -3750,7 +3750,7 @@ where
 		}
 
 		if let Some(msg) = res {
-			peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+			peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 				node_id: their_network_key,
 				msg,
 			});
@@ -3912,7 +3912,7 @@ where
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
 						// here as we don't need the monitor update to complete until we send a
 						// `shutdown_signed`, which we'll delay if we're pending a monitor update.
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+						peer_state.pending_msg_events.push(MessageSendEvent::SendShutdown {
 							node_id: *counterparty_node_id,
 							msg: shutdown_msg,
 						});
@@ -3978,7 +3978,7 @@ where
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
-	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
+	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
 	pub fn close_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
 	}
@@ -4011,7 +4011,7 @@ where
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
-	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
+	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
 	pub fn close_channel_with_feerate_and_script(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
@@ -4198,7 +4198,7 @@ where
 		if let Some(update) = update_opt {
 			// If we have some Channel Update to broadcast, we cache it and broadcast it later.
 			let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-			pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+			pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 				msg: update
 			});
 		}
@@ -4217,7 +4217,7 @@ where
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					peer_state.pending_msg_events.push(
-						events::MessageSendEvent::HandleError {
+						MessageSendEvent::HandleError {
 							node_id: counterparty_node_id,
 							action: msgs::ErrorAction::SendErrorMessage {
 								msg: msgs::ErrorMessage { channel_id: *channel_id, data: error_message }
@@ -4725,7 +4725,7 @@ where
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
-	/// [`UpdateHTLCs`]: events::MessageSendEvent::UpdateHTLCs
+	/// [`UpdateHTLCs`]: MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(
@@ -5173,7 +5173,7 @@ where
 		};
 
 		if let Some(msg) = msg_opt {
-			peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+			peer_state.pending_msg_events.push(MessageSendEvent::SendFundingCreated {
 				node_id: chan.context.get_counterparty_node_id(),
 				msg,
 			});
@@ -5414,7 +5414,7 @@ where
 							let mut close_res = chan.force_shutdown(false, closure_reason);
 							locked_close_channel!(self, peer_state, chan.context(), chan.funding(), close_res);
 							shutdown_results.push(close_res);
-							peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+							peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
 								node_id: counterparty_node_id,
 								action: msgs::ErrorAction::SendErrorMessage {
 									msg: msgs::ErrorMessage {
@@ -5452,7 +5452,7 @@ where
 	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
 	/// [`forwarding_fee_base_msat`]: ChannelConfig::forwarding_fee_base_msat
 	/// [`cltv_expiry_delta`]: ChannelConfig::cltv_expiry_delta
-	/// [`BroadcastChannelUpdate`]: events::MessageSendEvent::BroadcastChannelUpdate
+	/// [`BroadcastChannelUpdate`]: MessageSendEvent::BroadcastChannelUpdate
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
@@ -5489,9 +5489,9 @@ where
 				if let Some(channel) = channel.as_funded() {
 					if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
 						let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-						pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
+						pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate { msg });
 					} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 							node_id: channel.context.get_counterparty_node_id(),
 							msg,
 						});
@@ -5529,7 +5529,7 @@ where
 	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
 	/// [`forwarding_fee_base_msat`]: ChannelConfig::forwarding_fee_base_msat
 	/// [`cltv_expiry_delta`]: ChannelConfig::cltv_expiry_delta
-	/// [`BroadcastChannelUpdate`]: events::MessageSendEvent::BroadcastChannelUpdate
+	/// [`BroadcastChannelUpdate`]: MessageSendEvent::BroadcastChannelUpdate
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
@@ -6607,7 +6607,7 @@ where
 											funded_chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
 											if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
 												let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-												pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+												pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 													msg: update
 												});
 											}
@@ -6622,7 +6622,7 @@ where
 											funded_chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
 											if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
 												let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-												pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+												pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 													msg: update
 												});
 											}
@@ -6690,7 +6690,7 @@ where
 							let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(*chan_id), None);
 							log_error!(logger, "Force-closing unaccepted inbound channel {} for not accepting in a timely manner", &chan_id);
 							peer_state.pending_msg_events.push(
-								events::MessageSendEvent::HandleError {
+								MessageSendEvent::HandleError {
 									node_id: counterparty_node_id,
 									action: msgs::ErrorAction::SendErrorMessage {
 										msg: msgs::ErrorMessage { channel_id: chan_id.clone(), data: "Channel force-closed".to_owned() }
@@ -7623,13 +7623,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			send_channel_ready!(self, pending_msg_events, channel, msg);
 		}
 		if let Some(msg) = announcement_sigs {
-			pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+			pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
 				node_id: counterparty_node_id,
 				msg,
 			});
 		}
 		if let Some(msg) = tx_signatures {
-			pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+			pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 				node_id: counterparty_node_id,
 				msg,
 			});
@@ -7637,7 +7637,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		macro_rules! handle_cs { () => {
 			if let Some(update) = commitment_update {
-				pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+				pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
 					node_id: counterparty_node_id,
 					updates: update,
 				});
@@ -7645,7 +7645,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		} }
 		macro_rules! handle_raa { () => {
 			if let Some(revoke_and_ack) = raa {
-				pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+				pending_msg_events.push(MessageSendEvent::SendRevokeAndACK {
 					node_id: counterparty_node_id,
 					msg: revoke_and_ack,
 				});
@@ -7839,7 +7839,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						).map(|mut channel| {
 							let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 							let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
-								events::MessageSendEvent::SendAcceptChannel {
+								MessageSendEvent::SendAcceptChannel {
 									node_id: *counterparty_node_id,
 									msg,
 								}
@@ -7863,7 +7863,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								)
 							), *temporary_channel_id)
 						).map(|channel| {
-							let message_send_event =  events::MessageSendEvent::SendAcceptChannelV2 {
+							let message_send_event =  MessageSendEvent::SendAcceptChannelV2 {
 								node_id: channel.context.get_counterparty_node_id(),
 								msg: channel.accept_inbound_dual_funded_channel()
 							};
@@ -7901,7 +7901,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
 			debug_assert!(channel.context().minimum_depth().unwrap() == 0);
 		} else if channel.context().get_channel_type().requires_zero_conf() {
-			let send_msg_err_event = events::MessageSendEvent::HandleError {
+			let send_msg_err_event = MessageSendEvent::HandleError {
 				node_id: channel.context().get_counterparty_node_id(),
 				action: msgs::ErrorAction::SendErrorMessage{
 					msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "No zero confirmation channels accepted".to_owned(), }
@@ -7917,7 +7917,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
 			// channels per-peer we can accept channels from a peer with existing ones.
 			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
-				let send_msg_err_event = events::MessageSendEvent::HandleError {
+				let send_msg_err_event = MessageSendEvent::HandleError {
 					node_id: channel.context().get_counterparty_node_id(),
 					action: msgs::ErrorAction::SendErrorMessage{
 						msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
@@ -8123,7 +8123,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 				let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
-					events::MessageSendEvent::SendAcceptChannel {
+					MessageSendEvent::SendAcceptChannel {
 						node_id: *counterparty_node_id,
 						msg,
 					}
@@ -8137,7 +8137,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&peer_state.latest_features, msg, user_channel_id,
 					&self.default_configuration, best_block_height, &self.logger,
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
-				let message_send_event = events::MessageSendEvent::SendAcceptChannelV2 {
+				let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,
 					msg: channel.accept_inbound_dual_funded_channel(),
 				};
@@ -8268,7 +8268,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// accepted payment from yet. We do, however, need to wait to send our channel_ready
 							// until we have persisted our monitor.
 							if let Some(msg) = funding_msg_opt {
-								peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+								peer_state.pending_msg_events.push(MessageSendEvent::SendFundingSigned {
 									node_id: counterparty_node_id.clone(),
 									msg,
 								});
@@ -8491,7 +8491,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((funding_ready_for_sig_event, None));
 					}
-					peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+					peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
 						node_id: counterparty_node_id,
 						updates: CommitmentUpdate {
 							commitment_signed,
@@ -8530,7 +8530,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						let tx_signatures_opt = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
 							});
@@ -8606,7 +8606,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
 					// For rationale why we echo back `tx_abort`:
 					//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxAbort {
+					peer_state.pending_msg_events.push(MessageSendEvent::SendTxAbort {
 						node_id: *counterparty_node_id,
 						msg,
 					});
@@ -8638,7 +8638,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_entry);
 					if let Some(announcement_sigs) = announcement_sigs_opt {
 						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
 							node_id: counterparty_node_id.clone(),
 							msg: announcement_sigs,
 						});
@@ -8650,7 +8650,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						// announcement_signatures.
 						log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
 						if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 								node_id: counterparty_node_id.clone(),
 								msg,
 							});
@@ -8705,7 +8705,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// We can send the `shutdown` message before updating the `ChannelMonitor`
 							// here as we don't need the monitor update to complete until we send a
 							// `shutdown_signed`, which we'll delay if we're pending a monitor update.
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendShutdown {
 								node_id: *counterparty_node_id,
 								msg,
 							});
@@ -8757,7 +8757,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let (closing_signed, tx, shutdown_result) = try_channel_entry!(self, peer_state, chan.closing_signed(&self.fee_estimator, &msg, &&logger), chan_entry);
 						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendClosingSigned {
 								node_id: counterparty_node_id.clone(),
 								msg,
 							});
@@ -8791,7 +8791,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some(chan) = chan_option.as_ref().and_then(Channel::as_funded) {
 			if let Ok(update) = self.get_channel_update_for_broadcast(chan) {
 				let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-				pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+				pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 					msg: update
 				});
 			}
@@ -9289,7 +9289,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 					}
 
-					peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+					peer_state.pending_msg_events.push(MessageSendEvent::BroadcastChannelAnnouncement {
 						msg: try_channel_entry!(self, peer_state, chan.announcement_signatures(
 							&self.node_signer, self.chain_hash, self.best_block.read().unwrap().height,
 							msg, &self.default_configuration
@@ -9387,7 +9387,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.default_configuration, &*self.best_block.read().unwrap()), chan_entry);
 						let mut channel_update = None;
 						if let Some(msg) = responses.shutdown_msg {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendShutdown {
 								node_id: counterparty_node_id.clone(),
 								msg,
 							});
@@ -9396,7 +9396,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// down), send a unicast channel_update to our counterparty to make sure
 							// they have the latest channel parameters.
 							if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
-								channel_update = Some(events::MessageSendEvent::SendChannelUpdate {
+								channel_update = Some(MessageSendEvent::SendChannelUpdate {
 									node_id: chan.context.get_counterparty_node_id(),
 									msg,
 								});
@@ -9511,11 +9511,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									if let Some(funded_chan) = chan.as_funded() {
 										if let Ok(update) = self.get_channel_update_for_broadcast(funded_chan) {
 											let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-											pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+											pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 												msg: update
 											});
 										}
-										pending_msg_events.push(events::MessageSendEvent::HandleError {
+										pending_msg_events.push(MessageSendEvent::HandleError {
 											node_id: funded_chan.context.get_counterparty_node_id(),
 											action: msgs::ErrorAction::DisconnectPeer {
 												msg: Some(msgs::ErrorMessage {
@@ -9618,28 +9618,28 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let node_id = chan.context().get_counterparty_node_id();
 			if let Some(msgs) = chan.signer_maybe_unblocked(self.chain_hash, &&logger) {
 				if let Some(msg) = msgs.open_channel {
-					pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+					pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 						node_id,
 						msg,
 					});
 				}
 				if let Some(msg) = msgs.funding_created {
-					pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+					pending_msg_events.push(MessageSendEvent::SendFundingCreated {
 						node_id,
 						msg,
 					});
 				}
 				if let Some(msg) = msgs.accept_channel {
-					pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					pending_msg_events.push(MessageSendEvent::SendAcceptChannel {
 						node_id,
 						msg,
 					});
 				}
-				let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
+				let cu_msg = msgs.commitment_update.map(|updates| MessageSendEvent::UpdateHTLCs {
 					node_id,
 					updates,
 				});
-				let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+				let raa_msg = msgs.revoke_and_ack.map(|msg| MessageSendEvent::SendRevokeAndACK {
 					node_id,
 					msg,
 				});
@@ -9657,13 +9657,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					(_, _) => {},
 				}
 				if let Some(msg) = msgs.funding_signed {
-					pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+					pending_msg_events.push(MessageSendEvent::SendFundingSigned {
 						node_id,
 						msg,
 					});
 				}
 				if let Some(msg) = msgs.closing_signed {
-					pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+					pending_msg_events.push(MessageSendEvent::SendClosingSigned {
 						node_id,
 						msg,
 					});
@@ -9677,7 +9677,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
 
 						if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
-							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+							pending_msg_events.push(MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
 						}
@@ -9750,7 +9750,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								Ok((msg_opt, tx_opt, shutdown_result_opt)) => {
 									if let Some(msg) = msg_opt {
 										has_update = true;
-										pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+										pending_msg_events.push(MessageSendEvent::SendClosingSigned {
 											node_id: funded_chan.context.get_counterparty_node_id(), msg,
 										});
 									}
@@ -9764,7 +9764,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										// a closing_signed with a closing transaction to broadcast.
 										if let Ok(update) = self.get_channel_update_for_broadcast(&funded_chan) {
 											let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-											pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+											pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 												msg: update
 											});
 										}
@@ -9813,7 +9813,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					match funded_chan.try_send_stfu(&&logger) {
 						Ok(None) => {},
 						Ok(Some(stfu)) => {
-							pending_msg_events.push(events::MessageSendEvent::SendStfu {
+							pending_msg_events.push(MessageSendEvent::SendStfu {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg: stfu,
 							});
@@ -11109,58 +11109,58 @@ where
 				pending_msg_events.retain(|msg| {
 					match msg {
 						// V1 Channel Establishment
-						&events::MessageSendEvent::SendAcceptChannel { .. } => false,
-						&events::MessageSendEvent::SendOpenChannel { .. } => false,
-						&events::MessageSendEvent::SendFundingCreated { .. } => false,
-						&events::MessageSendEvent::SendFundingSigned { .. } => false,
+						&MessageSendEvent::SendAcceptChannel { .. } => false,
+						&MessageSendEvent::SendOpenChannel { .. } => false,
+						&MessageSendEvent::SendFundingCreated { .. } => false,
+						&MessageSendEvent::SendFundingSigned { .. } => false,
 						// V2 Channel Establishment
-						&events::MessageSendEvent::SendAcceptChannelV2 { .. } => false,
-						&events::MessageSendEvent::SendOpenChannelV2 { .. } => false,
+						&MessageSendEvent::SendAcceptChannelV2 { .. } => false,
+						&MessageSendEvent::SendOpenChannelV2 { .. } => false,
 						// Common Channel Establishment
-						&events::MessageSendEvent::SendChannelReady { .. } => false,
-						&events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+						&MessageSendEvent::SendChannelReady { .. } => false,
+						&MessageSendEvent::SendAnnouncementSignatures { .. } => false,
 						// Quiescence
-						&events::MessageSendEvent::SendStfu { .. } => false,
+						&MessageSendEvent::SendStfu { .. } => false,
 						// Splicing
-						&events::MessageSendEvent::SendSpliceInit { .. } => false,
-						&events::MessageSendEvent::SendSpliceAck { .. } => false,
-						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
+						&MessageSendEvent::SendSpliceInit { .. } => false,
+						&MessageSendEvent::SendSpliceAck { .. } => false,
+						&MessageSendEvent::SendSpliceLocked { .. } => false,
 						// Interactive Transaction Construction
-						&events::MessageSendEvent::SendTxAddInput { .. } => false,
-						&events::MessageSendEvent::SendTxAddOutput { .. } => false,
-						&events::MessageSendEvent::SendTxRemoveInput { .. } => false,
-						&events::MessageSendEvent::SendTxRemoveOutput { .. } => false,
-						&events::MessageSendEvent::SendTxComplete { .. } => false,
-						&events::MessageSendEvent::SendTxSignatures { .. } => false,
-						&events::MessageSendEvent::SendTxInitRbf { .. } => false,
-						&events::MessageSendEvent::SendTxAckRbf { .. } => false,
-						&events::MessageSendEvent::SendTxAbort { .. } => false,
+						&MessageSendEvent::SendTxAddInput { .. } => false,
+						&MessageSendEvent::SendTxAddOutput { .. } => false,
+						&MessageSendEvent::SendTxRemoveInput { .. } => false,
+						&MessageSendEvent::SendTxRemoveOutput { .. } => false,
+						&MessageSendEvent::SendTxComplete { .. } => false,
+						&MessageSendEvent::SendTxSignatures { .. } => false,
+						&MessageSendEvent::SendTxInitRbf { .. } => false,
+						&MessageSendEvent::SendTxAckRbf { .. } => false,
+						&MessageSendEvent::SendTxAbort { .. } => false,
 						// Channel Operations
-						&events::MessageSendEvent::UpdateHTLCs { .. } => false,
-						&events::MessageSendEvent::SendRevokeAndACK { .. } => false,
-						&events::MessageSendEvent::SendClosingSigned { .. } => false,
-						&events::MessageSendEvent::SendShutdown { .. } => false,
-						&events::MessageSendEvent::SendChannelReestablish { .. } => false,
-						&events::MessageSendEvent::HandleError { .. } => false,
+						&MessageSendEvent::UpdateHTLCs { .. } => false,
+						&MessageSendEvent::SendRevokeAndACK { .. } => false,
+						&MessageSendEvent::SendClosingSigned { .. } => false,
+						&MessageSendEvent::SendShutdown { .. } => false,
+						&MessageSendEvent::SendChannelReestablish { .. } => false,
+						&MessageSendEvent::HandleError { .. } => false,
 						// Gossip
-						&events::MessageSendEvent::SendChannelAnnouncement { .. } => false,
-						&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+						&MessageSendEvent::SendChannelAnnouncement { .. } => false,
+						&MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 						// [`ChannelManager::pending_broadcast_events`] holds the [`BroadcastChannelUpdate`]
 						// This check here is to ensure exhaustivity.
-						&events::MessageSendEvent::BroadcastChannelUpdate { .. } => {
+						&MessageSendEvent::BroadcastChannelUpdate { .. } => {
 							debug_assert!(false, "This event shouldn't have been here");
 							false
 						},
-						&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
-						&events::MessageSendEvent::SendChannelUpdate { .. } => false,
-						&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
-						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
-						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
-						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+						&MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
+						&MessageSendEvent::SendChannelUpdate { .. } => false,
+						&MessageSendEvent::SendChannelRangeQuery { .. } => false,
+						&MessageSendEvent::SendShortIdsQuery { .. } => false,
+						&MessageSendEvent::SendReplyChannelRange { .. } => false,
+						&MessageSendEvent::SendGossipTimestampFilter { .. } => false,
 
 						// Peer Storage
-						&events::MessageSendEvent::SendPeerStorage { .. } => false,
-						&events::MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
+						&MessageSendEvent::SendPeerStorage { .. } => false,
+						&MessageSendEvent::SendPeerStorageRetrieval { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
@@ -11244,7 +11244,7 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				if !peer_state.peer_storage.is_empty() {
-					pending_msg_events.push(events::MessageSendEvent::SendPeerStorageRetrieval {
+					pending_msg_events.push(MessageSendEvent::SendPeerStorageRetrieval {
 						node_id: counterparty_node_id.clone(),
 						msg: msgs::PeerStorageRetrieval {
 							data: peer_state.peer_storage.clone()
@@ -11256,17 +11256,17 @@ where
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
 					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
 						ReconnectionMsg::Reestablish(msg) =>
-							pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+							pending_msg_events.push(MessageSendEvent::SendChannelReestablish {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
 							}),
 						ReconnectionMsg::Open(OpenChannelMessage::V1(msg)) =>
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
 							}),
 						ReconnectionMsg::Open(OpenChannelMessage::V2(msg)) =>
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+							pending_msg_events.push(MessageSendEvent::SendOpenChannelV2 {
 								node_id: chan.context().get_counterparty_node_id(),
 								msg,
 							}),
@@ -11592,7 +11592,7 @@ where
 									if funded_channel.context.is_usable() {
 										log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", funded_channel.context.channel_id());
 										if let Ok(msg) = self.get_channel_update_for_unicast(funded_channel) {
-											pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+											pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
 												node_id: funded_channel.context.get_counterparty_node_id(),
 												msg,
 											});
@@ -11631,7 +11631,7 @@ where
 										if let Some(announcement) = funded_channel.get_signed_channel_announcement(
 											&self.node_signer, self.chain_hash, height, &self.default_configuration,
 										) {
-											pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+											pending_msg_events.push(MessageSendEvent::BroadcastChannelAnnouncement {
 												msg: announcement,
 												// Note that get_signed_channel_announcement fails
 												// if the channel cannot be announced, so
@@ -11644,7 +11644,7 @@ where
 								}
 								if let Some(announcement_sigs) = announcement_sigs {
 									log_trace!(logger, "Sending announcement_signatures for channel {}", funded_channel.context.channel_id());
-									pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+									pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
 										node_id: funded_channel.context.get_counterparty_node_id(),
 										msg: announcement_sigs,
 									});
@@ -11673,11 +11673,11 @@ where
 								failed_channels.push(close_res);
 								if let Ok(update) = self.get_channel_update_for_broadcast(&funded_channel) {
 									let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-									pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 										msg: update
 									});
 								}
-								pending_msg_events.push(events::MessageSendEvent::HandleError {
+								pending_msg_events.push(MessageSendEvent::HandleError {
 									node_id: funded_channel.context.get_counterparty_node_id(),
 									action: msgs::ErrorAction::DisconnectPeer {
 										msg: Some(msgs::ErrorMessage {
@@ -12109,12 +12109,12 @@ where
 								.and_then(Channel::as_funded)
 							{
 								if let Some(msg) = chan.get_outbound_shutdown() {
-									peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+									peer_state.pending_msg_events.push(MessageSendEvent::SendShutdown {
 										node_id: counterparty_node_id,
 										msg,
 									});
 								}
-								peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+								peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
 									node_id: counterparty_node_id,
 									action: msgs::ErrorAction::SendWarningMessage {
 										msg: msgs::WarningMessage {
@@ -12168,14 +12168,14 @@ where
 						self.chain_hash, &self.fee_estimator, &self.logger,
 					) {
 						Ok(Some(OpenChannelMessage::V1(msg))) => {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
 								node_id: counterparty_node_id,
 								msg,
 							});
 							return;
 						},
 						Ok(Some(OpenChannelMessage::V2(msg))) => {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannelV2 {
+							peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannelV2 {
 								node_id: counterparty_node_id,
 								msg,
 							});
@@ -14836,13 +14836,12 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
-	use crate::events::{Event, HTLCDestination, MessageSendEvent, ClosureReason};
+	use crate::events::{Event, HTLCDestination, ClosureReason};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{create_recv_pending_htlc_info, inbound_payment, ChannelConfigOverrides, HTLCForwardInfo, InterceptId, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{self, AcceptChannel, BaseMessageHandler, ErrorAction};
-	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, AcceptChannel, ErrorAction, MessageSendEvent};
 	use crate::ln::outbound_payment::Retry;
 	use crate::prelude::*;
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
@@ -16320,10 +16319,10 @@ pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
 	use crate::sign::{KeysManager, InMemorySigner};
-	use crate::events::{Event, MessageSendEvent};
+	use crate::events::Event;
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init};
+	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;

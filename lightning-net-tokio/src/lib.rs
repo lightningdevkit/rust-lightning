@@ -623,7 +623,6 @@ mod tests {
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::Network;
-	use lightning::events::*;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager};
 	use lightning::routing::gossip::NodeId;

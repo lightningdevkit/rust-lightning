@@ -32,8 +32,10 @@ use crate::blinded_path::message::{
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
-use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, ReplayEvent};
-use crate::ln::msgs::{self, BaseMessageHandler, OnionMessage, OnionMessageHandler, SocketAddress};
+use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
+use crate::ln::msgs::{
+	self, BaseMessageHandler, MessageSendEvent, OnionMessage, OnionMessageHandler, SocketAddress,
+};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
