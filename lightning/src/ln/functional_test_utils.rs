@@ -513,7 +513,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// Toggles this node's signer to be available for the given signer operation.
 	/// This is useful for testing behavior for restoring an async signer that previously
 	/// could not return a signature immediately.
-		pub fn enable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
+	pub fn enable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
 		self.set_channel_signer_ops(peer_id, chan_id, signer_op, true);
 	}
 
@@ -532,7 +532,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// will behave normally, returning `Ok`. When set to `false`, and the channel signer will
 	/// act like an off-line remote signer, returning `Err`. This applies to the signer in all
 	/// relevant places, i.e. the channel manager, chain monitor, and the keys manager.
-		fn set_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp, available: bool) {
+	fn set_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp, available: bool) {
 		use crate::sign::ChannelSigner;
 		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
 
@@ -2549,11 +2549,12 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	if conditions.expected_mpp_parts_remain { assert_eq!(payment_failed_events.len(), 1); } else { assert_eq!(payment_failed_events.len(), 2); }
 	let expected_payment_id = match &payment_failed_events[0] {
 		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, payment_id, failure,
-						error_code,
-						error_data, .. } => {
+				error_code,
+				error_data, ..
+		} => {
 			assert_eq!(*payment_hash, expected_payment_hash, "unexpected payment_hash");
 			assert_eq!(*payment_failed_permanently, expected_payment_failed_permanently, "unexpected payment_failed_permanently value");
-						{
+			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
 				if let Some((code, data)) = conditions.expected_htlc_error_data {
