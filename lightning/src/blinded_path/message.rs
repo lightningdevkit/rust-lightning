@@ -23,6 +23,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::Offer;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -393,6 +394,64 @@ pub enum OffersContext {
 /// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 #[derive(Clone, Debug)]
 pub enum AsyncPaymentsContext {
+	/// Context used by a reply path to an [`OfferPathsRequest`], provided back to us in corresponding
+	/// [`OfferPaths`] messages.
+	///
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+	OfferPaths {
+		/// A nonce used for authenticating that an [`OfferPaths`] message is valid for a preceding
+		/// [`OfferPathsRequest`].
+		///
+		/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		nonce: Nonce,
+		/// Authentication code for the [`OfferPaths`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to cache an
+		/// unintended async receive offer.
+		///
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Used to time out a static invoice server from providing offer paths if the async recipient
+		/// is no longer configured to accept paths from them.
+		path_absolute_expiry: core::time::Duration,
+	},
+	/// Context used by a reply path to a [`ServeStaticInvoice`] message, provided back to us in
+	/// corresponding [`StaticInvoicePersisted`] messages.
+	///
+	/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	StaticInvoicePersisted {
+		/// The offer corresponding to the [`StaticInvoice`] that has been persisted. This invoice is
+		/// now ready to be provided by the static invoice server in response to [`InvoiceRequest`]s.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		offer: Offer,
+		/// A nonce used for authenticating that a [`StaticInvoicePersisted`] message is valid for a
+		/// preceding [`ServeStaticInvoice`] message.
+		///
+		/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		nonce: Nonce,
+		/// Authentication code for the [`StaticInvoicePersisted`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to cache an
+		/// unintended async receive offer.
+		///
+		/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Prevents a static invoice server from causing an async recipient to cache an old offer if
+		/// the recipient is no longer configured to use that server.
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -474,6 +533,17 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, nonce, required),
 		(2, hmac, required),
 		(4, path_absolute_expiry, required),
+	},
+	(2, OfferPaths) => {
+		(0, nonce, required),
+		(2, hmac, required),
+		(4, path_absolute_expiry, required),
+	},
+	(3, StaticInvoicePersisted) => {
+		(0, offer, required),
+		(2, nonce, required),
+		(4, hmac, required),
+		(6, path_absolute_expiry, required),
 	},
 );
 

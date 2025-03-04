@@ -1820,6 +1820,18 @@ where
 {
 	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
+		macro_rules! extract_expected_context {
+			($context: expr, $expected_context_type: path) => {
+				match $context {
+					Some($expected_context_type(context)) => context,
+					Some(_) => {
+						debug_assert!(false, "Checked in peel_onion_message");
+						return;
+					},
+					None => return,
+				}
+			};
+		}
 		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, context, reply_path)) => {
 				log_trace!(
@@ -1848,16 +1860,51 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::OfferPathsRequest(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						let response_instructions = self
+							.async_payments_handler
+							.handle_offer_paths_request(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::OfferPaths(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						let response_instructions =
+							self.async_payments_handler.handle_offer_paths(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::ServeStaticInvoice(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						self.async_payments_handler.handle_serve_static_invoice(msg, context);
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
+						AsyncPaymentsMessage::StaticInvoicePersisted(msg),
+					) => {
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
+						self.async_payments_handler.handle_static_invoice_persisted(msg, context);
+					},
+					#[cfg(async_payments)]
+					ParsedOnionMessageContents::AsyncPayments(
 						AsyncPaymentsMessage::HeldHtlcAvailable(msg),
 					) => {
-						let context = match context {
-							Some(MessageContext::AsyncPayments(context)) => context,
-							Some(_) => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-							None => return,
-						};
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
 						let response_instructions = self
 							.async_payments_handler
 							.handle_held_htlc_available(msg, context, responder);
@@ -1869,14 +1916,8 @@ where
 					ParsedOnionMessageContents::AsyncPayments(
 						AsyncPaymentsMessage::ReleaseHeldHtlc(msg),
 					) => {
-						let context = match context {
-							Some(MessageContext::AsyncPayments(context)) => context,
-							Some(_) => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-							None => return,
-						};
+						let context =
+							extract_expected_context!(context, MessageContext::AsyncPayments);
 						self.async_payments_handler.handle_release_held_htlc(msg, context);
 					},
 					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECQuery(
@@ -1891,10 +1932,8 @@ where
 					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECProof(
 						msg,
 					)) => {
-						let context = match context {
-							Some(MessageContext::DNSResolver(context)) => context,
-							_ => return,
-						};
+						let context =
+							extract_expected_context!(context, MessageContext::DNSResolver);
 						self.dns_resolver_handler.handle_dnssec_proof(msg, context);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {

@@ -10,8 +10,10 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::prelude::*;
 
 #[cfg(fuzzing)]
 use crate::util::ser::Readable;
@@ -810,7 +812,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 ///
 /// `Default::default()` provides sane defaults for most configurations
 /// (but currently with zero relay fees!)
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct UserConfig {
 	/// Channel handshake config that we propose to our counterparty.
 	pub channel_handshake_config: ChannelHandshakeConfig,
@@ -878,6 +880,11 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	pub manually_handle_bolt12_invoices: bool,
+	/// [`BlindedMessagePath`]s to reach an always-online node that will serve [`StaticInvoice`]s on
+	/// our behalf.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	pub paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 }
 
 impl Default for UserConfig {
@@ -891,6 +898,7 @@ impl Default for UserConfig {
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
+			paths_to_static_invoice_server: Vec::new(),
 		}
 	}
 }
@@ -910,6 +918,7 @@ impl Readable for UserConfig {
 			manually_accept_inbound_channels: Readable::read(reader)?,
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
+			paths_to_static_invoice_server: Vec::new(),
 		})
 	}
 }
