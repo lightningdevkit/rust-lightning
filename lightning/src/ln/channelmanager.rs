@@ -12832,24 +12832,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 
 impl Writeable for HTLCFailureMsg {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		match self {
-			HTLCFailureMsg::Relay(msgs::UpdateFailHTLC { channel_id, htlc_id, reason }) => {
-				0u8.write(writer)?;
-				channel_id.write(writer)?;
-				htlc_id.write(writer)?;
-				reason.write(writer)?;
-			},
-			HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
-				channel_id, htlc_id, sha256_of_onion, failure_code
-			}) => {
-				1u8.write(writer)?;
-				channel_id.write(writer)?;
-				htlc_id.write(writer)?;
-				sha256_of_onion.write(writer)?;
-				failure_code.write(writer)?;
-			},
-		}
-		Ok(())
+		unimplemented!();
 	}
 }
 
@@ -15054,8 +15037,8 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-	
-		// Since we do not send peer storage, we manually simulate receiving a dummy 
+
+		// Since we do not send peer storage, we manually simulate receiving a dummy
 		// `PeerStorage` from the channel partner.
 		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
 
