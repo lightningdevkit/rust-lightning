@@ -38,6 +38,7 @@ use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
 use crate::util::config::{ChannelConfigOverrides, ChannelHandshakeConfigUpdate, ChannelConfigUpdate, MaxDustHTLCExposure, UserConfig};
+use crate::ln::onion_utils::AttributionData;
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::locktime::absolute::LockTime;
@@ -7114,7 +7115,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 		channel_id: chan.2,
 		htlc_id: 0,
 		reason: Vec::new(),
-		attribution_data: None,
+		attribution_data: Some(AttributionData::new())
 	};
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_msg);
