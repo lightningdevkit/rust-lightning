@@ -1187,7 +1187,7 @@ pub(super) enum OutputOwned {
 }
 
 impl OutputOwned {
-	pub fn tx_out(&self) -> &TxOut {
+	pub(super) fn tx_out(&self) -> &TxOut {
 		match self {
 			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => tx_out,
 			OutputOwned::Shared(output) => &output.tx_out,
