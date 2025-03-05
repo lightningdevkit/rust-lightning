@@ -103,19 +103,12 @@ impl EventQueue {
 
 	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
 	pub fn notifier(&self) -> EventQueueNotifierGuard {
-		#[cfg(feature = "std")]
 		{
 			EventQueueNotifierGuard {
 				queue: Arc::clone(&self.queue),
 				waker: Arc::clone(&self.waker),
+				#[cfg(feature = "std")]
 				condvar: Arc::clone(&self.condvar),
-			}
-		}
-		#[cfg(not(feature = "std"))]
-		{
-			EventQueueNotifierGuard {
-				queue: Arc::clone(&self.queue),
-				waker: Arc::clone(&self.waker),
 			}
 		}
 	}
