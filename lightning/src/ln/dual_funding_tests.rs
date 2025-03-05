@@ -39,7 +39,9 @@ struct V2ChannelEstablishmentTestSession {
 fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut node_1_user_config = test_default_channel_config();
+	node_1_user_config.enable_dual_funded_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(node_1_user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 
