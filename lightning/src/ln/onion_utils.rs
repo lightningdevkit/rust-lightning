@@ -91,6 +91,14 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).to_byte_array()
 }
 
+#[inline]
+pub(super) fn gen_ammagext_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+	assert_eq!(shared_secret.len(), 32);
+	let mut hmac = HmacEngine::<Sha256>::new(b"ammagext");
+	hmac.input(&shared_secret);
+	Hmac::from_engine(hmac).to_byte_array()
+}
+
 #[cfg(test)]
 #[inline]
 pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
@@ -877,7 +885,15 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 /// Encrypts/decrypts a failure packet.
 fn crypt_failure_packet(shared_secret: &[u8], packet: &mut OnionErrorPacket) {
 	let ammag = gen_ammag_from_shared_secret(&shared_secret);
-	process_chacha(&ammag, &mut packet.data);
+	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+	chacha.process_in_place(&mut packet.data);
+
+	if let Some(ref mut attribution_data) = packet.attribution_data {
+		let ammagext = gen_ammagext_from_shared_secret(&shared_secret);
+		let mut chacha = ChaCha20::new(&ammagext, &[0u8; 8]);
+		chacha.process_in_place(&mut attribution_data.hold_times);
+		chacha.process_in_place(&mut attribution_data.hmacs);
+	}
 }
 
 #[cfg(test)]
@@ -885,13 +901,9 @@ pub(super) fn test_crypt_failure_packet(shared_secret: &[u8], packet: &mut Onion
 	crypt_failure_packet(shared_secret, packet)
 }
 
-fn process_chacha(key: &[u8; 32], packet: &mut [u8]) {
-	let mut chacha = ChaCha20::new(key, &[0u8; 8]);
-	chacha.process_in_place(packet);
-}
-
 fn build_unencrypted_failure_packet(
-	shared_secret: &[u8], failure_type: u16, failure_data: &[u8], min_packet_len: usize,
+	shared_secret: &[u8], failure_type: u16, failure_data: &[u8], hold_time: u32,
+	min_packet_len: usize,
 ) -> OnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
 	assert!(failure_data.len() <= 64531);
@@ -926,16 +938,36 @@ fn build_unencrypted_failure_packet(
 	let hmac = Hmac::from_engine(hmac).to_byte_array();
 	writer.0[..32].copy_from_slice(&hmac);
 
-	OnionErrorPacket { data: writer.0, attribution_data: None }
+	// Prepare attribution data.
+	let mut packet = OnionErrorPacket { data: writer.0, attribution_data: None };
+	update_attribution_data(&mut packet, shared_secret, hold_time);
+
+	packet
+}
+
+fn update_attribution_data(
+	onion_error_packet: &mut OnionErrorPacket, shared_secret: &[u8], hold_time: u32,
+) {
+	// If there's no attribution data yet, we still add our hold times and HMACs to potentially give the sender
+	// attribution data for the partial path. In order for this to work, all upstream nodes need to support attributable
+	// failures.
+	let attribution_data =
+		onion_error_packet.attribution_data.get_or_insert(AttributionData::new());
+
+	let hold_time_bytes: [u8; 4] = hold_time.to_be_bytes();
+	attribution_data.hold_times[..HOLD_TIME_LEN].copy_from_slice(&hold_time_bytes);
+
+	attribution_data.add_hmacs(shared_secret, &onion_error_packet.data);
 }
 
 pub(super) fn build_failure_packet(
-	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
+	shared_secret: &[u8], failure_type: u16, failure_data: &[u8], hold_time: u32,
 ) -> OnionErrorPacket {
 	let mut onion_error_packet = build_unencrypted_failure_packet(
 		shared_secret,
 		failure_type,
 		failure_data,
+		hold_time,
 		DEFAULT_MIN_FAILURE_PACKET_LEN,
 	);
 
@@ -952,6 +984,8 @@ mod fuzzy_onion_utils {
 		pub(crate) short_channel_id: Option<u64>,
 		pub(crate) payment_failed_permanently: bool,
 		pub(crate) failed_within_blinded_path: bool,
+		#[allow(dead_code)]
+		pub(crate) hold_times: Vec<u32>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_code: Option<u16>,
 		#[cfg(any(test, feature = "_test_utils"))]
@@ -1026,6 +1060,7 @@ where
 			short_channel_id: None,
 			payment_failed_permanently: true,
 			failed_within_blinded_path: false,
+			hold_times: Vec::new(),
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
@@ -1044,6 +1079,7 @@ where
 	let mut _error_code_ret = None;
 	let mut _error_packet_ret = None;
 	let mut is_from_final_non_blinded_node = false;
+	let mut hop_hold_times: Vec<u32> = Vec::new();
 
 	const BADONION: u16 = 0x8000;
 	const PERM: u16 = 0x4000;
@@ -1109,8 +1145,8 @@ where
 	}
 
 	// Handle packed channel/node updates for passing back for the route handler
-	let mut iterator = onion_keys.into_iter().peekable();
-	while let Some((route_hop_option, shared_secret)) = iterator.next() {
+	let mut iterator = onion_keys.into_iter().enumerate().peekable();
+	while let Some((route_hop_idx, (route_hop_option, shared_secret))) = iterator.next() {
 		let route_hop = match route_hop_option.as_ref() {
 			Some(hop) => hop,
 			None => {
@@ -1138,7 +1174,7 @@ where
 			route_hop
 		} else {
 			match next_hop {
-				Some((Some(hop), _)) => hop,
+				Some((_, (Some(hop), _))) => hop,
 				_ => {
 					// The failing hop is within a multi-hop blinded path.
 					#[cfg(not(test))]
@@ -1175,6 +1211,47 @@ where
 		crypt_failure_packet(shared_secret.as_ref(), &mut encrypted_packet);
 
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
+
+		// Check attr error HMACs if present.
+		if let Some(ref mut attribution_data) = encrypted_packet.attribution_data {
+			// Only consider hops in the regular path for attribution data. Failures in a blinded path are not attributable.
+			if route_hop_idx < path.hops.len() {
+				// Calculate position relative to the final hop. The final hop is at position 0. The failure node does not
+				// need to come from the final node, but we need to look at the chain of HMACs that does include all data up
+				// to the final node. For a more nearby failure, the verified HMACs will include some zero padding data.
+				let position = path.hops.len() - route_hop_idx - 1;
+				let hold_time = attribution_data.verify(
+					&encrypted_packet.data,
+					shared_secret.as_ref(),
+					position,
+				);
+				if let Some(hold_time) = hold_time {
+					hop_hold_times.push(hold_time);
+
+					log_debug!(logger, "Htlc hold time at pos {}: {} ms", route_hop_idx, hold_time);
+
+					// Shift attribution data to prepare for processing the next hop.
+					attribution_data.shift_left();
+				} else {
+					res = Some(FailureLearnings {
+						network_update: None,
+						short_channel_id: route_hop.short_channel_id(),
+						payment_failed_permanently: false,
+						failed_within_blinded_path: false,
+					});
+
+					log_debug!(
+						logger,
+						"Invalid HMAC in attribution data for node at pos {}",
+						route_hop_idx
+					);
+
+					break;
+				}
+			}
+		}
+
+		// Check legacy HMAC.
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
 		hmac.input(&encrypted_packet.data[32..]);
 
@@ -1362,6 +1439,7 @@ where
 			short_channel_id,
 			payment_failed_permanently,
 			failed_within_blinded_path,
+			hold_times: hop_hold_times,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: _error_code_ret,
 			#[cfg(any(test, feature = "_test_utils"))]
@@ -1381,6 +1459,7 @@ where
 			short_channel_id: None,
 			payment_failed_permanently: is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
+			hold_times: hop_hold_times,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
@@ -1528,20 +1607,36 @@ impl HTLCFailReason {
 	) -> msgs::OnionErrorPacket {
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
-				if let Some(secondary_shared_secret) = secondary_shared_secret {
-					let mut packet =
-						build_failure_packet(secondary_shared_secret, *failure_code, &data[..]);
+				// Final hop always reports zero hold time.
+				let hold_time: u32 = 0;
 
+				if let Some(secondary_shared_secret) = secondary_shared_secret {
+					// Phantom hop always reports zero hold time too.
+					let mut packet = build_failure_packet(
+						secondary_shared_secret,
+						*failure_code,
+						&data[..],
+						hold_time,
+					);
+
+					process_failure_packet(&mut packet, incoming_packet_shared_secret, hold_time);
 					crypt_failure_packet(incoming_packet_shared_secret, &mut packet);
 
 					packet
 				} else {
-					build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..])
+					build_failure_packet(
+						incoming_packet_shared_secret,
+						*failure_code,
+						&data[..],
+						hold_time,
+					)
 				}
 			},
-			HTLCFailReasonRepr::LightningError { ref err, .. } => {
+			HTLCFailReasonRepr::LightningError { ref err, hold_time } => {
 				let mut err = err.clone();
+				let hold_time = hold_time.unwrap_or(0);
 
+				process_failure_packet(&mut err, incoming_packet_shared_secret, hold_time);
 				crypt_failure_packet(incoming_packet_shared_secret, &mut err);
 
 				err
@@ -1572,6 +1667,7 @@ impl HTLCFailReason {
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
 						failed_within_blinded_path: false,
+						hold_times: Vec::new(),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_code: Some(*failure_code),
 						#[cfg(any(test, feature = "_test_utils"))]
@@ -2171,6 +2267,156 @@ impl_writeable!(AttributionData, {
 	hmacs
 });
 
+impl AttributionData {
+	/// Adds the current node's HMACs for all possible positions to this packet.
+	pub(crate) fn add_hmacs(&mut self, shared_secret: &[u8], message: &[u8]) {
+		let um: [u8; 32] = gen_um_from_shared_secret(&shared_secret);
+
+		// Iterate over all possible positions that this hop could be on the path. An intermediate node does not have this
+		// information, so it is up to the sender to verify the HMAC that corresponds to the actual position.
+		for hmac_idx in 0..MAX_HOPS {
+			// Calculate position relative to the final node. The final node is at position 0.
+			let position: usize = MAX_HOPS - hmac_idx - 1;
+
+			// The HMAC covers the original message and - for the assumed position - all the hold times and downstream
+			// HMACs. As position decreases, fewer downstream HMACs are included.
+			let mut hmac_engine = HmacEngine::<Sha256>::new(&um);
+			hmac_engine.input(&message);
+			hmac_engine.input(&self.hold_times[..(position + 1) * HOLD_TIME_LEN]);
+			self.write_downstream_hmacs(position, &mut hmac_engine);
+
+			let full_hmac = Hmac::from_engine(hmac_engine).to_byte_array();
+
+			// Truncate the HMAC to save space. A low-probability collision acceptable here because the consequence is just
+			// a pathfinding penalty.
+			let hmac = &full_hmac[..HMAC_LEN];
+
+			// Store the new HMAC.
+			self.get_hmac_mut(hmac_idx).copy_from_slice(hmac);
+		}
+	}
+
+	/// Writes the HMACs corresponding to the given position that have been added already by downstream hops. Position is
+	/// relative to the final node. The final node is at position 0.
+	pub fn write_downstream_hmacs(&self, position: usize, w: &mut HmacEngine<Sha256>) {
+		// Set the index to the first downstream HMAC that we need to include. Note that we skip the first MAX_HOPS HMACs
+		// because this is space reserved for the HMACs that we are producing for the current node.
+		let mut hmac_idx = MAX_HOPS + MAX_HOPS - position - 1;
+
+		// For every hop between the assumed position of this node and the final node, add the corresponding HMAC.
+		for j in 0..position {
+			w.input(self.get_hmac(hmac_idx));
+
+			// HMAC block size gets smaller the closer we get to the (assumed) final hop.
+			let block_size = MAX_HOPS - j - 1;
+
+			// Move to the next HMAC in the block of the next downstream hop.
+			hmac_idx += block_size;
+		}
+	}
+
+	/// Verifies the attribution data of a failure packet for the given position in the path. If the HMAC checks out, the
+	/// reported hold time is returned. If the HMAC does not match, None is returned.
+	fn verify(&self, message: &Vec<u8>, shared_secret: &[u8], position: usize) -> Option<u32> {
+		// Calculate the expected HMAC.
+		let um = gen_um_from_shared_secret(shared_secret);
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
+		hmac.input(&message);
+		hmac.input(&self.hold_times[..(position + 1) * HOLD_TIME_LEN]);
+		self.write_downstream_hmacs(position, &mut hmac);
+		let expected_hmac = &Hmac::from_engine(hmac).to_byte_array()[..HMAC_LEN];
+
+		// Compare with the actual HMAC.
+		let hmac_idx = MAX_HOPS - position - 1;
+		let actual_hmac = self.get_hmac(hmac_idx);
+		if !fixed_time_eq(expected_hmac, actual_hmac) {
+			return None;
+		}
+
+		// The HMAC checks out and the hold time can be extracted and returned;
+		let hold_time: u32 = u32::from_be_bytes(self.get_hold_time_bytes(0).try_into().unwrap());
+
+		Some(hold_time)
+	}
+
+	/// Shifts hold times and HMACs to the left, taking into account HMAC pruning. This is the inverse operation of what
+	/// hops do when back-propagating the failure.
+	fn shift_left(&mut self) {
+		// Shift hold times left.
+		self.hold_times.copy_within(HOLD_TIME_LEN.., 0);
+
+		// Shift HMACs left.
+		let mut src_idx = MAX_HOPS;
+		let mut dest_idx = 1;
+		let mut copy_len = MAX_HOPS - 1;
+
+		for _ in 0..MAX_HOPS - 1 {
+			self.hmacs.copy_within(
+				src_idx * HMAC_LEN..(src_idx + copy_len) * HMAC_LEN,
+				dest_idx * HMAC_LEN,
+			);
+
+			src_idx += copy_len;
+			dest_idx += copy_len + 1;
+			copy_len -= 1;
+		}
+	}
+
+	/// Shifts hold times and HMACS to the right, taking into account HMAC pruning. Intermediate nodes do this to create
+	/// space for prepending their own hold time and HMACs.
+	fn shift_right(&mut self) {
+		// Shift hold times right. This will free up HOLD_TIME_LEN bytes at the beginning of the array.
+		self.hold_times.copy_within(..(MAX_HOPS - 1) * HOLD_TIME_LEN, HOLD_TIME_LEN);
+
+		// Shift HMACs right. Go backwards through the HMACs to prevent overwriting. This will free up MAX_HOPS slots at
+		// the beginning of the array.
+		let mut src_idx = HMAC_COUNT - 2;
+		let mut dest_idx = HMAC_COUNT - 1;
+		let mut copy_len = 1;
+
+		for i in 0..MAX_HOPS - 1 {
+			self.hmacs.copy_within(
+				src_idx * HMAC_LEN..(src_idx + copy_len) * HMAC_LEN,
+				dest_idx * HMAC_LEN,
+			);
+
+			// Break at last iteration to prevent underflow when updating indices.
+			if i == MAX_HOPS - 2 {
+				break;
+			}
+
+			copy_len += 1;
+			src_idx -= copy_len + 1;
+			dest_idx -= copy_len;
+		}
+	}
+
+	fn get_hmac(&self, idx: usize) -> &[u8] {
+		&self.hmacs[idx * HMAC_LEN..(idx + 1) * HMAC_LEN]
+	}
+
+	fn get_hmac_mut(&mut self, idx: usize) -> &mut [u8] {
+		&mut self.hmacs[idx * HMAC_LEN..(idx + 1) * HMAC_LEN]
+	}
+
+	fn get_hold_time_bytes(&self, idx: usize) -> &[u8] {
+		&self.hold_times[idx * HOLD_TIME_LEN..(idx + 1) * HOLD_TIME_LEN]
+	}
+}
+
+/// Updates the attribution data for an intermediate node.
+fn process_failure_packet(
+	onion_error: &mut OnionErrorPacket, shared_secret: &[u8], hold_time: u32,
+) {
+	// Process received attribution data if present.
+	if let Some(ref mut attribution_data) = onion_error.attribution_data {
+		attribution_data.shift_right();
+	}
+
+	// Add this node's attribution data.
+	update_attribution_data(onion_error, shared_secret, hold_time);
+}
+
 #[cfg(test)]
 mod tests {
 	use std::sync::Arc;
@@ -2189,7 +2435,7 @@ mod tests {
 	use crate::util::test_utils::TestLogger;
 
 	use super::*;
-	use bitcoin::hex::FromHex;
+	use bitcoin::hex::{DisplayHex, FromHex};
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use types::features::Features;
@@ -2504,40 +2750,147 @@ mod tests {
 	}
 
 	#[test]
-	fn test_failure_packet_onion() {
-		// Returning Errors test vectors from BOLT 4
+	fn test_attributable_failure_packet_onion_mutations() {
+		// Define the length of the (legacy) failure message field in the test.
+		const FAILURE_MESSAGE_LEN: usize = 1060;
+
+		for mutating_node in 0..5 {
+			for mutated_index in
+				0..FAILURE_MESSAGE_LEN + HOLD_TIME_LEN * MAX_HOPS + HMAC_LEN * HMAC_COUNT
+			{
+				let mutation = Mutation { node: mutating_node, index: mutated_index };
+				let decrypted_failure =
+					test_attributable_failure_packet_onion_with_mutation(Some(mutation));
+
+				if decrypted_failure.onion_error_code == Some(0x4000 | 15) {
+					continue;
+				}
+
+				assert!(decrypted_failure.short_channel_id == Some(mutating_node as u64));
+				assert_eq!(decrypted_failure.hold_times, [5, 4, 3, 2, 1][..mutating_node]);
+			}
+		}
+	}
+
+	#[test]
+	fn test_attributable_failure_packet_onion_happy() {
+		let decrypted_failure = test_attributable_failure_packet_onion_with_mutation(None);
+		assert_eq!(decrypted_failure.onion_error_code, Some(0x4000 | 15));
+		assert_eq!(decrypted_failure.hold_times, [5, 4, 3, 2, 1]);
+	}
+
+	struct Mutation {
+		node: usize,
+		index: usize,
+	}
+
+	fn test_attributable_failure_packet_onion_with_mutation(
+		mutation: Option<Mutation>,
+	) -> DecodedOnionFailure {
+		struct ExpectedMessage<'a> {
+			message: &'a str,
+			attribution_data: &'a str,
+		}
+
+		impl<'a> ExpectedMessage<'a> {
+			fn assert_eq(&self, actual: &OnionErrorPacket) {
+				assert_eq!(actual.data.to_lower_hex_string(), self.message);
+
+				let (expected_hold_times, expected_hmacs) =
+					self.attribution_data.split_at(MAX_HOPS * HOLD_TIME_LEN * 2);
+				assert_eq!(
+					actual.attribution_data.as_ref().unwrap().hold_times.to_lower_hex_string(),
+					expected_hold_times
+				);
+				assert_eq!(
+					actual.attribution_data.as_ref().unwrap().hmacs.to_lower_hex_string(),
+					expected_hmacs
+				);
+			}
+		}
+
+		const FAILURE_DATA: &str = "0000000000000064000c3500fd84d1fd012c808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080";
+		const EXPECTED_MESSAGES: [ExpectedMessage; 5] = [
+			ExpectedMessage {
+				message: "146e94a9086dbbed6a0ab6932d00c118a7195dbf69b7d7a12b0e6956fc54b5e0a989f165b5f12fd45edd73a5b0c48630ff5be69500d3d82a29c0803f0a0679a6a073c33a6fb8250090a3152eba3f11a85184fa87b67f1b0354d6f48e3b342e332a17b7710f342f342a87cf32eccdf0afc2160808d58abb5e5840d2c760c538e63a6f841970f97d2e6fe5b8739dc45e2f7f5f532f227bcc2988ab0f9cc6d3f12909cd5842c37bc8c7608475a5ebbe10626d5ecc1f3388ad5f645167b44a4d166f87863fe34918cea25c18059b4c4d9cb414b59f6bc50c1cea749c80c43e2344f5d23159122ed4ab9722503b212016470d9610b46c35dbeebaf2e342e09770b38392a803bc9d2e7c8d6d384ffcbeb74943fe3f64afb2a543a6683c7db3088441c531eeb4647518cb41992f8954f1269fb969630944928c2d2b45593731b5da0c4e70d04a0a57afe4af42e99912fbb4f8883a5ecb9cb29b883cb6bfa0f4db2279ff8c6d2b56a232f55ba28fe7dfa70a9ab0433a085388f25cce8d53de6a2fbd7546377d6ede9027ad173ba1f95767461a3689ef405ab608a21086165c64b02c1782b04a6dba2361a7784603069124e12f2f6dcb1ec7612a4fbf94c0e14631a2bef6190c3d5f35e0c4b32aa85201f449d830fd8f782ec758b0910428e3ec3ca1dba3b6c7d89f69e1ee1b9df3dfbbf6d361e1463886b38d52e8f43b73a3bd48c6f36f5897f514b93364a31d49d1d506340b1315883d425cb36f4ea553430d538fd6f3596d4afc518db2f317dd051abc0d4bfb0a7870c3db70f19fe78d6604bbf088fcb4613f54e67b038277fedcd9680eb97bdffc3be1ab2cbcbafd625b8a7ac34d8c190f98d3064ecd3b95b8895157c6a37f31ef4de094b2cb9dbf8ff1f419ba0ecacb1bb13df0253b826bec2ccca1e745dd3b3e7cc6277ce284d649e7b8285727735ff4ef6cca6c18e2714f4e2a1ac67b25213d3bb49763b3b94e7ebf72507b71fb2fe0329666477ee7cb7ebd6b88ad5add8b217188b1ca0fa13de1ec09cc674346875105be6e0e0d6c8928eb0df23c39a639e04e4aedf535c4e093f08b2c905a14f25c0c0fe47a5a1535ab9eae0d9d67bdd79de13a08d59ee05385c7ea4af1ad3248e61dd22f8990e9e99897d653dd7b1b1433a6d464ea9f74e377f2d8ce99ba7dbc753297644234d25ecb5bd528e2e2082824681299ac30c05354baaa9c3967d86d7c07736f87fc0f63e5036d47235d7ae12178ced3ae36ee5919c093a02579e4fc9edad2c446c656c790704bfc8e2c491a42500aa1d75c8d4921ce29b753f883e17c79b09ea324f1f32ddf1f3284cd70e847b09d90f6718c42e5c94484cc9cbb0df659d255630a3f5a27e7d5dd14fa6b974d1719aa98f01a20fb4b7b1c77b42d57fab3c724339d459ee4a1c6b5d3bd4e08624c786a257872acc9ad3ff62222f2265a658d9f2a007229a5293b67ec91c84c4b4407c228434bad8a815ca9b256c776bd2c9f",
+				attribution_data: "d77d0711b5f71d1d1be56bd88b3bb7ebc1792bb739ea7ebc1bc3b031b8bc2df3a50e25aeb99f47d7f7ab39e24187d3f4df9c4333463b053832ee9ac07274a5261b8b2a01fc09ce9ea7cd04d7b585dfb8cf5958e3f3f2a4365d1ec0df1d83c6a6221b5b7d1ff30156a2289a1d3ee559e7c7256bda444bb8e046f860e00b3a59a85e1e1a43de215fd5e6bf646a5deab97b1912c934e31b1cfd344764d6ca7e14ea7b3f2a951aba907c964c0f5d19a44e6d1d7279637321fa598adde927b3087d238f8b426ecde500d318617cdb7a56e6ce3520fc95be41a549973764e4dc483853ecc313947709f1b5199cb077d46e701fa633e11d3e13b03e9212c115ca6fa004b2f3dd912814693b705a561a06da54cdf603677a3abecdc22c7358c2de3cef771b366a568150aeecc86ad1990bb0f4e2865933b03ea0df87901bff467908273dc6cea31cbab0e2b8d398d10b001058c259ed221b7b55762f4c7e49c8c11a45a107b7a2c605c26dc5b0b10d719b1c844670102b2b6a36c43fe4753a78a483fc39166ae28420f112d50c10ee64ca69569a2f690712905236b7c2cb7ac8954f02922d2d918c56d42649261593c47b14b324a65038c3c5be8d3c403ce0c8f19299b1664bf077d7cf1636c4fb9685a8e58b7029fd0939fa07925a60bed339b23f973293598f595e75c8f9d455d7cebe4b5e23357c8bd47d66d6628b39427e37e0aecbabf46c11be6771f7136e108a143ae9bafba0fc47a51b6c7deef4cba54bae906398ee3162a41f2191ca386b628bde7e1dd63d1611aa01a95c456df337c763cb8c3a81a6013aa633739d8cd554c688102211725e6adad165adc1bcd429d020c51b4b25d2117e8bb27eb0cc7020f9070d4ad19ac31a76ebdf5f9246646aeadbfb9a3f1d75bd8237961e786302516a1a781780e8b73f58dc06f307e58bd0eb1d8f5c9111f01312974c1dc777a6a2d3834d8a2a40014e9818d0685cb3919f6b3b788ddc640b0ff9b1854d7098c7dd6f35196e902b26709640bc87935a3914869a807e8339281e9cedaaca99474c3e7bdd35050bb998ab4546f9900904e0e39135e861ff7862049269701081ebce32e4cca992c6967ff0fd239e38233eaf614af31e186635e9439ec5884d798f9174da6ff569d68ed5c092b78bd3f880f5e88a7a8ab36789e1b57b035fb6c32a6358f51f83e4e5f46220bcad072943df8bd9541a61b7dae8f30fa3dd5fb39b1fd9a0b8e802552b78d4ec306ecee15bfe6da14b29ba6d19ce5be4dd478bca74a52429cd5309d404655c3dec85c252"
+			},
+			ExpectedMessage {
+				message: "7512354d6a26781d25e65539772ba049b7ed7c530bf75ab7ef80cf974b978a07a1c3dabc61940011585323f70fa98cfa1d4c868da30b1f751e44a72d9b3f79809c8c51c9f0843daa8fe83587844fedeacb7348362003b31922cbb4d6169b2087b6f8d192d9cfe5363254cd1fde24641bde9e422f170c3eb146f194c48a459ae2889d706dc654235fa9dd20307ea54091d09970bf956c067a3bcc05af03c41e01af949a131533778bf6ee3b546caf2eabe9d53d0fb2e8cc952b7e0f5326a69ed2e58e088729a1d85971c6b2e129a5643f3ac43da031e655b27081f10543262cf9d72d6f64d5d96387ac0d43da3e3a03da0c309af121dcf3e99192efa754eab6960c256ffd4c546208e292e0ab9894e3605db098dc16b40f17c320aa4a0e42fc8b105c22f08c9bc6537182c24e32062c6cd6d7ec7062a0c2c2ecdae1588c82185cdc61d874ee916a7873ac54cddf929354f307e870011704a0e9fbc5c7802d6140134028aca0e78a7e2f3d9e5c7e49e20c3a56b624bfea51196ec9e88e4e56be38ff56031369f45f1e03be826d44a182f270c153ee0d9f8cf9f1f4132f33974e37c7887d5b857365c873cb218cbf20d4be3abdb2a2011b14add0a5672e01e5845421cf6dd6faca1f2f443757aae575c53ab797c2227ecdab03882bbbf4599318cefafa72fa0c9a0f5a51d13c9d0e5d25bfcfb0154ed25895260a9df8743ac188714a3f16960e6e2ff663c08bffda41743d50960ea2f28cda0bc3bd4a180e297b5b41c700b674cb31d99c7f2a1445e121e772984abff2bbe3f42d757ceeda3d03fb1ffe710aecabda21d738b1f4620e757e57b123dbc3c4aa5d9617dfa72f4a12d788ca596af14bea583f502f16fdc13a5e739afb0715424af2767049f6b9aa107f69c5da0e85f6d8c5e46507e14616d5d0b797c3dea8b74a1b12d4e47ba7f57f09d515f6c7314543f78b5e85329d50c5f96ee2f55bbe0df742b4003b24ccbd4598a64413ee4807dc7f2a9c0b92424e4ae1b418a3cdf02ea4da5c3b12139348aa7022cc8272a3a1714ee3e4ae111cffd1bdfd62c503c80bdf27b2feaea0d5ab8fe00f9cec66e570b00fd24b4a2ed9a5f6384f148a4d6325110a41ca5659ebc5b98721d298a52819b6fb150f273383f1c5754d320be428941922da790e17f482989c365c078f7f3ae100965e1b38c052041165295157e1a7c5b7a57671b842d4d85a7d971323ad1f45e17a16c4656d889fc75c12fc3d8033f598306196e29571e414281c5da19c12605f48347ad5b4648e371757cbe1c40adb93052af1d6110cfbf611af5c8fc682b7e2ade3bfca8b5c7717d19fc9f97964ba6025aebbc91a6671e259949dcf40984342118de1f6b514a7786bd4f6598ffbe1604cef476b2a4cb1343db608aca09d1d38fc23e98ee9c65e7f6023a8d1e61fd4f34f753454bd8e858c8ad6be6403edc599c220e03ca917db765980ac781e758179cd93983e9c1e769e4241d47c",
+				attribution_data: "1571e10db7f8aa9f8e7e99caaf9c892e106c817df1d8e3b7b0e39d1c48f631e473e17e205489dd7b3c634cac3be0825cbf01418cd46e83c24b8d9c207742db9a0f0e5bcd888086498159f08080ba7bf36dee297079eb841391ccd3096da76461e314863b6412efe0ffe228d51c6097db10d3edb2e50ea679820613bfe9db11ba02920ab4c1f2a79890d997f1fc022f3ab78f0029cc6de0c90be74d55f4a99bf77a50e20f8d076fe61776190a61d2f41c408871c0279309cba3b60fcdc7efc4a0e90b47cb4a418fc78f362ecc7f15ebbce9f854c09c7be300ebc1a40a69d4c7cb7a19779b6905e82bec221a709c1dab8cbdcde7b527aca3f54bde651aa9f3f2178829cee3f1c0b9292758a40cc63bd998fcd0d3ed4bdcaf1023267b8f8e44130a63ad15f76145936552381eabb6d684c0a3af6ba8efcf207cebaea5b7acdbb63f8e7221102409d10c23f0514dc9f4d0efb2264161a193a999a23e992632710580a0d320f676d367b9190721194514457761af05207cdab2b6328b1b3767eacb36a7ef4f7bd2e16762d13df188e0898b7410f62459458712a44bf594ae662fd89eb300abb6952ff8ad40164f2bcd7f86db5c7650b654b79046de55d51aa8061ce35f867a3e8f5bf98ad920be827101c64fb871d86e53a4b3c0455bfac5784168218aa72cbee86d9c750a9fa63c363a8b43d7bf4b2762516706a306f0aa3be1ec788b5e13f8b24837e53ac414f211e11c7a093cd9653dfa5fba4e377c79adfa5e841e2ddb6afc054fc715c05ddc6c8fc3e1ee3406e1ffceb2df77dc2f02652614d1bfcfaddebaa53ba919c7051034e2c7b7cfaabdf89f26e7f8e3f956d205dfab747ad0cb505b85b54a68439621b25832cbc2898919d0cd7c0a64cfd235388982dd4dd68240cb668f57e1d2619a656ed326f8c92357ee0d9acead3c20008bc5f04ca8059b55d77861c6d04dfc57cfba57315075acbe1451c96cf28e1e328e142890248d18f53b5d3513ce574dea7156cf596fdb3d909095ec287651f9cf1bcdc791c5938a5dd9b47e84c004d24ab3ae74492c7e8dcc1da15f65324be2672947ec82074cac8ce2b925bc555facbbf1b55d63ea6fbea6a785c97d4caf2e1dad9551b7f66c31caae5ebc7c0047e892f201308fcf452c588be0e63d89152113d87bf0dbd01603b4cdc7f0b724b0714a9851887a01f709408882e18230fe810b9fafa58a666654576d8eba3005f07221f55a6193815a672e5db56204053bc4286fa3db38250396309fd28011b5708a26a2d76c4a333b69b6bfd272fb"
+			},
+			ExpectedMessage {
+				message: "145bc1c63058f7204abbd2320d422e69fb1b3801a14312f81e5e29e6b5f4774cfed8a25241d3dfb7466e749c1b3261559e49090853612e07bd669dfb5f4c54162fa504138dabd6ebcf0db8017840c35f12a2cfb84f89cc7c8959a6d51815b1d2c5136cedec2e4106bb5f2af9a21bd0a02c40b44ded6e6a90a145850614fb1b0eef2a03389f3f2693bc8a755630fc81fff1d87a147052863a71ad5aebe8770537f333e07d841761ec448257f948540d8f26b1d5b66f86e073746106dfdbb86ac9475acf59d95ece037fba360670d924dce53aaa74262711e62a8fc9eb70cd8618fbedae22853d3053c7f10b1a6f75369d7f73c419baa7dbf9f1fc5895362dcc8b6bd60cca4943ef7143956c91992119bccbe1666a20b7de8a2ff30a46112b53a6bb79b763903ecbd1f1f74952fb1d8eb0950c504df31fe702679c23b463f82a921a2c931500ab08e686cffb2d87258d254fb17843959cccd265a57ba26c740f0f231bb76df932b50c12c10be90174b37d454a3f8b284c849e86578a6182c4a7b2e47dd57d44730a1be9fec4ad07287a397e28dce4fda57e9cdfdb2eb5afdf0d38ef19d982341d18d07a556bb16c1416f480a396f278373b8fd9897023a4ac506e65cf4c306377730f9c8ca63cf47565240b59c4861e52f1dab84d938e96fb31820064d534aca05fd3d2600834fe4caea98f2a748eb8f200af77bd9fbf46141952b9ddda66ef0ebea17ea1e7bb5bce65b6e71554c56dd0d4e14f4cf74c77a150776bf31e7419756c71e7421dc22efe9cf01de9e19fc8808d5b525431b944400db121a77994518d6025711cb25a18774068bba7faaa16d8f65c91bec8768848333156dcb4a08dfbbd9fef392da3e4de13d4d74e83a7d6e46cfe530ee7a6f711e2caf8ad5461ba8177b2ef0a518baf9058ff9156e6aa7b08d938bd8d1485a787809d7b4c8aed97be880708470cd2b2cdf8e2f13428cc4b04ef1f2acbc9562f3693b948d0aa94b0e6113cafa684f8e4a67dc431dfb835726874bef1de36f273f52ee694ec46b0700f77f8538067642a552968e866a72a3f2031ad116663ac17b172b446c5bc705b84777363a9a3fdc6443c07b2f4ef58858122168d4ebbaee920cefc312e1cea870ed6e15eec046ab2073bbf08b0a3366f55cfc6ad4681a12ab0946534e7b6f90ea8992d530ec3daa6b523b3cf03101c60cadd914f30dec932c1ef4341b5a8efac3c921e203574cfe0f1f83433fddb8ccfd273f7c3cab7bc27efe3bb61fdccd5146f1185364b9b621e7fb2b74b51f5ee6be72ab6ff46a6359dc2c855e61469724c1dbeb273df9d2e1c1fb74891239c0019dc12d5c7535f7238f963b761d7102b585372cf021b64c4fc85bfb3161e59d2e298bba44cfd34d6859d9dba9dc6271e5047d525468c814f2ae438474b0a977273036da1a2292f88fcfb89574a6bdca1185b40f8aa54026d5926725f99ef028da1be892e3586361efe15f4a148ff1bc9",
+				attribution_data: "34e34397b8621ec2f2b54dbe6c14073e267324cd60b152bce76aec8729a6ddefb61bc263be4b57bd592aae604a32bea69afe6ef4a6b573c26b17d69381ec1fc9b5aa769d148f2f1f8b5377a73840bb6dc641f68e356323d766fff0aaca5039fe7fc27038195844951a97d5a5b26698a4ca1e9cd4bca1fcca0aac5fee91b18977d2ad0e399ba159733fc98f6e96898ebc39bf0028c9c81619233bab6fad0328aa183a635fac20437fa6e00e899b2527c3697a8ab7342e42d55a679b176ab76671fcd480a9894cb897fa6af0a45b917a162bed6c491972403185df7235502f7ada65769d1bfb12d29f10e25b0d3cc08bbf6de8481ac5c04df32b4533b4f764c2aefb7333202645a629fb16e4a208e9045dc36830759c852b31dd613d8b2b10bbead1ed4eb60c85e8a4517deba5ab53e39867c83c26802beee2ee545bdd713208751added5fc0eb2bc89a5aa2decb18ee37dac39f22a33b60cc1a369d24de9f3d2d8b63c039e248806de4e36a47c7a0aed30edd30c3d62debdf1ad82bf7aedd7edec413850d91c261e12beec7ad1586a9ad25b2db62c58ca17119d61dcc4f3e5c4520c42a8e384a45d8659b338b3a08f9e123a1d3781f5fc97564ccff2c1d97f06fa0150cfa1e20eacabefb0c339ec109336d207cc63d9170752fc58314c43e6d4a528fd0975afa85f3aa186ff1b6b8cb12c97ed4ace295b0ef5f075f0217665b8bb180246b87982d10f43c9866b22878106f5214e99188781180478b07764a5e12876ddcb709e0a0a8dd42cf004c695c6fc1669a6fd0e4a1ca54b024d0d80eac492a9e5036501f36fb25b72a054189294955830e43c18e55668337c8c6733abb09fc2d4ade18d5a853a2b82f7b4d77151a64985004f1d9218f2945b63c56fdebd1e96a2a7e49fa70acb4c39873947b83c191c10e9a8f40f60f3ad5a2be47145c22ea59ed3f5f4e61cb069e875fb67142d281d784bf925cc286eacc2c43e94d08da4924b83e58dbf2e43fa625bdd620eba6d9ce960ff17d14ed1f2dbee7d08eceb540fdc75ff06dabc767267658fad8ce99e2a3236e46d2deedcb51c3c6f81589357edebac9772a70b3d910d83cd1b9ce6534a011e9fa557b891a23b5d88afcc0d9856c6dabeab25eea55e9a248182229e4927f268fe5431672fcce52f434ca3d27d1a2136bae5770bb36920df12fbc01d0e8165610efa04794f414c1417f1d4059435c5385bfe2de83ce0e238d6fd2dbd3c0487c69843298577bfa480fe2a16ab2a0e4bc712cd8b5a14871cda61c993b6835303d9043d7689a"
+			},
+			ExpectedMessage {
+				message: "1b4b09a935ce7af95b336baae307f2b400e3a7e808d9b4cf421cc4b3955620acb69dcdb656128dae8857adbd4e6b37fbb1be9c1f2f02e61e9e59a630c4c77cf383cb37b07413aa4de2f2fbf5b40ae40a91a8f4c6d74aeacef1bb1be4ecbc26ec2c824d2bc45db4b9098e732a769788f1cff3f5b41b0d25c132d40dc5ad045ef0043b15332ca3c5a09de2cdb17455a0f82a8f20da08346282823dab062cdbd2111e238528141d69de13de6d83994fbc711e3e269df63a12d3a4177c5c149150eb4dc2f589cd8acabcddba14dec3b0dada12d663b36176cd3c257c5460bab93981ad99f58660efa9b31d7e63b39915329695b3fa60e0a3bdb93e7e29a54ca6a8f360d3848866198f9c3da3ba958e7730847fe1e6478ce8597848d3412b4ae48b06e05ba9a104e648f6eaf183226b5f63ed2e68f77f7e38711b393766a6fab7921b03eba82b5d7cb78e34dc961948d6161eadd7cf5d95d9c56df2ff5faa6ccf85eacdc9ff2fc3abafe41c365a5bd14fd486d6b5e2f24199319e7813e02e798877ffe31a70ae2398d9e31b9e3727e6c1a3c0d995c67d37bb6e72e9660aaaa9232670f382add2edd468927e3303b6142672546997fe105583e7c5a3c4c2b599731308b5416e6c9a3f3ba55b181ad0439d3535356108b059f2cb8742eed7a58d4eba9fe79eaa77c34b12aff1abdaea93197aabd0e74cb271269ca464b3b06aef1d6573df5e1224179616036b368677f26479376681b772d3760e871d99efd34cca5cd6beca95190d967da820b21e5bec60082ea46d776b0517488c84f26d12873912d1f68fafd67bcf4c298e43cfa754959780682a2db0f75f95f0598c0d04fd014c50e4beb86a9e37d95f2bba7e5065ae052dc306555bca203d104c44a538b438c9762de299e1c4ad30d5b4a6460a76484661fc907682af202cd69b9a4473813b2fdc1142f1403a49b7e69a650b7cde9ff133997dcc6d43f049ecac5fce097a21e2bce49c810346426585e3a5a18569b4cddd5ff6bdec66d0b69fcbc5ab3b137b34cc8aefb8b850a764df0e685c81c326611d901c392a519866e132bbb73234f6a358ba284fbafb21aa3605cacbaf9d0c901390a98b7a7dac9d4f0b405f7291c88b2ff45874241c90ac6c5fc895a440453c344d3a365cb929f9c91b9e39cb98b142444aae03a6ae8284c77eb04b0a163813d4c21883df3c0f398f47bf127b5525f222107a2d8fe55289f0cfd3f4bbad6c5387b0594ef8a966afc9e804ccaf75fe39f35c6446f7ee076d433f2f8a44dba1515acc78e589fa8c71b0a006fe14feebd51d0e0aa4e51110d16759eee86192eee90b34432130f387e0ccd2ee71023f1f641cddb571c690107e08f592039fe36d81336a421e89378f351e633932a2f5f697d25b620ffb8e84bb6478e9bd229bf3b164b48d754ae97bd23f319e3c56b3bcdaaeb3bd7fc02ec02066b324cb72a09b6b43dec1097f49d69d3c138ce6f1a6402898baf7568c",
+				attribution_data: "74a4ea61339463642a2182758871b2ea724f31f531aa98d80f1c3043febca41d5ee52e8b1e127e61719a0d078db8909748d57839e58424b91f063c4fbc8a221bef261140e66a9b596ca6d420a973ad54fef30646ae53ccf0855b61f291a81e0ec6dc0f6bf69f0ca0e5889b7e23f577ba67d2a7d6a2aa91264ab9b20630ed52f8ed56cc10a869807cd1a4c2cd802d8433fee5685d6a04edb0bff248a480b93b01904bed3bb31705d1ecb7332004290cc0cd9cc2f7907cf9db28eec02985301668f53fbc28c3e095c8f3a6cd8cab28e5e442fd9ba608b8b12e098731bbfda755393bd403c62289093b40390b2bae337fc87d2606ca028311d73a9ffbdffef56020c735ada30f54e577c6a9ec515ae2739290609503404b118d7494499ecf0457d75015bb60a16288a4959d74cf5ac5d8d6c113de39f748a418d2a7083b90c9c0a09a49149fd1f2d2cde4412e5aa2421eca6fd4f6fe6b2c362ff37d1a0608c931c7ca3b8fefcfd4c44ef9c38357a0767b14f83cb49bd1989fb3f8e2ab202ac98bd8439790764a40bf309ea2205c1632610956495720030a25dc7118e0c868fdfa78c3e9ecce58215579a0581b3bafdb7dbbe53be9e904567fdc0ce1236aab5d22f1ebc18997e3ea83d362d891e04c5785fd5238326f767bce499209f8db211a50e1402160486e98e7235cf397dbb9ae19fd9b79ef589c821c6f99f28be33452405a003b33f4540fe0a41dfcc286f4d7cc10b70552ba7850869abadcd4bb7f256823face853633d6e2a999ac9fcd259c71d08e266db5d744e1909a62c0db673745ad9585949d108ab96640d2bc27fb4acac7fa8b170a30055a5ede90e004df9a44bdc29aeb4a6bec1e85dde1de6aaf01c6a5d12405d0bec22f49026cb23264f8c04b8401d3c2ab6f2e109948b6193b3bec27adfe19fb8afb8a92364d6fc5b219e8737d583e7ff3a4bcb75d53edda3bf3f52896ac36d8a877ad9f296ea6c045603fc62ac4ae41272bde85ef7c3b3fd3538aacfd5b025fefbe277c2906821ecb20e6f75ea479fa3280f9100fb0089203455c56b6bc775e5c2f0f58c63edd63fa3eec0b40da4b276d0d41da2ec0ead865a98d12bc694e23d8eaadd2b4d0ee88e9570c88fb878930f492e036d27998d593e47763927ff7eb80b188864a3846dd2238f7f95f4090ed399ae95deaeb37abca1cf37c397cc12189affb42dca46b4ff6988eb8c060691d155302d448f50ff70a794d97c0408f8cee9385d6a71fa412e36edcb22dbf433db9db4779f27b682ee17fc05e70c8e794b9f7f6d1"
+			},
+			ExpectedMessage {
+				message: "2dd2f49c1f5af0fcad371d96e8cddbdcd5096dc309c1d4e110f955926506b3c03b44c192896f45610741c85ed4074212537e0c118d472ff3a559ae244acd9d783c65977765c5d4e00b723d00f12475aafaafff7b31c1be5a589e6e25f8da2959107206dd42bbcb43438129ce6cce2b6b4ae63edc76b876136ca5ea6cd1c6a04ca86eca143d15e53ccdc9e23953e49dc2f87bb11e5238cd6536e57387225b8fff3bf5f3e686fd08458ffe0211b87d64770db9353500af9b122828a006da754cf979738b4374e146ea79dd93656170b89c98c5f2299d6e9c0410c826c721950c780486cd6d5b7130380d7eaff994a8503a8fef3270ce94889fe996da66ed121741987010f785494415ca991b2e8b39ef2df6bde98efd2aec7d251b2772485194c8368451ad49c2354f9d30d95367bde316fec6cbdddc7dc0d25e99d3075e13d3de0822669861dafcd29de74eac48b64411987285491f98d78584d0c2a163b7221ea796f9e8671b2bb91e38ef5e18aaf32c6c02f2fb690358872a1ed28166172631a82c2568d23238017188ebbd48944a147f6cdb3690d5f88e51371cb70adf1fa02afe4ed8b581afc8bcc5104922843a55d52acde09bc9d2b71a663e178788280f3c3eae127d21b0b95777976b3eb17be40a702c244d0e5f833ff49dae6403ff44b131e66df8b88e33ab0a58e379f2c34bf5113c66b9ea8241fc7aa2b1fa53cf4ed3cdd91d407730c66fb039ef3a36d4050dde37d34e80bcfe02a48a6b14ae28227b1627b5ad07608a7763a531f2ffc96dff850e8c583461831b19feffc783bc1beab6301f647e9617d14c92c4b1d63f5147ccda56a35df8ca4806b8884c4aa3c3cc6a174fdc2232404822569c01aba686c1df5eecc059ba97e9688c8b16b70f0d24eacfdba15db1c71f72af1b2af85bd168f0b0800483f115eeccd9b02adf03bdd4a88eab03e43ce342877af2b61f9d3d85497cd1c6b96674f3d4f07f635bb26add1e36835e321d70263b1c04234e222124dad30ffb9f2a138e3ef453442df1af7e566890aedee568093aa922dd62db188aa8361c55503f8e2c2e6ba93de744b55c15260f15ec8e69bb01048ca1fa7bbbd26975bde80930a5b95054688a0ea73af0353cc84b997626a987cc06a517e18f91e02908829d4f4efc011b9867bd9bfe04c5f94e4b9261d30cc39982eb7b250f12aee2a4cce0484ff34eebba89bc6e35bd48d3968e4ca2d77527212017e202141900152f2fd8af0ac3aa456aae13276a13b9b9492a9a636e18244654b3245f07b20eb76b8e1cea8c55e5427f08a63a16b0a633af67c8e48ef8e53519041c9138176eb14b8782c6c2ee76146b8490b97978ee73cd0104e12f483be5a4af414404618e9f6633c55dda6f22252cb793d3d16fae4f0e1431434e7acc8fa2c009d4f6e345ade172313d558a4e61b4377e31b8ed4e28f7cd13a7fe3f72a409bc3bdabfe0ba47a6d861e21f64d2fac706dab18b3e546df4",
+				attribution_data: "84986c936d26bfd3bb2d34d3ec62cfdb63e0032fdb3d9d75f3e5d456f73dffa7e35aab1db4f1bd3b98ff585caf004f656c51037a3f4e810d275f3f6aea0c8e3a125ebee5f374b6440bcb9bb2955ebf706f42be9999a62ed49c7a81fc73c0b4a16419fd6d334532f40bf179dd19afec21bd8519d5e6ebc3802501ef373bc378eee1f14a6fc5fab5b697c91ce31d5922199d1b0ad5ee12176aacafc7c81d54bc5b8fb7e63f3bfd40a3b6e21f985340cbd1c124c7f85f0369d1aa86ebc66def417107a7861131c8bcd73e8946f4fb54bfac87a2dc15bd7af642f32ae583646141e8875ef81ec9083d7e32d5f135131eab7a43803360434100ff67087762bbe3d6afe2034f5746b8c50e0c3c20dd62a4c174c38b1df7365dccebc7f24f19406649fbf48981448abe5c858bbd4bef6eb983ae7a23e9309fb33b5e7c0522554e88ca04b1d65fc190947dead8c0ccd32932976537d869b5ca53ed4945bccafab2a014ea4cbdc6b0250b25be66ba0afff2ff19c0058c68344fd1b9c472567147525b13b1bc27563e61310110935cf89fda0e34d0575e2389d57bdf2869398ca2965f64a6f04e1d1c2edf2082b97054264a47824dd1a9691c27902b39d57ae4a94dd6481954a9bd1b5cff4ab29ca221fa2bf9b28a362c9661206f896fc7cec563fb80aa5eaccb26c09fa4ef7a981e63028a9c4dac12f82ccb5bea090d56bbb1a4c431e315d9a169299224a8dbd099fb67ea61dfc604edf8a18ee742550b636836bb552dabb28820221bf8546331f32b0c143c1c89310c4fa2e1e0e895ce1a1eb0f43278fdb528131a3e32bfffe0c6de9006418f5309cba773ca38b6ad8507cc59445ccc0257506ebc16a4c01d4cd97e03fcf7a2049fea0db28447858f73b8e9fe98b391b136c9dc510288630a1f0af93b26a8891b857bfe4b818af99a1e011e6dbaa53982d29cf74ae7dffef45545279f19931708ed3eede5e82280eab908e8eb80abff3f1f023ab66869297b40da8496861dc455ac3abe1efa8a6f9e2c4eda48025d43a486a3f26f269743eaa30d6f0e1f48db6287751358a41f5b07aee0f098862e3493731fe2697acce734f004907c6f11eef189424fee52cd30ad708707eaf2e441f52bcf3d0c5440c1742458653c0c8a27b5ade784d9e09c8b47f1671901a29360e7e5e94946b9c75752a1a8d599d2a3e14ac81b84d42115cd688c8383a64fc6e7e1dc5568bb4837358ebe63207a4067af66b2027ad2ce8fb7ae3a452d40723a51fdf9f9c9913e8029a222cf81d12ad41e58860d75deb6de30ad"
+			}
+		];
+
+		let failure_data = <Vec<u8>>::from_hex(FAILURE_DATA).unwrap();
 
 		let onion_keys = build_test_onion_keys();
 		let mut onion_error = super::build_unencrypted_failure_packet(
 			onion_keys[4].shared_secret.as_ref(),
-			0x2002,
-			&[0; 0],
-			DEFAULT_MIN_FAILURE_PACKET_LEN,
+			0x400f,
+			&failure_data,
+			1,
+			1024,
 		);
-		let hex = "4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
-		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
-
-		super::crypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &mut onion_error);
-		let hex = "a5e6bd0c74cb347f10cce367f949098f2457d14c046fd8a22cb96efb30b0fdcda8cb9168b50f2fd45edd73c1b0c8b33002df376801ff58aaa94000bf8a86f92620f343baef38a580102395ae3abf9128d1047a0736ff9b83d456740ebbb4aeb3aa9737f18fb4afb4aa074fb26c4d702f42968888550a3bded8c05247e045b866baef0499f079fdaeef6538f31d44deafffdfd3afa2fb4ca9082b8f1c465371a9894dd8c243fb4847e004f5256b3e90e2edde4c9fb3082ddfe4d1e734cacd96ef0706bf63c9984e22dc98851bcccd1c3494351feb458c9c6af41c0044bea3c47552b1d992ae542b17a2d0bba1a096c78d169034ecb55b6e3a7263c26017f033031228833c1daefc0dedb8cf7c3e37c9c37ebfe42f3225c326e8bcfd338804c145b16e34e4";
-		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
-
-		super::crypt_failure_packet(onion_keys[3].shared_secret.as_ref(), &mut onion_error);
-		let hex = "c49a1ce81680f78f5f2000cda36268de34a3f0a0662f55b4e837c83a8773c22aa081bab1616a0011585323930fa5b9fae0c85770a2279ff59ec427ad1bbff9001c0cd1497004bd2a0f68b50704cf6d6a4bf3c8b6a0833399a24b3456961ba00736785112594f65b6b2d44d9f5ea4e49b5e1ec2af978cbe31c67114440ac51a62081df0ed46d4a3df295da0b0fe25c0115019f03f15ec86fabb4c852f83449e812f141a9395b3f70b766ebbd4ec2fae2b6955bd8f32684c15abfe8fd3a6261e52650e8807a92158d9f1463261a925e4bfba44bd20b166d532f0017185c3a6ac7957adefe45559e3072c8dc35abeba835a8cb01a71a15c736911126f27d46a36168ca5ef7dccd4e2886212602b181463e0dd30185c96348f9743a02aca8ec27c0b90dca270";
-		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
-
-		super::crypt_failure_packet(onion_keys[2].shared_secret.as_ref(), &mut onion_error);
-		let hex = "a5d3e8634cfe78b2307d87c6d90be6fe7855b4f2cc9b1dfb19e92e4b79103f61ff9ac25f412ddfb7466e74f81b3e545563cdd8f5524dae873de61d7bdfccd496af2584930d2b566b4f8d3881f8c043df92224f38cf094cfc09d92655989531524593ec6d6caec1863bdfaa79229b5020acc034cd6deeea1021c50586947b9b8e6faa83b81fbfa6133c0af5d6b07c017f7158fa94f0d206baf12dda6b68f785b773b360fd0497e16cc402d779c8d48d0fa6315536ef0660f3f4e1865f5b38ea49c7da4fd959de4e83ff3ab686f059a45c65ba2af4a6a79166aa0f496bf04d06987b6d2ea205bdb0d347718b9aeff5b61dfff344993a275b79717cd815b6ad4c0beb568c4ac9c36ff1c315ec1119a1993c4b61e6eaa0375e0aaf738ac691abd3263bf937e3";
-		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
-
-		super::crypt_failure_packet(onion_keys[1].shared_secret.as_ref(), &mut onion_error);
-		let hex = "aac3200c4968f56b21f53e5e374e3a2383ad2b1b6501bbcc45abc31e59b26881b7dfadbb56ec8dae8857add94e6702fb4c3a4de22e2e669e1ed926b04447fc73034bb730f4932acd62727b75348a648a1128744657ca6a4e713b9b646c3ca66cac02cdab44dd3439890ef3aaf61708714f7375349b8da541b2548d452d84de7084bb95b3ac2345201d624d31f4d52078aa0fa05a88b4e20202bd2b86ac5b52919ea305a8949de95e935eed0319cf3cf19ebea61d76ba92532497fcdc9411d06bcd4275094d0a4a3c5d3a945e43305a5a9256e333e1f64dbca5fcd4e03a39b9012d197506e06f29339dfee3331995b21615337ae060233d39befea925cc262873e0530408e6990f1cbd233a150ef7b004ff6166c70c68d9f8c853c1abca640b8660db2921";
-		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
-
-		super::crypt_failure_packet(onion_keys[0].shared_secret.as_ref(), &mut onion_error);
-		let hex = "9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d";
-		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
 
 		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
+
+		super::crypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &mut onion_error);
+		EXPECTED_MESSAGES[0].assert_eq(&onion_error);
+
+		let mut mutated = false;
+		let mutate_packet = |packet: &mut OnionErrorPacket, mutated_index| {
+			let data_len = packet.data.len();
+			if mutated_index < data_len {
+				// Mutate legacy failure message.
+				packet.data[mutated_index] ^= 1;
+			} else if mutated_index < data_len + HOLD_TIME_LEN * MAX_HOPS {
+				// Mutate hold times.
+				packet.attribution_data.as_mut().unwrap().hold_times[mutated_index - data_len] ^= 1;
+			} else {
+				// Mutate HMACs.
+				packet.attribution_data.as_mut().unwrap().hmacs
+					[mutated_index - data_len - HOLD_TIME_LEN * MAX_HOPS] ^= 1;
+			}
+		};
+
+		if let Some(Mutation { node, index }) = mutation {
+			if node == 4 {
+				mutate_packet(&mut onion_error, index);
+				mutated = true;
+			}
+		}
+
+		for idx in (0..4).rev() {
+			let shared_secret = onion_keys[idx].shared_secret.as_ref();
+			let hold_time = (5 - idx) as u32;
+			process_failure_packet(&mut onion_error, shared_secret, hold_time);
+			super::crypt_failure_packet(shared_secret, &mut onion_error);
+
+			if let Some(Mutation { node, index }) = mutation {
+				if node == idx {
+					mutate_packet(&mut onion_error, index);
+					mutated = true;
+				}
+			}
+
+			if !mutated {
+				let expected_messages = &EXPECTED_MESSAGES[4 - idx];
+				expected_messages.assert_eq(&onion_error);
+			}
+		}
+
 		let ctx_full = Secp256k1::new();
 		let path = build_test_path();
 		let htlc_source = HTLCSource::OutboundRoute {
@@ -2547,10 +2900,7 @@ mod tests {
 			payment_id: PaymentId([1; 32]),
 		};
 
-		// Assert that the original failure can be retrieved and that all hmacs check out.
-		let decrypted_failure =
-			process_onion_failure(&ctx_full, &logger, &htlc_source, onion_error);
-		assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
+		process_onion_failure(&ctx_full, &logger, &htlc_source, onion_error)
 	}
 
 	fn build_trampoline_test_path() -> Path {
@@ -2682,6 +3032,7 @@ mod tests {
 					outer_onion_keys[0].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					0,
 					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
 
@@ -2702,8 +3053,10 @@ mod tests {
 					outer_onion_keys[1].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					0,
 					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
+				trampoline_outer_hop_error_packet.attribution_data = None;
 
 				crypt_failure_packet(
 					outer_onion_keys[1].shared_secret.as_ref(),
@@ -2731,8 +3084,10 @@ mod tests {
 					trampoline_onion_keys[0].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					0,
 					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
+				trampoline_inner_hop_error_packet.attribution_data = None;
 
 				crypt_failure_packet(
 					trampoline_onion_keys[0].shared_secret.as_ref(),
@@ -2765,8 +3120,10 @@ mod tests {
 					trampoline_onion_keys[1].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					0,
 					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
+				trampoline_second_hop_error_packet.attribution_data = None;
 
 				crypt_failure_packet(
 					trampoline_onion_keys[1].shared_secret.as_ref(),
@@ -2803,18 +3160,13 @@ mod tests {
 	fn test_non_attributable_failure_packet_onion() {
 		// Create a failure packet with bogus data.
 		let packet = vec![1u8; 292];
-		let onion_error_packet = OnionErrorPacket { data: packet, attribution_data: None };
+		let onion_error_packet =
+			OnionErrorPacket { data: packet, attribution_data: Some(AttributionData::new()) };
 
-		// In the current protocol, it is unfortunately not possible to identify the failure source.
+		// With attributable failures, it should still be possible to identify the failing node.
 		let logger: TestLogger = TestLogger::new();
 		let decrypted_failure = test_failure_attribution(&logger, onion_error_packet);
-		assert_eq!(decrypted_failure.short_channel_id, None);
-
-		logger.assert_log_contains(
-			"lightning::ln::onion_utils",
-			"Non-attributable failure encountered",
-			1,
-		);
+		assert_eq!(decrypted_failure.short_channel_id, Some(0));
 	}
 
 	#[test]
@@ -2832,8 +3184,15 @@ mod tests {
 		let hmac = Hmac::from_engine(hmac).to_byte_array();
 		packet[..32].copy_from_slice(&hmac);
 
-		let mut onion_error_packet =
-			OnionErrorPacket { data: packet.to_vec(), attribution_data: None };
+		let mut onion_error_packet = OnionErrorPacket {
+			data: packet.to_vec(),
+			attribution_data: Some(AttributionData::new()),
+		};
+		onion_error_packet
+			.attribution_data
+			.as_mut()
+			.unwrap()
+			.add_hmacs(shared_secret, &onion_error_packet.data);
 		crypt_failure_packet(shared_secret, &mut onion_error_packet);
 
 		// For the unreadable failure, it is still expected that the failing channel can be identified.
@@ -2859,8 +3218,15 @@ mod tests {
 		hmac.input(&packet.encode()[32..]);
 		packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 
-		let mut onion_error_packet =
-			OnionErrorPacket { data: packet.encode(), attribution_data: None };
+		let mut onion_error_packet = OnionErrorPacket {
+			data: packet.encode(),
+			attribution_data: Some(AttributionData::new()),
+		};
+		onion_error_packet
+			.attribution_data
+			.as_mut()
+			.unwrap()
+			.add_hmacs(shared_secret, &onion_error_packet.data);
 		crypt_failure_packet(shared_secret, &mut onion_error_packet);
 
 		let logger = TestLogger::new();
@@ -2942,6 +3308,7 @@ mod tests {
 			&shared_secret,
 			0x2002,
 			&failure_data,
+			0,
 			DEFAULT_MIN_FAILURE_PACKET_LEN,
 		);
 
@@ -2949,10 +3316,7 @@ mod tests {
 			channel_id: ChannelId([0; 32]),
 			htlc_id: 0,
 			reason: onion_error.data,
-			attribution_data: Some(AttributionData {
-				hold_times: [0; MAX_HOPS * HOLD_TIME_LEN],
-				hmacs: [0; HMAC_LEN * HMAC_COUNT],
-			}),
+			attribution_data: onion_error.attribution_data,
 		};
 
 		let mut buffer = Vec::new();
