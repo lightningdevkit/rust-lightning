@@ -49,7 +49,7 @@ use crate::ln::chan_utils::{
 	ClosingTransaction, commit_tx_fee_sat,
 };
 use crate::ln::chan_utils;
-use crate::ln::onion_utils::{HTLCFailReason};
+use crate::ln::onion_utils::{HTLCFailReason, ATTRIBUTION_DATA_LEN};
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator, fee_for_weight};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
@@ -67,8 +67,11 @@ use crate::util::scid_utils::scid_from_parts;
 
 use crate::io;
 use crate::prelude::*;
+use core::time::Duration;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
+#[cfg(feature = "std")]
+use std::time::SystemTime;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
 use crate::sign::type_resolver::ChannelSignerType;
@@ -322,6 +325,7 @@ struct OutboundHTLCOutput {
 	source: HTLCSource,
 	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
+	timestamp: Option<Duration>,
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
@@ -4856,7 +4860,7 @@ trait FailHTLCContents {
 impl FailHTLCContents for msgs::OnionErrorPacket {
 	type Message = msgs::UpdateFailHTLC;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
-		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self.data }
+		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self.data, attribution_data: self.attribution_data }
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
@@ -6034,10 +6038,16 @@ impl<SP: Deref> FundedChannel<SP> where
 					false
 				} else { true }
 			});
+			let now = duration_since_epoch();
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
 					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", &htlc.payment_hash);
-					if let OutboundHTLCOutcome::Failure(reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
+					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
+						if let (Some(timestamp), Some(now)) = (htlc.timestamp, now) {
+							let hold_time = u32::try_from((now - timestamp).as_millis()).unwrap_or(u32::MAX);
+							reason.set_hold_time(hold_time);
+						}
+
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
 						finalized_claimed_htlcs.push(htlc.source.clone());
@@ -6779,6 +6789,7 @@ impl<SP: Deref> FundedChannel<SP> where
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
 							reason: err_packet.data.clone(),
+							attribution_data: err_packet.attribution_data,
 						});
 					},
 					&InboundHTLCRemovalReason::FailMalformed((ref sha256_of_onion, ref failure_code)) => {
@@ -8471,6 +8482,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Ok(None);
 		}
 
+		let timestamp = duration_since_epoch();
 		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.context.next_holder_htlc_id,
 			amount_msat,
@@ -8480,6 +8492,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			source,
 			blinding_point,
 			skimmed_fee_msat,
+			timestamp,
 		});
 
 		let res = msgs::UpdateAddHTLC {
@@ -10037,6 +10050,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				dropped_inbound_htlcs += 1;
 			}
 		}
+		let mut removed_htlc_failure_attribution_data: Vec<&Option<[u8; ATTRIBUTION_DATA_LEN]>> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
@@ -10062,9 +10076,10 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
 					match removal_reason {
-						InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket { data }) => {
+						InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket { data, attribution_data }) => {
 							0u8.write(writer)?;
 							data.write(writer)?;
+							removed_htlc_failure_attribution_data.push(&attribution_data);
 						},
 						InboundHTLCRemovalReason::FailMalformed((hash, code)) => {
 							1u8.write(writer)?;
@@ -10126,10 +10141,11 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 
 		let mut holding_cell_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut holding_cell_blinding_points: Vec<Option<PublicKey>> = Vec::new();
+		let mut holding_cell_failure_attribution_data: Vec<(u32, [u8; ATTRIBUTION_DATA_LEN])> = Vec::new();
 		// Vec of (htlc_id, failure_code, sha256_of_onion)
 		let mut malformed_htlcs: Vec<(u64, u16, [u8; 32])> = Vec::new();
 		(self.context.holding_cell_htlc_updates.len() as u64).write(writer)?;
-		for update in self.context.holding_cell_htlc_updates.iter() {
+		for (i, update) in self.context.holding_cell_htlc_updates.iter().enumerate() {
 			match update {
 				&HTLCUpdateAwaitingACK::AddHTLC {
 					ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
@@ -10154,6 +10170,13 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
 					err_packet.data.write(writer)?;
+
+					// Store the attribution data for later writing. Include the holding cell htlc update index because
+					// FailMalformedHTLC is stored with the same type 2 and we wouldn't be able to distinguish the two
+					// when reading back in.
+					if let Some(attribution_data ) = err_packet.attribution_data {
+						holding_cell_failure_attribution_data.push((i as u32, attribution_data));
+					}
 				}
 				&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 					htlc_id, failure_code, sha256_of_onion
@@ -10337,6 +10360,8 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
+			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -10414,6 +10439,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 						let reason = match <u8 as Readable>::read(reader)? {
 							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
 								data: Readable::read(reader)?,
+								attribution_data: None,
 							}),
 							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
 							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
@@ -10454,6 +10480,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				},
 				skimmed_fee_msat: None,
 				blinding_point: None,
+				timestamp: None,
 			});
 		}
 
@@ -10478,6 +10505,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 					htlc_id: Readable::read(reader)?,
 					err_packet: OnionErrorPacket {
 						data: Readable::read(reader)?,
+						attribution_data: None,
 					},
 				},
 				_ => return Err(DecodeError::InvalidValue),
@@ -10621,6 +10649,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
+		let mut removed_htlc_failure_attribution_data: Option<Vec<Option<[u8; ATTRIBUTION_DATA_LEN]>>> = None;
+		let mut holding_cell_failure_attribution_data: Option<Vec<(u32, [u8; ATTRIBUTION_DATA_LEN])>> = None;
+
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
@@ -10663,6 +10694,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(55, removed_htlc_failure_attribution_data, optional_vec),
+			(57, holding_cell_failure_attribution_data, optional_vec),
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -10742,6 +10775,38 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			}
 			// We expect all blinding points to be consumed above
 			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
+		}
+
+		if let Some(attribution_datas) = removed_htlc_failure_attribution_data {
+			let mut removed_htlc_relay_failures =
+				pending_inbound_htlcs.iter_mut().filter_map(|status|
+					if let InboundHTLCState::LocalRemoved(ref mut reason) = &mut status.state {
+						if let InboundHTLCRemovalReason::FailRelay(ref mut packet) = reason {
+							Some(&mut packet.attribution_data)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				);
+
+			for attribution_data in attribution_datas {
+				*removed_htlc_relay_failures.next().ok_or(DecodeError::InvalidValue)? = attribution_data;
+			}
+			if removed_htlc_relay_failures.next().is_some() { return Err(DecodeError::InvalidValue); }
+		}
+
+		if let Some(attribution_datas) = holding_cell_failure_attribution_data {
+			for (i, attribution_data) in attribution_datas {
+				let update = holding_cell_htlc_updates.get_mut(i as usize).ok_or(DecodeError::InvalidValue)?;
+
+				if let HTLCUpdateAwaitingACK::FailHTLC { htlc_id: _, ref mut err_packet } = update {
+					err_packet.attribution_data = Some(attribution_data);
+				} else {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
 		}
 
 		if let Some(malformed_htlcs) = malformed_htlcs {
@@ -10932,6 +10997,18 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 	}
 }
 
+fn duration_since_epoch() -> Option<Duration> {
+	#[cfg(not(feature = "std"))]
+	let now = None;
+
+	#[cfg(feature = "std")]
+	let now = Some(std::time::SystemTime::now()
+		.duration_since(std::time::SystemTime::UNIX_EPOCH)
+		.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH"));
+
+	now
+}
+
 #[cfg(test)]
 mod tests {
 	use std::cmp;
@@ -10941,7 +11018,7 @@ mod tests {
 	use bitcoin::transaction::{Transaction, TxOut, Version};
 	use bitcoin::opcodes;
 	use bitcoin::network::Network;
-	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
+	use crate::ln::onion_utils::{ATTRIBUTION_DATA_LEN, INVALID_ONION_BLINDING};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
@@ -11162,6 +11239,7 @@ mod tests {
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			timestamp: None,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -11546,6 +11624,7 @@ mod tests {
 			source: dummy_htlc_source.clone(),
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			timestamp: None,
 		};
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
@@ -11577,7 +11656,7 @@ mod tests {
 			htlc_id: 0,
 		};
 		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
-			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42] }
+			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: Some([1; ATTRIBUTION_DATA_LEN]) }
 		};
 		let dummy_holding_cell_malformed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailMalformedHTLC {
 			htlc_id, failure_code: INVALID_ONION_BLINDING, sha256_of_onion: [0; 32],

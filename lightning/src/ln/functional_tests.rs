@@ -17,6 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE};
 use crate::chain::transaction::OutPoint;
+use crate::ln::onion_utils::ATTRIBUTION_DATA_LEN;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
 use crate::events::bump_transaction::WalletSource;
 use crate::events::{Event, FundingInfo, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
@@ -7058,6 +7059,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 		channel_id: chan.2,
 		htlc_id: 0,
 		reason: Vec::new(),
+		attribution_data: Some([0; ATTRIBUTION_DATA_LEN])
 	};
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_msg);
