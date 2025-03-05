@@ -23,7 +23,6 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
-use crate::offers::OfferInvoice;
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -956,7 +955,7 @@ pub enum Event {
 		/// payment hash. A third party can verify that the payment was made by
 		/// showing the invoice and confirming that the payment hash matches
 		/// the hash of the payment preimage.
-		bolt12_invoice: Option<OfferInvoice>,
+		bolt12_invoice: Option<PaidInvoice>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
@@ -2752,3 +2751,27 @@ impl<T: EventHandler> EventHandler for Arc<T> {
 		self.deref().handle_event(event)
 	}
 }
+
+/// Wrapper time to move the bolt12 invoice and the static
+/// invoice across the same event as a unique type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaidInvoice {
+	/// Bolt12 invoice
+	Bolt12Invoice(crate::offers::invoice::Bolt12Invoice),
+	#[cfg(async_payments)]
+	/// Static invoice
+	StaticInvoice(crate::offers::static_invoice::StaticInvoice),
+ }
+
+ #[cfg(not(async_payments))]
+impl_writeable_tlv_based_enum_legacy!(PaidInvoice,
+	;
+	(0, Bolt12Invoice),
+);
+
+#[cfg(async_payments)]
+impl_writeable_tlv_based_enum_legacy!(PaidInvoice,
+	;
+	(0, Bolt12Invoice),
+	(2, StaticInvoice)
+);

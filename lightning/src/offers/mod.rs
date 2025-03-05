@@ -29,30 +29,3 @@ pub(crate) mod signer;
 pub mod static_invoice;
 #[cfg(test)]
 pub(crate) mod test_utils;
-
-/// Wrapper time to move the bolt12 invoice and the static invoice across the same event as a unique
-/// type.
-// P.S: `OfferInvoice` is confusing, offer is containing the info for asking an invoice :) but I will leave
-// this up to the reviewer that I am sure that will find a better name!
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum OfferInvoice {
-	/// Bolt12 invoice
-	Bolt12Invoice(invoice::Bolt12Invoice),
-	#[cfg(async_payments)]
-	/// Static invoice
-	StaticInvoice(static_invoice::StaticInvoice),
- }
-
-// FIXME(vincenzopalazzo): I do not think there is a way (easy and trivial) that adds cfg to the macro, so
-// when we remove the cfg will be removed we can merge these two macro in two.
-impl_writeable_tlv_based_enum_legacy!(OfferInvoice,
-	;
-	(0, Bolt12Invoice),
-);
-
-#[cfg(async_payments)]
-impl_writeable_tlv_based_enum_legacy!(OfferInvoice,
-	;
-	(0, Bolt12Invoice),
-	(2, StaticInvoice)
-);
