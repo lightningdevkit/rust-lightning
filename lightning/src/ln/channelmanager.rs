@@ -12014,6 +12014,12 @@ where
 	}
 
 	fn handle_open_channel_v2(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannelV2) {
+		if !self.init_features().supports_dual_fund() {
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				msg.common_fields.temporary_channel_id.clone())), counterparty_node_id);
+			return;
+		}
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
@@ -12934,7 +12940,9 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
-	features.set_dual_fund_optional();
+	if config.enable_dual_funded_channels {
+		features.set_dual_fund_optional();
+	}
 	// Only signal quiescence support in tests for now, as we don't yet support any
 	// quiescent-dependent protocols (e.g., splicing).
 	#[cfg(any(test, fuzzing))]
