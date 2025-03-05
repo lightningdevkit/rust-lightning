@@ -874,6 +874,11 @@ impl InvoiceRequest {
 		InvoiceWithExplicitSigningPubkeyBuilder
 	);
 	invoice_request_verify_method!(self, &Self);
+
+	#[allow(unused)] // TODO: remove this once we remove the `async_payments` cfg flag
+	pub(super) fn bytes(&self) -> &Vec<u8> {
+		&self.bytes
+	}
 }
 
 impl InvoiceRequest {

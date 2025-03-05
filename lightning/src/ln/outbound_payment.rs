@@ -93,6 +93,7 @@ pub(crate) enum PendingOutboundPayment {
 		retry_strategy: Retry,
 		route_params: RouteParameters,
 		invoice_request: InvoiceRequest,
+		static_invoice: StaticInvoice,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -1160,6 +1161,7 @@ impl OutboundPayments {
 							.take()
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 							.invoice_request,
+						static_invoice: invoice.clone(),
 					};
 					return Ok(())
 				},
@@ -1188,22 +1190,22 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let (payment_hash, keysend_preimage, route_params, retry_strategy, invoice_request) =
+		let (payment_hash, keysend_preimage, route_params, retry_strategy, invoice_request, invoice) =
 			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 				hash_map::Entry::Occupied(entry) => match entry.get() {
 					PendingOutboundPayment::StaticInvoiceReceived {
-						payment_hash, route_params, retry_strategy, keysend_preimage, invoice_request, ..
+						payment_hash, route_params, retry_strategy, keysend_preimage, invoice_request, static_invoice, ..
 					} => {
 						(*payment_hash, *keysend_preimage, route_params.clone(), *retry_strategy,
-						 invoice_request.clone())
+						 invoice_request.clone(), static_invoice.clone())
 					},
 					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 				},
 				hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 			};
-
+		let invoice = PaidInvoice::StaticInvoice(invoice.clone());
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, Some(keysend_preimage), Some(&invoice_request), None, route_params,
+			payment_id, payment_hash, Some(keysend_preimage), Some(&invoice_request), Some(&invoice), route_params,
 			retry_strategy, router, first_hops, inflight_htlcs, entropy_source, node_signer,
 			node_id_lookup, secp_ctx, best_block_height, logger, pending_events, send_payment_along_path
 		)
@@ -2527,6 +2529,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(4, retry_strategy, required),
 		(6, route_params, required),
 		(8, invoice_request, required),
+		(10, static_invoice, required),
 	},
 	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because
 	// no HTLCs are in-flight.
@@ -2558,6 +2561,10 @@ mod tests {
 
 	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
+	use crate::offers::static_invoice::{StaticInvoiceBuilder, StaticInvoice};
+	use crate::blinded_path::message::BlindedMessagePath;
+	use crate::ln::outbound_payment::tests::test_utils::pubkey;
+	use crate::blinded_path::BlindedHop;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -3135,6 +3142,46 @@ mod tests {
 			.unwrap()
 	}
 
+	fn blinded_path() -> BlindedMessagePath {
+		BlindedMessagePath::from_raw(
+			pubkey(40),
+			pubkey(41),
+			vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
+			],
+		)
+	}
+
+	// FIXME(vincenzopalazzo): This function is duplicated with the one in static_invoive.rs
+	fn dummy_static_invoice() -> StaticInvoice {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
+
+		StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		.unwrap()
+	}
+
 	#[test]
 	fn time_out_unreleased_async_payments() {
 		let pending_events = Mutex::new(VecDeque::new());
@@ -3157,6 +3204,7 @@ mod tests {
 			retry_strategy: Retry::Attempts(0),
 			route_params,
 			invoice_request: dummy_invoice_request(),
+			static_invoice: dummy_static_invoice(),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
@@ -3204,6 +3252,7 @@ mod tests {
 			retry_strategy: Retry::Attempts(0),
 			route_params,
 			invoice_request: dummy_invoice_request(),
+			static_invoice: dummy_static_invoice(),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
