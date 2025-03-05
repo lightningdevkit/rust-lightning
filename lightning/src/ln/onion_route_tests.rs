@@ -28,7 +28,7 @@ use crate::ln::msgs::{
 	OutboundOnionPayload, OutboundTrampolinePayload, MessageSendEvent,
 };
 use crate::ln::wire::Encode;
-use crate::util::ser::{Writeable, Writer, BigSize};
+use crate::util::ser::{BigSize, Writeable, Writer};
 use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
@@ -48,6 +48,8 @@ use types::features::{ChannelFeatures, Features, NodeFeatures};
 use crate::blinded_path::BlindedHop;
 use crate::ln::functional_test_utils::*;
 use crate::ln::onion_utils::{construct_trampoline_onion_keys, construct_trampoline_onion_packet};
+
+use super::msgs::OnionErrorPacket;
 
 fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, payment_secret: &PaymentSecret, callback_msg: F1, callback_node: F2, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>, expected_htlc_destination: Option<HTLCDestination>)
 	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
@@ -409,7 +411,7 @@ fn test_onion_failure() {
 		// and tamper returning error message
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), NODE|2, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), NODE|2, &[0;0]);
 	}, ||{}, true, Some(NODE|2), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[0].pubkey, is_permanent: false}), Some(route.paths[0].hops[0].short_channel_id), Some(next_hop_failure.clone()));
 
 	// final node failure
@@ -417,7 +419,7 @@ fn test_onion_failure() {
 		// and tamper returning error message
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[1].shared_secret.as_ref(), NODE|2, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[1].shared_secret.as_ref(), NODE|2, &[0;0]);
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(NODE|2), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[1].pubkey, is_permanent: false}), Some(route.paths[0].hops[1].short_channel_id), None);
@@ -429,14 +431,14 @@ fn test_onion_failure() {
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|NODE|2, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|NODE|2, &[0;0]);
 	}, ||{}, true, Some(PERM|NODE|2), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[0].pubkey, is_permanent: true}), Some(route.paths[0].hops[0].short_channel_id), Some(next_hop_failure.clone()));
 
 	// final node failure
 	run_onion_failure_test_with_fail_intercept("permanent_node_failure", 200, &nodes, &route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[1].shared_secret.as_ref(), PERM|NODE|2, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[1].shared_secret.as_ref(), PERM|NODE|2, &[0;0]);
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|NODE|2), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[1].pubkey, is_permanent: true}), Some(route.paths[0].hops[1].short_channel_id), None);
@@ -448,7 +450,7 @@ fn test_onion_failure() {
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|NODE|3, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|NODE|3, &[0;0]);
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(PERM|NODE|3), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[0].pubkey, is_permanent: true}), Some(route.paths[0].hops[0].short_channel_id), Some(next_hop_failure.clone()));
@@ -457,7 +459,7 @@ fn test_onion_failure() {
 	run_onion_failure_test_with_fail_intercept("required_node_feature_missing", 200, &nodes, &route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[1].shared_secret.as_ref(), PERM|NODE|3, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[1].shared_secret.as_ref(), PERM|NODE|3, &[0;0]);
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|NODE|3), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[1].pubkey, is_permanent: true}), Some(route.paths[0].hops[1].short_channel_id), None);
@@ -487,7 +489,7 @@ fn test_onion_failure() {
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &err_data);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &err_data);
 	}, ||{}, true, Some(UPDATE|7),
 	Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent: false }),
 	Some(short_channel_id), Some(next_hop_failure.clone()));
@@ -499,7 +501,7 @@ fn test_onion_failure() {
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &err_data_without_type);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &err_data_without_type);
 	}, ||{}, true, Some(UPDATE|7),
 	Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent: false }),
 	Some(short_channel_id), Some(next_hop_failure.clone()));
@@ -510,7 +512,7 @@ fn test_onion_failure() {
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|8, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|8, &[0;0]);
 		// short_channel_id from the processing node
 	}, ||{}, true, Some(PERM|8), Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent: true}), Some(short_channel_id), Some(next_hop_failure.clone()));
 
@@ -520,7 +522,7 @@ fn test_onion_failure() {
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|9, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[0].shared_secret.as_ref(), PERM|9, &[0;0]);
 		// short_channel_id from the processing node
 	}, ||{}, true, Some(PERM|9), Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent: true}), Some(short_channel_id), Some(next_hop_failure.clone()));
 
@@ -652,7 +654,7 @@ fn test_onion_failure() {
 		// Tamper returning error message
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[1].shared_secret.as_ref(), 23, &[0;0]);
+		msg.reason = onion_utils::build_failure_packet(onion_keys[1].shared_secret.as_ref(), 23, &[0;0]);
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(23), None, None, None);
@@ -670,8 +672,12 @@ fn test_onion_failure() {
 			let mut hmac = HmacEngine::<Sha256>::new(&um);
 			hmac.input(&decoded_err_packet.encode()[32..]);
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
-			msg.reason = onion_utils::encrypt_failure_packet(
-				&onion_keys[1].shared_secret.as_ref(), &decoded_err_packet.encode()[..])
+			let mut onion_error = OnionErrorPacket {
+				data: decoded_err_packet.encode(),
+			};
+			onion_utils::test_crypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &mut onion_error);
+			msg.reason = onion_error;
 		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), false, None,
 		Some(NetworkUpdate::NodeFailure { node_id: route.paths[0].hops[1].pubkey, is_permanent: true }),
 		Some(channels[1].0.contents.short_channel_id), None);
@@ -693,8 +699,12 @@ fn test_onion_failure() {
 			let mut hmac = HmacEngine::<Sha256>::new(&um);
 			hmac.input(&decoded_err_packet.encode()[32..]);
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
-			msg.reason = onion_utils::encrypt_failure_packet(
-				&onion_keys[0].shared_secret.as_ref(), &decoded_err_packet.encode()[..])
+			let mut onion_error = OnionErrorPacket{
+				data: decoded_err_packet.encode(),
+			};
+			onion_utils::test_crypt_failure_packet(
+				&onion_keys[0].shared_secret.as_ref(), &mut onion_error);
+			msg.reason = onion_error;
 		}, || {}, true, Some(0x1000|7),
 		Some(NetworkUpdate::ChannelFailure {
 			short_channel_id: channels[1].0.contents.short_channel_id,
@@ -717,8 +727,12 @@ fn test_onion_failure() {
 			let mut hmac = HmacEngine::<Sha256>::new(&um);
 			hmac.input(&decoded_err_packet.encode()[32..]);
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
-			msg.reason = onion_utils::encrypt_failure_packet(
-				&onion_keys[1].shared_secret.as_ref(), &decoded_err_packet.encode()[..])
+			let mut onion_error = OnionErrorPacket{
+				data: decoded_err_packet.encode(),
+			};
+			onion_utils::test_crypt_failure_packet(
+				&onion_keys[1].shared_secret.as_ref(), &mut onion_error);
+			msg.reason = onion_error;
 		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), true, Some(0x1000|7),
 		Some(NetworkUpdate::ChannelFailure {
 			short_channel_id: channels[1].0.contents.short_channel_id,
