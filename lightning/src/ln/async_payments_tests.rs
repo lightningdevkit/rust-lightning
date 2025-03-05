@@ -11,7 +11,7 @@ use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::payment::PaymentContext;
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::events::{Event, HTLCDestination, PaidInvoice, PaymentFailureReason};
+use crate::events::{Event, HTLCDestination, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::functional_test_utils::*;
@@ -444,7 +444,7 @@ fn async_receive_flow_success() {
 	let res =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
 	assert!(res.is_some());
-	assert_eq!(res, Some(PaidInvoice::StaticInvoice(static_invoice)));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
 #[cfg_attr(feature = "std", ignore)]

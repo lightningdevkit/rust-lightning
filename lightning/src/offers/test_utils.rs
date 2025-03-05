@@ -12,8 +12,10 @@
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::blinded_path::BlindedHop;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::offers::merkle::TaggedHash;
 use crate::sign::EntropySource;
 use crate::types::features::BlindedHopFeatures;
@@ -22,6 +24,10 @@ use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
+
+use super::nonce::Nonce;
+use super::offer::OfferBuilder;
+use super::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 
 pub(crate) fn fail_sign<T: AsRef<TaggedHash>>(_message: &T) -> Result<Signature, ()> {
 	Err(())
@@ -119,4 +125,43 @@ impl EntropySource for FixedEntropy {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		[42; 32]
 	}
+}
+
+pub fn blinded_path() -> BlindedMessagePath {
+	BlindedMessagePath::from_blinded_path(
+		pubkey(40),
+		pubkey(41),
+		vec![
+			BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+			BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
+		],
+	)
+}
+
+pub fn dummy_static_invoice() -> StaticInvoice {
+	let node_id = recipient_pubkey();
+	let payment_paths = payment_paths();
+	let now = now();
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let entropy = FixedEntropy {};
+	let nonce = Nonce::from_entropy_source(&entropy);
+	let secp_ctx = Secp256k1::new();
+
+	let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		.path(blinded_path())
+		.build()
+		.unwrap();
+
+	StaticInvoiceBuilder::for_offer_using_derived_keys(
+		&offer,
+		payment_paths.clone(),
+		vec![blinded_path()],
+		now,
+		&expanded_key,
+		nonce,
+		&secp_ctx,
+	)
+	.unwrap()
+	.build_and_sign(&secp_ctx)
+	.unwrap()
 }
