@@ -48,20 +48,12 @@ impl EventQueue {
 	}
 
 	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
-		{
-			let mut queue = self.queue.lock().unwrap();
-			if queue.len() < MAX_EVENT_QUEUE_SIZE {
-				queue.push_back(event.into());
-			} else {
-				return;
-			}
+		let mut queue = self.queue.lock().unwrap();
+		if queue.len() < MAX_EVENT_QUEUE_SIZE {
+			queue.push_back(event.into());
+		} else {
+			return;
 		}
-
-		if let Some(waker) = self.waker.lock().unwrap().take() {
-			waker.wake();
-		}
-		#[cfg(feature = "std")]
-		self.condvar.notify_one();
 	}
 
 	pub fn next_event(&self) -> Option<LiquidityEvent> {
