@@ -7,162 +7,21 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Convenient utilities for paying Lightning invoices.
-
-use bitcoin::hashes::Hash;
-use lightning_invoice::Bolt11Invoice;
-
-use crate::ln::channelmanager::RecipientOnionFields;
-use crate::routing::router::{PaymentParameters, RouteParameters};
-use crate::types::payment::PaymentHash;
-
-/// Builds the necessary parameters to pay or pre-flight probe the given variable-amount
-/// (also known as 'zero-amount') [`Bolt11Invoice`] using
-/// [`ChannelManager::send_payment`] or [`ChannelManager::send_preflight_probes`].
-///
-/// Prior to paying, you must ensure that the [`Bolt11Invoice::payment_hash`] is unique and the
-/// same [`PaymentHash`] has never been paid before.
-///
-/// Will always succeed unless the invoice has an amount specified, in which case
-/// [`payment_parameters_from_invoice`] should be used.
-///
-/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-/// [`ChannelManager::send_preflight_probes`]: crate::ln::channelmanager::ChannelManager::send_preflight_probes
-pub fn payment_parameters_from_variable_amount_invoice(
-	invoice: &Bolt11Invoice, amount_msat: u64,
-) -> Result<(PaymentHash, RecipientOnionFields, RouteParameters), ()> {
-	if invoice.amount_milli_satoshis().is_some() {
-		Err(())
-	} else {
-		Ok(params_from_invoice(invoice, amount_msat))
-	}
-}
-
-/// Builds the necessary parameters to pay or pre-flight probe the given [`Bolt11Invoice`] using
-/// [`ChannelManager::send_payment`] or [`ChannelManager::send_preflight_probes`].
-///
-/// Prior to paying, you must ensure that the [`Bolt11Invoice::payment_hash`] is unique and the
-/// same [`PaymentHash`] has never been paid before.
-///
-/// Will always succeed unless the invoice has no amount specified, in which case
-/// [`payment_parameters_from_variable_amount_invoice`] should be used.
-///
-/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-/// [`ChannelManager::send_preflight_probes`]: crate::ln::channelmanager::ChannelManager::send_preflight_probes
-pub fn payment_parameters_from_invoice(
-	invoice: &Bolt11Invoice,
-) -> Result<(PaymentHash, RecipientOnionFields, RouteParameters), ()> {
-	if let Some(amount_msat) = invoice.amount_milli_satoshis() {
-		Ok(params_from_invoice(invoice, amount_msat))
-	} else {
-		Err(())
-	}
-}
-
-fn params_from_invoice(
-	invoice: &Bolt11Invoice, amount_msat: u64,
-) -> (PaymentHash, RecipientOnionFields, RouteParameters) {
-	let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
-
-	let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
-	recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
-
-	let mut payment_params = PaymentParameters::from_node_id(
-		invoice.recover_payee_pub_key(),
-		invoice.min_final_cltv_expiry_delta() as u32,
-	)
-	.with_route_hints(invoice.route_hints())
-	.unwrap();
-	if let Some(expiry) = invoice.expires_at() {
-		payment_params = payment_params.with_expiry_time(expiry.as_secs());
-	}
-	if let Some(features) = invoice.features() {
-		payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
-	}
-
-	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
-	(payment_hash, recipient_onion, route_params)
-}
+//! Tests for verifying the correct end-to-end handling of BOLT11 payments, including metadata propagation.
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use crate::events::Event;
 	use crate::ln::channelmanager::{PaymentId, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::ln::outbound_payment::Bolt11PaymentError;
-	use crate::routing::router::{Payee, RouteParametersConfig};
+	use crate::routing::router::RouteParametersConfig;
 	use crate::sign::{NodeSigner, Recipient};
-	use crate::types::payment::PaymentSecret;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use lightning_invoice::{Currency, InvoiceBuilder};
+	use bitcoin::hashes::Hash;
+	use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder};
 	use std::time::SystemTime;
-
-	#[test]
-	fn invoice_test() {
-		let payment_hash = Sha256::hash(&[0; 32]);
-		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
-		let secp_ctx = Secp256k1::new();
-		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
-
-		let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
-			.description("test".into())
-			.payment_hash(payment_hash)
-			.payment_secret(PaymentSecret([0; 32]))
-			.duration_since_epoch(timestamp)
-			.min_final_cltv_expiry_delta(144)
-			.amount_milli_satoshis(128)
-			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
-			.unwrap();
-
-		assert!(payment_parameters_from_variable_amount_invoice(&invoice, 42).is_err());
-
-		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
-		assert_eq!(&hash.0[..], &payment_hash[..]);
-		assert_eq!(onion.payment_secret, Some(PaymentSecret([0; 32])));
-		assert_eq!(params.final_value_msat, 128);
-		match params.payment_params.payee {
-			Payee::Clear { node_id, .. } => {
-				assert_eq!(node_id, public_key);
-			},
-			_ => panic!(),
-		}
-	}
-
-	#[test]
-	fn zero_value_invoice_test() {
-		let payment_hash = Sha256::hash(&[0; 32]);
-		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
-		let secp_ctx = Secp256k1::new();
-		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
-
-		let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
-			.description("test".into())
-			.payment_hash(payment_hash)
-			.payment_secret(PaymentSecret([0; 32]))
-			.duration_since_epoch(timestamp)
-			.min_final_cltv_expiry_delta(144)
-			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
-			.unwrap();
-
-		assert!(payment_parameters_from_invoice(&invoice).is_err());
-
-		let (hash, onion, params) =
-			payment_parameters_from_variable_amount_invoice(&invoice, 42).unwrap();
-		assert_eq!(&hash.0[..], &payment_hash[..]);
-		assert_eq!(onion.payment_secret, Some(PaymentSecret([0; 32])));
-		assert_eq!(params.final_value_msat, 42);
-		match params.payment_params.payee {
-			Payee::Clear { node_id, .. } => {
-				assert_eq!(node_id, public_key);
-			},
-			_ => panic!(),
-		}
-	}
 
 	#[test]
 	fn payment_metadata_end_to_end_for_invoice_with_amount() {

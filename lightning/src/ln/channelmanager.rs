@@ -2038,9 +2038,6 @@ where
 /// # }
 /// ```
 ///
-/// For paying an invoice, see the [`bolt11_payment`] module with convenience functions for use with
-/// [`send_payment`].
-///
 /// ```
 /// # use bitcoin::hashes::Hash;
 /// # use lightning::events::{Event, EventsProvider};
@@ -2380,7 +2377,6 @@ where
 /// [`create_bolt11_invoice`]: Self::create_bolt11_invoice
 /// [`create_inbound_payment`]: Self::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-/// [`bolt11_payment`]: crate::ln::bolt11_payment
 /// [`claim_funds`]: Self::claim_funds
 /// [`send_payment`]: Self::send_payment
 /// [`offers`]: crate::offers
