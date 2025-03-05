@@ -36,7 +36,7 @@ use crate::ln::interactivetxs::{
 	TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
-use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
+use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::channelmanager::{self, OpenChannelMessage, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
@@ -49,7 +49,7 @@ use crate::ln::chan_utils::{
 	ClosingTransaction, commit_tx_fee_sat,
 };
 use crate::ln::chan_utils;
-use crate::ln::onion_utils::HTLCFailReason;
+use crate::ln::onion_utils::{HTLCFailReason};
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator, fee_for_weight};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
@@ -4856,7 +4856,7 @@ trait FailHTLCContents {
 impl FailHTLCContents for msgs::OnionErrorPacket {
 	type Message = msgs::UpdateFailHTLC;
 	fn to_message(self, htlc_id: u64, channel_id: ChannelId) -> Self::Message {
-		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self }
+		msgs::UpdateFailHTLC { htlc_id, channel_id, reason: self.data }
 	}
 	fn to_inbound_htlc_state(self) -> InboundHTLCState {
 		InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(self))
@@ -6070,7 +6070,7 @@ impl<SP: Deref> FundedChannel<SP> where
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay((&msg).into()));
 												update_fail_htlcs.push(msg)
 											},
 											HTLCFailureMsg::Malformed(msg) => {
@@ -6778,7 +6778,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						update_fail_htlcs.push(msgs::UpdateFailHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
-							reason: err_packet.clone()
+							reason: err_packet.data.clone(),
 						});
 					},
 					&InboundHTLCRemovalReason::FailMalformed((ref sha256_of_onion, ref failure_code)) => {
@@ -9932,11 +9932,6 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 const SERIALIZATION_VERSION: u8 = 4;
 const MIN_SERIALIZATION_VERSION: u8 = 4;
 
-impl_writeable_tlv_based_enum_legacy!(InboundHTLCRemovalReason,;
-	(0, FailRelay),
-	(1, FailMalformed),
-	(2, Fulfill),
-);
 
 impl Writeable for ChannelUpdateStatus {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -10066,7 +10061,20 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				},
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
-					removal_reason.write(writer)?;
+					match removal_reason {
+						InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket { data }) => {
+							0u8.write(writer)?;
+							data.write(writer)?;
+						},
+						InboundHTLCRemovalReason::FailMalformed((hash, code)) => {
+							1u8.write(writer)?;
+							(hash, code).write(writer)?;
+						},
+						InboundHTLCRemovalReason::Fulfill(preimage) => {
+							2u8.write(writer)?;
+							preimage.write(writer)?;
+						},
+					}
 				},
 			}
 		}
@@ -10145,7 +10153,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
-					err_packet.write(writer)?;
+					err_packet.data.write(writer)?;
 				}
 				&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 					htlc_id, failure_code, sha256_of_onion
@@ -10154,10 +10162,9 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					// `::FailHTLC` variant and write the real malformed error as an optional TLV.
 					malformed_htlcs.push((htlc_id, failure_code, sha256_of_onion));
 
-					let dummy_err_packet = msgs::OnionErrorPacket { data: Vec::new() };
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
-					dummy_err_packet.write(writer)?;
+					Vec::<u8>::new().write(writer)?;
 				}
 			}
 		}
@@ -10403,7 +10410,17 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
 					},
 					3 => InboundHTLCState::Committed,
-					4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
+					4 => {
+						let reason = match <u8 as Readable>::read(reader)? {
+							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
+								data: Readable::read(reader)?,
+							}),
+							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
+							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
+							_ => return Err(DecodeError::InvalidValue),
+						};
+						InboundHTLCState::LocalRemoved(reason)
+					},
 					_ => return Err(DecodeError::InvalidValue),
 				},
 			});
@@ -10459,7 +10476,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				},
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
-					err_packet: Readable::read(reader)?,
+					err_packet: OnionErrorPacket {
+						data: Readable::read(reader)?,
+					},
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			});
