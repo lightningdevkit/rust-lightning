@@ -22,7 +22,7 @@ use bitcoin::{BlockHash, Script, Transaction, Txid};
 
 use std::collections::HashSet;
 use std::ops::Deref;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Synchronizes LDK with a given Electrum server.
@@ -43,7 +43,7 @@ where
 {
 	sync_state: Mutex<SyncState>,
 	queue: Mutex<FilterQueue>,
-	client: ElectrumClient,
+	client: Arc<ElectrumClient>,
 	logger: L,
 }
 
@@ -53,10 +53,10 @@ where
 {
 	/// Returns a new [`ElectrumSyncClient`] object.
 	pub fn new(server_url: String, logger: L) -> Result<Self, TxSyncError> {
-		let client = ElectrumClient::new(&server_url).map_err(|e| {
+		let client = Arc::new(ElectrumClient::new(&server_url).map_err(|e| {
 			log_error!(logger, "Failed to connect to electrum server '{}': {}", server_url, e);
 			e
-		})?;
+		})?);
 
 		Self::from_client(client, logger)
 	}
@@ -64,7 +64,7 @@ where
 	/// Returns a new [`ElectrumSyncClient`] object using the given Electrum client.
 	///
 	/// This is not exported to bindings users as the underlying client from BDK is not exported.
-	pub fn from_client(client: ElectrumClient, logger: L) -> Result<Self, TxSyncError> {
+	pub fn from_client(client: Arc<ElectrumClient>, logger: L) -> Result<Self, TxSyncError> {
 		let sync_state = Mutex::new(SyncState::new());
 		let queue = Mutex::new(FilterQueue::new());
 
@@ -489,8 +489,8 @@ where
 	/// Returns a reference to the underlying Electrum client.
 	///
 	/// This is not exported to bindings users as the underlying client from BDK is not exported.
-	pub fn client(&self) -> &ElectrumClient {
-		&self.client
+	pub fn client(&self) -> Arc<ElectrumClient> {
+		Arc::clone(&self.client)
 	}
 }
 
