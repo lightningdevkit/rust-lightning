@@ -94,6 +94,8 @@ pub(crate) enum PendingOutboundPayment {
 		retry_strategy: Retry,
 		route_params: RouteParameters,
 		invoice_request: InvoiceRequest,
+		#[cfg(async_payments)]
+		static_invoice: StaticInvoice,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -1101,6 +1103,7 @@ impl OutboundPayments {
 							.take()
 							.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
 							.invoice_request,
+						static_invoice: invoice.clone(),
 					};
 					return Ok(())
 				},
@@ -1129,22 +1132,22 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let (payment_hash, keysend_preimage, route_params, retry_strategy, invoice_request) =
+		let (payment_hash, keysend_preimage, route_params, retry_strategy, invoice_request, invoice) =
 			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 				hash_map::Entry::Occupied(entry) => match entry.get() {
 					PendingOutboundPayment::StaticInvoiceReceived {
-						payment_hash, route_params, retry_strategy, keysend_preimage, invoice_request, ..
+						payment_hash, route_params, retry_strategy, keysend_preimage, invoice_request, static_invoice, ..
 					} => {
 						(*payment_hash, *keysend_preimage, route_params.clone(), *retry_strategy,
-						 invoice_request.clone())
+						 invoice_request.clone(), static_invoice.clone())
 					},
 					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 				},
 				hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 			};
-
+		let invoice = PaidInvoice::StaticInvoice(invoice.clone());
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, Some(keysend_preimage), Some(&invoice_request), None, route_params,
+			payment_id, payment_hash, Some(keysend_preimage), Some(&invoice_request), Some(&invoice), route_params,
 			retry_strategy, router, first_hops, inflight_htlcs, entropy_source, node_signer,
 			node_id_lookup, secp_ctx, best_block_height, logger, pending_events, send_payment_along_path
 		)
