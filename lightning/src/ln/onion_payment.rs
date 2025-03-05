@@ -407,7 +407,7 @@ where
 	).map_err(|e| {
 		let (err_code, err_data) = match e {
 			HTLCFailureMsg::Malformed(m) => (m.failure_code, Vec::new()),
-			HTLCFailureMsg::Relay(r) => (0x4000 | 22, r.reason.data),
+			HTLCFailureMsg::Relay(r) => (0x4000 | 22, r.reason),
 		};
 		let msg = "Failed to decode update add htlc onion";
 		InboundHTLCErr { msg, err_code, err_data }
@@ -512,11 +512,12 @@ where
 		}
 
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
+		let failure = HTLCFailReason::reason(err_code, data.to_vec())
+			.get_encrypted_failure_packet(&shared_secret, &trampoline_shared_secret);
 		return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
-			reason: HTLCFailReason::reason(err_code, data.to_vec())
-				.get_encrypted_failure_packet(&shared_secret, &trampoline_shared_secret),
+			reason: failure.data,
 		}));
 	};
 

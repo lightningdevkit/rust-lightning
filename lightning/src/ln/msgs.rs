@@ -766,7 +766,7 @@ pub struct UpdateFailHTLC {
 	pub channel_id: ChannelId,
 	/// The HTLC ID
 	pub htlc_id: u64,
-	pub(crate) reason: OnionErrorPacket,
+	pub(crate) reason: Vec<u8>,
 }
 
 /// An [`update_fail_malformed_htlc`] message to be sent to or received from a peer.
@@ -2355,6 +2355,14 @@ pub(crate) struct OnionErrorPacket {
 	pub(crate) data: Vec<u8>,
 }
 
+impl From<UpdateFailHTLC> for OnionErrorPacket {
+	fn from(msg: UpdateFailHTLC) -> Self {
+		OnionErrorPacket {
+			data: msg.reason,
+		}
+	}
+}
+
 impl fmt::Display for DecodeError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
@@ -3000,13 +3008,6 @@ impl_writeable_msg!(PeerStorage, {
 impl_writeable_msg!(PeerStorageRetrieval, {
 	data
 }, {});
-
-// Note that this is written as a part of ChannelManager objects, and thus cannot change its
-// serialization format in a way which assumes we know the total serialized length/message end
-// position.
-impl_writeable!(OnionErrorPacket, {
-	data
-});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
 // serialization format in a way which assumes we know the total serialized length/message end
@@ -3933,7 +3934,7 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket, InboundOnionForwardPayload, InboundOnionReceivePayload};
+	use crate::ln::msgs::{self, FinalOnionHopData, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket, InboundOnionForwardPayload, InboundOnionReceivePayload};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
@@ -4932,13 +4933,10 @@ mod tests {
 
 	#[test]
 	fn encoding_update_fail_htlc() {
-		let reason = OnionErrorPacket {
-			data: [1; 32].to_vec(),
-		};
 		let update_fail_htlc = msgs::UpdateFailHTLC {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
-			reason
+			reason: [1; 32].to_vec()
 		};
 		let encoded_value = update_fail_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();

@@ -1299,7 +1299,14 @@ impl Readable for HTLCFailReason {
 
 impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 	(0, LightningError) => {
-		(0, err, required),
+		(0, data, (legacy, Vec<u8>, |us|
+			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref data, .. } } = us {
+				Some(data)
+			} else {
+				None
+			})
+		),
+		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)? })),
 	},
 	(1, Reason) => {
 		(0, failure_code, required),
@@ -1356,7 +1363,9 @@ impl HTLCFailReason {
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
-		Self(HTLCFailReasonRepr::LightningError { err: msg.reason.clone() })
+		Self(HTLCFailReasonRepr::LightningError {
+			err: OnionErrorPacket { data: msg.reason.clone() },
+		})
 	}
 
 	/// Encrypted a failure packet using a shared secret.
