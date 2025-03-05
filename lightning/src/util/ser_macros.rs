@@ -42,9 +42,24 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
-	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => {
-		$crate::_encode_tlv!($stream, $optional_type, { let value: Option<$fieldty> = $write($($self)?); value }, option);
-	};
+	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr) $(, $self: ident)?) => { {
+		let value: Option<_> = $write($($self)?);
+		#[cfg(debug_assertions)]
+		{
+			// The value we write may be either an Option<$fieldty> or an Option<&$fieldty>.
+			// Either way, it should decode just fine as a $fieldty, so we check that here.
+			// This is useful in that it checks that we aren't accidentally writing, for example,
+			// Option<Option<$fieldty>>.
+			if let Some(v) = &value {
+				let encoded_value = v.encode();
+				let mut read_slice = &encoded_value[..];
+				let _: $fieldty = $crate::util::ser::Readable::read(&mut read_slice)
+					.expect("Failed to read written TLV, check types");
+				assert!(read_slice.is_empty(), "Reading written TLV was short, check types");
+			}
+		}
+		$crate::_encode_tlv!($stream, $optional_type, value, option);
+	} };
 	($stream: expr, $type: expr, $field: expr, optional_vec $(, $self: ident)?) => {
 		if !$field.is_empty() {
 			$crate::_encode_tlv!($stream, $type, $field, required_vec);
