@@ -223,14 +223,8 @@ impl<
 		R: Deref<Target = RapidGossipSync<G, L>>,
 		G: Deref<Target = NetworkGraph<L>>,
 		L: Deref,
-	>
-	GossipSync<
-		&P2PGossipSync<G, &'a (dyn UtxoLookup + Send + Sync), L>,
-		R,
-		G,
-		&'a (dyn UtxoLookup + Send + Sync),
-		L,
-	> where
+	> GossipSync<&P2PGossipSync<G, &'a (dyn UtxoLookup), L>, R, G, &'a (dyn UtxoLookup), L>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::Rapid`] variant.
@@ -242,10 +236,10 @@ impl<
 /// This is not exported to bindings users as the bindings concretize everything and have constructors for us
 impl<'a, L: Deref>
 	GossipSync<
-		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn UtxoLookup + Send + Sync), L>,
+		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn UtxoLookup), L>,
 		&RapidGossipSync<&'a NetworkGraph<L>, L>,
 		&'a NetworkGraph<L>,
-		&'a (dyn UtxoLookup + Send + Sync),
+		&'a (dyn UtxoLookup),
 		L,
 	> where
 	L::Target: Logger,
@@ -271,7 +265,7 @@ where
 
 /// Updates scorer based on event and returns whether an update occurred so we can decide whether
 /// to persist.
-fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
+fn update_scorer<'a, S: 'static + Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
@@ -665,10 +659,10 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger>;
 /// #
 /// # struct Node<
-/// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
-/// #     F: lightning::chain::Filter + Send + Sync + 'static,
-/// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
-/// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
+/// #     B: lightning::chain::chaininterface::BroadcasterInterface + 'static,
+/// #     F: lightning::chain::Filter + 'static,
+/// #     FE: lightning::chain::chaininterface::FeeEstimator + 'static,
+/// #     UL: lightning::routing::utxo::UtxoLookup + 'static,
 /// # > {
 /// #     peer_manager: Arc<PeerManager<B, F, FE, UL>>,
 /// #     event_handler: Arc<EventHandler>,
@@ -683,10 +677,10 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # }
 /// #
 /// # async fn setup_background_processing<
-/// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
-/// #     F: lightning::chain::Filter + Send + Sync + 'static,
-/// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
-/// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
+/// #     B: lightning::chain::chaininterface::BroadcasterInterface + 'static,
+/// #     F: lightning::chain::Filter + 'static,
+/// #     FE: lightning::chain::chaininterface::FeeEstimator + 'static,
+/// #     UL: lightning::routing::utxo::UtxoLookup + 'static,
 /// # >(node: Node<B, F, FE, UL>) {
 ///	let background_persister = Arc::clone(&node.persister);
 ///	let background_event_handler = Arc::clone(&node.event_handler);
@@ -770,7 +764,7 @@ pub async fn process_events_async<
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
 	PM: 'static + Deref,
 	LM: 'static + Deref,
-	S: 'static + Deref<Target = SC> + Send + Sync,
+	S: 'static + Deref<Target = SC> + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
@@ -938,7 +932,7 @@ impl BackgroundProcessor {
 		UL: 'static + Deref,
 		CF: 'static + Deref,
 		T: 'static + Deref,
-		F: 'static + Deref + Send,
+		F: 'static + Deref,
 		G: 'static + Deref<Target = NetworkGraph<L>>,
 		L: 'static + Deref + Send,
 		P: 'static + Deref,
