@@ -11984,6 +11984,12 @@ where
 	}
 
 	fn handle_open_channel_v2(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannelV2) {
+		if !self.default_configuration.enable_dual_funded_channels {
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				msg.common_fields.temporary_channel_id.clone())), counterparty_node_id);
+			return;
+		}
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
