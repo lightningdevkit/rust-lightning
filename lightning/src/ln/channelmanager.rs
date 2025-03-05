@@ -40,7 +40,7 @@ use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, 
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
+use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, MAX_BLOCKS_FOR_CONF, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
@@ -2855,12 +2855,12 @@ pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = HTLC_FAIL_BACK_BUFFER as u16 + 3;
 // force-close on us.
 // In other words, if the next-hop peer fails HTLC LATENCY_GRACE_PERIOD_BLOCKS after our
 // CLTV_CLAIM_BUFFER (because that's how many blocks we allow them after expiry), we'll still have
-// CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY left to get two transactions on chain and the second
+// 2*MAX_BLOCKS_FOR_CONF + ANTI_REORG_DELAY left to get two transactions on chain and the second
 // fully locked in before the peer force-closes on us (LATENCY_GRACE_PERIOD_BLOCKS before the
 // expiry, i.e. assuming the peer force-closes right at the expiry and we're behind by
 // LATENCY_GRACE_PERIOD_BLOCKS).
 const _CHECK_CLTV_EXPIRY_SANITY: () = assert!(
-	MIN_CLTV_EXPIRY_DELTA as u32 >= 2*LATENCY_GRACE_PERIOD_BLOCKS + CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY
+	MIN_CLTV_EXPIRY_DELTA as u32 >= 2*LATENCY_GRACE_PERIOD_BLOCKS + 2*MAX_BLOCKS_FOR_CONF + ANTI_REORG_DELAY
 );
 
 // Check that our MIN_CLTV_EXPIRY_DELTA gives us enough time to get the HTLC preimage back to our
