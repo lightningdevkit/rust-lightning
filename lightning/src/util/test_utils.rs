@@ -21,13 +21,13 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events;
 use crate::events::bump_transaction::{Utxo, WalletSource};
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 use crate::ln::inbound_payment::ExpandedKey;
+use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent};
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
@@ -913,7 +913,7 @@ impl ConnectionTracker {
 }
 
 pub struct TestChannelMessageHandler {
-	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
+	pub pending_events: Mutex<Vec<MessageSendEvent>>,
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
 	pub conn_tracker: ConnectionTracker,
 	chain_hash: ChainHash,
@@ -1041,24 +1041,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
-	fn peer_disconnected(&self, their_node_id: PublicKey) {
-		self.conn_tracker.peer_disconnected(their_node_id)
-	}
-	fn peer_connected(
-		&self, their_node_id: PublicKey, _msg: &msgs::Init, _inbound: bool,
-	) -> Result<(), ()> {
-		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
-		// bother re-generating the expected Init message in all tests.
-		self.conn_tracker.peer_connected(their_node_id)
-	}
 	fn handle_error(&self, _their_node_id: PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
-	}
-	fn provided_node_features(&self) -> NodeFeatures {
-		channelmanager::provided_node_features(&UserConfig::default())
-	}
-	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
-		channelmanager::provided_init_features(&UserConfig::default())
 	}
 
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
@@ -1122,8 +1106,24 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn message_received(&self) {}
 }
 
-impl events::MessageSendEventsProvider for TestChannelMessageHandler {
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+impl msgs::BaseMessageHandler for TestChannelMessageHandler {
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		self.conn_tracker.peer_disconnected(their_node_id)
+	}
+	fn peer_connected(
+		&self, their_node_id: PublicKey, _msg: &msgs::Init, _inbound: bool,
+	) -> Result<(), ()> {
+		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
+		// bother re-generating the expected Init message in all tests.
+		self.conn_tracker.peer_connected(their_node_id)
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		channelmanager::provided_node_features(&UserConfig::default())
+	}
+	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
+		channelmanager::provided_init_features(&UserConfig::default())
+	}
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		Self::MESSAGE_FETCH_COUNTER.with(|val| val.fetch_add(1, Ordering::AcqRel));
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
@@ -1186,7 +1186,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 pub struct TestRoutingMessageHandler {
 	pub chan_upds_recvd: AtomicUsize,
 	pub chan_anns_recvd: AtomicUsize,
-	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
+	pub pending_events: Mutex<Vec<MessageSendEvent>>,
 	pub request_full_sync: AtomicBool,
 	pub announcement_available_for_sync: AtomicBool,
 	pub conn_tracker: ConnectionTracker,
@@ -1244,46 +1244,6 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		None
 	}
 
-	fn peer_connected(
-		&self, their_node_id: PublicKey, init_msg: &msgs::Init, _inbound: bool,
-	) -> Result<(), ()> {
-		if !init_msg.features.supports_gossip_queries() {
-			return Ok(());
-		}
-
-		#[allow(unused_mut, unused_assignments)]
-		let mut gossip_start_time = 0;
-		#[cfg(feature = "std")]
-		{
-			use std::time::{SystemTime, UNIX_EPOCH};
-			gossip_start_time = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs();
-			if self.request_full_sync.load(Ordering::Acquire) {
-				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
-			} else {
-				gossip_start_time -= 60 * 60; // an hour ago
-			}
-		}
-
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::MessageSendEvent::SendGossipTimestampFilter {
-			node_id: their_node_id.clone(),
-			msg: msgs::GossipTimestampFilter {
-				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-				first_timestamp: gossip_start_time as u32,
-				timestamp_range: u32::max_value(),
-			},
-		});
-
-		self.conn_tracker.peer_connected(their_node_id)
-	}
-
-	fn peer_disconnected(&self, their_node_id: PublicKey) {
-		self.conn_tracker.peer_disconnected(their_node_id);
-	}
-
 	fn handle_reply_channel_range(
 		&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange,
 	) -> Result<(), msgs::LightningError> {
@@ -1308,6 +1268,52 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Ok(())
 	}
 
+	fn processing_queue_high(&self) -> bool {
+		false
+	}
+}
+
+impl BaseMessageHandler for TestRoutingMessageHandler {
+	fn peer_connected(
+		&self, their_node_id: PublicKey, init_msg: &msgs::Init, _inbound: bool,
+	) -> Result<(), ()> {
+		if !init_msg.features.supports_gossip_queries() {
+			return Ok(());
+		}
+
+		#[allow(unused_mut, unused_assignments)]
+		let mut gossip_start_time = 0;
+		#[cfg(feature = "std")]
+		{
+			use std::time::{SystemTime, UNIX_EPOCH};
+			gossip_start_time = SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("Time must be > 1970")
+				.as_secs();
+			if self.request_full_sync.load(Ordering::Acquire) {
+				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
+			} else {
+				gossip_start_time -= 60 * 60; // an hour ago
+			}
+		}
+
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(MessageSendEvent::SendGossipTimestampFilter {
+			node_id: their_node_id.clone(),
+			msg: msgs::GossipTimestampFilter {
+				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+				first_timestamp: gossip_start_time as u32,
+				timestamp_range: u32::max_value(),
+			},
+		});
+
+		self.conn_tracker.peer_connected(their_node_id)
+	}
+
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		self.conn_tracker.peer_disconnected(their_node_id);
+	}
+
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
 		features.set_gossip_queries_optional();
@@ -1320,13 +1326,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		features
 	}
 
-	fn processing_queue_high(&self) -> bool {
-		false
-	}
-}
-
-impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		core::mem::swap(&mut ret, &mut pending_events);

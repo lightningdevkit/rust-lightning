@@ -15,7 +15,7 @@ use lightning::chain::{chainmonitor, BestBlock, Confirm};
 use lightning::ln::channelmanager;
 use lightning::ln::channelmanager::ChainParameters;
 use lightning::ln::functional_test_utils::*;
-use lightning::ln::msgs::{ChannelMessageHandler, Init};
+use lightning::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init};
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };

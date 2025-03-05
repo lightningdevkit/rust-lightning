@@ -1063,8 +1063,9 @@ impl From<u64> for UpdateName {
 mod tests {
 	use super::*;
 	use crate::chain::ChannelMonitorUpdateStatus;
-	use crate::events::{ClosureReason, MessageSendEventsProvider};
+	use crate::events::ClosureReason;
 	use crate::ln::functional_test_utils::*;
+	use crate::ln::msgs::BaseMessageHandler;
 	use crate::sync::Arc;
 	use crate::util::test_channel_signer::TestChannelSigner;
 	use crate::util::test_utils::{self, TestLogger, TestStore};

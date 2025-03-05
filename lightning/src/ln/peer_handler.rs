@@ -20,11 +20,10 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::blinded_path::message::{AsyncPaymentsContext, DNSResolverContext, OffersContext};
 use crate::sign::{NodeSigner, Recipient};
-use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
 use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, Init, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, LightningError, SocketAddress, MessageSendEvent, OnionMessageHandler, RoutingMessageHandler};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
@@ -110,7 +109,14 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
 /// or doing any processing. You can provide one of these as the route_handler in a MessageHandler.
 pub struct IgnoringMessageHandler{}
-impl MessageSendEventsProvider for IgnoringMessageHandler {
+impl BaseMessageHandler for IgnoringMessageHandler {
+	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
+	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
+
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> { Vec::new() }
 }
 impl RoutingMessageHandler for IgnoringMessageHandler {
@@ -120,29 +126,17 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn get_next_channel_announcement(&self, _starting_point: u64) ->
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
 	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> { None }
-	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
-	fn peer_disconnected(&self, _their_node_id: PublicKey) { }
 	fn handle_reply_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_short_channel_ids(&self, _their_node_id: PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
-	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
-	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
-		InitFeatures::empty()
-	}
 	fn processing_queue_high(&self) -> bool { false }
 }
 
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: PublicKey, _msg: &msgs::OnionMessage) {}
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
-	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
-	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
 	fn timer_tick_occurred(&self) {}
-	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
-	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
-		InitFeatures::empty()
-	}
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
@@ -252,7 +246,31 @@ impl ErroringMessageHandler {
 		});
 	}
 }
-impl MessageSendEventsProvider for ErroringMessageHandler {
+impl BaseMessageHandler for ErroringMessageHandler {
+	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
+	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
+		// Set a number of features which various nodes may require to talk to us. It's totally
+		// reasonable to indicate we "support" all kinds of channel features...we just reject all
+		// channels.
+		let mut features = InitFeatures::empty();
+		features.set_data_loss_protect_optional();
+		features.set_upfront_shutdown_script_optional();
+		features.set_variable_length_onion_optional();
+		features.set_static_remote_key_optional();
+		features.set_payment_secret_optional();
+		features.set_basic_mpp_optional();
+		features.set_wumbo_optional();
+		features.set_shutdown_any_segwit_optional();
+		features.set_dual_fund_optional();
+		features.set_channel_type_optional();
+		features.set_scid_privacy_optional();
+		features.set_zero_conf_optional();
+		features.set_route_blinding_optional();
+		features
+	}
+
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut res = Vec::new();
 		mem::swap(&mut res, &mut self.message_queue.lock().unwrap());
@@ -327,32 +345,11 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	}
 	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: PublicKey, _msg: &msgs::ChannelUpdate) {}
+
 	fn handle_peer_storage(&self, _their_node_id: PublicKey, _msg: msgs::PeerStorage) {}
 	fn handle_peer_storage_retrieval(&self, _their_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) {}
-	fn peer_disconnected(&self, _their_node_id: PublicKey) {}
-	fn peer_connected(&self, _their_node_id: PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
+
 	fn handle_error(&self, _their_node_id: PublicKey, _msg: &msgs::ErrorMessage) {}
-	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
-	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
-		// Set a number of features which various nodes may require to talk to us. It's totally
-		// reasonable to indicate we "support" all kinds of channel features...we just reject all
-		// channels.
-		let mut features = InitFeatures::empty();
-		features.set_data_loss_protect_optional();
-		features.set_upfront_shutdown_script_optional();
-		features.set_variable_length_onion_optional();
-		features.set_static_remote_key_optional();
-		features.set_payment_secret_optional();
-		features.set_basic_mpp_optional();
-		features.set_wumbo_optional();
-		features.set_shutdown_any_segwit_optional();
-		features.set_dual_fund_optional();
-		features.set_channel_type_optional();
-		features.set_scid_privacy_optional();
-		features.set_zero_conf_optional();
-		features.set_route_blinding_optional();
-		features
-	}
 
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
 		// We don't enforce any chains upon peer connection for `ErroringMessageHandler` and leave it up
@@ -2130,9 +2127,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			{
 				let peers_lock = self.peers.read().unwrap();
 
-				let chan_events = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
-				let route_events = self.message_handler.route_handler.get_and_clear_pending_msg_events();
-
 				let peers = &*peers_lock;
 				macro_rules! get_peer_for_forwarding {
 					($node_id: expr) => {
@@ -2489,10 +2483,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					Some(())
 				};
+
+				let chan_events = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
 				for event in chan_events {
 					handle_event(event, true);
 				}
+
+				let route_events = self.message_handler.route_handler.get_and_clear_pending_msg_events();
 				for event in route_events {
+					handle_event(event, false);
+				}
+
+				let onion_msg_events = self.message_handler.onion_message_handler.get_and_clear_pending_msg_events();
+				for event in onion_msg_events {
 					handle_event(event, false);
 				}
 
@@ -2746,7 +2749,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	///
 	/// Panics if `addresses` is absurdly large (more than 100).
 	///
-	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
+	/// [`get_and_clear_pending_msg_events`]: BaseMessageHandler::get_and_clear_pending_msg_events
 	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<SocketAddress>) {
 		if addresses.len() > 100 {
 			panic!("More than half the message size was taken up by public addresses!");
@@ -2809,7 +2812,6 @@ mod tests {
 	use super::*;
 
 	use crate::sign::{NodeSigner, Recipient};
-	use crate::events;
 	use crate::io;
 	use crate::ln::types::ChannelId;
 	use crate::types::features::{InitFeatures, NodeFeatures};
@@ -3097,7 +3099,7 @@ mod tests {
 						if peers[0].read_event(&mut fd_a, &b_data).is_err() { break; }
 
 						cfgs[0].chan_handler.pending_events.lock().unwrap()
-							.push(crate::events::MessageSendEvent::SendShutdown {
+							.push(MessageSendEvent::SendShutdown {
 								node_id: peers[1].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
@@ -3105,7 +3107,7 @@ mod tests {
 								},
 							});
 						cfgs[1].chan_handler.pending_events.lock().unwrap()
-							.push(crate::events::MessageSendEvent::SendShutdown {
+							.push(MessageSendEvent::SendShutdown {
 								node_id: peers[0].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
@@ -3203,7 +3205,7 @@ mod tests {
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
-		cfgs[0].chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
+		cfgs[0].chan_handler.pending_events.lock().unwrap().push(MessageSendEvent::HandleError {
 			node_id: their_id,
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		});
@@ -3226,7 +3228,7 @@ mod tests {
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
 		let msg = msgs::Shutdown { channel_id: ChannelId::from_bytes([42; 32]), scriptpubkey: bitcoin::ScriptBuf::new() };
-		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
+		a_chan_handler.pending_events.lock().unwrap().push(MessageSendEvent::SendShutdown {
 			node_id: their_id, msg: msg.clone()
 		});
 		peers[0].message_handler.chan_handler = &a_chan_handler;

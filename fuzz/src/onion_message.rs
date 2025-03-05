@@ -10,7 +10,7 @@ use lightning::blinded_path::message::{
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::inbound_payment::ExpandedKey;
-use lightning::ln::msgs::{self, OnionMessageHandler};
+use lightning::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
@@ -170,7 +170,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	}
 	fn read_custom_message<R: io::Read>(
 		&self, _message_type: u64, buffer: &mut R,
-	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+	) -> Result<Option<Self::CustomMessage>, DecodeError> {
 		let mut buf = Vec::new();
 		buffer.read_to_limit(&mut buf, u64::MAX)?;
 		return Ok(Some(TestCustomMessage {}));

@@ -13,14 +13,14 @@
 use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
-use crate::events::{Event, MessageSendEventsProvider};
+use crate::events::Event;
 use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
-use crate::ln::msgs::OnionMessageHandler;
+use crate::ln::msgs::{BaseMessageHandler, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
