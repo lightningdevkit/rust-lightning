@@ -167,20 +167,17 @@ impl OutboundJITChannelState {
 							)));
 				}
 
-				let opening_fee_msat = if let Some(opening_fee) = compute_opening_fee(
+				let opening_fee_msat = compute_opening_fee(
 					expected_payment_size_msat,
 					opening_fee_params.min_fee_msat,
 					opening_fee_params.proportional.into(),
-				) {
-					opening_fee
-				} else {
-					return Err(ChannelStateError(
-							format!("Could not compute valid opening fee with min_fee_msat = {}, proportional = {}, and expected_payment_size_msat = {}",
-									opening_fee_params.min_fee_msat,
-									opening_fee_params.proportional,
-									expected_payment_size_msat
-							)));
-				};
+				).ok_or(ChannelStateError(
+					format!("Could not compute valid opening fee with min_fee_msat = {}, proportional = {}, and expected_payment_size_msat = {}",
+						opening_fee_params.min_fee_msat,
+						opening_fee_params.proportional,
+						expected_payment_size_msat
+					))
+				)?;
 
 				let amt_to_forward_msat =
 					expected_payment_size_msat.saturating_sub(opening_fee_msat);
