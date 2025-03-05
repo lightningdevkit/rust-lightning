@@ -40,6 +40,7 @@ fn test_v1_splice_in() {
 	let channel_value_sat = 100_000; // same as funding satoshis
 	let push_msat = 0;
 	let channel_reserve_amnt_sat = 1_000;
+	let expect_inputs_in_reverse = true;
 
 	let expected_funded_channel_id =
 		"ae3367da2c13bc1ceb86bf56418f62828f7ce9d6bfb15a46af5ba1f1ed8b124f";
@@ -230,6 +231,7 @@ fn test_v1_splice_in() {
 
 	// Amount being added to the channel through the splice-in
 	let splice_in_sats: u64 = 20000;
+	let post_splice_channel_value = channel_value_sat + splice_in_sats;
 	let funding_feerate_perkw = 1024; // TODO
 	let locktime = 0; // TODO
 
@@ -305,9 +307,51 @@ fn test_v1_splice_in() {
 		assert!(channel.confirmations.unwrap() > 0);
 	}
 
-	let _error_msg = get_err_msg(initiator_node, &acceptor_node.node.get_our_node_id());
+	exp_balance1 += 1000 * splice_in_sats; // increase in balance
 
-	// TODO(splicing): continue with splice transaction negotiation
+	// Negotiate transaction inputs and outputs
+
+	// First input
+	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
+	let exp_value = if expect_inputs_in_reverse { extra_splice_funding_input_sats } else { channel_value_sat };
+	assert_eq!(tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value.to_sat(), exp_value);
+
+	let _res = acceptor_node.node.handle_tx_add_input(initiator_node.node.get_our_node_id(), &tx_add_input_msg);
+	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+
+	let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	// Second input
+	let exp_value = if expect_inputs_in_reverse { channel_value_sat } else { extra_splice_funding_input_sats };
+	let tx_add_input2_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
+	assert_eq!(tx_add_input2_msg.prevtx.as_transaction().output[tx_add_input2_msg.prevtx_out as usize].value.to_sat(), exp_value);
+
+	let _res = acceptor_node.node.handle_tx_add_input(initiator_node.node.get_our_node_id(), &tx_add_input2_msg);
+	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+
+	let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+
+	// TxAddOutput for the splice funding
+	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
+	assert!(tx_add_output_msg.script.is_p2wpkh());
+	assert_eq!(tx_add_output_msg.sats, 14093); // extra_splice_input_sats - splice_in_sats
+
+	let _res = acceptor_node.node.handle_tx_add_output(initiator_node.node.get_our_node_id(), &tx_add_output_msg);
+	let tx_complete_msg = get_event_msg!(&acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+
+	let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	// TxAddOutput for the change output
+	let tx_add_output2_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
+	assert!(tx_add_output2_msg.script.is_p2wsh());
+	assert_eq!(tx_add_output2_msg.sats, post_splice_channel_value);
+
+	let _res = acceptor_node.node.handle_tx_add_output(initiator_node.node.get_our_node_id(), &tx_add_output2_msg);
+	let _tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+
+	// TODO(splicing) This is the last tx_complete, which triggers the commitment flow, which is not yet implemented
+	// let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+
+	// TODO(splicing): Continue with commitment flow, new tx confirmation
+
 
 	// === Close channel, cooperatively
 	initiator_node.node.close_channel(&channel_id2, &acceptor_node.node.get_our_node_id()).unwrap();
