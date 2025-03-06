@@ -2280,8 +2280,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		// Add output for funding tx
 		let mut funding_outputs = Vec::new();
 		let funding_output_value_satoshis = self.funding.get_value_satoshis();
-		let funding_output_script_pubkey = self.context.get_funding_redeemscript().to_p2wsh();
-		let expected_remote_shared_funding_output = if self.context.is_outbound() {
+		let funding_output_script_pubkey = self.funding.get_funding_redeemscript().to_p2wsh();
+		let expected_remote_shared_funding_output = if self.funding.is_outbound() {
 			let tx_out = TxOut {
 				value: Amount::from_sat(funding_output_value_satoshis),
 				script_pubkey: funding_output_script_pubkey,
@@ -2302,7 +2302,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		// Optionally add change output
 		if let Some(change_value) = calculate_change_output_value(
-			self.context.is_outbound(), self.dual_funding_context.our_funding_satoshis,
+			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
 			&funding_inputs_prev_outputs, &funding_outputs,
 			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
 			self.context.holder_dust_limit_satoshis,
@@ -2327,7 +2327,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			counterparty_node_id: self.context.counterparty_node_id,
 			channel_id: self.context.channel_id(),
 			feerate_sat_per_kw: self.dual_funding_context.funding_feerate_sat_per_1000_weight,
-			is_initiator: self.context.is_outbound(),
+			is_initiator: self.funding.is_outbound(),
 			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
@@ -2506,6 +2506,56 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
 }
+
+/*
+impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+	fn dual_funding_context(&self) -> &DualFundingChannelContext {
+		&self.dual_funding_context
+	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
+	fn unfunded_context(&self) -> &UnfundedChannelContext {
+		&self.unfunded_context
+	}
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
+		&mut self.interactive_tx_constructor
+	}
+	fn is_initiator(&self) -> bool {
+		true
+	}
+}
+
+impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+	fn dual_funding_context(&self) -> &DualFundingChannelContext {
+		&self.dual_funding_context
+	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
+	fn unfunded_context(&self) -> &UnfundedChannelContext {
+		&self.unfunded_context
+	}
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
+		&mut self.interactive_tx_constructor
+	}
+	fn is_initiator(&self) -> bool {
+		false
+	}
+}
+*/
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
@@ -4737,38 +4787,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
-
-	/// Get the splice message that can be sent during splice initiation.
-	#[cfg(splicing)]
-	pub fn get_splice_init(&self, our_funding_contribution_satoshis: i64,
-		funding_feerate_perkw: u32, locktime: u32,
-	) -> msgs::SpliceInit {
-		// Reuse the existing funding pubkey, in spite of the channel value changing
-		// (though at this point we don't know the new value yet, due tue the optional counterparty contribution)
-		// Note that channel_keys_id is supposed NOT to change
-		let funding_pubkey = self.get_holder_pubkeys().funding_pubkey.clone();
-		msgs::SpliceInit {
-			channel_id: self.channel_id,
-			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_feerate_perkw,
-			locktime,
-			funding_pubkey,
-			require_confirmed_inputs: None,
-		}
-	}
-
-	/// Get the splice_ack message that can be sent in response to splice initiation.
-	#[cfg(splicing)]
-	pub fn get_splice_ack(&self, our_funding_contribution_satoshis: i64) -> msgs::SpliceAck {
-		// Reuse the existing funding pubkey, in spite of the channel value changing
-		let funding_pubkey = self.get_holder_pubkeys().funding_pubkey;
-		msgs::SpliceAck {
-			channel_id: self.channel_id,
-			funding_contribution_satoshis: our_funding_contribution_satoshis,
-			funding_pubkey,
-			require_confirmed_inputs: None,
-		}
-	}
 }
 
 // Internal utility functions for channels
@@ -4860,7 +4878,6 @@ pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
 	/// The amount in satoshis our counterparty will be contributing to the channel.
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub their_funding_satoshis: Option<u64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
@@ -8578,8 +8595,27 @@ impl<SP: Deref> FundedChannel<SP> where
 			our_funding_inputs: funding_inputs,
 		});
 
-		let msg = self.context.get_splice_init(our_funding_contribution_satoshis, funding_feerate_perkw, locktime);
+		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_perkw, locktime);
 		Ok(msg)
+	}
+
+	/// Get the splice message that can be sent during splice initiation.
+	#[cfg(splicing)]
+	pub fn get_splice_init(&self, our_funding_contribution_satoshis: i64,
+		funding_feerate_perkw: u32, locktime: u32,
+	) -> msgs::SpliceInit {
+		// Reuse the existing funding pubkey, in spite of the channel value changing
+		// (though at this point we don't know the new value yet, due tue the optional counterparty contribution)
+		// Note that channel_keys_id is supposed NOT to change
+		let funding_pubkey = self.funding.get_holder_pubkeys().funding_pubkey.clone();
+		msgs::SpliceInit {
+			channel_id: self.context.channel_id,
+			funding_contribution_satoshis: our_funding_contribution_satoshis,
+			funding_feerate_perkw,
+			locktime,
+			funding_pubkey,
+			require_confirmed_inputs: None,
+		}
 	}
 
 	/// Handle splice_init
@@ -8633,13 +8669,26 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Apply start of splice change in the state
 		self.splice_start(false, logger);
 
-		let splice_ack_msg = self.context.get_splice_ack(our_funding_contribution_satoshis);
+		let splice_ack_msg = self.get_splice_ack(our_funding_contribution_satoshis);
 
 		// TODO(splicing): start interactive funding negotiation
 		// let _msg = self.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id)
 		// 	.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
 
 		Ok(splice_ack_msg)
+	}
+
+	/// Get the splice_ack message that can be sent in response to splice initiation.
+	#[cfg(splicing)]
+	pub fn get_splice_ack(&self, our_funding_contribution_satoshis: i64) -> msgs::SpliceAck {
+		// Reuse the existing funding pubkey, in spite of the channel value changing
+		let funding_pubkey = self.funding.get_holder_pubkeys().funding_pubkey;
+		msgs::SpliceAck {
+			channel_id: self.context.channel_id,
+			funding_contribution_satoshis: our_funding_contribution_satoshis,
+			funding_pubkey,
+			require_confirmed_inputs: None,
+		}
 	}
 
 	/// Handle splice_ack
@@ -8684,7 +8733,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// 	NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
 		// );
 		log_info!(logger, "Splicing process started, old channel value {}, outgoing {}, channel_id {}",
-			self.funding.channel_value_satoshis, is_outgoing, self.context.channel_id);
+			self.funding.get_value_satoshis(), is_outgoing, self.context.channel_id);
 	}
 
 	// Send stuff to our remote peers:

@@ -11,9 +11,9 @@
 //! payments/messages between them, and often checking the resulting ChannelMonitors are able to
 //! claim outputs on-chain.
 
-use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use crate::events::Event;
 use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::util::config::{ChannelHandshakeConfig, UserConfig};
 
 /// Splicing test, simple splice-in flow. Starts with opening a V1 channel first.
