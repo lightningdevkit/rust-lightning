@@ -535,6 +535,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
+	// Update LatestHolderCommitmentTXInfo in channel.rs if adding new fields to this variant.
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
 		/// Note that LDK after 0.0.115 supports this only containing dust HTLCs (implying the

@@ -2032,7 +2032,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	fn received_msg(&self) -> &'static str;
 
 	fn check_counterparty_commitment_signature<L: Deref>(
-		&self, sig: &Signature, holder_commitment_point: &mut HolderCommitmentPoint, logger: &L
+		&self, sig: &Signature, holder_commitment_point: &HolderCommitmentPoint, logger: &L
 	) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.funding().get_funding_redeemscript();
 
@@ -3457,6 +3457,132 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			!matches!(self.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH))
 	}
 
+	fn validate_commitment_signed<L: Deref>(
+		&self, funding: &FundingScope, holder_commitment_point: &HolderCommitmentPoint,
+		msg: &msgs::CommitmentSigned, logger: &L,
+	) -> Result<LatestHolderCommitmentTXInfo, ChannelError>
+	where
+		L::Target: Logger,
+	{
+		let funding_script = funding.get_funding_redeemscript();
+
+		let keys = self.build_holder_transaction_keys(funding, holder_commitment_point.current_point());
+
+		let commitment_stats = self.build_commitment_transaction(funding, holder_commitment_point.transaction_number(), &keys, true, false, logger);
+		let commitment_txid = {
+			let trusted_tx = commitment_stats.tx.trust();
+			let bitcoin_tx = trusted_tx.built_transaction();
+			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
+
+			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
+				log_bytes!(msg.signature.serialize_compact()[..]),
+				log_bytes!(funding.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), &self.channel_id());
+			if let Err(_) = self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &funding.counterparty_funding_pubkey()) {
+				return Err(ChannelError::close("Invalid commitment tx signature from peer".to_owned()));
+			}
+			bitcoin_tx.txid
+		};
+		let mut htlcs_cloned: Vec<_> = commitment_stats.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
+
+		// If our counterparty updated the channel fee in this commitment transaction, check that
+		// they can actually afford the new fee now.
+		let update_fee = if let Some((_, update_state)) = self.pending_update_fee {
+			update_state == FeeUpdateState::RemoteAnnounced
+		} else { false };
+		if update_fee {
+			debug_assert!(!funding.is_outbound());
+			let counterparty_reserve_we_require_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
+			if commitment_stats.remote_balance_msat < commitment_stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
+				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
+			}
+		}
+		#[cfg(any(test, fuzzing))]
+		{
+			if funding.is_outbound() {
+				let projected_commit_tx_info = funding.next_local_commitment_tx_fee_info_cached.lock().unwrap().take();
+				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+				if let Some(info) = projected_commit_tx_info {
+					let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len()
+						+ self.holding_cell_htlc_updates.len();
+					if info.total_pending_htlcs == total_pending_htlcs
+						&& info.next_holder_htlc_id == self.next_holder_htlc_id
+						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
+						&& info.feerate == self.feerate_per_kw {
+							assert_eq!(commitment_stats.total_fee_sat, info.fee / 1000);
+						}
+				}
+			}
+		}
+
+		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
+			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
+		}
+
+		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
+		// `htlcs_and_sigs` vec and in the `holder_commitment_tx` itself, both of which were passed
+		// in the `ChannelMonitorUpdate`. In 0.0.115, support for having a separate set of
+		// outbound-non-dust-HTLCSources in the `ChannelMonitorUpdate` was added, however for
+		// backwards compatibility, we never use it in production. To provide test coverage, here,
+		// we randomly decide (in test/fuzzing builds) to use the new vec sometimes.
+		#[allow(unused_assignments, unused_mut)]
+		let mut separate_nondust_htlc_sources = false;
+		#[cfg(all(feature = "std", any(test, fuzzing)))] {
+			use core::hash::{BuildHasher, Hasher};
+			// Get a random value using the only std API to do so - the DefaultHasher
+			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+			separate_nondust_htlc_sources = rand_val % 2 == 0;
+		}
+
+		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
+		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
+		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
+			if let Some(_) = htlc.transaction_output_index {
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
+					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.channel_type,
+					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.channel_type, &keys);
+				let htlc_sighashtype = if self.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
+				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
+					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
+					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.channel_id());
+				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
+					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
+				}
+				if !separate_nondust_htlc_sources {
+					htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source_opt.take()));
+				}
+			} else {
+				htlcs_and_sigs.push((htlc, None, source_opt.take()));
+			}
+			if separate_nondust_htlc_sources {
+				if let Some(source) = source_opt.take() {
+					nondust_htlc_sources.push(source);
+				}
+			}
+			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
+		}
+
+		let holder_commitment_tx = HolderCommitmentTransaction::new(
+			commitment_stats.tx,
+			msg.signature,
+			msg.htlc_signatures.clone(),
+			&funding.get_holder_pubkeys().funding_pubkey,
+			funding.counterparty_funding_pubkey()
+		);
+
+		self.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
+			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
+
+		Ok(LatestHolderCommitmentTXInfo {
+			commitment_tx: holder_commitment_tx,
+			htlc_outputs: htlcs_and_sigs,
+			nondust_htlc_sources,
+		})
+	}
+
 	/// Transaction nomenclature is somewhat confusing here as there are many different cases - a
 	/// transaction is referred to as "a's transaction" implying that a will be able to broadcast
 	/// the transaction. Thus, b will generally be sending a signature over such a transaction to
@@ -4711,6 +4837,14 @@ struct CommitmentTxInfoCached {
 	feerate: u32,
 }
 
+/// Partial data from ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo used to simplify the
+/// return type of `ChannelContext::validate_commitment_signed`.
+struct LatestHolderCommitmentTXInfo {
+	pub commitment_tx: HolderCommitmentTransaction,
+	pub htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+	pub nondust_htlc_sources: Vec<HTLCSource>,
+}
+
 /// Contents of a wire message that fails an HTLC backwards. Useful for [`FundedChannel::fail_htlc`] to
 /// fail with either [`msgs::UpdateFailMalformedHTLC`] or [`msgs::UpdateFailHTLC`] as needed.
 trait FailHTLCContents {
@@ -5515,117 +5649,21 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
-		let funding_script = self.funding.get_funding_redeemscript();
+		let commitment_tx_info = self.context.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)?;
 
-		let keys = self.context.build_holder_transaction_keys(&self.funding, self.holder_commitment_point.current_point());
-
-		let commitment_stats = self.context.build_commitment_transaction(&self.funding, self.holder_commitment_point.transaction_number(), &keys, true, false, logger);
-		let commitment_txid = {
-			let trusted_tx = commitment_stats.tx.trust();
-			let bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, self.funding.get_value_satoshis());
-
-			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
-				log_bytes!(msg.signature.serialize_compact()[..]),
-				log_bytes!(self.funding.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), &self.context.channel_id());
-			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.funding.counterparty_funding_pubkey()) {
-				return Err(ChannelError::close("Invalid commitment tx signature from peer".to_owned()));
-			}
-			bitcoin_tx.txid
-		};
-		let mut htlcs_cloned: Vec<_> = commitment_stats.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
-
-		// If our counterparty updated the channel fee in this commitment transaction, check that
-		// they can actually afford the new fee now.
-		let update_fee = if let Some((_, update_state)) = self.context.pending_update_fee {
-			update_state == FeeUpdateState::RemoteAnnounced
-		} else { false };
-		if update_fee {
-			debug_assert!(!self.funding.is_outbound());
-			let counterparty_reserve_we_require_msat = self.funding.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_stats.remote_balance_msat < commitment_stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
-				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
-			}
+		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
+			// We only fail to advance our commitment point/number if we're currently
+			// waiting for our signer to unblock and provide a commitment point.
+			// During post-funding channel operation, we only advance our point upon
+			// receiving a commitment_signed, and our counterparty cannot send us
+			// another commitment signed until we've provided a new commitment point
+			// in revoke_and_ack, which requires unblocking our signer and completing
+			// the advance to the next point. This should be unreachable since
+			// a new commitment_signed should fail at our signature checks in
+			// validate_commitment_signed.
+			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
+			return Err(ChannelError::close("Failed to advance our commitment point".to_owned()));
 		}
-		#[cfg(any(test, fuzzing))]
-		{
-			if self.funding.is_outbound() {
-				let projected_commit_tx_info = self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap().take();
-				*self.funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
-				if let Some(info) = projected_commit_tx_info {
-					let total_pending_htlcs = self.context.pending_inbound_htlcs.len() + self.context.pending_outbound_htlcs.len()
-						+ self.context.holding_cell_htlc_updates.len();
-					if info.total_pending_htlcs == total_pending_htlcs
-						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
-						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
-						&& info.feerate == self.context.feerate_per_kw {
-							assert_eq!(commitment_stats.total_fee_sat, info.fee / 1000);
-						}
-				}
-			}
-		}
-
-		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
-		}
-
-		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
-		// `htlcs_and_sigs` vec and in the `holder_commitment_tx` itself, both of which were passed
-		// in the `ChannelMonitorUpdate`. In 0.0.115, support for having a separate set of
-		// outbound-non-dust-HTLCSources in the `ChannelMonitorUpdate` was added, however for
-		// backwards compatibility, we never use it in production. To provide test coverage, here,
-		// we randomly decide (in test/fuzzing builds) to use the new vec sometimes.
-		#[allow(unused_assignments, unused_mut)]
-		let mut separate_nondust_htlc_sources = false;
-		#[cfg(all(feature = "std", any(test, fuzzing)))] {
-			use core::hash::{BuildHasher, Hasher};
-			// Get a random value using the only std API to do so - the DefaultHasher
-			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-			separate_nondust_htlc_sources = rand_val % 2 == 0;
-		}
-
-		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
-		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
-		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
-			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
-					self.funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.context.channel_type,
-					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &keys);
-				let htlc_sighashtype = if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
-				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
-					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
-					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.context.channel_id());
-				if let Err(_) = self.context.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
-					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
-				}
-				if !separate_nondust_htlc_sources {
-					htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source_opt.take()));
-				}
-			} else {
-				htlcs_and_sigs.push((htlc, None, source_opt.take()));
-			}
-			if separate_nondust_htlc_sources {
-				if let Some(source) = source_opt.take() {
-					nondust_htlc_sources.push(source);
-				}
-			}
-			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
-		}
-
-		let holder_commitment_tx = HolderCommitmentTransaction::new(
-			commitment_stats.tx,
-			msg.signature,
-			msg.htlc_signatures.clone(),
-			&self.funding.get_holder_pubkeys().funding_pubkey,
-			self.funding.counterparty_funding_pubkey()
-		);
-
-		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
-			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
@@ -5666,31 +5704,22 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
+		let LatestHolderCommitmentTXInfo {
+			commitment_tx, htlc_outputs, nondust_htlc_sources,
+		} = commitment_tx_info;
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx: holder_commitment_tx,
-				htlc_outputs: htlcs_and_sigs,
+				commitment_tx,
+				htlc_outputs,
 				claimed_htlcs,
 				nondust_htlc_sources,
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
-			// We only fail to advance our commitment point/number if we're currently
-			// waiting for our signer to unblock and provide a commitment point.
-			// During post-funding channel operation, we only advance our point upon
-			// receiving a commitment_signed, and our counterparty cannot send us
-			// another commitment signed until we've provided a new commitment point
-			// in revoke_and_ack, which requires unblocking our signer and completing
-			// the advance to the next point. This should be unreachable since
-			// a new commitment_signed should fail at our signature checks above.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive commitment_signed");
-			return Err(ChannelError::close("Failed to advance our commitment point".to_owned()));
-		}
 		self.context.expecting_peer_commitment_signed = false;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
