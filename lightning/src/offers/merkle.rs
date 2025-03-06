@@ -11,7 +11,6 @@
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::constants::SCHNORR_SIGNATURE_SIZE;
 use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
@@ -25,10 +24,6 @@ pub(super) const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
 tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
 	(240, signature: Signature),
 });
-
-/// Size of a TLV record in `SIGNATURE_TYPES` when the type is 1000. TLV types are encoded using
-/// BigSize, so a TLV record with type 240 will use two less bytes.
-pub(super) const SIGNATURE_TLV_RECORD_SIZE: usize = 3 + 1 + SCHNORR_SIGNATURE_SIZE;
 
 /// A hash for use in a specific context by tweaking with a context-dependent tag as per [BIP 340]
 /// and computed over the merkle root of a TLV stream to sign as defined in [BOLT 12].
@@ -253,7 +248,6 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
-	pub(super) start: usize,
 	pub(super) end: usize,
 }
 
@@ -278,7 +272,7 @@ impl<'a> Iterator for TlvStream<'a> {
 			self.data.set_position(end);
 
 			Some(TlvRecord {
-				r#type, type_bytes, record_bytes, start: start as usize, end: end as usize,
+				r#type, type_bytes, record_bytes, end: end as usize,
 			})
 		} else {
 			None
