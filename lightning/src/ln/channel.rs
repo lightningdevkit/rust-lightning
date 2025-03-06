@@ -1514,6 +1514,7 @@ impl<SP: Deref> Channel<SP> where
 				};
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
+					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -1659,6 +1660,30 @@ pub(super) struct FundingScope {
 	/// [`ChannelContext::is_manual_broadcast`] is true) this will be a dummy empty transaction.
 	funding_transaction: Option<Transaction>,
 }
+
+#[cfg(not(any(test, fuzzing)))]
+impl_writeable_tlv_based!(FundingScope, {
+	(0, value_to_self_msat, required),
+	(1, counterparty_selected_channel_reserve_satoshis, option),
+	(2, holder_selected_channel_reserve_satoshis, required),
+	(3, holder_max_commitment_tx_output, required),
+	(4, counterparty_max_commitment_tx_output, required),
+	(5, channel_transaction_parameters, (required: ReadableArgs, 0)), // FIXME: This won't work
+	(6, funding_transaction, option),
+});
+
+#[cfg(any(test, fuzzing))]
+impl_writeable_tlv_based!(FundingScope, {
+	(0, value_to_self_msat, required),
+	(1, counterparty_selected_channel_reserve_satoshis, option),
+	(2, holder_selected_channel_reserve_satoshis, required),
+	(3, holder_max_commitment_tx_output, required),
+	(4, counterparty_max_commitment_tx_output, required),
+	(5, channel_transaction_parameters, (required: ReadableArgs, 0)),
+	(6, funding_transaction, option),
+	(126, next_local_commitment_tx_fee_info_cached, required), // FIXME: This won't work
+	(127, next_remote_commitment_tx_fee_info_cached, required), // FIXME: This won't work
+});
 
 impl FundingScope {
 	pub fn get_value_satoshis(&self) -> u64 {
@@ -4890,6 +4915,7 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
+	pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -9472,6 +9498,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -9748,6 +9775,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -10542,6 +10570,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(55, self.pending_funding, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -10833,6 +10862,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
+		let mut pending_funding = Some(Vec::new());
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -10868,6 +10899,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(55, pending_funding, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -11009,6 +11041,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
 			},
+			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
 				user_id,
 
