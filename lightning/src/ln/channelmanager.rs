@@ -9020,6 +9020,38 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	fn internal_commitment_signed_batch(&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, batch: &BTreeMap<Txid, msgs::CommitmentSigned>) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let chan = chan_entry.get_mut();
+				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+				let funding_txo = chan.funding().get_funding_txo();
+				if let Some(chan) = chan.as_funded_mut() {
+					let monitor_update_opt = try_channel_entry!(
+						self, peer_state, chan.commitment_signed_batch(batch, &&logger), chan_entry
+					);
+
+					if let Some(monitor_update) = monitor_update_opt {
+						handle_new_monitor_update!(
+							self, funding_txo.unwrap(), monitor_update, peer_state_lock, peer_state,
+							per_peer_state, chan
+						);
+					}
+				}
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), channel_id))
+		}
+	}
+
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
 		let mut push_forward_event = self.forward_htlcs.lock().unwrap().is_empty();
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
@@ -12128,6 +12160,11 @@ where
 	fn handle_commitment_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_commitment_signed(&counterparty_node_id, msg), counterparty_node_id);
+	}
+
+	fn handle_commitment_signed_batch(&self, counterparty_node_id: PublicKey, channel_id: ChannelId, batch: BTreeMap<Txid, msgs::CommitmentSigned>) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _ = handle_error!(self, self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, &batch), counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::RevokeAndACK) {

@@ -66,6 +66,8 @@ use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
 
+use alloc::collections::BTreeMap;
+
 use crate::io;
 use crate::prelude::*;
 use core::time::Duration;
@@ -5777,6 +5779,11 @@ impl<SP: Deref> FundedChannel<SP> where
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
 		}
+
+		if msg.batch.is_some() {
+			return Err(ChannelError::close("Peer sent initial commitment_signed with a batch".to_owned()));
+		}
+
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
 		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "initial commitment_signed");
 
@@ -5804,6 +5811,49 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 		where L::Target: Logger
 	{
+		self.commitment_signed_check_state()?;
+
+		let updates = self
+			.context
+			.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
+			.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+				vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+					commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+				}]
+			)?;
+
+		self.commitment_signed_update_monitor(updates, logger)
+	}
+
+	pub fn commitment_signed_batch<L: Deref>(&mut self, batch: &BTreeMap<Txid, msgs::CommitmentSigned>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+		where L::Target: Logger
+	{
+		self.commitment_signed_check_state()?;
+
+		// Any commitment_signed not associated with a FundingScope is ignored below if a
+		// pending splice transaction has confirmed since receiving the batch.
+		let updates = core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding| {
+				let funding_txid = funding.get_funding_txo().unwrap().txid;
+				let msg = batch
+					.get(&funding_txid)
+					.ok_or_else(|| ChannelError::close(format!("Peer did not send a commitment_signed for pending splice transaction: {}", funding_txid)))?;
+				self.context
+					.validate_commitment_signed(funding, &self.holder_commitment_point, msg, logger)
+					.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+						ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+							commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+						}
+					)
+				}
+			)
+			.collect::<Result<Vec<_>, ChannelError>>()?;
+
+		self.commitment_signed_update_monitor(updates, logger)
+	}
+
+	fn commitment_signed_check_state(&self) -> Result<(), ChannelError> {
 		if self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got commitment_signed message while quiescent".to_owned()));
 		}
@@ -5817,8 +5867,12 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
-		let commitment_tx_info = self.context.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)?;
+		Ok(())
+	}
 
+	fn commitment_signed_update_monitor<L: Deref>(&mut self, mut updates: Vec<ChannelMonitorUpdateStep>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+		where L::Target: Logger
+	{
 		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
 			// We only fail to advance our commitment point/number if we're currently
 			// waiting for our signer to unblock and provide a commitment point.
@@ -5872,18 +5926,21 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		let LatestHolderCommitmentTXInfo {
-			commitment_tx, htlc_outputs, nondust_htlc_sources,
-		} = commitment_tx_info;
+		for mut update in updates.iter_mut() {
+			if let ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+				claimed_htlcs: ref mut update_claimed_htlcs, ..
+			} = &mut update {
+				debug_assert!(update_claimed_htlcs.is_empty());
+				*update_claimed_htlcs = claimed_htlcs.clone();
+			} else {
+				debug_assert!(false);
+			}
+		}
+
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx,
-				htlc_outputs,
-				claimed_htlcs,
-				nondust_htlc_sources,
-			}],
+			updates,
 			channel_id: Some(self.context.channel_id()),
 		};
 

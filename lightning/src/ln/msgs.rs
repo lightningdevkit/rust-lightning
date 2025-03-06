@@ -1940,7 +1940,7 @@ pub trait ChannelMessageHandler : BaseMessageHandler {
 	fn handle_commitment_signed_batch(
 		&self, their_node_id: PublicKey, channel_id: ChannelId,
 		batch: BTreeMap<Txid, CommitmentSigned>,
-	) {}
+	);
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK);
 

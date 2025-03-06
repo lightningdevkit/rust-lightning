@@ -334,6 +334,12 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_commitment_signed(&self, their_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_commitment_signed_batch(
+		&self, their_node_id: PublicKey, channel_id: ChannelId,
+		_batch: BTreeMap<Txid, msgs::CommitmentSigned>,
+	) {
+		ErroringMessageHandler::push_error(self, their_node_id, channel_id);
+	}
 	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
