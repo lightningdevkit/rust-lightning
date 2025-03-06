@@ -1359,8 +1359,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
+		let holder_pubkeys = &channel_parameters.holder_pubkeys;
 		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
-			&channel_parameters.channel_type_features, &keys.pubkeys().payment_point
+			&channel_parameters.channel_type_features, &holder_pubkeys.payment_point
 		);
 
 		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
@@ -1369,7 +1370,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let counterparty_commitment_params = CounterpartyCommitmentParameters { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv };
 
 		let channel_keys_id = keys.channel_keys_id();
-		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
+		let holder_revocation_basepoint = holder_pubkeys.revocation_basepoint;
 
 		// block for Rust 1.34 compat
 		let (holder_commitment_tx, current_holder_commitment_number) = {
@@ -5417,6 +5418,7 @@ mod tests {
 				selected_contest_delay: 67,
 			}),
 			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis: 0,
 		};
@@ -5669,6 +5671,7 @@ mod tests {
 				selected_contest_delay: 67,
 			}),
 			funding_outpoint: Some(funding_outpoint),
+			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis: 0,
 		};

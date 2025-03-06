@@ -774,8 +774,14 @@ pub trait ChannelSigner {
 
 	/// Returns the holder's channel public keys and basepoints.
 	///
+	/// `splice_parent_funding_txid` can be used to compute a tweak to rotate the funding key in the
+	/// 2-of-2 multisig script during a splice. See [`compute_funding_key_tweak`] for an example
+	/// tweak and more details.
+	///
 	/// This method is *not* asynchronous. Instead, the value must be cached locally.
-	fn pubkeys(&self) -> &ChannelPublicKeys;
+	fn pubkeys(
+		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ChannelPublicKeys;
 
 	/// Returns an arbitrary identifier describing the set of keys which are provided back to you in
 	/// some [`SpendableOutputDescriptor`] types. This should be sufficient to identify this
@@ -977,6 +983,56 @@ pub trait ChangeDestinationSource {
 	fn get_change_destination_script(&self) -> Result<ScriptBuf, ()>;
 }
 
+mod sealed {
+	use bitcoin::secp256k1::{Scalar, SecretKey};
+
+	#[derive(Clone, PartialEq)]
+	pub struct MaybeTweakedSecretKey(SecretKey);
+
+	impl From<SecretKey> for MaybeTweakedSecretKey {
+		fn from(value: SecretKey) -> Self {
+			Self(value)
+		}
+	}
+
+	impl MaybeTweakedSecretKey {
+		pub fn with_tweak(&self, tweak: Option<Scalar>) -> SecretKey {
+			tweak
+				.map(|tweak| {
+					self.0
+						.add_tweak(&tweak)
+						.expect("Addition only fails if the tweak is the inverse of the key")
+				})
+				.unwrap_or(self.0)
+		}
+	}
+}
+
+/// Computes the tweak to apply to the base funding key of a channel.
+///
+/// The tweak is computed similar to existing tweaks used in
+/// [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md#key-derivation):
+///
+/// 1. We use the txid of the funding transaction the splice transaction is spending instead of the
+///    `per_commitment_point` to guarantee uniqueness.
+/// 2. We include the private key instead of the public key to guarantee only those with knowledge
+///    of it can re-derive the new funding key.
+///
+///   tweak = SHA256(splice_parent_funding_txid || base_funding_secret_key)
+///   tweaked_funding_key = base_funding_key + tweak
+///
+/// While the use of this tweak is not required (signers may choose to compute a tweak of their
+/// choice), signers must ensure their tweak guarantees the two properties mentioned above:
+/// uniqueness and derivable only by one or both of the channel participants.
+pub fn compute_funding_key_tweak(
+	base_funding_secret_key: &SecretKey, splice_parent_funding_txid: &Txid,
+) -> Scalar {
+	let mut sha = Sha256::engine();
+	sha.input(splice_parent_funding_txid.as_byte_array());
+	sha.input(&base_funding_secret_key.secret_bytes());
+	Scalar::from_be_bytes(Sha256::from_engine(sha).to_byte_array()).unwrap()
+}
+
 /// A simple implementation of [`EcdsaChannelSigner`] that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
@@ -984,7 +1040,7 @@ pub trait ChangeDestinationSource {
 pub struct InMemorySigner {
 	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
 	/// holder's anchor output in a commitment transaction, if one is present.
-	pub funding_key: SecretKey,
+	funding_key: sealed::MaybeTweakedSecretKey,
 	/// Holder secret key for blinded revocation pubkey.
 	pub revocation_base_key: SecretKey,
 	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions.
@@ -1048,7 +1104,7 @@ impl InMemorySigner {
 			&htlc_base_key,
 		);
 		InMemorySigner {
-			funding_key,
+			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
 			payment_key,
 			delayed_payment_base_key,
@@ -1058,6 +1114,14 @@ impl InMemorySigner {
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
 		}
+	}
+
+	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
+	/// holder's anchor output in a commitment transaction, if one is present.
+	pub fn funding_key(&self, splice_parent_funding_txid: Option<Txid>) -> SecretKey {
+		let tweak = splice_parent_funding_txid
+			.map(|txid| compute_funding_key_tweak(&self.funding_key.with_tweak(None), &txid));
+		self.funding_key.with_tweak(tweak)
 	}
 
 	fn make_holder_keys<C: Signing>(
@@ -1103,7 +1167,7 @@ impl InMemorySigner {
 			return Err(());
 		}
 
-		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_point);
+		let remotepubkey = bitcoin::PublicKey::new(self.holder_channel_pubkeys.payment_point);
 		let supports_anchors_zero_fee_htlc_tx = descriptor
 			.channel_transaction_parameters
 			.as_ref()
@@ -1251,8 +1315,15 @@ impl ChannelSigner for InMemorySigner {
 		Ok(())
 	}
 
-	fn pubkeys(&self) -> &ChannelPublicKeys {
-		&self.holder_channel_pubkeys
+	fn pubkeys(
+		&self, splice_parent_funding_txid: Option<Txid>, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ChannelPublicKeys {
+		let mut pubkeys = self.holder_channel_pubkeys.clone();
+		if splice_parent_funding_txid.is_some() {
+			pubkeys.funding_pubkey =
+				self.funding_key(splice_parent_funding_txid).public_key(secp_ctx);
+		}
+		pubkeys
 	}
 
 	fn channel_keys_id(&self) -> [u8; 32] {
@@ -1274,7 +1345,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_keys =
 			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let channel_funding_redeemscript =
@@ -1282,7 +1354,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 
 		let built_tx = trusted_tx.built_transaction();
 		let commitment_sig = built_tx.sign_counterparty_commitment(
-			&self.funding_key,
+			&funding_key,
 			&channel_funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
 			secp_ctx,
@@ -1335,14 +1407,15 @@ impl EcdsaChannelSigner for InMemorySigner {
 	) -> Result<Signature, ()> {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_keys =
 			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		Ok(trusted_tx.built_transaction().sign_holder_commitment(
-			&self.funding_key,
+			&funding_key,
 			&funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
 			&self,
@@ -1357,14 +1430,15 @@ impl EcdsaChannelSigner for InMemorySigner {
 	) -> Result<Signature, ()> {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_keys =
 			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		Ok(trusted_tx.built_transaction().sign_holder_commitment(
-			&self.funding_key,
+			&funding_key,
 			&funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
 			&self,
@@ -1549,13 +1623,14 @@ impl EcdsaChannelSigner for InMemorySigner {
 	) -> Result<Signature, ()> {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_funding_key =
 			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
 		let channel_funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
 		Ok(closing_tx.trust().sign(
-			&self.funding_key,
+			&funding_key,
 			&channel_funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
 			secp_ctx,
@@ -1578,14 +1653,17 @@ impl EcdsaChannelSigner for InMemorySigner {
 				EcdsaSighashType::All,
 			)
 			.unwrap();
-		Ok(sign_with_aux_rand(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key, &self))
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		Ok(sign_with_aux_rand(secp_ctx, &hash_to_message!(&sighash[..]), &funding_key, &self))
 	}
 
 	fn sign_channel_announcement_with_funding_key(
-		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok(secp_ctx.sign_ecdsa(&msghash, &self.funding_key))
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		Ok(secp_ctx.sign_ecdsa(&msghash, &funding_key))
 	}
 
 	fn sign_splicing_funding_input(
@@ -1594,7 +1672,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 	) -> Result<Signature, ()> {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 
-		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
 		let counterparty_funding_key =
 			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
 		let funding_redeemscript =
@@ -1608,7 +1687,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			)
 			.unwrap()[..];
 		let msg = hash_to_message!(sighash);
-		Ok(sign(secp_ctx, &msg, &self.funding_key))
+		Ok(sign(secp_ctx, &msg, &funding_key))
 	}
 }
 

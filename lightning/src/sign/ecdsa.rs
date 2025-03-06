@@ -238,7 +238,8 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`NodeSigner::sign_gossip_message`]: crate::sign::NodeSigner::sign_gossip_message
 	fn sign_channel_announcement_with_funding_key(
-		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 
 	/// Signs the input of a splicing funding transaction with our funding key.

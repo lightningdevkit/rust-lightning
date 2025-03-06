@@ -2411,7 +2411,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(true, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
-		let pubkeys = holder_signer.pubkeys().clone();
 
 		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
@@ -2571,6 +2570,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
+		let pubkeys = holder_signer.pubkeys(None, &secp_ctx);
+
 		let funding = FundingScope {
 			value_to_self_msat,
 			counterparty_selected_channel_reserve_satoshis: Some(msg_channel_reserve_satoshis),
@@ -2595,6 +2596,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 					pubkeys: counterparty_pubkeys,
 				}),
 				funding_outpoint: None,
+				splice_parent_funding_txid: None,
 				channel_type_features: channel_type.clone(),
 				channel_value_satoshis,
 			},
@@ -2734,11 +2736,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		config: &'a UserConfig,
 		current_chain_height: u32,
 		outbound_scid_alias: u64,
-		temporary_channel_id: Option<ChannelId>,
+		temporary_channel_id_fn: Option<impl Fn(&ChannelPublicKeys) -> ChannelId>,
 		holder_selected_channel_reserve_satoshis: u64,
 		channel_keys_id: [u8; 32],
 		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
-		pubkeys: ChannelPublicKeys,
 		_logger: L,
 	) -> Result<(FundingScope, ChannelContext<SP>), APIError>
 		where
@@ -2804,7 +2805,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
 
-		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
+		let pubkeys = holder_signer.pubkeys(None, &secp_ctx);
+		let temporary_channel_id = temporary_channel_id_fn.map(|f| f(&pubkeys))
+			.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
 		let funding = FundingScope {
 			value_to_self_msat,
@@ -2829,6 +2832,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
 				funding_outpoint: None,
+				splice_parent_funding_txid: None,
 				channel_type_features: channel_type.clone(),
 				// We'll add our counterparty's `funding_satoshis` when we receive `accept_channel2`.
 				channel_value_satoshis,
@@ -8161,7 +8165,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		};
 		match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				let our_bitcoin_sig = match ecdsa.sign_channel_announcement_with_funding_key(&announcement, &self.context.secp_ctx) {
+				let our_bitcoin_sig = match ecdsa.sign_channel_announcement_with_funding_key(
+					&self.funding.channel_transaction_parameters, &announcement, &self.context.secp_ctx,
+				) {
 					Err(_) => {
 						log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
 						return None;
@@ -8202,7 +8208,9 @@ impl<SP: Deref> FundedChannel<SP> where
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
 			match &self.context.holder_signer {
 				ChannelSignerType::Ecdsa(ecdsa) => {
-					let our_bitcoin_sig = ecdsa.sign_channel_announcement_with_funding_key(&announcement, &self.context.secp_ctx)
+					let our_bitcoin_sig = ecdsa.sign_channel_announcement_with_funding_key(
+						&self.funding.channel_transaction_parameters, &announcement, &self.context.secp_ctx,
+					)
 						.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 					Ok(msgs::ChannelAnnouncement {
 						node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
@@ -9008,7 +9016,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
-		let pubkeys = holder_signer.pubkeys().clone();
+
+		let temporary_channel_id_fn = temporary_channel_id.map(|id| {
+			move |_: &ChannelPublicKeys| id
+		});
 
 		let (funding, context) = ChannelContext::new_for_outbound_channel(
 			fee_estimator,
@@ -9022,11 +9033,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			config,
 			current_chain_height,
 			outbound_scid_alias,
-			temporary_channel_id,
+			temporary_channel_id_fn,
 			holder_selected_channel_reserve_satoshis,
 			channel_keys_id,
 			holder_signer,
-			pubkeys,
 			logger,
 		)?;
 		let unfunded_context = UnfundedChannelContext {
@@ -9565,9 +9575,10 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	{
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
-		let pubkeys = holder_signer.pubkeys().clone();
 
-		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
+		let temporary_channel_id_fn = Some(|pubkeys: &ChannelPublicKeys| {
+			ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint)
+		});
 
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
@@ -9591,11 +9602,10 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			config,
 			current_chain_height,
 			outbound_scid_alias,
-			temporary_channel_id,
+			temporary_channel_id_fn,
 			holder_selected_channel_reserve_satoshis,
 			channel_keys_id,
 			holder_signer,
-			pubkeys,
 			logger,
 		)?;
 		let unfunded_context = UnfundedChannelContext {
@@ -11597,7 +11607,8 @@ mod tests {
 			[0; 32],
 		);
 
-		assert_eq!(signer.pubkeys().funding_pubkey.serialize()[..],
+		let holder_pubkeys = signer.pubkeys(None, &secp_ctx);
+		assert_eq!(holder_pubkeys.funding_pubkey.serialize()[..],
 				<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 		let keys_provider = Keys { signer: signer.clone() };
 
@@ -11636,11 +11647,13 @@ mod tests {
 		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
 		// build_commitment_transaction.
-		let delayed_payment_base = &chan.context.holder_signer.as_ref().pubkeys().delayed_payment_basepoint;
 		let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-		let htlc_basepoint = &chan.context.holder_signer.as_ref().pubkeys().htlc_basepoint;
-		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
+		let directed_params = chan.funding.channel_transaction_parameters.as_holder_broadcastable();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			&per_commitment_point, directed_params.broadcaster_pubkeys(),
+			directed_params.countersignatory_pubkeys(), &secp_ctx,
+		);
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {
@@ -11691,7 +11704,7 @@ mod tests {
 					commitment_tx.clone(),
 					counterparty_signature,
 					counterparty_htlc_sigs,
-					&chan.context.holder_signer.as_ref().pubkeys().funding_pubkey,
+					&holder_pubkeys.funding_pubkey,
 					chan.funding.counterparty_funding_pubkey()
 				);
 				let holder_sig = signer.sign_holder_commitment(&chan.funding.channel_transaction_parameters, &holder_commitment_tx, &secp_ctx).unwrap();
