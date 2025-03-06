@@ -872,10 +872,9 @@ impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: 
 
 #[derive(Clone, PartialEq)]
 struct FundingScope {
-	outpoint: OutPoint,
 	script_pubkey: ScriptBuf,
 	redeem_script: ScriptBuf,
-	channel_value_satoshis: u64,
+	channel_parameters: ChannelTransactionParameters,
 
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
@@ -1110,15 +1109,16 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 
 		self.channel_keys_id.write(writer)?;
 		self.holder_revocation_basepoint.write(writer)?;
-		writer.write_all(&self.funding.outpoint.txid[..])?;
-		writer.write_all(&self.funding.outpoint.index.to_be_bytes())?;
+		let funding_outpoint = self.get_funding_txo();
+		writer.write_all(&funding_outpoint.txid[..])?;
+		writer.write_all(&funding_outpoint.index.to_be_bytes())?;
 		self.funding.script_pubkey.write(writer)?;
 		self.funding.current_counterparty_commitment_txid.write(writer)?;
 		self.funding.prev_counterparty_commitment_txid.write(writer)?;
 
 		self.counterparty_commitment_params.write(writer)?;
 		self.funding.redeem_script.write(writer)?;
-		self.funding.channel_value_satoshis.write(writer)?;
+		self.funding.channel_parameters.channel_value_satoshis.write(writer)?;
 
 		match self.their_cur_per_commitment_points {
 			Some((idx, pubkey, second_option)) => {
@@ -1375,10 +1375,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	pub(crate) fn new(
 		secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<ScriptBuf>,
-		on_counterparty_tx_csv: u16, destination_script: &Script, funding_outpoint: OutPoint,
-		funding_script: ScriptBuf, channel_parameters: &ChannelTransactionParameters,
-		holder_pays_commitment_tx_fee: bool, funding_redeemscript: ScriptBuf,
-		channel_value_satoshis: u64, commitment_transaction_number_obscure_factor: u64,
+		on_counterparty_tx_csv: u16, destination_script: &Script,
+		channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
+		commitment_transaction_number_obscure_factor: u64,
 		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BestBlock,
 		counterparty_node_id: PublicKey, channel_id: ChannelId,
 	) -> ChannelMonitor<Signer> {
@@ -1418,10 +1417,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		};
 
 		let onchain_tx_handler = OnchainTxHandler::new(
-			channel_value_satoshis, channel_keys_id, destination_script.into(), keys,
-			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
+			channel_parameters.channel_value_satoshis, channel_keys_id, destination_script.into(),
+			keys, channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
 		);
 
+		let funding_outpoint = channel_parameters.funding_outpoint
+			.expect("Funding outpoint must be known during initialization");
+		let funding_redeem_script = channel_parameters.make_funding_redeemscript();
+		let funding_script = funding_redeem_script.to_p2wsh();
 		let mut outputs_to_watch = new_hash_map();
 		outputs_to_watch.insert(
 			funding_outpoint.txid, vec![(funding_outpoint.index as u32, funding_script.clone())],
@@ -1429,10 +1432,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		Self::from_impl(ChannelMonitorImpl {
 			funding: FundingScope {
-				outpoint: funding_outpoint,
 				script_pubkey: funding_script,
-				redeem_script: funding_redeemscript,
-				channel_value_satoshis,
+				redeem_script: funding_redeem_script,
+				channel_parameters: channel_parameters.clone(),
 
 				current_counterparty_commitment_txid: None,
 				prev_counterparty_commitment_txid: None,
@@ -1663,7 +1665,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let lock = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*lock, None);
 		log_trace!(&logger, "Registering funding outpoint {}", &lock.get_funding_txo());
-		filter.register_tx(&lock.funding.outpoint.txid, &lock.funding.script_pubkey);
+		let funding_outpoint = lock.get_funding_txo();
+		filter.register_tx(&funding_outpoint.txid, &lock.funding.script_pubkey);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
 			for (index, script_pubkey) in outputs.iter() {
 				assert!(*index <= u16::MAX as u32);
@@ -3146,18 +3149,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding_outp = HolderFundingOutput::build(
 			self.funding.redeem_script.clone(),
-			self.funding.channel_value_satoshis,
+			self.funding.channel_parameters.channel_value_satoshis,
 			self.onchain_tx_handler.channel_type_features().clone()
 		);
+		let funding_outpoint = self.get_funding_txo();
 		let commitment_package = PackageTemplate::build_package(
-			self.funding.outpoint.txid.clone(), self.funding.outpoint.index as u32,
+			funding_outpoint.txid.clone(), funding_outpoint.index as u32,
 			PackageSolvingData::HolderFundingOutput(funding_outp),
 			self.best_block.height,
 		);
 		let mut claimable_outpoints = vec![commitment_package];
 		let event = MonitorEvent::HolderForceClosedWithInfo {
 			reason,
-			outpoint: self.funding.outpoint,
+			outpoint: funding_outpoint,
 			channel_id: self.channel_id,
 		};
 		self.pending_monitor_events.push(event);
@@ -3360,7 +3364,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	fn get_funding_txo(&self) -> OutPoint {
-		self.funding.outpoint
+		self.funding.channel_parameters.funding_outpoint
+			.expect("Funding outpoint must be set for active monitor")
 	}
 
 	fn get_funding_script(&self) -> ScriptBuf {
@@ -3403,7 +3408,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let commitment_txid = commitment_tx.compute_txid();
 					debug_assert_eq!(self.funding.current_holder_commitment_tx.txid, commitment_txid);
 					let pending_htlcs = self.funding.current_holder_commitment_tx.non_dust_htlcs();
-					let commitment_tx_fee_satoshis = self.funding.channel_value_satoshis -
+					let channel_value_satoshis = self.funding.channel_parameters.channel_value_satoshis;
+					let commitment_tx_fee_satoshis = channel_value_satoshis -
 						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value.to_sat());
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
 						channel_id,
@@ -3415,7 +3421,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						anchor_descriptor: AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
-								value_satoshis: self.funding.channel_value_satoshis,
+								value_satoshis: channel_value_satoshis,
 								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
 							},
 							outpoint: BitcoinOutPoint {
@@ -3436,7 +3442,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						htlc_descriptors.push(HTLCDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
-								value_satoshis: self.funding.channel_value_satoshis,
+								value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
 								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
 							},
 							commitment_txid: htlc.commitment_txid,
@@ -4139,7 +4145,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// (except for HTLC transactions for channels with anchor outputs), which is an easy
 				// way to filter out any potential non-matching txn for lazy filters.
 				let prevout = &tx.input[0].previous_output;
-				if prevout.txid == self.funding.outpoint.txid && prevout.vout == self.funding.outpoint.index as u32 {
+				let funding_outpoint = self.get_funding_txo();
+				if prevout.txid == funding_outpoint.txid && prevout.vout == funding_outpoint.index as u32 {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
 						&self.channel_id(), txid);
@@ -4809,7 +4816,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						output: outp.clone(),
 						revocation_pubkey: broadcasted_holder_revokable_script.2,
 						channel_keys_id: self.channel_keys_id,
-						channel_value_satoshis: self.funding.channel_value_satoshis,
+						channel_value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
 						channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
 					}));
 				}
@@ -4819,7 +4826,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
 					channel_keys_id: self.channel_keys_id,
-					channel_value_satoshis: self.funding.channel_value_satoshis,
+					channel_value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
 					channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
 				}));
 			}
@@ -5183,12 +5190,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				To continue, run a v0.1 release, send/route a payment over the channel or close it.", channel_id);
 		}
 
+		let channel_parameters = onchain_tx_handler.channel_transaction_parameters.clone();
+
 		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
 			funding: FundingScope {
-				outpoint,
 				script_pubkey: funding_script,
 				redeem_script: funding_redeemscript,
-				channel_value_satoshis,
+				channel_parameters,
 
 				current_counterparty_commitment_txid,
 				prev_counterparty_commitment_txid,
@@ -5481,12 +5489,11 @@ mod tests {
 		// old state.
 		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
-		let funding_txo = OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 };
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			funding_txo, ScriptBuf::new(), &channel_parameters, true, ScriptBuf::new(), 46, 0,
-			HolderCommitmentTransaction::dummy(0, &mut Vec::new()), best_block, dummy_key, channel_id,
+			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, &mut Vec::new()),
+			best_block, dummy_key, channel_id,
 		);
 
 		let mut htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
@@ -5734,12 +5741,11 @@ mod tests {
 		};
 		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey);
-		let funding_txo = OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 };
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			funding_txo, ScriptBuf::new(), &channel_parameters, true, ScriptBuf::new(), 46, 0,
-			HolderCommitmentTransaction::dummy(0, &mut Vec::new()), best_block, dummy_key, channel_id,
+			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, &mut Vec::new()),
+			best_block, dummy_key, channel_id,
 		);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
