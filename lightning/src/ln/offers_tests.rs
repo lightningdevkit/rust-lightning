@@ -46,7 +46,7 @@ use core::time::Duration;
 use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
-use crate::blinded_path::message::{MessageContext, OffersContext};
+use crate::blinded_path::message::OffersContext;
 use crate::events::{ClosureReason, Event, HTLCDestination, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
@@ -60,7 +60,6 @@ use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{Destination, PeeledOnion, MessageSendInstructions};
 use crate::onion_message::offers::OffersMessage;
-use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
@@ -193,9 +192,10 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(_, Some(MessageContext::Offers(OffersContext::InvoiceRequest { nonce })), _)) => nonce,
-		Ok(PeeledOnion::Receive(_, context, _)) => panic!("Unexpected onion message context: {:?}", context),
+		Ok(PeeledOnion::Offers(_, Some(OffersContext::InvoiceRequest { nonce }), _)) => nonce,
+		Ok(PeeledOnion::Offers(_, context, _)) => panic!("Unexpected onion message context: {:?}", context),
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
 	}
 }
@@ -204,34 +204,30 @@ pub(super) fn extract_invoice_request<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> (InvoiceRequest, BlindedMessagePath) {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(message, _, reply_path)) => match message {
-			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
-				OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
-				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
-				#[cfg(async_payments)]
-				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
-				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
-			},
-			_ => panic!("Unexpected message {:?}", message),
+		Ok(PeeledOnion::Offers(message, _, reply_path)) => match message {
+			OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
+			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+			#[cfg(async_payments)]
+			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
+			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
 	}
 }
 
 fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> (Bolt12Invoice, BlindedMessagePath) {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(message, _, reply_path)) => match message {
-			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
-				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
-				OffersMessage::Invoice(invoice) => (invoice, reply_path.unwrap()),
-				#[cfg(async_payments)]
-				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
-				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
-			},
-			_ => panic!("Unexpected message {:?}", message),
+		Ok(PeeledOnion::Offers(message, _, reply_path)) => match message {
+			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
+			OffersMessage::Invoice(invoice) => (invoice, reply_path.unwrap()),
+			#[cfg(async_payments)]
+			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
+			OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
 	}
 }
@@ -240,17 +236,15 @@ fn extract_invoice_error<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> InvoiceError {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(message, _, _)) => match message {
-			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
-				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
-				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
-				#[cfg(async_payments)]
-				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
-				OffersMessage::InvoiceError(error) => error,
-			},
-			_ => panic!("Unexpected message: {:?}", message),
+		Ok(PeeledOnion::Offers(message, _, _)) => match message {
+			OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
+			OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+			#[cfg(async_payments)]
+			OffersMessage::StaticInvoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+			OffersMessage::InvoiceError(error) => error,
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
 	}
 }
