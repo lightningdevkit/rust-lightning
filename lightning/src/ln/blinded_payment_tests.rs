@@ -1814,3 +1814,147 @@ fn test_combined_trampoline_onion_creation_vectors() {
 	assert_eq!(htlc_msat, 150_156_000);
 	assert_eq!(htlc_cltv, 800_060);
 }
+
+#[test]
+#[cfg(trampoline)]
+fn test_trampoline_inbound_payment_decoding() {
+	let secp_ctx = Secp256k1::new();
+	let session_priv = secret_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
+
+	let bob_secret = secret_from_hex("4242424242424242424242424242424242424242424242424242424242424242");
+	let bob_node_id = PublicKey::from_secret_key(&secp_ctx, &bob_secret);
+	let _bob_unblinded_tlvs = bytes_from_hex("011a0000000000000000000000000000000000000000000000000000020800000000000006c10a0800240000009627100c06000b69e505dc0e00fd023103123456");
+	let carol_secret = secret_from_hex("4343434343434343434343434343434343434343434343434343434343434343");
+	let carol_node_id = PublicKey::from_secret_key(&secp_ctx, &carol_secret);
+	let _carol_unblinded_tlvs = bytes_from_hex("020800000000000004510821031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0a0800300000006401f40c06000b69c105dc0e00");
+	let dave_secret = secret_from_hex("4444444444444444444444444444444444444444444444444444444444444444");
+	let dave_node_id = PublicKey::from_secret_key(&secp_ctx, &dave_secret);
+	let _dave_unblinded_tlvs = bytes_from_hex("01230000000000000000000000000000000000000000000000000000000000000000000000020800000000000002310a060090000000fa0c06000b699105dc0e00");
+	let eve_secret = secret_from_hex("4545454545454545454545454545454545454545454545454545454545454545");
+	let _eve_node_id = PublicKey::from_secret_key(&secp_ctx, &eve_secret);
+	let _eve_unblinded_tlvs = bytes_from_hex("011a00000000000000000000000000000000000000000000000000000604deadbeef0c06000b690105dc0e0f020000000000000000000000000000fdffff0206c1");
+
+	let path = Path {
+		hops: vec![
+			// Bob
+			RouteHop {
+				pubkey: bob_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+
+			// Carol
+			RouteHop {
+				pubkey: carol_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: (572330 << 40) + (42 << 16) + 2821,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 150_153_000,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+		],
+		blinded_tail: Some(BlindedTail {
+			trampoline_hops: vec![
+				// Carol's pubkey
+				TrampolineHop {
+					pubkey: carol_node_id,
+					node_features: Features::empty(),
+					fee_msat: 2_500,
+					cltv_expiry_delta: 24,
+				},
+				// Dave's pubkey (the intro node needs to be duplicated)
+				TrampolineHop {
+					pubkey: dave_node_id,
+					node_features: Features::empty(),
+					fee_msat: 150_500, // incorporate both base and proportional fee
+					cltv_expiry_delta: 36,
+				}
+			],
+			hops: vec![
+				// Dave's blinded node id
+				BlindedHop {
+					blinded_node_id: pubkey_from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be"),
+					encrypted_payload: bytes_from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a"),
+				},
+				// Eve's blinded node id
+				BlindedHop {
+					blinded_node_id: pubkey_from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22"),
+					encrypted_payload: bytes_from_hex("bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c"),
+				}
+			],
+			blinding_point: pubkey_from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e"),
+			excess_final_cltv_expiry_delta: 0,
+			final_value_msat: 150_000_000
+		})
+	};
+
+	let payment_secret = PaymentSecret(secret_from_hex("7494b65bc092b48a75465e43e29be807eb2cc535ce8aaba31012b8ff1ceac5da").secret_bytes());
+
+	let amt_msat = 150_000_001;
+	let cur_height = 800_001;
+	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
+	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &recipient_onion_fields, cur_height, &PaymentHash([0; 32]), &None, None, [0; 32]).unwrap();
+
+	struct TestEcdhSigner {
+		node_secret: SecretKey,
+	}
+	impl NodeSigner for TestEcdhSigner {
+		fn ecdh(
+			&self, _recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+		) -> Result<SharedSecret, ()> {
+			let mut node_secret = self.node_secret.clone();
+			if let Some(tweak) = tweak {
+				node_secret = self.node_secret.mul_tweak(tweak).map_err(|_| ())?;
+			}
+			Ok(SharedSecret::new(other_key, &node_secret))
+		}
+		fn get_inbound_payment_key(&self) -> ExpandedKey { unreachable!() }
+		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
+		fn sign_invoice(
+			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
+		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn sign_bolt12_invoice(
+			&self, _invoice: &UnsignedBolt12Invoice,
+		) -> Result<schnorr::Signature, ()> { unreachable!() }
+		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
+	}
+	let logger = test_utils::TestLogger::with_id("".to_owned());
+
+	let bob_update_add = update_add_msg(111_000, 747_501, None, bob_onion);
+	let bob_node_signer = TestEcdhSigner { node_secret: bob_secret };
+
+	let (bob_peeled_onion, next_packet_details_opt) = onion_payment::decode_incoming_update_add_htlc_onion(
+		&bob_update_add, &bob_node_signer, &logger, &secp_ctx
+	).unwrap_or_else(|_| panic!());
+
+	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::Forward {
+		next_hop_data: msgs::InboundOnionForwardPayload {..}, next_hop_hmac, new_packet_bytes, ..
+	} = bob_peeled_onion {
+		(new_packet_bytes, next_hop_hmac)
+	} else { panic!() };
+
+	let carol_packet_details = next_packet_details_opt.unwrap();
+	let carol_onion = msgs::OnionPacket {
+		version: 0,
+		public_key: carol_packet_details.next_packet_pubkey,
+		hop_data: carol_packet_bytes,
+		hmac: carol_hmac,
+	};
+	let carol_update_add = update_add_msg(carol_packet_details.outgoing_amt_msat, carol_packet_details.outgoing_cltv_value, None, carol_onion);
+
+	let carol_node_signer = TestEcdhSigner { node_secret: carol_secret };
+	let (carol_peeled_onion, _) = onion_payment::decode_incoming_update_add_htlc_onion(
+		&carol_update_add, &carol_node_signer, &logger, &secp_ctx
+	).unwrap_or_else(|_| panic!());
+
+	let _carol_trampoline_update_add = if let onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, .. } = carol_peeled_onion {
+		assert_eq!(next_trampoline_hop_data.next_trampoline, dave_node_id);
+	} else {
+		panic!();
+	};
+}
