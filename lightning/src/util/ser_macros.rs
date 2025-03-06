@@ -33,7 +33,10 @@ macro_rules! _encode_tlv {
 		$crate::_encode_tlv!($stream, $type, $field, required);
 	};
 	($stream: expr, $type: expr, $field: expr, required_vec $(, $self: ident)?) => {
-		$crate::_encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
+		$crate::_encode_tlv!($stream, $type, $crate::util::ser::WithoutLength($field), required);
+	};
+	($stream: expr, $type: expr, $field: expr, (required_vec, encoding: ($fieldty: ty, $encoding: ident)) $(, $self: ident)?) => {
+		$crate::_encode_tlv!($stream, $type, $encoding($field), required);
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option $(, $self: ident)?) => {
 		if let Some(ref field) = $optional_field {
@@ -166,7 +169,7 @@ macro_rules! _encode_tlv_stream {
 		)*
 		for tlv in $extra_tlvs {
 			let (typ, value): &(u64, Vec<u8>) = tlv;
-			$crate::_encode_tlv!($stream, *typ, *value, required_vec);
+			$crate::_encode_tlv!($stream, *typ, value, required_vec);
 		}
 
 		#[allow(unused_mut, unused_variables, unused_assignments)]
@@ -207,11 +210,15 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};
 	($len: expr, $type: expr, $field: expr, required_vec $(, $self: ident)?) => {
-		let field = $crate::util::ser::WithoutLength(&$field);
+		let field = $crate::util::ser::WithoutLength($field);
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, required);
+	};
+	($len: expr, $type: expr, $field: expr, (required_vec, encoding: ($fieldty: ty, $encoding: ident)) $(, $self: ident)?) => {
+		let field = $encoding($field);
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, field, required);
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option $(, $self: ident)?) => {
-		if let Some(ref field) = $optional_field {
+		if let Some(ref field) = $optional_field.as_ref() {
 			BigSize($optional_type)
 				.write(&mut $len)
 				.expect("No in-memory data may fail to serialize");
@@ -265,7 +272,7 @@ macro_rules! _encode_varint_length_prefixed_tlv {
 			)*
 			for tlv in $extra_tlvs {
 				let (typ, value): &(u64, Vec<u8>) = tlv;
-				$crate::_get_varint_length_prefixed_tlv_length!(len, *typ, *value, required_vec);
+				$crate::_get_varint_length_prefixed_tlv_length!(len, *typ, value, required_vec);
 			}
 			len.0
 		};
@@ -316,6 +323,9 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required_vec) => {{
 		$crate::_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (required_vec, encoding: $encoding: tt)) => {{
+		$crate::_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, optional_vec) => {{
 		// no-op
 	}};
@@ -361,6 +371,9 @@ macro_rules! _check_missing_tlv {
 		$crate::_check_missing_tlv!($last_seen_type, $type, $field, required);
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, required_vec) => {{
+		$crate::_check_missing_tlv!($last_seen_type, $type, $field, required);
+	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (required_vec, encoding: $encoding: tt)) => {{
 		$crate::_check_missing_tlv!($last_seen_type, $type, $field, required);
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
@@ -411,6 +424,12 @@ macro_rules! _decode_tlv {
 	($outer_reader: expr, $reader: expr, $field: ident, required_vec) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
 		$field = f.0;
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, (required_vec, encoding: ($fieldty: ty, $encoding: ident))) => {{
+		$field = {
+			let field: $encoding<$fieldty> = ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
+			$crate::util::ser::RequiredWrapper(Some(field.0))
+		};
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?);
@@ -762,7 +781,7 @@ macro_rules! write_ver_prefix {
 #[macro_export]
 macro_rules! write_tlv_fields {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => {
-		$crate::_encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*})
+		$crate::_encode_varint_length_prefixed_tlv!($stream, {$(($type, &$field, $fieldty)),*})
 	}
 }
 
@@ -830,6 +849,9 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, required_vec) => {
 		$field
 	};
+	($field: ident, (required_vec, encoding: ($fieldty: ty, $encoding: ident))) => {
+		$crate::_init_tlv_based_struct_field!($field, required)
+	};
 	($field: ident, optional_vec) => {
 		$field.unwrap()
 	};
@@ -855,6 +877,9 @@ macro_rules! _init_tlv_field_var {
 	};
 	($field: ident, required_vec) => {
 		let mut $field = Vec::new();
+	};
+	($field: ident, (required_vec, encoding: ($fieldty: ty, $encoding: ident))) => {
+		$crate::_init_tlv_field_var!($field, required);
 	};
 	($field: ident, option) => {
 		let mut $field = None;
@@ -983,7 +1008,7 @@ macro_rules! impl_writeable_tlv_based {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				$crate::_encode_varint_length_prefixed_tlv!(writer, {
-					$(($type, self.$field, $fieldty, self)),*
+					$(($type, &self.$field, $fieldty, self)),*
 				});
 				Ok(())
 			}
@@ -995,7 +1020,7 @@ macro_rules! impl_writeable_tlv_based {
 					#[allow(unused_mut)]
 					let mut len = $crate::util::ser::LengthCalculatingWriter(0);
 					$(
-						$crate::_get_varint_length_prefixed_tlv_length!(len, $type, self.$field, $fieldty, self);
+						$crate::_get_varint_length_prefixed_tlv_length!(len, $type, &self.$field, $fieldty, self);
 					)*
 					len.0
 				};
@@ -1112,7 +1137,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
 						$crate::_encode_varint_length_prefixed_tlv!(writer, {
-							$(($type, *$field, $fieldty, self)),*
+							$(($type, $field, $fieldty, self)),*
 						});
 					}),*
 					$($st::$tuple_variant_name (ref field) => {
@@ -1370,7 +1395,8 @@ mod tests {
 	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
 	use crate::util::ser::{
-		HighZeroBytesDroppedBigSize, LengthReadable, MaybeReadable, Readable, VecWriter, Writeable,
+		HighZeroBytesDroppedBigSize, LengthReadable, MaybeReadable, Readable, VecWriter,
+		WithoutLength, Writeable,
 	};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
@@ -1878,5 +1904,24 @@ mod tests {
 		let encoded = <Vec<u8>>::from_hex("0300012a").unwrap();
 		let read = <ExpandedField as Readable>::read(&mut &encoded[..]).unwrap();
 		assert_eq!(read, ExpandedField { new_field: (42, 0) });
+	}
+
+	#[test]
+	fn required_vec_with_encoding() {
+		// Ensure that serializing a required vec with a specified encoding will survive a ser round
+		// trip.
+		#[derive(PartialEq, Eq, Debug)]
+		struct MyCustomStruct {
+			tlv_field: Vec<u8>,
+		}
+		impl_writeable_tlv_based!(MyCustomStruct, {
+			(0, tlv_field, (required_vec, encoding: (Vec<u8>, WithoutLength))),
+		});
+
+		let instance = MyCustomStruct { tlv_field: vec![42; 32] };
+		let encoded = instance.encode();
+		let decoded: MyCustomStruct =
+			LengthReadable::read_from_fixed_length_buffer(&mut &encoded[..]).unwrap();
+		assert_eq!(decoded, instance);
 	}
 }
