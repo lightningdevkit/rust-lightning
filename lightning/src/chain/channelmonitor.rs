@@ -223,16 +223,20 @@ impl_writeable_tlv_based!(HTLCUpdate, {
 /// transaction.
 pub(crate) const COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE: u32 = 12;
 
-/// When we go to force-close a channel because an HTLC is expiring, we should ensure that the
-/// HTLC(s) expiring are not considered pinnable, allowing us to aggregate them with other HTLC(s)
-/// expiring at the same time.
-const _: () = assert!(CLTV_CLAIM_BUFFER > COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
+/// When we go to force-close a channel because an HTLC is expiring, by the time we've gotten the
+/// commitment transaction confirmed, we should ensure that the HTLC(s) expiring are not considered
+/// pinnable, allowing us to aggregate them with other HTLC(s) expiring at the same time.
+const _: () = assert!(MAX_BLOCKS_FOR_CONF > COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
+
+/// The upper bound on how many blocks we think it can take for us to get a transaction confirmed.
+pub(crate) const MAX_BLOCKS_FOR_CONF: u32 = 18;
 
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.
-/// In other words, this is an upper bound on how many blocks we think it can take us to get a
-/// transaction confirmed (and we use it in a few more, equivalent, places).
-pub(crate) const CLTV_CLAIM_BUFFER: u32 = 18;
+///
+/// This is two times [`MAX_BLOCKS_FOR_CONF`] as we need to first get the commitment transaction
+/// confirmed, then get an HTLC transaction confirmed.
+pub(crate) const CLTV_CLAIM_BUFFER: u32 = MAX_BLOCKS_FOR_CONF * 2;
 /// Number of blocks by which point we expect our counterparty to have seen new blocks on the
 /// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
 /// copies of ChannelMonitors, including watchtowers). We could enforce the contract by failing
@@ -4512,18 +4516,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
 					// we give ourselves a few blocks of headroom after expiration before going
 					// on-chain for an expired HTLC.
-					// Note that, to avoid a potential attack whereby a node delays claiming an HTLC
-					// from us until we've reached the point where we go on-chain with the
-					// corresponding inbound HTLC, we must ensure that outbound HTLCs go on chain at
-					// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
-					//  aka outbound_cltv + LATENCY_GRACE_PERIOD_BLOCKS == height - CLTV_CLAIM_BUFFER
-					//      inbound_cltv == height + CLTV_CLAIM_BUFFER
-					//      outbound_cltv + LATENCY_GRACE_PERIOD_BLOCKS + CLTV_CLAIM_BUFFER <= inbound_cltv - CLTV_CLAIM_BUFFER
-					//      LATENCY_GRACE_PERIOD_BLOCKS + 2*CLTV_CLAIM_BUFFER <= inbound_cltv - outbound_cltv
-					//      CLTV_EXPIRY_DELTA <= inbound_cltv - outbound_cltv (by check in ChannelManager::decode_update_add_htlc_onion)
-					//      LATENCY_GRACE_PERIOD_BLOCKS + 2*CLTV_CLAIM_BUFFER <= CLTV_EXPIRY_DELTA
-					//  The final, above, condition is checked for statically in channelmanager
-					//  with CHECK_CLTV_EXPIRY_SANITY_2.
 					let htlc_outbound = $holder_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
 					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
