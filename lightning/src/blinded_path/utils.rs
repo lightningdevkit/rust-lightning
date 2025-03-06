@@ -18,12 +18,10 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use super::message::BlindedMessagePath;
 use super::{BlindedHop, BlindedPath};
 use crate::crypto::streams::ChaChaPolyWriteAdapter;
-use crate::ln::msgs::DecodeError;
+use crate::io;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
-use crate::util::ser::{Readable, Writeable};
-
-use crate::io;
+use crate::util::ser::{Writeable, Writer};
 
 use core::borrow::Borrow;
 
@@ -196,19 +194,82 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Ve
 	write_adapter.encode()
 }
 
-/// Blinded path encrypted payloads may be padded to ensure they are equal length.
+/// A data structure used exclusively to pad blinded path payloads, ensuring they are of
+/// equal length. Padding is written at Type 1 for compatibility with the lightning specification.
 ///
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
-impl Readable for Padding {
-	#[inline]
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+/// For more details, see the [BOLTs Specification - Encrypted Recipient Data](https://github.com/lightning/bolts/blob/8707471dbc23245fb4d84c5f5babac1197f1583e/04-onion-routing.md#inside-encrypted_recipient_data-encrypted_data_tlv).
+pub(crate) struct BlindedPathPadding {
+	length: usize,
+}
+
+impl BlindedPathPadding {
+	/// Creates a new [`BlindedPathPadding`] instance with a specified size.
+	/// Use this method when defining the padding size before writing
+	/// an encrypted payload.
+	pub fn new(length: usize) -> Self {
+		Self { length }
+	}
+}
+
+impl Writeable for BlindedPathPadding {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		const BUFFER_SIZE: usize = 1024;
+		let buffer = [0u8; BUFFER_SIZE];
+
+		let mut remaining = self.length;
 		loop {
-			let mut buf = [0; 8192];
-			if reader.read(&mut buf[..])? == 0 {
+			let to_write = core::cmp::min(remaining, BUFFER_SIZE);
+			writer.write_all(&buffer[..to_write])?;
+			remaining -= to_write;
+			if remaining == 0 {
 				break;
 			}
 		}
-		Ok(Self {})
+		Ok(())
 	}
+}
+
+/// Padding storage requires two extra bytes:
+/// - One byte for the type.
+/// - One byte for the padding length.
+/// This constant accounts for that overhead.
+const TLV_OVERHEAD: usize = 2;
+
+/// A generic struct that applies padding to blinded path TLVs, rounding their size off to `round_off`
+pub(crate) struct BlindedPathWithPadding<T: Writeable> {
+	pub(crate) tlvs: T,
+	pub(crate) round_off: usize,
+}
+
+impl<T: Writeable> Writeable for BlindedPathWithPadding<T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let tlv_length = self.tlvs.serialized_length();
+		let total_length = tlv_length + TLV_OVERHEAD;
+
+		let padding_length =
+			(total_length + self.round_off - 1) / self.round_off * self.round_off - total_length;
+
+		let padding = Some(BlindedPathPadding::new(padding_length));
+
+		encode_tlv_stream!(writer, {
+			(1, padding, option),
+		});
+
+		self.tlvs.write(writer)
+	}
+}
+
+#[cfg(test)]
+/// Checks if all the packets in the blinded path are properly padded.
+pub fn is_padded(hops: &[BlindedHop], padding_round_off: usize) -> bool {
+	let first_hop = hops.first().expect("BlindedPath must have at least one hop");
+	let first_payload_size = first_hop.encrypted_payload.len();
+
+	// The unencrypted payload data is padded before getting encrypted.
+	// Assuming the first payload is padded properly, get the extra data length.
+	let extra_length = first_payload_size % padding_round_off;
+	hops.iter().all(|hop| {
+		// Check that every packet is padded to the round off length subtracting the extra length.
+		(hop.encrypted_payload.len() - extra_length) % padding_round_off == 0
+	})
 }
