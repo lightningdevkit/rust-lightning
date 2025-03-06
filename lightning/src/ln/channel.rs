@@ -60,7 +60,7 @@ use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Reci
 use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
-use crate::util::ser::{Readable, ReadableArgs, TransactionU16LenLimited, Writeable, Writer};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, TransactionU16LenLimited, Writeable, Writer};
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
@@ -1519,6 +1519,7 @@ impl<SP: Deref> Channel<SP> where
 				};
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
+					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -1663,6 +1664,53 @@ pub(super) struct FundingScope {
 	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
 	/// [`ChannelContext::is_manual_broadcast`] is true) this will be a dummy empty transaction.
 	funding_transaction: Option<Transaction>,
+}
+
+impl Writeable for FundingScope {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(1, self.value_to_self_msat, required),
+			(3, self.counterparty_selected_channel_reserve_satoshis, option),
+			(5, self.holder_selected_channel_reserve_satoshis, required),
+			(7, self.channel_transaction_parameters, (required: ReadableArgs, None)),
+			(9, self.funding_transaction, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for FundingScope {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut value_to_self_msat = RequiredWrapper(None);
+		let mut counterparty_selected_channel_reserve_satoshis = None;
+		let mut holder_selected_channel_reserve_satoshis = RequiredWrapper(None);
+		let mut channel_transaction_parameters = RequiredWrapper(None);
+		let mut funding_transaction = None;
+
+		read_tlv_fields!(reader, {
+			(1, value_to_self_msat, required),
+			(3, counterparty_selected_channel_reserve_satoshis, option),
+			(5, holder_selected_channel_reserve_satoshis, required),
+			(7, channel_transaction_parameters, (required: ReadableArgs, None)),
+			(9, funding_transaction, option),
+		});
+
+		Ok(Self {
+			value_to_self_msat: value_to_self_msat.0.unwrap(),
+			counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.0.unwrap(),
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((0, 0)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
+			channel_transaction_parameters: channel_transaction_parameters.0.unwrap(),
+			funding_transaction,
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+		})
+	}
 }
 
 impl FundingScope {
@@ -4945,6 +4993,7 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
+	pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -9548,6 +9597,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -9824,6 +9874,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -10633,6 +10684,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
 		});
@@ -10862,7 +10914,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let channel_parameters: ChannelTransactionParameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
+		let channel_parameters: ChannelTransactionParameters = ReadableArgs::<Option<u64>>::read(reader, Some(channel_value_satoshis))?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -10932,6 +10984,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
+		let mut pending_funding = Some(Vec::new());
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -10967,6 +11021,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(54, pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 		});
@@ -11142,6 +11197,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
 			},
+			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
 				user_id,
 

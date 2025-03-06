@@ -1034,8 +1034,8 @@ impl Writeable for ChannelTransactionParameters {
 	}
 }
 
-impl ReadableArgs<u64> for ChannelTransactionParameters {
-	fn read<R: io::Read>(reader: &mut R, read_args: u64) -> Result<Self, DecodeError> {
+impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
+	fn read<R: io::Read>(reader: &mut R, read_args: Option<u64>) -> Result<Self, DecodeError> {
 		let mut holder_pubkeys = RequiredWrapper(None);
 		let mut holder_selected_contest_delay = RequiredWrapper(None);
 		let mut is_outbound_from_holder = RequiredWrapper(None);
@@ -1058,10 +1058,17 @@ impl ReadableArgs<u64> for ChannelTransactionParameters {
 			(13, channel_value_satoshis, option),
 		});
 
-		let channel_value_satoshis = channel_value_satoshis.unwrap_or(read_args);
-		if channel_value_satoshis != read_args {
-			return Err(DecodeError::InvalidValue);
-		}
+		let channel_value_satoshis = match read_args {
+			None => channel_value_satoshis.ok_or(DecodeError::InvalidValue)?,
+			Some(expected_value) => {
+				let channel_value_satoshis = channel_value_satoshis.unwrap_or(expected_value);
+				if channel_value_satoshis == expected_value {
+					channel_value_satoshis
+				} else {
+					return Err(DecodeError::InvalidValue);
+				}
+			},
+		};
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
