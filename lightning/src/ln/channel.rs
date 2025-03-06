@@ -1513,6 +1513,7 @@ impl<SP: Deref> Channel<SP> where
 				};
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
+					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -4820,6 +4821,7 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
+	pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -9278,6 +9280,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -9545,6 +9548,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -10785,6 +10789,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
 			},
+			pending_funding: vec![],
 			context: ChannelContext {
 				user_id,
 
