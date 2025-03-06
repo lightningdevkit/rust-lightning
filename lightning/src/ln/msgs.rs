@@ -59,7 +59,7 @@ use crate::io_extras::read_to_end;
 
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
-use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
+use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthLimitedRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
 use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -2323,7 +2323,7 @@ impl Writeable for TrampolineOnionPacket {
 }
 
 impl LengthReadable for TrampolineOnionPacket {
-	fn read_from_fixed_length_buffer<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let version = Readable::read(r)?;
 		let public_key = Readable::read(r)?;
 

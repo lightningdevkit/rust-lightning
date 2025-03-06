@@ -4,7 +4,7 @@ use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::io::{self, Read, Write};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{
-	FixedLengthReader, LengthRead, LengthReadableArgs, Readable, Writeable, Writer,
+	FixedLengthReader, LengthLimitedRead, LengthReadableArgs, Readable, Writeable, Writer,
 };
 
 pub(crate) struct ChaChaReader<'a, R: io::Read> {
@@ -56,10 +56,10 @@ pub(crate) struct ChaChaPolyReadAdapter<R: Readable> {
 }
 
 impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
-	// Simultaneously read and decrypt an object from a LengthRead, storing it in Self::readable.
-	// LengthRead must be used instead of std::io::Read because we need the total length to separate
-	// out the tag at the end.
-	fn read<R: LengthRead>(r: &mut R, secret: [u8; 32]) -> Result<Self, DecodeError> {
+	// Simultaneously read and decrypt an object from a LengthLimitedRead storing it in
+	// Self::readable. LengthLimitedRead must be used instead of std::io::Read because we need the
+	// total length to separate out the tag at the end.
+	fn read<R: LengthLimitedRead>(r: &mut R, secret: [u8; 32]) -> Result<Self, DecodeError> {
 		if r.total_bytes() < 16 {
 			return Err(DecodeError::InvalidValue);
 		}
