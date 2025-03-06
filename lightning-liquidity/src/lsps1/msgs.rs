@@ -1,14 +1,15 @@
 //! Message, request, and other primitive types used to implement bLIP-51 / LSPS1.
 
 use crate::lsps0::ser::{
-	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSDateTime,
-	LSPSMessage, LSPSRequestId, LSPSResponseError,
+	string_amount, string_offer, u32_fee_rate, unchecked_address, unchecked_address_option,
+	LSPSDateTime, LSPSMessage, LSPSRequestId, LSPSResponseError,
 };
 
 use crate::prelude::String;
 
 use bitcoin::{Address, FeeRate, OutPoint};
 
+use lightning::offers::offer::Offer;
 use lightning_invoice::Bolt11Invoice;
 
 use serde::{Deserialize, Serialize};
@@ -170,6 +171,24 @@ pub struct LSPS1Bolt11PaymentInfo {
 	pub order_total_sat: u64,
 	/// A BOLT11 invoice the client can pay to have to channel opened.
 	pub invoice: Bolt11Invoice,
+}
+
+/// A Lightning payment using BOLT 12.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct LSPS1Bolt12PaymentInfo {
+	/// Indicates the current state of the payment.
+	pub state: LSPS1PaymentState,
+	/// The datetime when the payment option expires.
+	pub expires_at: LSPSDateTime,
+	/// The total fee the LSP will charge to open this channel in satoshi.
+	#[serde(with = "string_amount")]
+	pub fee_total_sat: u64,
+	/// The amount the client needs to pay to have the requested channel openend.
+	#[serde(with = "string_amount")]
+	pub order_total_sat: u64,
+	/// A BOLT12 offer the client can pay to have to channel opened.
+	#[serde(with = "string_offer")]
+	pub offer: Offer,
 }
 
 /// An onchain payment.
@@ -388,6 +407,15 @@ mod tests {
 		let _bolt11_payment: LSPS1Bolt11PaymentInfo = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
+			"state" : "EXPECT_PAYMENT",
+			"expires_at": "2025-01-01T00:00:00Z",
+			"fee_total_sat": "8888",
+			"order_total_sat": "200888",
+			"offer": "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcgqvp3pwq2q3shxerxzzfqyxdxxkjqxfpt9tz94zj79m4n99kwjddq92uqryuwsu4nt0t3lthfq02jzqla96dtkf4rew8edxw0p85swe89wd8ldekdl5j262n76qyl2qgzajm08clzr74z6ssy0qlvvp9f5kvrxf27yz4pcy99jge69kxu8ttsqt8gw8jsk5397zvvdf4lfd52paf73thcg6xf57xmvtdrwny5mn2r4jw2d5jzalqrq537mmt6u9qpqytzzql6zemrme07jqqwtza76lldcj9wgc0ccd4d2w584cdcx6szsuupvy"
+		}"#;
+		let _bolt11_payment: LSPS1Bolt12PaymentInfo = serde_json::from_str(json_str).unwrap();
+
+		let json_str = r#"{
 			"state": "EXPECT_PAYMENT",
 			"expires_at": "2025-01-01T00:00:00Z",
 			"fee_total_sat": "9999",
@@ -405,6 +433,13 @@ mod tests {
 				"fee_total_sat": "8888",
 				"order_total_sat": "200888",
 				"invoice": "lnbc252u1p3aht9ysp580g4633gd2x9lc5al0wd8wx0mpn9748jeyz46kqjrpxn52uhfpjqpp5qgf67tcqmuqehzgjm8mzya90h73deafvr4m5705l5u5l4r05l8cqdpud3h8ymm4w3jhytnpwpczqmt0de6xsmre2pkxzm3qydmkzdjrdev9s7zhgfaqxqyjw5qcqpjrzjqt6xptnd85lpqnu2lefq4cx070v5cdwzh2xlvmdgnu7gqp4zvkus5zapryqqx9qqqyqqqqqqqqqqqcsq9q9qyysgqen77vu8xqjelum24hgjpgfdgfgx4q0nehhalcmuggt32japhjuksq9jv6eksjfnppm4hrzsgyxt8y8xacxut9qv3fpyetz8t7tsymygq8yzn05"
+			},
+			"bolt12": {
+				"state" : "EXPECT_PAYMENT",
+				"expires_at": "2025-01-01T00:00:00Z",
+				"fee_total_sat": "8888",
+				"order_total_sat": "200888",
+				"offer": "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcgqvp3pwq2q3shxerxzzfqyxdxxkjqxfpt9tz94zj79m4n99kwjddq92uqryuwsu4nt0t3lthfq02jzqla96dtkf4rew8edxw0p85swe89wd8ldekdl5j262n76qyl2qgzajm08clzr74z6ssy0qlvvp9f5kvrxf27yz4pcy99jge69kxu8ttsqt8gw8jsk5397zvvdf4lfd52paf73thcg6xf57xmvtdrwny5mn2r4jw2d5jzalqrq537mmt6u9qpqytzzql6zemrme07jqqwtza76lldcj9wgc0ccd4d2w584cdcx6szsuupvy"
 			},
 			"onchain": {
 				"state": "EXPECT_PAYMENT",
@@ -436,6 +471,13 @@ mod tests {
 					"fee_total_sat": "8888",
 					"order_total_sat": "2008888",
 					"invoice" : "lnbc252u1p3aht9ysp580g4633gd2x9lc5al0wd8wx0mpn9748jeyz46kqjrpxn52uhfpjqpp5qgf67tcqmuqehzgjm8mzya90h73deafvr4m5705l5u5l4r05l8cqdpud3h8ymm4w3jhytnpwpczqmt0de6xsmre2pkxzm3qydmkzdjrdev9s7zhgfaqxqyjw5qcqpjrzjqt6xptnd85lpqnu2lefq4cx070v5cdwzh2xlvmdgnu7gqp4zvkus5zapryqqx9qqqyqqqqqqqqqqqcsq9q9qyysgqen77vu8xqjelum24hgjpgfdgfgx4q0nehhalcmuggt32japhjuksq9jv6eksjfnppm4hrzsgyxt8y8xacxut9qv3fpyetz8t7tsymygq8yzn05"
+				},
+				"bolt12": {
+					"state" : "EXPECT_PAYMENT",
+					"expires_at": "2025-01-01T00:00:00Z",
+					"fee_total_sat": "8888",
+					"order_total_sat": "200888",
+					"offer": "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcgqvp3pwq2q3shxerxzzfqyxdxxkjqxfpt9tz94zj79m4n99kwjddq92uqryuwsu4nt0t3lthfq02jzqla96dtkf4rew8edxw0p85swe89wd8ldekdl5j262n76qyl2qgzajm08clzr74z6ssy0qlvvp9f5kvrxf27yz4pcy99jge69kxu8ttsqt8gw8jsk5397zvvdf4lfd52paf73thcg6xf57xmvtdrwny5mn2r4jw2d5jzalqrq537mmt6u9qpqytzzql6zemrme07jqqwtza76lldcj9wgc0ccd4d2w584cdcx6szsuupvy"
 				},
 				"onchain": {
 					"state": "EXPECT_PAYMENT",
