@@ -226,7 +226,7 @@ impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
 	}
 }
 
-impl<'a, R: Read> LengthRead for FixedLengthReader<'a, R> {
+impl<'a, R: Read> LengthLimitedRead for FixedLengthReader<'a, R> {
 	#[inline]
 	fn total_bytes(&self) -> u64 {
 		self.total_bytes
@@ -344,25 +344,27 @@ where
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A [`io::Read`] that also provides the total bytes available to be read.
-pub trait LengthRead: Read {
+/// A [`io::Read`] that limits the amount of bytes that can be read. Implementations should ensure
+/// that the object being read will only consume a fixed number of bytes from the underlying
+/// [`io::Read`], see [`FixedLengthReader`] for an example.
+pub trait LengthLimitedRead: Read {
 	/// The total number of bytes available to be read.
 	fn total_bytes(&self) -> u64;
 }
 
-/// A trait that various higher-level LDK types implement allowing them to be read in
-/// from a Read given some additional set of arguments which is required to deserialize, requiring
-/// the implementer to provide the total length of the read.
+/// Similar to [`LengthReadable`]. Useful when an additional set of arguments is required to
+/// deserialize.
 pub(crate) trait LengthReadableArgs<P>
 where
 	Self: Sized,
 {
-	/// Reads a `Self` in from the given [`LengthRead`].
-	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+	/// Reads a `Self` in from the given [`LengthLimitedRead`].
+	fn read<R: LengthLimitedRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A trait that allows the implementer to be read in from a [`LengthRead`], requiring
-/// the reader to provide the total length of the read.
+/// A trait that allows the implementer to be read in from a [`LengthLimitedRead`], requiring the
+/// reader to limit the number of total bytes read from its underlying [`Read`]. Useful for structs
+/// that will always consume the entire provided [`Read`] when deserializing.
 ///
 /// Any type that implements [`Readable`] also automatically has a [`LengthReadable`]
 /// implementation, but some types, most notably onion packets, only implement [`LengthReadable`].
@@ -370,13 +372,17 @@ pub trait LengthReadable
 where
 	Self: Sized,
 {
-	/// Reads a `Self` in from the given [`LengthRead`].
-	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+	/// Reads a `Self` in from the given [`LengthLimitedRead`].
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError>;
 }
 
 impl<T: Readable> LengthReadable for T {
 	#[inline]
-	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<T, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<T, DecodeError> {
 		Readable::read(reader)
 	}
 }
@@ -405,7 +411,9 @@ impl<T: Readable> MaybeReadable for T {
 pub struct RequiredWrapper<T>(pub Option<T>);
 impl<T: LengthReadable> LengthReadable for RequiredWrapper<T> {
 	#[inline]
-	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
 		Ok(Self(Some(LengthReadable::read_from_fixed_length_buffer(reader)?)))
 	}
 }
