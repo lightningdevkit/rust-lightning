@@ -1,0 +1,5 @@
+## API Updates (0.2)
+
+* Upgrading to v0.2.0 is not allowed when a `ChannelMonitor` that does not track the channel's
+  `counterparty_node_id` is loaded. Upgrade to a v0.1.* release first and either send/route a
+  payment over the channel, or close it, before upgrading to v0.2.0.

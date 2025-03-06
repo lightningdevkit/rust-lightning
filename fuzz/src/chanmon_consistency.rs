@@ -282,7 +282,7 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 
 	fn release_pending_monitor_events(
 		&self,
-	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }

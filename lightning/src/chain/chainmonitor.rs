@@ -246,7 +246,7 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	persister: P,
 	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
 	/// from the user and not from a [`ChannelMonitor`].
-	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>>,
+	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>>,
 	/// The best block height seen, used as a proxy for the passage of time.
 	highest_chain_height: AtomicUsize,
 
@@ -804,7 +804,7 @@ where C::Target: chain::Filter,
 		let monitors = self.monitors.read().unwrap();
 		match monitors.get(&channel_id) {
 			None => {
-				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(channel_id), None);
+				let logger = WithContext::from(&self.logger, None, Some(channel_id), None);
 				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
 
 				// We should never ever trigger this from within ChannelManager. Technically a
@@ -874,7 +874,7 @@ where C::Target: chain::Filter,
 		}
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();

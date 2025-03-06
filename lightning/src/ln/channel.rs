@@ -3457,6 +3457,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			!matches!(self.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH))
 	}
 
+	fn unset_funding_info(&mut self, funding: &mut FundingScope) {
+		debug_assert!(
+			matches!(self.channel_state, ChannelState::FundingNegotiated)
+				|| matches!(self.channel_state, ChannelState::AwaitingChannelReady(_))
+		);
+		funding.channel_transaction_parameters.funding_outpoint = None;
+		self.channel_id = self.temporary_channel_id.expect(
+			"temporary_channel_id should be set since unset_funding_info is only called on funded \
+			 channels that were unfunded immediately beforehand"
+		);
+	}
+
 	fn validate_commitment_signed<L: Deref>(
 		&self, funding: &FundingScope, holder_commitment_point: &HolderCommitmentPoint,
 		msg: &msgs::CommitmentSigned, logger: &L,
@@ -4516,7 +4528,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				self.latest_monitor_update_id += 1;
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
-					counterparty_node_id: Some(self.counterparty_node_id),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
 					channel_id: Some(self.channel_id()),
 				}))
@@ -5095,7 +5106,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage: payment_preimage_arg.clone(),
 				payment_info,
@@ -5310,14 +5320,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// Further, the channel must be immediately shut down after this with a call to
 	/// [`ChannelContext::force_shutdown`].
 	pub fn unset_funding_info(&mut self) {
-		debug_assert!(matches!(
-			self.context.channel_state, ChannelState::AwaitingChannelReady(_)
-		));
-		self.funding.channel_transaction_parameters.funding_outpoint = None;
-		self.context.channel_id = self.context.temporary_channel_id.expect(
-			"temporary_channel_id should be set since unset_funding_info is only called on funded \
-			 channels that were unfunded immediately beforehand"
-		);
+		self.context.unset_funding_info(&mut self.funding);
 	}
 
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
@@ -5710,7 +5713,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
 				commitment_tx,
 				htlc_outputs,
@@ -5792,7 +5794,6 @@ impl<SP: Deref> FundedChannel<SP> where
 
 			let mut monitor_update = ChannelMonitorUpdate {
 				update_id: self.context.latest_monitor_update_id + 1, // We don't increment this yet!
-				counterparty_node_id: Some(self.context.counterparty_node_id),
 				updates: Vec::new(),
 				channel_id: Some(self.context.channel_id()),
 			};
@@ -5985,7 +5986,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::CommitmentSecret {
 				idx: self.context.cur_counterparty_commitment_transaction_number + 1,
 				secret: msg.per_commitment_secret,
@@ -7257,7 +7257,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.latest_monitor_update_id += 1;
 			let monitor_update = ChannelMonitorUpdate {
 				update_id: self.context.latest_monitor_update_id,
-				counterparty_node_id: Some(self.context.counterparty_node_id),
 				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
@@ -8543,7 +8542,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
 				commitment_txid: counterparty_commitment_txid,
 				htlc_outputs: htlcs.clone(),
@@ -8755,7 +8753,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.latest_monitor_update_id += 1;
 			let monitor_update = ChannelMonitorUpdate {
 				update_id: self.context.latest_monitor_update_id,
-				counterparty_node_id: Some(self.context.counterparty_node_id),
 				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
@@ -9314,6 +9311,14 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.get_funding_created_msg(logger)
 		} else { None };
 		(open_channel, funding_created)
+	}
+
+	/// Unsets the existing funding information.
+	///
+	/// The channel must be immediately shut down after this with a call to
+	/// [`ChannelContext::force_shutdown`].
+	pub fn unset_funding_info(&mut self) {
+		self.context.unset_funding_info(&mut self.funding);
 	}
 }
 

@@ -9478,41 +9478,32 @@ pub fn test_peer_funding_sidechannel() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let temp_chan_id_ab = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
-	let temp_chan_id_ca = exchange_open_accept_chan(&nodes[2], &nodes[0], 1_000_000, 0);
+	let temp_chan_id_ca = exchange_open_accept_chan(&nodes[1], &nodes[0], 1_000_000, 0);
 
 	let (_, tx, funding_output) =
 		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 
-	let cs_funding_events = nodes[2].node.get_and_clear_pending_events();
+	let cs_funding_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(cs_funding_events.len(), 1);
 	match cs_funding_events[0] {
 		Event::FundingGenerationReady { .. } => {}
 		_ => panic!("Unexpected event {:?}", cs_funding_events),
 	}
 
-	nodes[2].node.funding_transaction_generated_unchecked(temp_chan_id_ca, nodes[0].node.get_our_node_id(), tx.clone(), funding_output.index).unwrap();
-	let funding_created_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_funding_created(nodes[2].node.get_our_node_id(), &funding_created_msg);
-	get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[2].node.get_our_node_id());
-	expect_channel_pending_event(&nodes[0], &nodes[2].node.get_our_node_id());
+	nodes[1].node.funding_transaction_generated_unchecked(temp_chan_id_ca, nodes[0].node.get_our_node_id(), tx.clone(), funding_output.index).unwrap();
+	let funding_created_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_created(nodes[1].node.get_our_node_id(), &funding_created_msg);
+	get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 	check_added_monitors!(nodes[0], 1);
 
 	let res = nodes[0].node.funding_transaction_generated(temp_chan_id_ab, nodes[1].node.get_our_node_id(), tx.clone());
 	let err_msg = format!("{:?}", res.unwrap_err());
-	assert!(err_msg.contains("An existing channel using outpoint "));
-	assert!(err_msg.contains(" is open with peer"));
-	// Even though the last funding_transaction_generated errored, it still generated a
-	// SendFundingCreated. However, when the peer responds with a funding_signed it will send the
-	// appropriate error message.
-	let as_funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &as_funding_created);
-	check_added_monitors!(nodes[1], 1);
-	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
-	let reason = ClosureReason::ProcessingError { err: format!("An existing channel using outpoint {} is open with peer {}", funding_output, nodes[2].node.get_our_node_id()), };
-	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(ChannelId::v1_from_funding_outpoint(funding_output), true, reason)]);
-
-	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed);
+	assert!(err_msg.contains("An existing channel using ID"));
+	assert!(err_msg.contains("is open with peer"));
+	let channel_id = ChannelId::v1_from_funding_outpoint(funding_output);
+	let reason = ClosureReason::ProcessingError { err: format!("An existing channel using ID {} is open with peer {}", channel_id, nodes[1].node.get_our_node_id()), };
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(temp_chan_id_ab, true, reason)]);
 	get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
@@ -9598,11 +9589,6 @@ pub fn test_duplicate_funding_err_in_funding() {
 	let reason = ClosureReason::ProcessingError { err };
 	let expected_closing = ExpectedCloseEvent::from_id_reason(real_channel_id, false, reason);
 	check_closed_events(&nodes[1], &[expected_closing]);
-
-	assert_eq!(
-		*nodes[1].node.outpoint_to_peer.lock().unwrap().get(&real_chan_funding_txo).unwrap(),
-		nodes[0].node.get_our_node_id()
-	);
 }
 
 #[xtest(feature = "_externalize_tests")]
