@@ -728,7 +728,7 @@ pub struct UpdateFulfillHTLC {
 /// A [`peer_storage`] message that can be sent to or received from a peer.
 ///
 /// This message is used to distribute backup data to peers.
-/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]  
+/// If data is lost or corrupted, users can retrieve it through [`PeerStorageRetrieval`]
 /// to recover critical information, such as channel states, for fund recovery.
 ///
 /// [`peer_storage`] is used to send our own encrypted backup data to a peer.
@@ -743,7 +743,7 @@ pub struct PeerStorage {
 /// A [`peer_storage_retrieval`] message that can be sent to or received from a peer.
 ///
 /// This message is sent to peers for whom we store backup data.
-/// If we receive this message, it indicates that the peer had stored our backup data.  
+/// If we receive this message, it indicates that the peer had stored our backup data.
 /// This data can be used for fund recovery in case of data loss.
 ///
 /// [`peer_storage_retrieval`] is used to send the most recent backup of the peer.

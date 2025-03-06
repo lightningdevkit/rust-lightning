@@ -2405,4 +2405,3 @@ fn no_double_pay_with_stale_channelmanager() {
 	// generated in response to the duplicate invoice.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
-
