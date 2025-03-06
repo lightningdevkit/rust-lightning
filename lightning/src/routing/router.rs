@@ -10,6 +10,7 @@
 //! The router finds paths within a [`NetworkGraph`] for a payment.
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
+use lightning_invoice::Bolt11Invoice;
 
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay, ReceiveTlvs};
@@ -908,6 +909,27 @@ impl PaymentParameters {
 		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta)
 			.with_bolt11_features(Bolt11InvoiceFeatures::for_keysend(allow_mpp))
 			.expect("PaymentParameters::from_node_id should always initialize the payee as unblinded")
+	}
+
+	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
+	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
+	/// [`PaymentParameters::expiry_time`].
+	pub fn from_bolt11_invoice(invoice: &Bolt11Invoice) -> Self {
+		let mut payment_params = Self::from_node_id(
+			invoice.recover_payee_pub_key(),
+			invoice.min_final_cltv_expiry_delta() as u32,
+		)
+		.with_route_hints(invoice.route_hints())
+		.unwrap();
+
+		if let Some(expiry) = invoice.expires_at() {
+			payment_params = payment_params.with_expiry_time(expiry.as_secs());
+		}
+		if let Some(features) = invoice.features() {
+			payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
+		}
+
+		payment_params
 	}
 
 	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets

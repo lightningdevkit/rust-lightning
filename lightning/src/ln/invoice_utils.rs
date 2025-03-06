@@ -716,7 +716,7 @@ mod test {
 	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
-	use crate::routing::router::{PaymentParameters, RouteParameters};
+	use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
 	use crate::util::test_utils;
 	use crate::util::config::UserConfig;
 	use std::collections::HashSet;
@@ -751,7 +751,7 @@ mod test {
 
 
 	#[test]
-	fn test_from_channelmanager() {
+	fn create_and_pay_for_bolt11_invoice() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -785,17 +785,11 @@ mod test {
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan.inbound_htlc_minimum_msat);
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan.inbound_htlc_maximum_msat);
 
-		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
-				invoice.min_final_cltv_expiry_delta() as u32)
-			.with_bolt11_features(invoice.features().unwrap().clone()).unwrap()
-			.with_route_hints(invoice.route_hints()).unwrap();
-		let route_params = RouteParameters::from_payment_params_and_value(
-			payment_params, invoice.amount_milli_satoshis().unwrap());
 		let payment_event = {
-			let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
-			nodes[0].node.send_payment(payment_hash,
-				RecipientOnionFields::secret_only(*invoice.payment_secret()),
-				PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+			nodes[0].node.pay_for_bolt11_invoice(
+				&invoice, PaymentId([42; 32]), None, RouteParametersConfig::default(),
+				Retry::Attempts(0)
+			).unwrap();
 			check_added_monitors(&nodes[0], 1);
 
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();

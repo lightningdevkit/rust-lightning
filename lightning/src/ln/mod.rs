@@ -28,7 +28,6 @@ pub mod types;
 // TODO: These modules were moved from lightning-invoice and need to be better integrated into this
 // crate now:
 pub mod invoice_utils;
-pub mod bolt11_payment;
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
@@ -52,6 +51,9 @@ pub use onion_utils::create_payment_onion;
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
+#[cfg(test)]
+#[allow(unused_mut)]
+pub mod bolt11_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod blinded_payment_tests;
