@@ -829,7 +829,10 @@ impl LengthReadable for Refund {
 		reader: &mut R,
 	) -> Result<Self, DecodeError> {
 		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(reader)?;
-		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
+		Self::try_from(bytes.0).map_err(|e| match e {
+			Bolt12ParseError::Decode(e) => e,
+			_ => DecodeError::InvalidValue,
+		})
 	}
 }
 
