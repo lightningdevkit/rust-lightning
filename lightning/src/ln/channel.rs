@@ -1513,6 +1513,7 @@ impl<SP: Deref> Channel<SP> where
 				};
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
+					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -3483,7 +3484,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 			bitcoin_tx.txid
 		};
-		let mut htlcs_cloned: Vec<_> = commitment_stats.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
+		let htlcs_cloned: Vec<_> = commitment_stats.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
 
 		// If our counterparty updated the channel fee in this commitment transaction, check that
 		// they can actually afford the new fee now.
@@ -3536,7 +3537,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
-		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
+		for (idx, (htlc, mut source_opt)) in htlcs_cloned.into_iter().enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
 					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.channel_type,
@@ -4820,6 +4821,7 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
+	pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -5649,7 +5651,17 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
-		let commitment_tx_info = self.context.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)?;
+		let mut updates: Vec<ChannelMonitorUpdateStep> = core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding| self.context
+				.validate_commitment_signed(funding, &self.holder_commitment_point, msg, logger)
+				.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+					ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+						commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+					}
+				)
+			)
+			.collect::<Result<Vec<_>, ChannelError>>()?;
 
 		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
 			// We only fail to advance our commitment point/number if we're currently
@@ -5704,19 +5716,22 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		let LatestHolderCommitmentTXInfo {
-			commitment_tx, htlc_outputs, nondust_htlc_sources,
-		} = commitment_tx_info;
+		for mut update in updates.iter_mut() {
+			if let ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+				claimed_htlcs: ref mut update_claimed_htlcs, ..
+			} = &mut update {
+				debug_assert!(update_claimed_htlcs.is_empty());
+				*update_claimed_htlcs = claimed_htlcs.clone();
+			} else {
+				debug_assert!(false);
+			}
+		}
+
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
 			counterparty_node_id: Some(self.context.counterparty_node_id),
-			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx,
-				htlc_outputs,
-				claimed_htlcs,
-				nondust_htlc_sources,
-			}],
+			updates,
 			channel_id: Some(self.context.channel_id()),
 		};
 
@@ -9278,6 +9293,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -9545,6 +9561,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -10785,6 +10802,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
 			},
+			pending_funding: vec![],
 			context: ChannelContext {
 				user_id,
 
