@@ -2133,14 +2133,16 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let monitor_signer = signer_provider.derive_channel_signer(context.channel_keys_id);
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
-		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
-		                                          shutdown_script, funding.get_holder_selected_contest_delay(),
-		                                          &context.destination_script, (funding_txo, funding_txo_script),
-		                                          &funding.channel_transaction_parameters, funding.is_outbound(),
-		                                          funding_redeemscript.clone(), funding.get_value_satoshis(),
-		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
-		channel_monitor.provide_initial_counterparty_commitment_tx(counterparty_initial_commitment_tx.clone(), logger);
+		let channel_monitor = ChannelMonitor::new(
+			context.secp_ctx.clone(), monitor_signer, shutdown_script,
+			funding.get_holder_selected_contest_delay(), &context.destination_script, funding_txo,
+			funding_txo_script, &funding.channel_transaction_parameters, funding.is_outbound(),
+			funding_redeemscript, funding.get_value_satoshis(), obscure_factor,
+			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
+		);
+		channel_monitor.provide_initial_counterparty_commitment_tx(
+			counterparty_initial_commitment_tx.clone(), logger,
+		);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
