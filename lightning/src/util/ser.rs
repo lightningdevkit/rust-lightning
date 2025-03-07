@@ -228,8 +228,8 @@ impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
 
 impl<'a, R: Read> LengthLimitedRead for FixedLengthReader<'a, R> {
 	#[inline]
-	fn total_bytes(&self) -> u64 {
-		self.total_bytes
+	fn remaining_bytes(&self) -> u64 {
+		self.total_bytes.saturating_sub(self.bytes_read)
 	}
 }
 
@@ -348,8 +348,16 @@ where
 /// that the object being read will only consume a fixed number of bytes from the underlying
 /// [`io::Read`], see [`FixedLengthReader`] for an example.
 pub trait LengthLimitedRead: Read {
-	/// The total number of bytes available to be read.
-	fn total_bytes(&self) -> u64;
+	/// The number of bytes remaining to be read.
+	fn remaining_bytes(&self) -> u64;
+}
+
+impl LengthLimitedRead for &[u8] {
+	fn remaining_bytes(&self) -> u64 {
+		// The underlying `Read` implementation for slice updates the slice to point to the yet unread
+		// part.
+		self.len() as u64
+	}
 }
 
 /// Similar to [`LengthReadable`]. Useful when an additional set of arguments is required to

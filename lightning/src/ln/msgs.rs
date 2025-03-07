@@ -2324,10 +2324,11 @@ impl Writeable for TrampolineOnionPacket {
 
 impl LengthReadable for TrampolineOnionPacket {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let hop_data_len = r.remaining_bytes().saturating_sub(66); // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
+
 		let version = Readable::read(r)?;
 		let public_key = Readable::read(r)?;
 
-		let hop_data_len = r.total_bytes().saturating_sub(66); // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
 		let mut rd = FixedLengthReader::new(r, hop_data_len);
 		let hop_data = WithoutLength::<Vec<u8>>::read(&mut rd)?.0;
 

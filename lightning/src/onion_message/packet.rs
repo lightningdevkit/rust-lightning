@@ -85,12 +85,12 @@ impl Writeable for Packet {
 impl LengthReadable for Packet {
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		const READ_BUFFER_SIZE: usize = 4096;
+		let hop_data_len = r.remaining_bytes().saturating_sub(66) as usize; // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
 
 		let version = Readable::read(r)?;
 		let public_key = Readable::read(r)?;
 
 		let mut hop_data = Vec::new();
-		let hop_data_len = r.total_bytes().saturating_sub(66) as usize; // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
 		let mut read_idx = 0;
 		while read_idx < hop_data_len {
 			let mut read_buffer = [0; READ_BUFFER_SIZE];

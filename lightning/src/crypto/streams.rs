@@ -60,12 +60,12 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 	// Self::readable. LengthLimitedRead must be used instead of std::io::Read because we need the
 	// total length to separate out the tag at the end.
 	fn read<R: LengthLimitedRead>(r: &mut R, secret: [u8; 32]) -> Result<Self, DecodeError> {
-		if r.total_bytes() < 16 {
+		if r.remaining_bytes() < 16 {
 			return Err(DecodeError::InvalidValue);
 		}
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&secret, &[0; 12], &[]);
-		let decrypted_len = r.total_bytes() - 16;
+		let decrypted_len = r.remaining_bytes() - 16;
 		let s = FixedLengthReader::new(r, decrypted_len);
 		let mut chacha_stream = ChaChaPolyReader { chacha: &mut chacha, read: s };
 		let readable: T = Readable::read(&mut chacha_stream)?;
