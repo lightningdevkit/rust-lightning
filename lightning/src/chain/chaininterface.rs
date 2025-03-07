@@ -61,7 +61,9 @@ pub enum ConfirmationTarget {
 	/// Generally we have in the high tens to low hundreds of blocks to get our transaction
 	/// on-chain (it doesn't have to happen in the next few blocks!), but we shouldn't risk too low
 	/// a fee - this should be a relatively high priority feerate.
-	UrgentOnChainSweep,
+	///
+	/// If a target confirmation delta is known, it can be set as the parameter.
+	UrgentOnChainSweep(Option<u32>),
 	/// This is the lowest feerate we will allow our channel counterparty to have in an anchor
 	/// channel in order to close the channel if a channel party goes away.
 	///
