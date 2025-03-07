@@ -220,7 +220,8 @@ inner,
 	fn sign_bolt12_invoice(,
 		invoice: &crate::offers::invoice::UnsignedBolt12Invoice
 	) -> Result<secp256k1::schnorr::Signature, ()>,
-	fn get_inbound_payment_key(,) -> ExpandedKey
+	fn get_inbound_payment_key(,) -> ExpandedKey,
+	fn get_peer_storage_key(,) -> [u8; 32]
 );
 
 delegate!(DynKeysInterface, SignerProvider,
@@ -288,7 +289,8 @@ delegate!(DynPhantomKeysInterface, NodeSigner,
 	fn sign_invoice(, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()>,
 	fn sign_bolt12_invoice(, invoice: &crate::offers::invoice::UnsignedBolt12Invoice
 	) -> Result<secp256k1::schnorr::Signature, ()>,
-	fn get_inbound_payment_key(,) -> ExpandedKey
+	fn get_inbound_payment_key(,) -> ExpandedKey,
+	fn get_peer_storage_key(,) -> [u8; 32]
 );
 
 impl SignerProvider for DynPhantomKeysInterface {

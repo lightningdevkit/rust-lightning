@@ -829,6 +829,30 @@ pub trait NodeSigner {
 	/// [phantom node payments]: PhantomKeysManager
 	fn get_inbound_payment_key(&self) -> ExpandedKey;
 
+	/// Defines a method to derive a 32-byte encryption key for peer storage.
+	///
+	/// Implementations of this method must derive a secure encryption key using a
+	/// cryptographically strong key derivation function (e.g., HKDF or a hardened
+	/// child key derivation). The derived key is used to encrypt or decrypt peer
+	/// storage data, ensuring confidentiality and integrity.
+	///
+	/// # Implementation Details
+	///
+	/// - The key must be derived from a node-specific secret to ensure uniqueness.
+	/// - The derived key must be exactly **32 bytes** and suitable for symmetric
+	///   encryption algorithms.
+	///
+	/// # Returns
+	///
+	/// A **32-byte array** representing the encryption key for peer storage.
+	///
+	/// # Usage
+	///
+	/// This method is invoked when encrypting or decrypting peer storage data.
+	/// It must return the same key every time it is called, ensuring consistency
+	/// for encryption and decryption operations.
+	fn get_peer_storage_key(&self) -> [u8; 32];
+
 	/// Get node id based on the provided [`Recipient`].
 	///
 	/// This method must return the same value each time it is called with a given [`Recipient`]
@@ -1778,6 +1802,7 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
 	channel_child_index: AtomicUsize,
+	peer_storage_key: SecretKey,
 
 	#[cfg(test)]
 	pub(crate) entropy_source: RandomBytes,
@@ -1846,6 +1871,10 @@ impl KeysManager {
 					.private_key;
 				let mut inbound_pmt_key_bytes = [0; 32];
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
+				let peer_storage_key: SecretKey = master_key
+					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(6).unwrap())
+					.expect("Your RNG is busted")
+					.private_key;
 
 				let mut rand_bytes_engine = Sha256::engine();
 				rand_bytes_engine.input(&starting_time_secs.to_be_bytes());
@@ -1860,6 +1889,8 @@ impl KeysManager {
 					node_secret,
 					node_id,
 					inbound_payment_key: ExpandedKey::new(inbound_pmt_key_bytes),
+
+					peer_storage_key,
 
 					destination_script,
 					shutdown_pubkey,
@@ -2086,6 +2117,10 @@ impl NodeSigner for KeysManager {
 		self.inbound_payment_key.clone()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		self.peer_storage_key.secret_bytes()
+	}
+
 	fn sign_invoice(
 		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
@@ -2245,6 +2280,10 @@ impl NodeSigner for PhantomKeysManager {
 
 	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		self.inbound_payment_key.clone()
+	}
+
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		self.inner.peer_storage_key.secret_bytes()
 	}
 
 	fn sign_invoice(
