@@ -59,7 +59,7 @@ use crate::io_extras::read_to_end;
 
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
-use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
+use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthLimitedRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
 use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -2323,13 +2323,14 @@ impl Writeable for TrampolineOnionPacket {
 }
 
 impl LengthReadable for TrampolineOnionPacket {
-	fn read_from_fixed_length_buffer<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let hop_data_len = r.remaining_bytes().saturating_sub(66); // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
+
 		let version = Readable::read(r)?;
 		let public_key = Readable::read(r)?;
 
-		let hop_data_len = r.total_bytes().saturating_sub(66); // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
 		let mut rd = FixedLengthReader::new(r, hop_data_len);
-		let hop_data = WithoutLength::<Vec<u8>>::read(&mut rd)?.0;
+		let hop_data = WithoutLength::<Vec<u8>>::read_from_fixed_length_buffer(&mut rd)?.0;
 
 		let hmac = Readable::read(r)?;
 
@@ -2411,8 +2412,8 @@ impl Writeable for AcceptChannel {
 	}
 }
 
-impl Readable for AcceptChannel {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for AcceptChannel {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
 		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
@@ -2496,8 +2497,8 @@ impl Writeable for AcceptChannelV2 {
 	}
 }
 
-impl Readable for AcceptChannelV2 {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for AcceptChannelV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_satoshis: u64 = Readable::read(r)?;
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
@@ -2759,8 +2760,8 @@ impl Writeable for Init {
 	}
 }
 
-impl Readable for Init {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for Init {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
 		let mut remote_network_address: Option<SocketAddress> = None;
@@ -2805,8 +2806,8 @@ impl Writeable for OpenChannel {
 	}
 }
 
-impl Readable for OpenChannel {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for OpenChannel {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_satoshis: u64 = Readable::read(r)?;
@@ -2889,8 +2890,8 @@ impl Writeable for OpenChannelV2 {
 	}
 }
 
-impl Readable for OpenChannelV2 {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for OpenChannelV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_feerate_sat_per_1000_weight: u32 = Readable::read(r)?;
@@ -3525,8 +3526,8 @@ impl Writeable for Ping {
 	}
 }
 
-impl Readable for Ping {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for Ping {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Ping {
 			ponglen: Readable::read(r)?,
 			byteslen: {
@@ -3545,8 +3546,8 @@ impl Writeable for Pong {
 	}
 }
 
-impl Readable for Pong {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for Pong {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Pong {
 			byteslen: {
 				let byteslen = Readable::read(r)?;
@@ -3652,8 +3653,8 @@ impl Writeable for ErrorMessage {
 	}
 }
 
-impl Readable for ErrorMessage {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for ErrorMessage {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
@@ -3679,8 +3680,8 @@ impl Writeable for WarningMessage {
 	}
 }
 
-impl Readable for WarningMessage {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for WarningMessage {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
@@ -3786,8 +3787,8 @@ impl_writeable!(NodeAnnouncement, {
 	contents
 });
 
-impl Readable for QueryShortChannelIds {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for QueryShortChannelIds {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 
 		let encoding_len: u16 = Readable::read(r)?;
@@ -3862,8 +3863,8 @@ impl_writeable_msg!(QueryChannelRange, {
 	number_of_blocks
 }, {});
 
-impl Readable for ReplyChannelRange {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for ReplyChannelRange {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 		let first_blocknum: u32 = Readable::read(r)?;
 		let number_of_blocks: u32 = Readable::read(r)?;
@@ -3936,7 +3937,7 @@ mod tests {
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket, InboundOnionForwardPayload, InboundOnionReceivePayload};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
+	use crate::util::ser::{BigSize, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hex::FromHex;
@@ -4875,7 +4876,7 @@ mod tests {
 		let encoded_value = closing_signed.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
-		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
+		assert_eq!(msgs::ClosingSigned::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap(), closing_signed);
 
 		let closing_signed_with_range = msgs::ClosingSigned {
 			channel_id: ChannelId::from_bytes([2; 32]),
@@ -4889,7 +4890,7 @@ mod tests {
 		let encoded_value_with_range = closing_signed_with_range.encode();
 		let target_value_with_range = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a011000000000deadbeef1badcafe01234567").unwrap();
 		assert_eq!(encoded_value_with_range, target_value_with_range);
-		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value_with_range)).unwrap(),
+		assert_eq!(msgs::ClosingSigned::read_from_fixed_length_buffer(&mut &target_value_with_range[..]).unwrap(),
 			closing_signed_with_range);
 	}
 
@@ -5053,7 +5054,7 @@ mod tests {
 		let encoded_value = init_msg.encode();
 		let target_value = <Vec<u8>>::from_hex("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000307017f00000103e8").unwrap();
 		assert_eq!(encoded_value, target_value);
-		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(), init_msg);
+		assert_eq!(msgs::Init::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap(), init_msg);
 	}
 
 	#[test]
@@ -5288,9 +5289,10 @@ mod tests {
 		assert_eq!(encoded_trampoline_packet.len(), 716);
 
 		{ // verify that a codec round trip works
-			let mut reader = Cursor::new(&encoded_trampoline_packet);
-			let mut trampoline_packet_reader = FixedLengthReader::new(&mut reader, encoded_trampoline_packet.len() as u64);
-			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read_from_fixed_length_buffer(&mut trampoline_packet_reader).unwrap();
+			let decoded_trampoline_packet: TrampolineOnionPacket =
+				<TrampolineOnionPacket as LengthReadable>::read_from_fixed_length_buffer(
+					&mut &encoded_trampoline_packet[..]
+				).unwrap();
 			assert_eq!(decoded_trampoline_packet.encode(), encoded_trampoline_packet);
 		}
 
@@ -5416,7 +5418,7 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		query_channel_range = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 		assert_eq!(query_channel_range.first_blocknum, 100000);
 		assert_eq!(query_channel_range.number_of_blocks, 1500);
 	}
@@ -5443,7 +5445,7 @@ mod tests {
 			let encoded_value = reply_channel_range.encode();
 			assert_eq!(encoded_value, target_value);
 
-			reply_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			reply_channel_range = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 			assert_eq!(reply_channel_range.chain_hash, expected_chain_hash);
 			assert_eq!(reply_channel_range.first_blocknum, 756230);
 			assert_eq!(reply_channel_range.number_of_blocks, 1500);
@@ -5453,7 +5455,7 @@ mod tests {
 			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
 			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
-			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]);
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
 	}
@@ -5477,14 +5479,14 @@ mod tests {
 			let encoded_value = query_short_channel_ids.encode();
 			assert_eq!(encoded_value, target_value);
 
-			query_short_channel_ids = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			query_short_channel_ids = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 			assert_eq!(query_short_channel_ids.chain_hash, expected_chain_hash);
 			assert_eq!(query_short_channel_ids.short_channel_ids[0], 0x000000000000008e);
 			assert_eq!(query_short_channel_ids.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(query_short_channel_ids.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
 			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
-			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]);
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
 	}
@@ -5500,7 +5502,7 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		reply_short_channel_ids_end = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 		assert_eq!(reply_short_channel_ids_end.chain_hash, expected_chain_hash);
 		assert_eq!(reply_short_channel_ids_end.full_information, true);
 	}
@@ -5517,7 +5519,9 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
-		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		gossip_timestamp_filter = LengthReadable::read_from_fixed_length_buffer(
+			&mut &target_value[..]
+		).unwrap();
 		assert_eq!(gossip_timestamp_filter.chain_hash, expected_chain_hash);
 		assert_eq!(gossip_timestamp_filter.first_timestamp, 1590000000);
 		assert_eq!(gossip_timestamp_filter.timestamp_range, 0xffff_ffff);
