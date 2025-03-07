@@ -88,7 +88,8 @@ use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, 
 use crate::offers::signer::{self, Metadata, MetadataMaterial};
 use crate::types::features::OfferFeatures;
 use crate::util::ser::{
-	CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer,
+	CursorReadable, HighZeroBytesDroppedBigSize, LengthLimitedRead, LengthReadable, Readable,
+	WithoutLength, Writeable, Writer,
 };
 use crate::util::string::PrintableString;
 use bitcoin::constants::ChainHash;
@@ -1033,9 +1034,11 @@ impl OfferContents {
 	}
 }
 
-impl Readable for Offer {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+impl LengthReadable for Offer {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(reader)?;
 		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }

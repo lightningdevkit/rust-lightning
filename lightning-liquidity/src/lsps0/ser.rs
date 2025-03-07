@@ -18,9 +18,10 @@ use crate::lsps2::msgs::{
 };
 use crate::prelude::{HashMap, String};
 
-use lightning::ln::msgs::LightningError;
+use lightning::io;
+use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::wire;
-use lightning::util::ser::WithoutLength;
+use lightning::util::ser::{Readable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -168,9 +169,21 @@ impl lightning::util::ser::Writeable for RawLSPSMessage {
 	}
 }
 
-impl lightning::util::ser::Readable for RawLSPSMessage {
-	fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, lightning::ln::msgs::DecodeError> {
-		let payload_without_length = WithoutLength::read(r)?;
+impl Readable for RawLSPSMessage {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		// Because strings will consume the entire reader when read, they are intended to be read from a
+		// length-limiting reader. However, there's no way of knowing the length ahead of time in this
+		// case so use a wrapper.
+		struct UnknownLengthString(String);
+		impl Readable for UnknownLengthString {
+			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let v: alloc::vec::Vec<u8> = Readable::read(r)?;
+				let ret = String::from_utf8(v).map_err(|_| DecodeError::InvalidValue)?;
+				Ok(Self(ret))
+			}
+		}
+
+		let payload_without_length: UnknownLengthString = Readable::read(r)?;
 		Ok(Self { payload: payload_without_length.0 })
 	}
 }

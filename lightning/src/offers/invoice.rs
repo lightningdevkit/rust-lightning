@@ -148,8 +148,8 @@ use crate::offers::signer::{self, Metadata};
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::types::payment::PaymentHash;
 use crate::util::ser::{
-	CursorReadable, HighZeroBytesDroppedBigSize, Iterable, Readable, WithoutLength, Writeable,
-	Writer,
+	CursorReadable, HighZeroBytesDroppedBigSize, Iterable, LengthLimitedRead, LengthReadable,
+	WithoutLength, Writeable, Writer,
 };
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
@@ -1398,9 +1398,11 @@ impl Writeable for Bolt12Invoice {
 	}
 }
 
-impl Readable for Bolt12Invoice {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+impl LengthReadable for Bolt12Invoice {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(reader)?;
 		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }

@@ -86,7 +86,8 @@ use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::types::payment::PaymentHash;
 use crate::util::ser::{
-	CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer,
+	CursorReadable, HighZeroBytesDroppedBigSize, LengthLimitedRead, LengthReadable, Readable,
+	WithoutLength, Writeable, Writer,
 };
 use crate::util::string::{PrintableString, UntrustedString};
 use bitcoin::constants::ChainHash;
@@ -1119,9 +1120,9 @@ impl Writeable for InvoiceRequestContents {
 	}
 }
 
-impl Readable for InvoiceRequest {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+impl LengthReadable for InvoiceRequest {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
