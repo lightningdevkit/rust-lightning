@@ -81,6 +81,27 @@ pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
 /// outputs.
 pub const HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 327;
 
+/// The size of the 2-of-2 multisig script
+const MULTISIG_SCRIPT_SIZE: u64 =
+	1 + // OP_2
+	1 + // data len
+	33 + // pubkey1
+	1 + // data len
+	33 + // pubkey2
+	1 + // OP_2
+	1;  // OP_CHECKMULTISIG
+/// The weight of a funding transaction input (2-of-2 P2WSH)
+/// See https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-the-commitment-transaction
+pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 =
+	1 + // number_of_witness_elements
+	1 + // nil_len
+	1 + // sig len
+	73 + // sig1
+	1 + // sig len
+	73 + // sig2
+	1 + // witness_script_length
+	MULTISIG_SCRIPT_SIZE;
+
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
 pub fn htlc_success_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {

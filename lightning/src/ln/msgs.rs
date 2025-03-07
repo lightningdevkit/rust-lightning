@@ -471,7 +471,7 @@ pub struct SpliceInit {
 	/// or remove from its channel balance (splice-out).
 	pub funding_contribution_satoshis: i64,
 	/// The feerate for the new funding transaction, set by the splice initiator
-	pub funding_feerate_perkw: u32,
+	pub funding_feerate_per_kw: u32,
 	/// The locktime for the new funding transaction
 	pub locktime: u32,
 	/// The key of the sender (splice initiator) controlling the new funding transaction
@@ -2556,7 +2556,7 @@ impl_writeable_msg!(Stfu, {
 impl_writeable_msg!(SpliceInit, {
 	channel_id,
 	funding_contribution_satoshis,
-	funding_feerate_perkw,
+	funding_feerate_per_kw,
 	locktime,
 	funding_pubkey,
 }, {
@@ -4595,7 +4595,7 @@ mod tests {
 		let splice_init = msgs::SpliceInit {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			funding_contribution_satoshis: -123456,
-			funding_feerate_perkw: 2000,
+			funding_feerate_per_kw: 2000,
 			locktime: 0,
 			funding_pubkey: pubkey_1,
 			require_confirmed_inputs: Some(()),
