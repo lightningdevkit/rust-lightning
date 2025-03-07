@@ -33,7 +33,7 @@ use crate::offers::offer::{
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
-use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer, Readable};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::constants::ChainHash;
@@ -69,6 +69,14 @@ pub struct StaticInvoice {
 	contents: InvoiceContents,
 	signature: Signature,
 }
+
+impl PartialEq for StaticInvoice {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for StaticInvoice {}
 
 /// The contents of a [`StaticInvoice`] for responding to an [`Offer`].
 ///
@@ -531,6 +539,13 @@ impl InvoiceContents {
 impl Writeable for StaticInvoice {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
+	}
+}
+
+impl Readable for StaticInvoice {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 
