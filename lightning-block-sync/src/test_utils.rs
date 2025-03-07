@@ -131,7 +131,7 @@ impl Blockchain {
 		for i in heights {
 			let value = self.at_height(i);
 			let key = value.header.block_hash();
-			assert!(cache.insert(key, value).is_none());
+			assert!(cache.inner.insert(key, value).is_none());
 		}
 		cache
 	}
