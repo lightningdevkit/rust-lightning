@@ -262,49 +262,101 @@ where
 		msgs::WarningMessage::TYPE => Ok(Message::Warning(Readable::read(buffer)?)),
 		msgs::Ping::TYPE => Ok(Message::Ping(Readable::read(buffer)?)),
 		msgs::Pong::TYPE => Ok(Message::Pong(Readable::read(buffer)?)),
-		msgs::PeerStorage::TYPE => Ok(Message::PeerStorage(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::PeerStorageRetrieval::TYPE => {
-			Ok(Message::PeerStorageRetrieval(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		msgs::PeerStorage::TYPE => {
+			Ok(Message::PeerStorage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
+		msgs::PeerStorageRetrieval::TYPE => Ok(Message::PeerStorageRetrieval(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::OpenChannel::TYPE => Ok(Message::OpenChannel(Readable::read(buffer)?)),
 		msgs::OpenChannelV2::TYPE => Ok(Message::OpenChannelV2(Readable::read(buffer)?)),
 		msgs::AcceptChannel::TYPE => Ok(Message::AcceptChannel(Readable::read(buffer)?)),
 		msgs::AcceptChannelV2::TYPE => Ok(Message::AcceptChannelV2(Readable::read(buffer)?)),
-		msgs::FundingCreated::TYPE => Ok(Message::FundingCreated(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::FundingSigned::TYPE => Ok(Message::FundingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
+		msgs::FundingCreated::TYPE => {
+			Ok(Message::FundingCreated(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::FundingSigned::TYPE => {
+			Ok(Message::FundingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		#[cfg(splicing)]
-		msgs::SpliceInit::TYPE => Ok(Message::SpliceInit(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::Stfu::TYPE => Ok(Message::Stfu(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
+		msgs::SpliceInit::TYPE => {
+			Ok(Message::SpliceInit(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::Stfu::TYPE => {
+			Ok(Message::Stfu(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		#[cfg(splicing)]
-		msgs::SpliceAck::TYPE => Ok(Message::SpliceAck(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
+		msgs::SpliceAck::TYPE => {
+			Ok(Message::SpliceAck(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		#[cfg(splicing)]
-		msgs::SpliceLocked::TYPE => Ok(Message::SpliceLocked(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxAddInput::TYPE => Ok(Message::TxAddInput(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxAddOutput::TYPE => Ok(Message::TxAddOutput(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxRemoveInput::TYPE => Ok(Message::TxRemoveInput(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxRemoveOutput::TYPE => Ok(Message::TxRemoveOutput(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxComplete::TYPE => Ok(Message::TxComplete(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxSignatures::TYPE => Ok(Message::TxSignatures(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxInitRbf::TYPE => Ok(Message::TxInitRbf(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxAckRbf::TYPE => Ok(Message::TxAckRbf(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::TxAbort::TYPE => Ok(Message::TxAbort(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::ChannelReady::TYPE => Ok(Message::ChannelReady(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::Shutdown::TYPE => Ok(Message::Shutdown(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::ClosingSigned::TYPE => Ok(Message::ClosingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
+		msgs::SpliceLocked::TYPE => {
+			Ok(Message::SpliceLocked(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxAddInput::TYPE => {
+			Ok(Message::TxAddInput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxAddOutput::TYPE => {
+			Ok(Message::TxAddOutput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxRemoveInput::TYPE => {
+			Ok(Message::TxRemoveInput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxRemoveOutput::TYPE => {
+			Ok(Message::TxRemoveOutput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxComplete::TYPE => {
+			Ok(Message::TxComplete(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxSignatures::TYPE => {
+			Ok(Message::TxSignatures(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxInitRbf::TYPE => {
+			Ok(Message::TxInitRbf(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxAckRbf::TYPE => {
+			Ok(Message::TxAckRbf(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::TxAbort::TYPE => {
+			Ok(Message::TxAbort(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::ChannelReady::TYPE => {
+			Ok(Message::ChannelReady(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::Shutdown::TYPE => {
+			Ok(Message::Shutdown(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::ClosingSigned::TYPE => {
+			Ok(Message::ClosingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		msgs::OnionMessage::TYPE => Ok(Message::OnionMessage(Readable::read(buffer)?)),
-		msgs::UpdateAddHTLC::TYPE => Ok(Message::UpdateAddHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::UpdateFulfillHTLC::TYPE => Ok(Message::UpdateFulfillHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::UpdateFailHTLC::TYPE => Ok(Message::UpdateFailHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::UpdateFailMalformedHTLC::TYPE => {
-			Ok(Message::UpdateFailMalformedHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		msgs::UpdateAddHTLC::TYPE => {
+			Ok(Message::UpdateAddHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::CommitmentSigned::TYPE => Ok(Message::CommitmentSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::RevokeAndACK::TYPE => Ok(Message::RevokeAndACK(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::UpdateFee::TYPE => Ok(Message::UpdateFee(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::ChannelReestablish::TYPE => Ok(Message::ChannelReestablish(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
-		msgs::AnnouncementSignatures::TYPE => {
-			Ok(Message::AnnouncementSignatures(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		msgs::UpdateFulfillHTLC::TYPE => {
+			Ok(Message::UpdateFulfillHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
+		msgs::UpdateFailHTLC::TYPE => {
+			Ok(Message::UpdateFailHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::UpdateFailMalformedHTLC::TYPE => Ok(Message::UpdateFailMalformedHTLC(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
+		msgs::CommitmentSigned::TYPE => {
+			Ok(Message::CommitmentSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::RevokeAndACK::TYPE => {
+			Ok(Message::RevokeAndACK(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::UpdateFee::TYPE => {
+			Ok(Message::UpdateFee(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::ChannelReestablish::TYPE => {
+			Ok(Message::ChannelReestablish(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::AnnouncementSignatures::TYPE => Ok(Message::AnnouncementSignatures(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::ChannelAnnouncement::TYPE => {
 			Ok(Message::ChannelAnnouncement(Readable::read(buffer)?))
 		},
@@ -313,14 +365,16 @@ where
 		msgs::QueryShortChannelIds::TYPE => {
 			Ok(Message::QueryShortChannelIds(Readable::read(buffer)?))
 		},
-		msgs::ReplyShortChannelIdsEnd::TYPE => {
-			Ok(Message::ReplyShortChannelIdsEnd(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		msgs::ReplyShortChannelIdsEnd::TYPE => Ok(Message::ReplyShortChannelIdsEnd(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
+		msgs::QueryChannelRange::TYPE => {
+			Ok(Message::QueryChannelRange(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::QueryChannelRange::TYPE => Ok(Message::QueryChannelRange(LengthReadable::read_from_fixed_length_buffer(buffer)?)),
 		msgs::ReplyChannelRange::TYPE => Ok(Message::ReplyChannelRange(Readable::read(buffer)?)),
-		msgs::GossipTimestampFilter::TYPE => {
-			Ok(Message::GossipTimestampFilter(LengthReadable::read_from_fixed_length_buffer(buffer)?))
-		},
+		msgs::GossipTimestampFilter::TYPE => Ok(Message::GossipTimestampFilter(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		_ => {
 			if let Some(custom) = custom_reader.read(message_type, buffer)? {
 				Ok(Message::Custom(custom))
