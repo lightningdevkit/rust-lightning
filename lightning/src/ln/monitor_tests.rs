@@ -2327,6 +2327,16 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	nodes[0].keys_manager.backing.inner.set_counter(0x1_0000_0004);
 	nodes[1].keys_manager.backing.inner.set_counter(0x1_0000_0004);
 
+	// Add deterministic random bytes
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some([
+		34, 179, 149, 142, 142, 70, 235, 119, 164, 188, 180, 189, 160, 46, 59, 32,87, 50, 35, 220,
+		63, 181, 17, 19, 187, 212, 122, 14, 222, 35, 36, 8
+	]);
+	*nodes[1].keys_manager.override_random_bytes.lock().unwrap() = Some([
+		208, 0, 214, 32, 31, 17, 107, 175, 211, 121, 241, 214, 29, 241, 97, 185, 85, 205, 48, 159,
+		119, 71, 240, 90, 36, 247, 8, 142, 59, 250, 164, 197
+	]);
+
 	// Open a channel, lock in an HTLC, and immediately broadcast the commitment transaction. This
 	// ensures that the HTLC timeout package is held until we reach its expiration height.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
