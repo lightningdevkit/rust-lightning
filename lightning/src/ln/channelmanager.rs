@@ -15463,9 +15463,26 @@ mod tests {
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		// Since we do not send peer storage, we manually simulate receiving a dummy
-		// `PeerStorage` from the channel partner.
-		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
+		let peer_storage_msg_events_node0 = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+		let peer_storage_msg_events_node1 = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+		assert_ne!(peer_storage_msg_events_node0.len(), 0);
+		assert_ne!(peer_storage_msg_events_node1.len(), 0);
+
+		match peer_storage_msg_events_node0[0] {
+			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg.clone());
+			}
+			_ => panic!("Unexpected event"),
+		}
+
+		match peer_storage_msg_events_node1[0] {
+			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg.clone());
+			}
+			_ => panic!("Unexpected event"),
+		}
 
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
@@ -15477,8 +15494,23 @@ mod tests {
 			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
 		}, false).unwrap();
 
+		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(node_1_events.len(), 2);
+
 		let node_0_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_0_events.len(), 2);
+
+		for msg in node_1_events{
+			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
+				nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg {
+				nodes[0].node.handle_peer_storage_retrieval(nodes[1].node.get_our_node_id(), msg.clone());
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			} else {
+				panic!("Unexpected event")
+			}
+		}
 
 		for msg in node_0_events{
 			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
@@ -15492,29 +15524,34 @@ mod tests {
 			}
 		}
 
-		let msg_events_after_peer_storage_retrieval = nodes[1].node.get_and_clear_pending_msg_events();
+		let node_1_msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		let node_0_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 
-		// Check if we receive a warning message.
-		let peer_storage_warning: Vec<&MessageSendEvent> = msg_events_after_peer_storage_retrieval
-									.iter()
-									.filter(|event| match event {
-										MessageSendEvent::HandleError { .. } => true,
-										_ => false,
-									})
-									.collect();
+		assert_eq!(node_1_msg_events.len(), 3);
+		assert_eq!(node_0_msg_events.len(), 3);
 
-		assert_eq!(peer_storage_warning.len(), 1);
-
-		match peer_storage_warning[0] {
-			MessageSendEvent::HandleError { node_id, action } => {
+		for msg in node_1_msg_events {
+			if let MessageSendEvent::SendChannelReady { ref node_id, .. } = msg {
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				match action {
-					ErrorAction::SendWarningMessage { msg, .. } =>
-						assert_eq!(msg.data, "Invalid peer_storage_retrieval message received.".to_owned()),
-					_ => panic!("Unexpected error action"),
-				}
+			} else if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } = msg {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			} else if let MessageSendEvent::SendChannelUpdate { ref node_id, .. } = msg {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			} else {
+				panic!("Unexpected event")
 			}
-			_ => panic!("Unexpected event"),
+		}
+
+		for msg in node_0_msg_events {
+			if let MessageSendEvent::SendChannelReady { ref node_id, .. } = msg {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			} else if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } = msg {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			} else if let MessageSendEvent::SendChannelUpdate { ref node_id, .. } = msg {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			} else {
+				panic!("Unexpected event")
+			}
 		}
 	}
 
