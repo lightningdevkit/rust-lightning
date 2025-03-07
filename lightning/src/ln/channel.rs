@@ -7025,9 +7025,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 			// if next_funding_txid is set:
 			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
-				 if let Some(session) = &self.interactive_tx_signing_session {
+				if let Some(session) = &self.interactive_tx_signing_session {
 					// if next_funding_txid matches the latest interactive funding transaction:
 					if session.unsigned_tx().compute_txid() == next_funding_txid {
+						debug_assert_eq!(session.unsigned_tx().compute_txid(), self.maybe_get_next_funding_txid().unwrap());
 						// if it has not received tx_signatures for that funding transaction:
 						if !session.counterparty_sent_tx_signatures() {
 							// if next_commitment_number is zero:
