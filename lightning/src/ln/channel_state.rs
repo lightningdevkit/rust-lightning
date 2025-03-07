@@ -15,7 +15,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
-use crate::ln::channel::{ChannelContext, FundingScope};
+use crate::ln::channel::Channel;
 use crate::ln::types::ChannelId;
 use crate::sign::SignerProvider;
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
@@ -475,15 +475,17 @@ impl ChannelDetails {
 		self.short_channel_id.or(self.outbound_scid_alias)
 	}
 
-	pub(super) fn from_channel_context<SP: Deref, F: Deref>(
-		context: &ChannelContext<SP>, funding: &FundingScope, best_block_height: u32,
-		latest_features: InitFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	pub(super) fn from_channel<SP: Deref, F: Deref>(
+		channel: &Channel<SP>, best_block_height: u32, latest_features: InitFeatures,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
 		F::Target: FeeEstimator,
 	{
-		let balance = context.get_available_balances(funding, fee_estimator);
+		let context = channel.context();
+		let funding = channel.funding();
+		let balance = channel.get_available_balances(fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.

@@ -1552,6 +1552,25 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 	}
+
+	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
+	/// Doesn't bother handling the
+	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
+	/// corner case properly.
+	pub fn get_available_balances<F: Deref>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances
+	where
+		F::Target: FeeEstimator,
+	{
+		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => chan.get_available_balances(fee_estimator),
+			ChannelPhase::UnfundedOutboundV1(chan) => chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator),
+			ChannelPhase::UnfundedInboundV1(chan) => chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator),
+			ChannelPhase::UnfundedV2(chan) => chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator),
+		}
+	}
 }
 
 impl<SP: Deref> From<OutboundV1Channel<SP>> for Channel<SP>
@@ -4195,11 +4214,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		outbound_details
 	}
 
-	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
-	/// Doesn't bother handling the
-	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
-	/// corner case properly.
-	pub fn get_available_balances<F: Deref>(
+	fn get_available_balances_for_scope<F: Deref>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> AvailableBalances
 	where
@@ -8792,7 +8807,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.context.get_available_balances(&self.funding, fee_estimator);
+		let available_balances = self.get_available_balances(fee_estimator);
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
 				available_balances.next_outbound_htlc_minimum_msat)));
@@ -8870,6 +8885,26 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.next_holder_htlc_id += 1;
 
 		Ok(Some(res))
+	}
+
+	pub(super) fn get_available_balances<F: Deref>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances
+	where
+		F::Target: FeeEstimator,
+	{
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding| self.context.get_available_balances_for_scope(funding, fee_estimator))
+			.reduce(|acc, e| {
+				AvailableBalances {
+					inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
+					outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
+					next_outbound_htlc_limit_msat: acc.next_outbound_htlc_limit_msat.min(e.next_outbound_htlc_limit_msat),
+					next_outbound_htlc_minimum_msat: acc.next_outbound_htlc_minimum_msat.max(e.next_outbound_htlc_minimum_msat),
+				}
+			})
+			.expect("At least one FundingScope is always provided")
 	}
 
 	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate where L::Target: Logger {
