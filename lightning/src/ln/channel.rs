@@ -6901,7 +6901,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-			msg.next_local_commitment_number == 0 && msg.next_funding_txid.is_none() {
+			(msg.next_local_commitment_number == 0 && msg.next_funding_txid.is_none()) {
 			// Note: This also covers the following case in the V2 channel establishment specification:
 			//   if `next_funding_txid` is not set, and `next_commitment_number` is zero:
 			//     MUST immediately fail the channel and broadcast any relevant latest commitment transaction.
