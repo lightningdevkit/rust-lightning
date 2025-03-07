@@ -3744,8 +3744,11 @@ where
 					.filter_map(|(chan_id, chan)| chan.as_funded().map(|chan| (chan_id, chan)))
 					.filter(f)
 					.map(|(_channel_id, channel)| {
-						ChannelDetails::from_channel_context(&channel.context, &channel.funding, best_block_height,
-							peer_state.latest_features.clone(), &self.fee_estimator)
+						ChannelDetails::from_channel_context(
+							&channel.context, &channel.funding, &channel.pending_funding,
+							best_block_height, peer_state.latest_features.clone(),
+							&self.fee_estimator,
+						)
 					})
 				);
 			}
@@ -3768,9 +3771,13 @@ where
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				for (context, funding) in peer_state.channel_by_id.iter().map(|(_, chan)| (chan.context(), chan.funding())) {
-					let details = ChannelDetails::from_channel_context(context, funding, best_block_height,
-						peer_state.latest_features.clone(), &self.fee_estimator);
+				for (context, funding, pending_funding) in peer_state.channel_by_id.iter()
+					.map(|(_, chan)| (chan.context(), chan.funding(), chan.pending_funding()))
+				{
+					let details = ChannelDetails::from_channel_context(
+						context, funding, pending_funding, best_block_height,
+						peer_state.latest_features.clone(), &self.fee_estimator,
+					);
 					res.push(details);
 				}
 			}
@@ -3800,12 +3807,15 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			let features = &peer_state.latest_features;
-			let context_to_details = |(context, funding)| {
-				ChannelDetails::from_channel_context(context, funding, best_block_height, features.clone(), &self.fee_estimator)
+			let context_to_details = |(context, funding, pending_funding)| {
+				ChannelDetails::from_channel_context(
+					context, funding, pending_funding, best_block_height, features.clone(),
+					&self.fee_estimator,
+				)
 			};
 			return peer_state.channel_by_id
 				.iter()
-				.map(|(_, chan)| (chan.context(), chan.funding()))
+				.map(|(_, chan)| (chan.context(), chan.funding(), chan.pending_funding()))
 				.map(context_to_details)
 				.collect();
 		}
@@ -6087,7 +6097,7 @@ where
 								let maybe_optimal_channel = peer_state.channel_by_id.values_mut()
 									.filter_map(Channel::as_funded_mut)
 									.filter_map(|chan| {
-										let balances = chan.context.get_available_balances(&chan.funding, &self.fee_estimator);
+										let balances = chan.get_available_balances(&self.fee_estimator);
 										if outgoing_amt_msat <= balances.next_outbound_htlc_limit_msat &&
 											outgoing_amt_msat >= balances.next_outbound_htlc_minimum_msat &&
 											chan.context.is_usable() {

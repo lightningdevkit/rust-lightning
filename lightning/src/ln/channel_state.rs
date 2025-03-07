@@ -476,14 +476,15 @@ impl ChannelDetails {
 	}
 
 	pub(super) fn from_channel_context<SP: Deref, F: Deref>(
-		context: &ChannelContext<SP>, funding: &FundingScope, best_block_height: u32,
-		latest_features: InitFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		context: &ChannelContext<SP>, funding: &FundingScope, pending_funding: &[FundingScope],
+		best_block_height: u32, latest_features: InitFeatures,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
 		F::Target: FeeEstimator,
 	{
-		let balance = context.get_available_balances(funding, fee_estimator);
+		let balance = context.get_available_balances(funding, pending_funding, fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
