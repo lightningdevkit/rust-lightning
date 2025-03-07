@@ -1242,6 +1242,16 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	pub fn pending_funding(&self) -> &[FundingScope] {
+		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => &chan.pending_funding,
+			ChannelPhase::UnfundedOutboundV1(_) => &[],
+			ChannelPhase::UnfundedInboundV1(_) => &[],
+			ChannelPhase::UnfundedV2(_) => &[],
+		}
+	}
+
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
@@ -4085,6 +4095,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
 	pub fn get_available_balances<F: Deref>(
+		&self, funding: &FundingScope, pending_funding: &[FundingScope],
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances
+	where
+		F::Target: FeeEstimator,
+	{
+		core::iter::once(funding)
+			.chain(pending_funding.iter())
+			.map(|funding| self.get_available_balances_for_scope(funding, fee_estimator))
+			.min_by_key(|balances| balances.next_outbound_htlc_limit_msat)
+			.expect("At least one FundingScope is always provided")
+	}
+
+	fn get_available_balances_for_scope<F: Deref>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> AvailableBalances
 	where
@@ -4821,7 +4845,7 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
-	pending_funding: Vec<FundingScope>,
+	pub(crate) pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -8440,7 +8464,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.context.get_available_balances(&self.funding, fee_estimator);
+		let available_balances = self.get_available_balances(fee_estimator);
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
 				available_balances.next_outbound_htlc_minimum_msat)));
@@ -8510,6 +8534,15 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.next_holder_htlc_id += 1;
 
 		Ok(Some(res))
+	}
+
+	pub fn get_available_balances<F: Deref>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances
+	where
+		F::Target: FeeEstimator,
+	{
+		self.context.get_available_balances(&self.funding, &self.pending_funding, fee_estimator)
 	}
 
 	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate where L::Target: Logger {
