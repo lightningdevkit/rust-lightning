@@ -8,7 +8,7 @@
 // licenses.
 
 use crate::io_extras::sink;
-use crate::prelude::*;
+use crate::{io, prelude::*};
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::Amount;
@@ -26,10 +26,12 @@ use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
-use crate::util::ser::TransactionU16LenLimited;
+use crate::util::ser::{Readable, TransactionU16LenLimited, Writeable, Writer};
 
 use core::fmt::Display;
 use core::ops::Deref;
+
+use super::msgs::DecodeError;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
@@ -288,16 +290,25 @@ impl ConstructedTransaction {
 /// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#sharing-funding-signatures-tx_signatures
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractiveTxSigningSession {
-	pub unsigned_tx: ConstructedTransaction,
+	unsigned_tx: ConstructedTransaction,
 	holder_sends_tx_signatures_first: bool,
-	received_commitment_signed: bool,
 	holder_tx_signatures: Option<TxSignatures>,
-	counterparty_sent_tx_signatures: bool,
 }
 
 impl InteractiveTxSigningSession {
+	pub fn unsigned_tx(&self) -> &ConstructedTransaction {
+		&self.unsigned_tx
+	}
+
+	pub fn holder_sends_tx_signatures_first(&self) -> bool {
+		self.holder_sends_tx_signatures_first
+	}
+
+	pub fn holder_tx_signatures(&self) -> &Option<TxSignatures> {
+		&self.holder_tx_signatures
+	}
+
 	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
-		self.received_commitment_signed = true;
 		if self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
 		} else {
@@ -305,8 +316,8 @@ impl InteractiveTxSigningSession {
 		}
 	}
 
-	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.received_commitment_signed {
+	pub fn get_tx_signatures(&self, received_commitment_signed: bool) -> Option<TxSignatures> {
+		if received_commitment_signed {
 			self.holder_tx_signatures.clone()
 		} else {
 			None
@@ -331,7 +342,6 @@ impl InteractiveTxSigningSession {
 			return Err(());
 		}
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
-		self.counterparty_sent_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
@@ -409,6 +419,115 @@ impl InteractiveTxSigningSession {
 			input: inputs.iter().cloned().map(|input| input.into_txin()).collect(),
 			output: outputs.iter().cloned().map(|output| output.into_tx_out()).collect(),
 		}
+	}
+
+	pub fn update_from_funding_tx_after_read(&mut self, funding_tx: &Transaction) {
+		self.unsigned_tx.inputs.iter_mut().zip(funding_tx.input.iter().cloned()).for_each(
+			|(placeholder, real)| {
+				*placeholder.txin_mut() = real;
+			},
+		);
+		self.unsigned_tx.outputs.iter_mut().zip(funding_tx.output.iter().cloned()).for_each(
+			|(placeholder, real)| {
+				(*placeholder).output = OutputOwned::Single(real);
+			},
+		);
+	}
+}
+
+impl Writeable for InteractiveTxSigningSession {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let input_serial_ids =
+			self.unsigned_tx.inputs.iter().map(|input| input.serial_id()).collect::<Vec<_>>();
+		let output_serial_ids =
+			self.unsigned_tx.outputs.iter().map(|output| output.serial_id).collect::<Vec<_>>();
+
+		write_tlv_fields!(writer, {
+			(0, self.unsigned_tx.holder_is_initiator, required),
+			(2, self.unsigned_tx.holder_sends_tx_signatures_first, required),
+			(4, input_serial_ids, required),
+			(6, output_serial_ids, required),
+			(8, self.holder_tx_signatures, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for InteractiveTxSigningSession {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut holder_is_initiator = false;
+		let mut holder_sends_tx_signatures_first = false;
+		let mut input_serial_ids: Vec<SerialId> = vec![];
+		let mut output_serial_ids: Vec<SerialId> = vec![];
+		let mut holder_tx_signatures: Option<TxSignatures> = None;
+
+		read_tlv_fields!(reader, {
+			(0, holder_is_initiator, required),
+			(2, holder_sends_tx_signatures_first, required),
+			(4, input_serial_ids, required),
+			(6, output_serial_ids, required),
+			(8, holder_tx_signatures, required),
+		});
+
+		// We use an empty dummy `TxOut` for all `TxOut`s as they will be populated with their real
+		// values from `funding_transaction` after reading.
+		let dummy_txout = TxOut { value: Amount::default(), script_pubkey: ScriptBuf::new() };
+
+		Ok(InteractiveTxSigningSession {
+			holder_sends_tx_signatures_first,
+			holder_tx_signatures,
+			unsigned_tx: ConstructedTransaction {
+				holder_is_initiator,
+				holder_sends_tx_signatures_first,
+				inputs: input_serial_ids
+					.into_iter()
+					.map(|serial_id| {
+						if is_serial_id_valid_for_counterparty(holder_is_initiator, serial_id) {
+							InteractiveTxInput::Remote(LocalOrRemoteInput {
+								serial_id,
+								input: TxIn::default(),
+								prev_output: dummy_txout.clone(),
+							})
+						} else {
+							InteractiveTxInput::Local(
+								// We use a dummy TxOut that will be populated from the funding_transaction after read.
+								LocalOrRemoteInput {
+									serial_id,
+									input: TxIn::default(),
+									prev_output: dummy_txout.clone(),
+								},
+							)
+						}
+					})
+					.collect(),
+				outputs: output_serial_ids
+					.into_iter()
+					.map(|serial_id| {
+						let added_by = if is_serial_id_valid_for_counterparty(
+							holder_is_initiator,
+							serial_id,
+						) {
+							AddingRole::Remote
+						} else {
+							AddingRole::Local
+						};
+						InteractiveTxOutput {
+							serial_id,
+							added_by,
+							// The ownership of the output is irrelevant at this point as the read would only happen
+							// at `ChannelState::InteractiveSigning`, so we just use `Single` here.
+							output: OutputOwned::Single(dummy_txout.clone()),
+						}
+					})
+					.collect(),
+				local_inputs_value_satoshis: 0,
+				local_outputs_value_satoshis: 0,
+				remote_inputs_value_satoshis: 0,
+				remote_outputs_value_satoshis: 0,
+				lock_time: AbsoluteLockTime::from_height(0)
+					.expect("0 is a valid absolute locktime"),
+			},
+		})
 	}
 }
 
@@ -987,9 +1106,7 @@ macro_rules! define_state_transitions {
 				let signing_session = InteractiveTxSigningSession {
 					holder_sends_tx_signatures_first: tx.holder_sends_tx_signatures_first,
 					unsigned_tx: tx,
-					received_commitment_signed: false,
 					holder_tx_signatures: None,
-					counterparty_sent_tx_signatures: false,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
