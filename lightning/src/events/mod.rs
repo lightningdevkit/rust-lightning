@@ -774,10 +774,16 @@ pub enum Event {
 		/// Information for claiming this received payment, based on whether the purpose of the
 		/// payment is to pay an invoice or to send a spontaneous payment.
 		purpose: PaymentPurpose,
-		/// The `channel_id` indicating over which channel we received the payment.
-		via_channel_id: Option<ChannelId>,
-		/// The `user_channel_id` indicating over which channel we received the payment.
-		via_user_channel_id: Option<u128>,
+		/// The `channel_id`(s) indicating over which channel(s) we received the payment.
+		/// - In a non-MPP scenario, this will contain a single `channel_id` where the payment was received.
+		/// - In an MPP scenario, this will contain multiple `channel_id`s corresponding to the channels over
+		///   which the payment parts were received.
+		via_channel_ids: Vec<Option<ChannelId>>,
+		/// The `user_channel_id`(s) indicating over which channel(s) we received the payment.
+		/// - In a non-MPP scenario, this will contain a single `user_channel_id`.
+		/// - In an MPP scenario, this will contain multiple `user_channel_id`s corresponding to the channels
+		///   over which the payment parts were received.
+		via_user_channel_ids: Vec<Option<u128>>,
 		/// The block height at which this payment will be failed back and will no longer be
 		/// eligible for claiming.
 		///
@@ -1506,7 +1512,7 @@ impl Writeable for Event {
 				// drop any channels which have not yet exchanged funding_signed.
 			},
 			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, counterparty_skimmed_fee_msat,
-				ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
+				ref purpose, ref receiver_node_id, ref via_channel_ids, ref via_user_channel_ids,
 				ref claim_deadline, ref onion_fields, ref payment_id,
 			} => {
 				1u8.write(writer)?;
@@ -1544,9 +1550,11 @@ impl Writeable for Event {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
 					(2, payment_secret, option),
-					(3, via_channel_id, option),
+					// legacy field
+					// (3, via_channel_id, option),
 					(4, amount_msat, required),
-					(5, via_user_channel_id, option),
+					// legacy field
+					// (5, via_user_channel_id, option),
 					// Type 6 was `user_payment_id` on 0.0.103 and earlier
 					(7, claim_deadline, option),
 					(8, payment_preimage, option),
@@ -1554,6 +1562,8 @@ impl Writeable for Event {
 					(10, skimmed_fee_opt, option),
 					(11, payment_context, option),
 					(13, payment_id, option),
+					(15, *via_channel_ids, optional_vec),
+					(17, *via_user_channel_ids, optional_vec),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
@@ -1855,6 +1865,8 @@ impl MaybeReadable for Event {
 					let mut onion_fields = None;
 					let mut payment_context = None;
 					let mut payment_id = None;
+					let mut via_channel_ids_opt = None;
+					let mut via_user_channel_ids_opt = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1869,6 +1881,8 @@ impl MaybeReadable for Event {
 						(10, counterparty_skimmed_fee_msat_opt, option),
 						(11, payment_context, option),
 						(13, payment_id, option),
+						(15, via_channel_ids_opt, optional_vec),
+						(17, via_user_channel_ids_opt, optional_vec),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context)
@@ -1876,14 +1890,17 @@ impl MaybeReadable for Event {
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
+
+					let via_channel_ids = via_channel_ids_opt.unwrap_or(vec![via_channel_id]);
+					let via_user_channel_ids = via_user_channel_ids_opt.unwrap_or(vec![via_user_channel_id]);
 					Ok(Some(Event::PaymentClaimable {
 						receiver_node_id,
 						payment_hash,
 						amount_msat,
 						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt.unwrap_or(0),
 						purpose,
-						via_channel_id,
-						via_user_channel_id,
+						via_channel_ids,
+						via_user_channel_ids,
 						claim_deadline,
 						onion_fields,
 						payment_id,
