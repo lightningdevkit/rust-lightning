@@ -256,6 +256,66 @@ pub fn test_insane_channel_opens() {
 	});
 }
 
+#[test]
+fn test_insane_zero_fee_channel_open() {
+	let mut cfg = UserConfig::default();
+	cfg.manually_accept_inbound_channels = true;
+	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+
+	let open_channel_message =
+		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+
+	let insane_open_helper =
+		|expected_error_str: &str, message_mutator: fn(msgs::OpenChannel) -> msgs::OpenChannel| {
+			let open_channel_mutated = message_mutator(open_channel_message.clone());
+			nodes[1].node.handle_open_channel(node_a_id, &open_channel_mutated);
+
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				Event::OpenChannelRequest { temporary_channel_id, .. } => {
+					match nodes[1].node.accept_inbound_channel(
+						&temporary_channel_id,
+						&nodes[0].node.get_our_node_id(),
+						23,
+						None,
+					) {
+						Ok(_) => panic!("Unexpected successful channel accept"),
+						Err(e) => assert!(format!("{:?}", e).contains(expected_error_str)),
+					}
+				},
+				_ => panic!("Unexpected event"),
+			}
+
+			let events = nodes[1].node.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			assert!(matches!(events[0], MessageSendEvent::HandleError { .. }));
+		};
+
+	insane_open_helper(
+		"max_accepted_htlcs was 115. It must not be larger than 114".into(),
+		|mut msg| {
+			msg.common_fields.max_accepted_htlcs = 115;
+			msg
+		},
+	);
+
+	insane_open_helper("Zero Fee Channels must never attempt to use a fee".into(), |mut msg| {
+		msg.common_fields.commitment_feerate_sat_per_1000_weight = 123;
+		msg
+	});
+}
+
 #[xtest(feature = "_externalize_tests")]
 pub fn test_funding_exceeds_no_wumbo_limit() {
 	// Test that if a peer does not support wumbo channels, we'll refuse to open a wumbo channel to
