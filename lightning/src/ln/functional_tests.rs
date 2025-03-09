@@ -10609,8 +10609,9 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(10_000);
 	// Make sure the HTLC limits don't get in the way
-	config.channel_handshake_limits.min_max_accepted_htlcs = chan_utils::MAX_HTLCS;
-	config.channel_handshake_config.our_max_accepted_htlcs = chan_utils::MAX_HTLCS;
+	let chan_ty = ChannelTypeFeatures::only_static_remote_key();
+	config.channel_handshake_limits.min_max_accepted_htlcs = chan_utils::max_htlcs(&chan_ty);
+	config.channel_handshake_config.our_max_accepted_htlcs = chan_utils::max_htlcs(&chan_ty);
 	config.channel_handshake_config.our_htlc_minimum_msat = 1;
 	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
@@ -10651,7 +10652,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	let commitment_tx_per_htlc_cost =
 		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * EXCESS_FEERATE as u64;
 	let max_htlcs_remaining = dust_limit * 2 / commitment_tx_per_htlc_cost;
-	assert!(max_htlcs_remaining < chan_utils::MAX_HTLCS.into(),
+	assert!(max_htlcs_remaining < chan_utils::max_htlcs(&chan_ty).into(),
 		"We should be able to fill our dust limit without too many HTLCs");
 	for i in 0..max_htlcs_remaining + 1 {
 		assert_ne!(i, max_htlcs_remaining);

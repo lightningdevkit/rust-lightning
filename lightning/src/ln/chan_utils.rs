@@ -52,8 +52,14 @@ use super::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, H
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-/// Maximum number of one-way in-flight HTLC (protocol-level value).
-pub const MAX_HTLCS: u16 = 483;
+/// Maximum number of in-flight HTLCs in each direction allowed by the lightning protocol.
+///
+/// 483 for non-zero-fee-commitment channels and 114 for zero-fee-commitment channels.
+///
+/// Actual maximums can be set equal to or below this value by each channel participant.
+pub fn max_htlcs(_channel_type: &ChannelTypeFeatures) -> u16 {
+	483
+}
 /// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, non-anchor variant.
 pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 /// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, anchor variant.
