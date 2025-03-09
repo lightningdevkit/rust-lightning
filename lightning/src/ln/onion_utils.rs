@@ -965,8 +965,8 @@ where
 	}
 	let mut res: Option<FailureLearnings> = None;
 	let mut htlc_msat = *first_hop_htlc_msat;
-	let mut error_code_ret = None;
-	let mut error_packet_ret = None;
+	let mut _error_code_ret = None;
+	let mut _error_packet_ret = None;
 	let mut is_from_final_node = false;
 
 	const BADONION: u16 = 0x8000;
@@ -974,25 +974,37 @@ where
 	const NODE: u16 = 0x2000;
 	const UPDATE: u16 = 0x1000;
 
+	let mut onion_keys = Vec::with_capacity(path.hops.len());
+	construct_onion_keys_generic_callback(
+		secp_ctx,
+		&path.hops,
+		path.blinded_tail.as_ref(),
+		session_priv,
+		|shared_secret, _, _, route_hop_option: Option<&RouteHop>, _| {
+			onion_keys.push((route_hop_option.cloned(), shared_secret))
+		},
+	)
+	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+
 	// Handle packed channel/node updates for passing back for the route handler
-	let callback = |shared_secret, _, _, route_hop_opt: Option<&RouteHop>, route_hop_idx| {
+	for (route_hop_idx, (route_hop_option, shared_secret)) in onion_keys.into_iter().enumerate() {
 		if res.is_some() {
-			return;
+			break;
 		}
 
-		let route_hop = match route_hop_opt {
+		let route_hop = match route_hop_option.as_ref() {
 			Some(hop) => hop,
 			None => {
 				// Got an error from within a blinded route.
-				error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
-				error_packet_ret = Some(vec![0; 32]);
+				_error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+				_error_packet_ret = Some(vec![0; 32]);
 				res = Some(FailureLearnings {
 					network_update: None,
 					short_channel_id: None,
 					payment_failed_permanently: false,
 					failed_within_blinded_path: true,
 				});
-				return;
+				break;
 			},
 		};
 
@@ -1010,8 +1022,8 @@ where
 					// The failing hop is within a multi-hop blinded path.
 					#[cfg(not(test))]
 					{
-						error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
-						error_packet_ret = Some(vec![0; 32]);
+						_error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+						_error_packet_ret = Some(vec![0; 32]);
 					}
 					#[cfg(test)]
 					{
@@ -1022,10 +1034,10 @@ where
 							&encrypted_packet,
 						))
 						.unwrap();
-						error_code_ret = Some(u16::from_be_bytes(
+						_error_code_ret = Some(u16::from_be_bytes(
 							err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
 						));
-						error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+						_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
 					}
 
 					res = Some(FailureLearnings {
@@ -1034,7 +1046,7 @@ where
 						payment_failed_permanently: false,
 						failed_within_blinded_path: true,
 					});
-					return;
+					break;
 				},
 			}
 		};
@@ -1049,7 +1061,7 @@ where
 		hmac.input(&encrypted_packet[32..]);
 
 		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &encrypted_packet[..32]) {
-			return;
+			continue;
 		}
 
 		let err_packet =
@@ -1069,7 +1081,7 @@ where
 						payment_failed_permanently: is_from_final_node,
 						failed_within_blinded_path: false,
 					});
-					return;
+					break;
 				},
 			};
 
@@ -1091,13 +1103,13 @@ where
 					payment_failed_permanently: is_from_final_node,
 					failed_within_blinded_path: false,
 				});
-				return;
+				break;
 			},
 		};
 
 		let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
-		error_code_ret = Some(error_code);
-		error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
+		_error_code_ret = Some(error_code);
+		_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
 
 		let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
 
@@ -1208,16 +1220,7 @@ where
 				description
 			);
 		}
-	};
-
-	construct_onion_keys_generic_callback(
-		secp_ctx,
-		&path.hops,
-		path.blinded_tail.as_ref(),
-		session_priv,
-		callback,
-	)
-	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+	}
 
 	if let Some(FailureLearnings {
 		network_update,
@@ -1232,9 +1235,9 @@ where
 			payment_failed_permanently,
 			failed_within_blinded_path,
 			#[cfg(any(test, feature = "_test_utils"))]
-			onion_error_code: error_code_ret,
+			onion_error_code: _error_code_ret,
 			#[cfg(any(test, feature = "_test_utils"))]
-			onion_error_data: error_packet_ret,
+			onion_error_data: _error_packet_ret,
 		}
 	} else {
 		// only not set either packet unparseable or hmac does not match with any
