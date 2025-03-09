@@ -58,8 +58,13 @@ use crate::prelude::*;
 /// 483 for non-zero-fee-commitment channels and 114 for zero-fee-commitment channels.
 ///
 /// Actual maximums can be set equal to or below this value by each channel participant.
-pub fn max_htlcs(_channel_type: &ChannelTypeFeatures) -> u16 {
-	483
+pub fn max_htlcs(channel_type: &ChannelTypeFeatures) -> u16 {
+	if channel_type.supports_anchor_zero_fee_commitments() {
+		// TRUC restricts the size of our commitment transactions to 10K vB rather than 100K vB
+		114
+	} else {
+		483
+	}
 }
 /// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, non-anchor variant.
 pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
