@@ -43,7 +43,7 @@ use crate::ln::chan_utils::{
 	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
 	htlc_timeout_tx_weight, ChannelPublicKeys, CommitmentTransaction,
 	HolderCommitmentTransaction, ChannelTransactionParameters,
-	CounterpartyChannelTransactionParameters, MAX_HTLCS,
+	CounterpartyChannelTransactionParameters, max_htlcs,
 	get_commitment_transaction_number_obscure_factor,
 	ClosingTransaction, commit_tx_fee_sat,
 };
@@ -2457,8 +2457,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if open_channel_fields.max_accepted_htlcs < 1 {
 			return Err(ChannelError::close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
 		}
-		if open_channel_fields.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", open_channel_fields.max_accepted_htlcs, MAX_HTLCS)));
+		if open_channel_fields.max_accepted_htlcs > max_htlcs(&channel_type) {
+			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", open_channel_fields.max_accepted_htlcs, max_htlcs(&channel_type))));
 		}
 
 		// Now check against optional parameters as set by config...
@@ -2686,7 +2686,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			counterparty_htlc_minimum_msat: open_channel_fields.htlc_minimum_msat,
 			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: open_channel_fields.max_accepted_htlcs,
-			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
+			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, max_htlcs(&channel_type)),
 			minimum_depth,
 
 			counterparty_forwarding_info: None,
@@ -2923,7 +2923,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			counterparty_htlc_minimum_msat: 0,
 			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
-			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
+			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, max_htlcs(&channel_type)),
 			minimum_depth: None, // Filled in in accept_channel
 
 			counterparty_forwarding_info: None,
@@ -3183,6 +3183,22 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if !matches!(self.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) {
 			return Err(ChannelError::close("Got an accept_channel message at a strange time".to_owned()));
 		}
+
+		if let Some(ty) = &common_fields.channel_type {
+			if *ty != self.channel_type {
+				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
+			}
+		} else if their_features.supports_channel_type() {
+			// Assume they've accepted the channel type as they said they understand it.
+		} else {
+			let channel_type = ChannelTypeFeatures::from_init(&their_features);
+			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
+				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+			}
+			self.channel_type = channel_type.clone();
+			funding.channel_transaction_parameters.channel_type_features = channel_type;
+		}
+
 		if common_fields.dust_limit_satoshis > 21000000 * 100000000 {
 			return Err(ChannelError::close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", common_fields.dust_limit_satoshis)));
 		}
@@ -3207,8 +3223,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if common_fields.max_accepted_htlcs < 1 {
 			return Err(ChannelError::close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
 		}
-		if common_fields.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", common_fields.max_accepted_htlcs, MAX_HTLCS)));
+
+		let channel_type = &funding.channel_transaction_parameters.channel_type_features;
+		if common_fields.max_accepted_htlcs > max_htlcs(channel_type) {
+			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", common_fields.max_accepted_htlcs, max_htlcs(channel_type))));
 		}
 
 		// Now check against optional parameters as set by config...
@@ -3232,21 +3250,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 		if common_fields.minimum_depth > peer_limits.max_minimum_depth {
 			return Err(ChannelError::close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, common_fields.minimum_depth)));
-		}
-
-		if let Some(ty) = &common_fields.channel_type {
-			if *ty != self.channel_type {
-				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
-			}
-		} else if their_features.supports_channel_type() {
-			// Assume they've accepted the channel type as they said they understand it.
-		} else {
-			let channel_type = ChannelTypeFeatures::from_init(&their_features);
-			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
-			}
-			self.channel_type = channel_type.clone();
-			funding.channel_transaction_parameters.channel_type_features = channel_type;
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {

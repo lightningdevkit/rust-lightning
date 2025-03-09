@@ -193,8 +193,10 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Default value: `50`
 	///
-	/// Maximum value: `483` (Any values larger will be treated as `483`. This is the BOLT #2 spec
-	/// limit on `max_accepted_htlcs`.)
+	/// Maximum value: depends on channel type, see docs on [`max_htlcs`] (any values over the
+	///                maximum will be silently reduced to the maximum).
+	///
+	/// [`max_htlcs`]: crate::ln::chan_utils::max_htlcs
 	pub our_max_accepted_htlcs: u16,
 }
 
