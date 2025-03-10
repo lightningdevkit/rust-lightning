@@ -967,27 +967,91 @@ where
 	let mut htlc_msat = *first_hop_htlc_msat;
 	let mut _error_code_ret = None;
 	let mut _error_packet_ret = None;
-	let mut is_from_final_node = false;
+	let mut is_from_final_non_blinded_node = false;
 
 	const BADONION: u16 = 0x8000;
 	const PERM: u16 = 0x4000;
 	const NODE: u16 = 0x2000;
 	const UPDATE: u16 = 0x1000;
 
+	let blinded_hop_count = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
+	let (blinded_tail, outer_session_priv) =
+		path.blinded_tail.as_ref().map_or((None, None), |bt| {
+			if !bt.trampoline_hops.is_empty() {
+				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
+				(
+					None,
+					Some(
+						SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!"),
+					),
+				)
+			} else {
+				(Some(bt), None)
+			}
+		});
+
+	enum ErrorHop {
+		RouteHop(RouteHop),
+		TrampolineHop(TrampolineHop),
+	}
+
+	impl ErrorHop {
+		fn fee_msat(&self) -> u64 {
+			match self {
+				ErrorHop::RouteHop(rh) => rh.fee_msat,
+				ErrorHop::TrampolineHop(th) => th.fee_msat,
+			}
+		}
+
+		fn pubkey(&self) -> &PublicKey {
+			match self {
+				ErrorHop::RouteHop(rh) => rh.node_pubkey(),
+				ErrorHop::TrampolineHop(th) => th.node_pubkey(),
+			}
+		}
+
+		fn short_channel_id(&self) -> Option<u64> {
+			match self {
+				ErrorHop::RouteHop(rh) => Some(rh.short_channel_id),
+				ErrorHop::TrampolineHop(_) => None,
+			}
+		}
+	}
+
 	let mut onion_keys = Vec::with_capacity(path.hops.len());
 	construct_onion_keys_generic_callback(
 		secp_ctx,
 		&path.hops,
-		path.blinded_tail.as_ref(),
-		session_priv,
+		blinded_tail,
+		outer_session_priv.as_ref().unwrap_or(session_priv),
 		|shared_secret, _, _, route_hop_option: Option<&RouteHop>, _| {
-			onion_keys.push((route_hop_option.cloned(), shared_secret))
+			onion_keys
+				.push((route_hop_option.map(|rh| ErrorHop::RouteHop(rh.clone())), shared_secret))
 		},
 	)
 	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
 
+	path.blinded_tail.as_ref().map(|bt| {
+		if !bt.trampoline_hops.is_empty() {
+			construct_onion_keys_generic_callback(
+				secp_ctx,
+				&bt.trampoline_hops,
+				Some(bt),
+				session_priv,
+				|shared_secret, _, _, trampoline_hop_option: Option<&TrampolineHop>, _| {
+					onion_keys.push((
+						trampoline_hop_option.map(|th| ErrorHop::TrampolineHop(th.clone())),
+						shared_secret,
+					))
+				},
+			)
+			.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+		}
+	});
+
 	// Handle packed channel/node updates for passing back for the route handler
-	for (route_hop_idx, (route_hop_option, shared_secret)) in onion_keys.into_iter().enumerate() {
+	let mut iterator = onion_keys.into_iter().peekable();
+	while let Some((route_hop_option, shared_secret)) = iterator.next() {
 		if res.is_some() {
 			break;
 		}
@@ -1010,15 +1074,17 @@ where
 
 		// The failing hop includes either the inbound channel to the recipient or the outbound channel
 		// from the current hop (i.e., the next hop's inbound channel).
-		let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
+
 		// For 1-hop blinded paths, the final `path.hops` entry is the recipient.
-		is_from_final_node = route_hop_idx + 1 == path.hops.len() && num_blinded_hops <= 1;
-		let failing_route_hop = if is_from_final_node {
+
+		is_from_final_non_blinded_node = iterator.peek().is_none() && blinded_hop_count <= 1;
+
+		let failing_route_hop = if is_from_final_non_blinded_node {
 			route_hop
 		} else {
-			match path.hops.get(route_hop_idx + 1) {
-				Some(hop) => hop,
-				None => {
+			match iterator.peek() {
+				Some((Some(hop), _)) => hop,
+				_ => {
 					// The failing hop is within a multi-hop blinded path.
 					#[cfg(not(test))]
 					{
@@ -1051,7 +1117,7 @@ where
 			}
 		};
 
-		let amt_to_forward = htlc_msat - route_hop.fee_msat;
+		let amt_to_forward = htlc_msat - route_hop.fee_msat();
 		htlc_msat = amt_to_forward;
 
 		decrypt_onion_error_packet(&mut encrypted_packet, shared_secret);
@@ -1068,17 +1134,17 @@ where
 			match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&encrypted_packet)) {
 				Ok(p) => p,
 				Err(_) => {
-					log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey);
+					log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey());
 
 					let network_update = Some(NetworkUpdate::NodeFailure {
-						node_id: route_hop.pubkey,
+						node_id: route_hop.pubkey().clone(),
 						is_permanent: true,
 					});
-					let short_channel_id = Some(route_hop.short_channel_id);
+					let short_channel_id = route_hop.short_channel_id();
 					res = Some(FailureLearnings {
 						network_update,
 						short_channel_id,
-						payment_failed_permanently: is_from_final_node,
+						payment_failed_permanently: is_from_final_non_blinded_node,
 						failed_within_blinded_path: false,
 					});
 					break;
@@ -1090,17 +1156,17 @@ where
 			None => {
 				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
 				// in question
-				log_warn!(logger, "Missing error code in failure from {}", route_hop.pubkey);
+				log_warn!(logger, "Missing error code in failure from {}", route_hop.pubkey());
 
 				let network_update = Some(NetworkUpdate::NodeFailure {
-					node_id: route_hop.pubkey,
+					node_id: route_hop.pubkey().clone(),
 					is_permanent: true,
 				});
-				let short_channel_id = Some(route_hop.short_channel_id);
+				let short_channel_id = route_hop.short_channel_id();
 				res = Some(FailureLearnings {
 					network_update,
 					short_channel_id,
-					payment_failed_permanently: is_from_final_node,
+					payment_failed_permanently: is_from_final_non_blinded_node,
 					failed_within_blinded_path: false,
 				});
 				break;
@@ -1117,7 +1183,7 @@ where
 		let payment_failed = match error_code & 0xff {
 			15 | 16 | 17 | 18 | 19 | 23 => true,
 			_ => false,
-		} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
+		} && is_from_final_non_blinded_node; // PERM bit observed below even if this error is from the intermediate nodes
 
 		let mut network_update = None;
 		let mut short_channel_id = None;
@@ -1130,22 +1196,28 @@ where
 			// entirely, but we can't be confident in that, as it would allow any node to get us to
 			// completely ban one of its counterparties. Instead, we simply remove the channel in
 			// question.
-			network_update = Some(NetworkUpdate::ChannelFailure {
-				short_channel_id: failing_route_hop.short_channel_id,
-				is_permanent: true,
-			});
-		} else if error_code & NODE == NODE {
-			let is_permanent = error_code & PERM == PERM;
-			network_update =
-				Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
-			short_channel_id = Some(route_hop.short_channel_id);
-		} else if error_code & PERM == PERM {
-			if !payment_failed {
+			if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
 				network_update = Some(NetworkUpdate::ChannelFailure {
 					short_channel_id: failing_route_hop.short_channel_id,
 					is_permanent: true,
 				});
-				short_channel_id = Some(failing_route_hop.short_channel_id);
+			}
+		} else if error_code & NODE == NODE {
+			let is_permanent = error_code & PERM == PERM;
+			network_update = Some(NetworkUpdate::NodeFailure {
+				node_id: route_hop.pubkey().clone(),
+				is_permanent,
+			});
+			short_channel_id = route_hop.short_channel_id();
+		} else if error_code & PERM == PERM {
+			if !payment_failed {
+				if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
+					network_update = Some(NetworkUpdate::ChannelFailure {
+						short_channel_id: failing_route_hop.short_channel_id,
+						is_permanent: true,
+					});
+				}
+				short_channel_id = failing_route_hop.short_channel_id();
 			}
 		} else if error_code & UPDATE == UPDATE {
 			if let Some(update_len_slice) =
@@ -1158,43 +1230,47 @@ where
 					.get(debug_field_size + 4..debug_field_size + 4 + update_len)
 					.is_some()
 				{
-					network_update = Some(NetworkUpdate::ChannelFailure {
-						short_channel_id: failing_route_hop.short_channel_id,
-						is_permanent: false,
-					});
-					short_channel_id = Some(failing_route_hop.short_channel_id);
+					if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
+						network_update = Some(NetworkUpdate::ChannelFailure {
+							short_channel_id: failing_route_hop.short_channel_id,
+							is_permanent: false,
+						});
+					}
+					short_channel_id = failing_route_hop.short_channel_id();
 				}
 			}
 			if network_update.is_none() {
 				// They provided an UPDATE which was obviously bogus, not worth
 				// trying to relay through them anymore.
 				network_update = Some(NetworkUpdate::NodeFailure {
-					node_id: route_hop.pubkey,
+					node_id: route_hop.pubkey().clone(),
 					is_permanent: true,
 				});
 			}
 			if short_channel_id.is_none() {
-				short_channel_id = Some(route_hop.short_channel_id);
+				short_channel_id = route_hop.short_channel_id();
 			}
 		} else if payment_failed {
 			// Only blame the hop when a value in the HTLC doesn't match the corresponding value in the
 			// onion.
 			short_channel_id = match error_code & 0xff {
-				18 | 19 => Some(route_hop.short_channel_id),
+				18 | 19 => route_hop.short_channel_id(),
 				_ => None,
 			};
 		} else {
 			// We can't understand their error messages and they failed to forward...they probably can't
 			// understand our forwards so it's really not worth trying any further.
-			network_update =
-				Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent: true });
-			short_channel_id = Some(route_hop.short_channel_id);
+			network_update = Some(NetworkUpdate::NodeFailure {
+				node_id: route_hop.pubkey().clone(),
+				is_permanent: true,
+			});
+			short_channel_id = route_hop.short_channel_id()
 		}
 
 		res = Some(FailureLearnings {
 			network_update,
 			short_channel_id,
-			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node,
+			payment_failed_permanently: error_code & PERM == PERM && is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 		});
 
@@ -1203,7 +1279,7 @@ where
 			log_info!(
 				logger,
 				"Onion Error[from {}: {}({:#x}) {}({})] {}",
-				route_hop.pubkey,
+				route_hop.pubkey(),
 				title,
 				error_code,
 				debug_field,
@@ -1214,7 +1290,7 @@ where
 			log_info!(
 				logger,
 				"Onion Error[from {}: {}({:#x})] {}",
-				route_hop.pubkey,
+				route_hop.pubkey(),
 				title,
 				error_code,
 				description
@@ -1251,7 +1327,7 @@ where
 		DecodedOnionFailure {
 			network_update: None,
 			short_channel_id: None,
-			payment_failed_permanently: is_from_final_node,
+			payment_failed_permanently: is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
@@ -1970,11 +2046,11 @@ mod tests {
 	use crate::prelude::*;
 	use crate::util::test_utils::TestLogger;
 
+	use super::*;
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
-
-	use super::*;
+	use types::features::Features;
 
 	fn get_test_session_key() -> SecretKey {
 		let hex = "4141414141414141414141414141414141414141414141414141414141414141";
@@ -2345,6 +2421,188 @@ mod tests {
 			process_onion_failure(&ctx_full, &logger, &htlc_source, onion_packet_5.data);
 
 		assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
+	}
+
+	#[test]
+	fn test_trampoline_failure_onion() {
+		let amt_msat = 150_000_000;
+
+		let path = Path {
+			hops: vec![
+				// Bob
+				RouteHop {
+					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()).unwrap(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 3_000,
+					cltv_expiry_delta: 24,
+					maybe_announced_channel: false,
+				},
+
+				// Carol
+				RouteHop {
+					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: (572330 << 40) + (42 << 16) + 2821,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 153_000,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: false,
+				},
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![
+					// Carol's pubkey
+					TrampolineHop {
+						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+						node_features: Features::empty(),
+						fee_msat: 2_500,
+						cltv_expiry_delta: 24,
+					},
+					// Dave's pubkey
+					TrampolineHop {
+						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22").unwrap()).unwrap(),
+						node_features: Features::empty(),
+						fee_msat: 2_500,
+						cltv_expiry_delta: 24,
+					},
+					// Emily's pubkey (the intro node needs to be duplicated)
+					TrampolineHop {
+						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()).unwrap(),
+						node_features: Features::empty(),
+						fee_msat: 150_500,
+						cltv_expiry_delta: 36,
+					}
+				],
+				hops: vec![
+					// Emily's blinded node id
+					BlindedHop {
+						blinded_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be").unwrap()).unwrap(),
+						encrypted_payload: vec![],
+					},
+					// Forrest's blinded node id
+					BlindedHop {
+						blinded_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22").unwrap()).unwrap(),
+						encrypted_payload: vec![],
+					}
+				],
+				blinding_point: PublicKey::from_slice(&<Vec<u8>>::from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e").unwrap()).unwrap(),
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: amt_msat
+			}),
+		};
+
+		// all dummy values
+		let secp_ctx = Secp256k1::new();
+		let session_priv = get_test_session_key();
+
+		let trampoline_onion_keys = construct_trampoline_onion_keys(
+			&secp_ctx,
+			&path.blinded_tail.as_ref().unwrap(),
+			&session_priv,
+		)
+		.unwrap();
+
+		let outer_onion_keys = {
+			let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
+			let outer_session_priv =
+				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!");
+			construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv).unwrap()
+		};
+
+		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
+		let htlc_source = HTLCSource::OutboundRoute {
+			path,
+			session_priv,
+			first_hop_htlc_msat: amt_msat,
+			payment_id: PaymentId([1; 32]),
+		};
+
+		let first_hop_error_packet = {
+			let onion_error = super::build_failure_packet(
+				outer_onion_keys[0].shared_secret.as_ref(),
+				0x2002,
+				&[0; 0],
+			);
+			super::encrypt_failure_packet(
+				outer_onion_keys[0].shared_secret.as_ref(),
+				&onion_error.encode()[..],
+			)
+		};
+
+		let trampoline_outer_hop_error_packet = {
+			let onion_error = super::build_failure_packet(
+				outer_onion_keys[1].shared_secret.as_ref(),
+				0x2003,
+				&[0; 0],
+			);
+			let error_packet_1 = super::encrypt_failure_packet(
+				outer_onion_keys[1].shared_secret.as_ref(),
+				&onion_error.encode()[..],
+			);
+
+			super::encrypt_failure_packet(
+				outer_onion_keys[0].shared_secret.as_ref(),
+				&error_packet_1.data[..],
+			)
+		};
+
+		let trampoline_inner_hop_error_packet = {
+			let onion_error = super::build_failure_packet(
+				trampoline_onion_keys[0].shared_secret.as_ref(),
+				0x2004,
+				&[0; 0],
+			);
+			let error_packet_t0 = super::encrypt_failure_packet(
+				trampoline_onion_keys[0].shared_secret.as_ref(),
+				&onion_error.encode()[..],
+			);
+
+			let error_packet_1 = super::encrypt_failure_packet(
+				outer_onion_keys[1].shared_secret.as_ref(),
+				&error_packet_t0.data[..],
+			);
+
+			let error_packet_0 = super::encrypt_failure_packet(
+				outer_onion_keys[0].shared_secret.as_ref(),
+				&error_packet_1.data[..],
+			);
+			error_packet_0
+		};
+
+		{
+			// Assert that the original failure can be retrieved and that all hmacs check out.
+			let decrypted_failure = process_onion_failure(
+				&secp_ctx,
+				&logger,
+				&htlc_source,
+				first_hop_error_packet.data,
+			);
+			assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
+		}
+
+		{
+			// Assert that the original failure can be retrieved and that all hmacs check out.
+			let decrypted_failure = process_onion_failure(
+				&secp_ctx,
+				&logger,
+				&htlc_source,
+				trampoline_outer_hop_error_packet.data,
+			);
+			assert_eq!(decrypted_failure.onion_error_code, Some(0x2003));
+		}
+
+		{
+			// Assert that the original failure can be retrieved and that all hmacs check out.
+			let decrypted_failure = process_onion_failure(
+				&secp_ctx,
+				&logger,
+				&htlc_source,
+				trampoline_inner_hop_error_packet.data,
+			);
+			assert_eq!(decrypted_failure.onion_error_code, Some(0x2004));
+		}
 	}
 
 	#[test]
