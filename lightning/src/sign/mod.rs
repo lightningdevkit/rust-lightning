@@ -164,9 +164,9 @@ impl StaticPaymentOutputDescriptor {
 	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
 	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref().and_then(|channel_params| {
-			if channel_params.supports_anchors() {
+			if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 				let payment_point = channel_params.holder_pubkeys.payment_point;
-				Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
+				Some(chan_utils::get_to_countersigner_keyed_anchor_redeemscript(&payment_point))
 			} else {
 				None
 			}
@@ -177,7 +177,7 @@ impl StaticPaymentOutputDescriptor {
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
 	pub fn max_witness_length(&self) -> u64 {
-		if self.channel_transaction_parameters.as_ref().map_or(false, |p| p.supports_anchors()) {
+		if self.needs_csv_1_for_spend() {
 			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
 				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
 			1 /* num witness items */ + 1 /* sig push */ + 73 /* sig including sighash flag */ +
@@ -185,6 +185,13 @@ impl StaticPaymentOutputDescriptor {
 		} else {
 			P2WPKH_WITNESS_WEIGHT
 		}
+	}
+
+	/// Returns true if spending this output requires a transaction with a CheckSequenceVerify
+	/// value of at least 1.
+	pub fn needs_csv_1_for_spend(&self) -> bool {
+		let chan_params = self.channel_transaction_parameters.as_ref();
+		chan_params.map_or(false, |p| p.channel_type_features.supports_anchors_zero_fee_htlc_tx())
 	}
 }
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
@@ -440,11 +447,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(descriptor.outpoint) {
 						return Err(());
 					}
-					let sequence = if descriptor
-						.channel_transaction_parameters
-						.as_ref()
-						.map_or(false, |p| p.supports_anchors())
-					{
+					let sequence = if descriptor.needs_csv_1_for_spend() {
 						Sequence::from_consensus(1)
 					} else {
 						Sequence::ZERO
@@ -1175,7 +1178,7 @@ impl InMemorySigner {
 			.unwrap_or(false);
 
 		let witness_script = if supports_anchors_zero_fee_htlc_tx {
-			chan_utils::get_to_countersignatory_with_anchors_redeemscript(&remotepubkey.inner)
+			chan_utils::get_to_countersigner_keyed_anchor_redeemscript(&remotepubkey.inner)
 		} else {
 			ScriptBuf::new_p2pkh(&remotepubkey.pubkey_hash())
 		};
@@ -1637,23 +1640,19 @@ impl EcdsaChannelSigner for InMemorySigner {
 		))
 	}
 
-	fn sign_holder_anchor_input(
-		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
-		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	fn sign_holder_keyed_anchor_input(
+		&self, chan_params: &ChannelTransactionParameters, anchor_tx: &Transaction, input: usize,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
-		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
+		assert!(chan_params.is_populated(), "Channel parameters must be fully populated");
 
 		let witness_script =
-			chan_utils::get_anchor_redeemscript(&channel_parameters.holder_pubkeys.funding_pubkey);
+			chan_utils::get_keyed_anchor_redeemscript(&chan_params.holder_pubkeys.funding_pubkey);
+		let amt = Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI);
 		let sighash = sighash::SighashCache::new(&*anchor_tx)
-			.p2wsh_signature_hash(
-				input,
-				&witness_script,
-				Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
-				EcdsaSighashType::All,
-			)
+			.p2wsh_signature_hash(input, &witness_script, amt, EcdsaSighashType::All)
 			.unwrap();
-		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_key = self.funding_key(chan_params.splice_parent_funding_txid);
 		Ok(sign_with_aux_rand(secp_ctx, &hash_to_message!(&sighash[..]), &funding_key, &self))
 	}
 
@@ -1746,12 +1745,6 @@ impl TaprootChannelSigner for InMemorySigner {
 	fn partially_sign_closing_transaction(
 		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>,
 	) -> Result<PartialSignature, ()> {
-		todo!()
-	}
-
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>,
-	) -> Result<schnorr::Signature, ()> {
 		todo!()
 	}
 }

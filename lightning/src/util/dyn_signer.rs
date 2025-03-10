@@ -117,12 +117,6 @@ impl TaprootChannelSigner for DynSigner {
 	) -> Result<PartialSignature, ()> {
 		todo!();
 	}
-
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
-		todo!();
-	}
 }
 
 impl Clone for DynSigner {
@@ -158,7 +152,7 @@ delegate!(DynSigner, EcdsaChannelSigner, inner,
 		channel_parameters: &ChannelTransactionParameters, msg: &UnsignedChannelAnnouncement,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()>,
-	fn sign_holder_anchor_input(, channel_parameters: &ChannelTransactionParameters,
+	fn sign_holder_keyed_anchor_input(, channel_parameters: &ChannelTransactionParameters,
 		anchor_tx: &Transaction, input: usize,
 		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>,
 	fn sign_holder_htlc_transaction(, htlc_tx: &Transaction, input: usize,

@@ -52,8 +52,14 @@ use super::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, H
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-/// Maximum number of one-way in-flight HTLC (protocol-level value).
-pub const MAX_HTLCS: u16 = 483;
+/// Maximum number of in-flight HTLCs in each direction allowed by the lightning protocol.
+///
+/// 483 for non-zero-fee-commitment channels and 114 for zero-fee-commitment channels.
+///
+/// Actual maximums can be set equal to or below this value by each channel participant.
+pub fn max_htlcs(_channel_type: &ChannelTypeFeatures) -> u16 {
+	483
+}
 /// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, non-anchor variant.
 pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 /// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, anchor variant.
@@ -574,7 +580,7 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 /// the channel type.
 pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_p2wsh()
+		get_to_countersigner_keyed_anchor_redeemscript(payment_key).to_p2wsh()
 	} else {
 		ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
 	}
@@ -838,7 +844,7 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
 #[inline]
-pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> ScriptBuf {
+pub fn get_to_countersigner_keyed_anchor_redeemscript(payment_point: &PublicKey) -> ScriptBuf {
 	Builder::new()
 		.push_slice(payment_point.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
@@ -847,14 +853,20 @@ pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicK
 		.into_script()
 }
 
-/// Gets the witnessScript for an anchor output from the funding public key.
+/// Gets the script_pubkey for a shared anchor
+pub fn shared_anchor_script_pubkey() -> ScriptBuf {
+	Builder::new().push_int(1).push_slice(&[0x4e, 0x73]).into_script()
+}
+
+/// Gets the witnessScript for a keyed anchor (non-zero-fee-commitments) output from the funding
+/// public key.
+///
 /// The witness in the spending input must be:
 /// <BIP 143 funding_signature>
 /// After 16 blocks of confirmation, an alternative satisfying witness could be:
 /// <>
 /// (empty vector required to satisfy compliance with MINIMALIF-standard rule)
-#[inline]
-pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
+pub fn get_keyed_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
 	Builder::new().push_slice(funding_pubkey.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIG)
 		.push_opcode(opcodes::all::OP_IFDUP)
@@ -865,17 +877,19 @@ pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
 		.into_script()
 }
 
-/// Locates the output with an anchor script paying to `funding_pubkey` within `commitment_tx`.
-pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
-	let anchor_script = get_anchor_redeemscript(funding_pubkey).to_p2wsh();
+/// Locates the output with a keyed anchor (non-zero-fee-commitments) script paying to
+/// `funding_pubkey` within `commitment_tx`.
+pub(crate) fn get_keyed_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
+	let anchor_script = get_keyed_anchor_redeemscript(funding_pubkey).to_p2wsh();
 	commitment_tx.output.iter().enumerate()
 		.find(|(_, txout)| txout.script_pubkey == anchor_script)
 		.map(|(idx, txout)| (idx as u32, txout))
 }
 
-/// Returns the witness required to satisfy and spend an anchor input.
-pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
-	let anchor_redeem_script = get_anchor_redeemscript(funding_key);
+/// Returns the witness required to satisfy and spend a keyed anchor (non-zero-fee-commitments)
+/// input.
+pub fn build_keyed_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
+	let anchor_redeem_script = get_keyed_anchor_redeemscript(funding_key);
 	let mut ret = Witness::new();
 	ret.push_ecdsa_signature(&BitcoinSignature::sighash_all(*funding_sig));
 	ret.push(anchor_redeem_script.as_bytes());
@@ -932,11 +946,6 @@ impl ChannelTransactionParameters {
 	/// Whether the late bound parameters are populated.
 	pub fn is_populated(&self) -> bool {
 		self.counterparty_parameters.is_some() && self.funding_outpoint.is_some()
-	}
-
-	/// Whether the channel supports zero-fee HTLC transaction anchors.
-	pub(crate) fn supports_anchors(&self) -> bool {
-		self.channel_type_features.supports_anchors_zero_fee_htlc_tx()
 	}
 
 	/// Convert the holder/counterparty parameters to broadcaster/countersignatory-organized parameters,
@@ -1122,7 +1131,7 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 		self.inner.funding_outpoint.unwrap().into_bitcoin_outpoint()
 	}
 
-	/// Whether to use anchors for this channel
+	/// The type of channel these parameters are for
 	pub fn channel_type_features(&self) -> &'a ChannelTypeFeatures {
 		&self.inner.channel_type_features
 	}
@@ -1579,7 +1588,7 @@ impl CommitmentTransaction {
 
 		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-				get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_p2wsh()
+				get_to_countersigner_keyed_anchor_redeemscript(&countersignatory_pubkeys.payment_point).to_p2wsh()
 			} else {
 				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_pubkeys.payment_point.serialize()).into())
 			};
@@ -1609,7 +1618,7 @@ impl CommitmentTransaction {
 
 		if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			if to_broadcaster_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
-				let anchor_script = get_anchor_redeemscript(broadcaster_funding_key);
+				let anchor_script = get_keyed_anchor_redeemscript(broadcaster_funding_key);
 				txouts.push((
 					TxOut {
 						script_pubkey: anchor_script.to_p2wsh(),
@@ -1620,7 +1629,7 @@ impl CommitmentTransaction {
 			}
 
 			if to_countersignatory_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
-				let anchor_script = get_anchor_redeemscript(countersignatory_funding_key);
+				let anchor_script = get_keyed_anchor_redeemscript(countersignatory_funding_key);
 				txouts.push((
 					TxOut {
 						script_pubkey: anchor_script.to_p2wsh(),
@@ -1958,7 +1967,7 @@ pub fn get_commitment_transaction_number_obscure_factor(
 mod tests {
 	use super::{CounterpartyCommitmentSecrets, ChannelPublicKeys};
 	use crate::chain;
-	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersigner_keyed_anchor_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::sign::{ChannelSigner, SignerProvider};
@@ -2048,7 +2057,7 @@ mod tests {
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 4);
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersigner_keyed_anchor_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
 
 		// Generate broadcaster output and anchor
 		let tx = builder.build(3000, 0);

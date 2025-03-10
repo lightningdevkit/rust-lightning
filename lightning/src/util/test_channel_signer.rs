@@ -445,9 +445,9 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		Ok(self.inner.sign_closing_transaction(channel_parameters, closing_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_anchor_input(
-		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
-		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	fn sign_holder_keyed_anchor_input(
+		&self, chan_params: &ChannelTransactionParameters, anchor_tx: &Transaction, input: usize,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		debug_assert!(MIN_CHAN_DUST_LIMIT_SATOSHIS > ANCHOR_OUTPUT_VALUE_SATOSHI);
 		// As long as our minimum dust limit is enforced and is greater than our anchor output
@@ -460,13 +460,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::SignHolderAnchorInput) {
 			return Err(());
 		}
-		EcdsaChannelSigner::sign_holder_anchor_input(
-			&self.inner,
-			channel_parameters,
-			anchor_tx,
-			input,
-			secp_ctx,
-		)
+		self.inner.sign_holder_keyed_anchor_input(chan_params, anchor_tx, input, secp_ctx)
 	}
 
 	fn sign_channel_announcement_with_funding_key(
@@ -545,12 +539,6 @@ impl TaprootChannelSigner for TestChannelSigner {
 	fn partially_sign_closing_transaction(
 		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>,
 	) -> Result<PartialSignature, ()> {
-		todo!()
-	}
-
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>,
-	) -> Result<secp256k1::schnorr::Signature, ()> {
 		todo!()
 	}
 }

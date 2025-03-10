@@ -212,7 +212,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		&self, channel_parameters: &ChannelTransactionParameters, closing_tx: &ClosingTransaction,
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
-	/// Computes the signature for a commitment transaction's anchor output used as an
+	/// Computes the signature for a commitment transaction's keyed anchor output used as an
 	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
 	///
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
@@ -222,7 +222,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-	fn sign_holder_anchor_input(
+	fn sign_holder_keyed_anchor_input(
 		&self, channel_parameters: &ChannelTransactionParameters, anchor_tx: &Transaction,
 		input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
