@@ -881,7 +881,7 @@ pub(super) fn process_chacha(key: &[u8; 32], packet: &mut [u8]) {
 	chacha.process_in_place(packet);
 }
 
-pub(super) fn build_failure_packet(
+fn build_unencrypted_failure_packet(
 	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
 ) -> OnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
@@ -910,14 +910,15 @@ pub(super) fn build_failure_packet(
 	OnionErrorPacket { data: packet.encode() }
 }
 
-#[cfg(test)]
-pub(super) fn build_first_hop_failure_packet(
+pub(super) fn build_failure_packet(
 	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
-) -> msgs::OnionErrorPacket {
-	let mut failure_packet = build_failure_packet(shared_secret, failure_type, failure_data);
-	crypt_failure_packet(shared_secret, &mut failure_packet);
+) -> OnionErrorPacket {
+	let mut onion_error_packet =
+		build_unencrypted_failure_packet(shared_secret, failure_type, failure_data);
 
-	failure_packet
+	crypt_failure_packet(shared_secret, &mut onion_error_packet);
+
+	onion_error_packet
 }
 
 pub(crate) struct DecodedOnionFailure {
@@ -1367,19 +1368,11 @@ impl HTLCFailReason {
 					let mut packet =
 						build_failure_packet(secondary_shared_secret, *failure_code, &data[..]);
 
-					crypt_failure_packet(secondary_shared_secret, &mut packet);
 					crypt_failure_packet(incoming_packet_shared_secret, &mut packet);
 
 					packet
 				} else {
-					let mut packet = build_failure_packet(
-						incoming_packet_shared_secret,
-						*failure_code,
-						&data[..],
-					);
-					crypt_failure_packet(incoming_packet_shared_secret, &mut packet);
-
-					packet
+					build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..])
 				}
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
@@ -2288,8 +2281,11 @@ mod tests {
 		// Returning Errors test vectors from BOLT 4
 
 		let onion_keys = build_test_onion_keys();
-		let mut onion_error =
-			super::build_failure_packet(onion_keys[4].shared_secret.as_ref(), 0x2002, &[0; 0]);
+		let mut onion_error = super::build_unencrypted_failure_packet(
+			onion_keys[4].shared_secret.as_ref(),
+			0x2002,
+			&[0; 0],
+		);
 		let hex = "4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
 
