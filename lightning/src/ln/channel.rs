@@ -2242,6 +2242,28 @@ impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
 	}
 }
 
+#[cfg(splicing)]
+impl PendingSplice {
+	#[inline]
+	fn add_checked(base: u64, delta: i64) -> u64 {
+		if delta >= 0 {
+			base.saturating_add(delta as u64)
+		} else {
+			base.saturating_sub(delta.abs() as u64)
+		}
+	}
+
+	/// Compute the post-splice channel value from the pre-splice values and the peer contributions
+	pub fn compute_post_value(
+		pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64,
+	) -> u64 {
+		Self::add_checked(
+			pre_channel_value,
+			our_funding_contribution.saturating_add(their_funding_contribution),
+		)
+	}
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref>
 where
@@ -5096,6 +5118,71 @@ where
 			next_outbound_htlc_limit_msat: available_capacity_msat,
 			next_outbound_htlc_minimum_msat,
 		}
+	}
+
+	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well
+	#[cfg(splicing)]
+	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(
+		pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64,
+		dust_limit: u64,
+	) -> Result<(), u64> {
+		if post_balance == 0 {
+			// 0 balance is fine
+			return Ok(());
+		}
+		let post_channel_reserve = get_v2_channel_reserve_satoshis(post_channel_value, dust_limit);
+		if post_balance >= post_channel_reserve {
+			return Ok(());
+		}
+		// post is not OK, check pre
+		if pre_balance == 0 {
+			// pre OK, post not -> not
+			return Err(post_channel_reserve);
+		}
+		let pre_channel_reserve = get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
+		if pre_balance >= pre_channel_reserve {
+			// pre OK, post not -> not
+			return Err(post_channel_reserve);
+		}
+		// post not OK, but so was pre -> OK
+		Ok(())
+	}
+
+	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
+	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
+	/// to check with new channel value (before being committed to it).
+	#[cfg(splicing)]
+	pub fn check_splice_balances_meet_v2_reserve_requirements(
+		&self, self_balance_pre: u64, self_balance_post: u64, counterparty_balance_pre: u64,
+		counterparty_balance_post: u64, channel_value_pre: u64, channel_value_post: u64,
+	) -> Result<(), ChannelError> {
+		let is_ok_self = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
+			self_balance_pre,
+			self_balance_post,
+			channel_value_pre,
+			channel_value_post,
+			self.holder_dust_limit_satoshis,
+		);
+		if let Err(channel_reserve_self) = is_ok_self {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve, mandated by holder, {} vs {}",
+				self_balance_post, channel_reserve_self,
+			)));
+		}
+		let is_ok_cp = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
+			counterparty_balance_pre,
+			counterparty_balance_post,
+			channel_value_pre,
+			channel_value_post,
+			self.counterparty_dust_limit_satoshis,
+		);
+		if let Err(channel_reserve_cp) = is_ok_cp {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve mandated by counterparty, {} vs {}",
+				counterparty_balance_post, channel_reserve_cp,
+			)));
+		}
+		Ok(())
 	}
 
 	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
@@ -10334,14 +10421,28 @@ where
 
 	/// Handle splice_ack
 	#[cfg(splicing)]
-	pub fn splice_ack(&mut self, _msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
+	pub fn splice_ack(&mut self, msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
 		// check if splice is pending
-		if self.pending_splice.is_none() {
+		let pending_splice = if let Some(pending_splice) = &self.pending_splice {
+			pending_splice
+		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
 		};
 
-		// TODO(splicing): Pre-check for reserve requirement
+		// Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
+		let our_funding_contribution = pending_splice.our_funding_contribution;
+		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
+
+		let pre_channel_value = self.funding.get_value_satoshis();
+		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
+		let pre_balance_self = self.funding.value_to_self_msat;
+		let post_balance_self = PendingSplice::add_checked(pre_balance_self, our_funding_contribution);
+		let pre_balance_counterparty = pre_channel_value.saturating_sub(pre_balance_self);
+		let post_balance_counterparty = post_channel_value.saturating_sub(post_balance_self);
+		// Pre-check for reserve requirement
+		// This will also be checked later at tx_complete
+		let _res = self.context.check_splice_balances_meet_v2_reserve_requirements(pre_balance_self, post_balance_self, pre_balance_counterparty, post_balance_counterparty, pre_channel_value, post_channel_value)?;
 		Ok(())
 	}
 
@@ -15104,6 +15205,78 @@ mod tests {
 				).unwrap(),
 				expected_fee,
 			);
+		}
+	}
+
+	#[cfg(splicing)]
+	fn get_pre_and_post(
+		pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64,
+	) -> (u64, u64) {
+		use crate::ln::channel::PendingSplice;
+
+		let post_channel_value = PendingSplice::compute_post_value(
+			pre_channel_value,
+			our_funding_contribution,
+			their_funding_contribution,
+		);
+		(pre_channel_value, post_channel_value)
+	}
+
+	#[cfg(splicing)]
+	#[test]
+	fn test_splice_compute_post_value() {
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 6_000, 0);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 4_000, 2_000);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// increase, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, 0, 6_000);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 15_000);
+		}
+		{
+			// decrease, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, -6_000, 0);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 9_000);
+		}
+		{
+			// decrease, small amounts
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, -4_000, -2_000);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 9_000);
+		}
+		{
+			// increase and decrease
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(15_000, 4_000, -2_000);
+			assert_eq!(pre_channel_value, 15_000);
+			assert_eq!(post_channel_value, 17_000);
+		}
+		let base2: u64 = 2;
+		let huge63i3 = (base2.pow(63) - 3) as i64;
+		assert_eq!(huge63i3, 9223372036854775805);
+		assert_eq!(-huge63i3, -9223372036854775805);
+		{
+			// increase, large amount
+			let (pre_channel_value, post_channel_value) = get_pre_and_post(9_000, huge63i3, 3);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 9223372036854784807);
+		}
+		{
+			// increase, large amounts
+			let (pre_channel_value, post_channel_value) =
+				get_pre_and_post(9_000, huge63i3, huge63i3);
+			assert_eq!(pre_channel_value, 9_000);
+			assert_eq!(post_channel_value, 9223372036854784807);
 		}
 	}
 }
