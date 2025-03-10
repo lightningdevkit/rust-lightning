@@ -204,6 +204,7 @@ impl TestChainMonitor {
 				logger.clone(),
 				feeest,
 				Arc::clone(&persister),
+				keys.get_peer_storage_key(),
 			)),
 			logger,
 			keys,
@@ -335,6 +336,10 @@ impl NodeSigner for KeyProvider {
 		&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
+	}
+
+	fn get_peer_storage_key(&self) -> [u8; 32] {
+		[0; 32]
 	}
 
 	fn sign_bolt12_invoice(

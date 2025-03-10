@@ -52,6 +52,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 use crate::ln::channel::PendingV2Channel;
+use crate::ln::our_peer_storage::OurPeerStorage;
 use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -77,8 +78,8 @@ use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailab
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -8341,15 +8342,39 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
-		// TODO: Decrypt and check if have any stale or missing ChannelMonitor.
+	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
+		// TODO: Check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
 
-		log_debug!(logger, "Received unexpected peer_storage_retrieval from {}. This is unusual since we do not yet distribute peer storage. Sending a warning.", log_pubkey!(counterparty_node_id));
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
+				"Invalid peer_storage_retrieval message received.".into(),
+			), ChannelId([0; 32])));
+		}
 
-		Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-			"Invalid peer_storage_retrieval message received.".into(),
-		), ChannelId([0; 32])))
+ 		let mut res = vec![0; msg.data.len() - 16];
+		let our_peerstorage_encryption_key = self.node_signer.get_peer_storage_key();
+
+		match OurPeerStorage::decrypt_our_peer_storage(&mut res, &msg.data.clone(), our_peerstorage_encryption_key) {
+			Ok(()) => {
+				// Decryption successful, the plaintext is now stored in `res`.
+			}
+			Err(_) => {
+				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+
+				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
+					"Invalid peer_storage_retrieval message received.".into(),
+				), ChannelId([0; 32])));
+			}
+		}
+		let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::bitcoin::io::Cursor::new(res)).unwrap();
+
+		if our_peer_storage.get_ser_channels().len() == 0 {
+			log_debug!(logger, "Received a peer storage from peer {} with 0 channels.", log_pubkey!(counterparty_node_id));
+		}
+
+		Ok(())
 	}
 
 	fn internal_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) -> Result<(), MsgHandleErrInternal> {
@@ -15174,9 +15199,26 @@ mod tests {
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		// Since we do not send peer storage, we manually simulate receiving a dummy
-		// `PeerStorage` from the channel partner.
-		nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msgs::PeerStorage{data: vec![0; 100]});
+		let peer_storage_msg_events_node0 = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+		let peer_storage_msg_events_node1 = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_msg_events();
+		assert_ne!(peer_storage_msg_events_node0.len(), 0);
+		assert_ne!(peer_storage_msg_events_node1.len(), 0);
+
+		match peer_storage_msg_events_node0[0] {
+			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				nodes[1].node.handle_peer_storage(nodes[0].node.get_our_node_id(), msg.clone());
+			}
+			_ => panic!("Unexpected event"),
+		}
+
+		match peer_storage_msg_events_node1[0] {
+			MessageSendEvent::SendPeerStorage { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_peer_storage(nodes[1].node.get_our_node_id(), msg.clone());
+			}
+			_ => panic!("Unexpected event"),
+		}
 
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
@@ -15188,8 +15230,23 @@ mod tests {
 			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
 		}, false).unwrap();
 
+		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(node_1_events.len(), 2);
+
 		let node_0_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_0_events.len(), 2);
+
+		for msg in node_1_events{
+			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
+				nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), msg);
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			} else if let MessageSendEvent::SendPeerStorageRetrieval { ref node_id, ref msg } = msg {
+				nodes[0].node.handle_peer_storage_retrieval(nodes[1].node.get_our_node_id(), msg.clone());
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			} else {
+				panic!("Unexpected event")
+			}
+		}
 
 		for msg in node_0_events{
 			if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
@@ -15203,30 +15260,9 @@ mod tests {
 			}
 		}
 
-		let msg_events_after_peer_storage_retrieval = nodes[1].node.get_and_clear_pending_msg_events();
-
-		// Check if we receive a warning message.
-		let peer_storage_warning: Vec<&MessageSendEvent> = msg_events_after_peer_storage_retrieval
-									.iter()
-									.filter(|event| match event {
-										MessageSendEvent::HandleError { .. } => true,
-										_ => false,
-									})
-									.collect();
-
-		assert_eq!(peer_storage_warning.len(), 1);
-
-		match peer_storage_warning[0] {
-			MessageSendEvent::HandleError { node_id, action } => {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				match action {
-					ErrorAction::SendWarningMessage { msg, .. } =>
-						assert_eq!(msg.data, "Invalid peer_storage_retrieval message received.".to_owned()),
-					_ => panic!("Unexpected error action"),
-				}
-			}
-			_ => panic!("Unexpected event"),
-		}
+		// Clear all other messages.
+		nodes[1].node.get_and_clear_pending_msg_events();
+		nodes[0].node.get_and_clear_pending_msg_events();
 	}
 
 	#[test]
@@ -16323,7 +16359,7 @@ mod tests {
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
-	use crate::sign::{KeysManager, InMemorySigner};
+	use crate::sign::{KeysManager, InMemorySigner, NodeSigner};
 	use crate::events::Event;
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
@@ -16386,9 +16422,9 @@ pub mod bench {
 		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 		config.channel_handshake_config.minimum_depth = 1;
 
-		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
+		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, keys_manager_a.get_peer_storage_key());
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &message_router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
@@ -16396,9 +16432,9 @@ pub mod bench {
 		let node_a_holder = ANodeHolder { node: &node_a };
 
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
-		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
+		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, keys_manager_b.get_peer_storage_key());
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &message_router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),
