@@ -1417,7 +1417,7 @@ mod tests {
 			1,
 			1,
 			&&broadcaster,
-			ConfirmationTarget::UrgentOnChainSweep,
+			ConfirmationTarget::UrgentOnChainSweep(Some(2)),
 			&fee_estimator,
 			&logger,
 		);
@@ -1440,7 +1440,7 @@ mod tests {
 			2,
 			2,
 			&&broadcaster,
-			ConfirmationTarget::UrgentOnChainSweep,
+			ConfirmationTarget::UrgentOnChainSweep(Some(3)),
 			&fee_estimator,
 			&logger,
 		);
