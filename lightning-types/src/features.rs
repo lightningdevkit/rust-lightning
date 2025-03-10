@@ -154,7 +154,7 @@ mod sealed {
 			// Byte 3
 			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
 			// Byte 4
-			Quiescence | OnionMessages,
+			Quiescence | OnionMessages | AttributableFailures,
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -175,7 +175,7 @@ mod sealed {
 			// Byte 3
 			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
 			// Byte 4
-			Quiescence | OnionMessages,
+			Quiescence | OnionMessages | AttributableFailures,
 			// Byte 5
 			ProvideStorage | ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -199,7 +199,7 @@ mod sealed {
 		// Byte 3
 		,
 		// Byte 4
-		,
+		AttributableFailures,
 		// Byte 5
 		,
 		// Byte 6
@@ -219,7 +219,7 @@ mod sealed {
 		// Byte 3
 		,
 		// Byte 4
-		,
+		AttributableFailures,
 		// Byte 5
 		,
 		// Byte 6
@@ -547,6 +547,16 @@ mod sealed {
 		set_quiescence_required,
 		supports_quiescence,
 		requires_quiescence
+	);
+	define_feature!(
+		37,
+		AttributableFailures,
+		[InitContext, NodeContext, Bolt11InvoiceContext, Bolt12InvoiceContext],
+		"Feature flags for `option_attributable_failures`.",
+		set_attributable_failures_optional,
+		set_attributable_failures_required,
+		supports_attributable_failures,
+		requires_attributable_failures
 	);
 	define_feature!(
 		39,

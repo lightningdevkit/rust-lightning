@@ -597,12 +597,18 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::F
 	/// Construct new, empty `InvoiceBuilder`. All necessary fields have to be filled first before
 	/// `InvoiceBuilder::build(self)` becomes available.
 	pub fn new(currency: Currency) -> Self {
+		let mut features = Bolt11InvoiceFeatures::empty();
+		features.set_attributable_failures_optional();
+
+		let mut tagged_fields = Vec::with_capacity(8);
+		tagged_fields.push(TaggedField::Features(features));
+
 		InvoiceBuilder {
 			currency,
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
-			tagged_fields: Vec::with_capacity(8),
+			tagged_fields,
 			error: None,
 
 			phantom_d: core::marker::PhantomData,

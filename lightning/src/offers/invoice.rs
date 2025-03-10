@@ -413,6 +413,9 @@ macro_rules! invoice_builder_methods {
 			payment_paths: Vec<BlindedPaymentPath>, created_at: Duration,
 			payment_hash: PaymentHash, amount_msats: u64, signing_pubkey: PublicKey,
 		) -> InvoiceFields {
+			let mut features = Bolt12InvoiceFeatures::empty();
+			features.set_attributable_failures_optional();
+
 			InvoiceFields {
 				payment_paths,
 				created_at,
@@ -420,7 +423,7 @@ macro_rules! invoice_builder_methods {
 				payment_hash,
 				amount_msats,
 				fallbacks: None,
-				features: Bolt12InvoiceFeatures::empty(),
+				features,
 				signing_pubkey,
 				#[cfg(test)]
 				experimental_baz: None,
@@ -1777,6 +1780,7 @@ mod tests {
 	use bitcoin::secp256k1::{self, Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
 	use bitcoin::{CompressedPublicKey, WitnessProgram, WitnessVersion};
 
+	use core::f32::consts::E;
 	use core::time::Duration;
 
 	use crate::blinded_path::message::BlindedMessagePath;
@@ -1878,7 +1882,10 @@ mod tests {
 		assert!(!unsigned_invoice.is_expired());
 		assert_eq!(unsigned_invoice.payment_hash(), payment_hash);
 		assert!(unsigned_invoice.fallbacks().is_empty());
-		assert_eq!(unsigned_invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+
+		let mut expected_features = Bolt12InvoiceFeatures::empty();
+		expected_features.set_attributable_failures_optional();
+		assert_eq!(unsigned_invoice.invoice_features(), &expected_features);
 
 		match UnsignedBolt12Invoice::try_from(buffer) {
 			Err(e) => panic!("error parsing unsigned invoice: {:?}", e),
@@ -1926,7 +1933,7 @@ mod tests {
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert!(invoice.fallbacks().is_empty());
-		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert_eq!(invoice.invoice_features(), &expected_features);
 		assert!(!invoice.is_for_refund_without_paths());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
@@ -1974,7 +1981,7 @@ mod tests {
 					payment_hash: Some(&payment_hash),
 					amount: Some(1000),
 					fallbacks: None,
-					features: None,
+					features: Some(&expected_features),
 					node_id: Some(&recipient_pubkey()),
 					message_paths: None,
 				},
@@ -2009,6 +2016,9 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 
+		let mut expected_features = Bolt12InvoiceFeatures::empty();
+		expected_features.set_attributable_failures_optional();
+
 		assert_eq!(invoice.bytes, buffer.as_slice());
 		assert_eq!(invoice.payer_metadata(), &[1; 32]);
 		assert_eq!(invoice.offer_chains(), None);
@@ -2034,7 +2044,7 @@ mod tests {
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert!(invoice.fallbacks().is_empty());
-		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert_eq!(invoice.invoice_features(), &expected_features);
 		assert!(invoice.is_for_refund_without_paths());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
@@ -2077,7 +2087,7 @@ mod tests {
 					payment_hash: Some(&payment_hash),
 					amount: Some(1000),
 					fallbacks: None,
-					features: None,
+					features: Some(&expected_features),
 					node_id: Some(&recipient_pubkey()),
 					message_paths: None,
 				},
@@ -2501,6 +2511,7 @@ mod tests {
 
 		let mut features = Bolt12InvoiceFeatures::empty();
 		features.set_basic_mpp_optional();
+		features.set_attributable_failures_optional();
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -2838,6 +2849,7 @@ mod tests {
 			Ok(invoice) => {
 				let mut features = Bolt12InvoiceFeatures::empty();
 				features.set_basic_mpp_optional();
+				features.set_attributable_failures_optional();
 				assert_eq!(invoice.invoice_features(), &features);
 			},
 			Err(e) => panic!("error parsing invoice: {:?}", e),
