@@ -16,6 +16,7 @@ members = [
     "lightning-macros",
     "lightning-dns-resolver",
     "lightning-liquidity",
+    "lightning-tests",
     "possiblyrandom",
 ]
 

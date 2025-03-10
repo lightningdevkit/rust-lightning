@@ -1,0 +1,25 @@
+[package]
+name = "lightning-tests"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
+description = "Tests for LDK crates"
+edition = "2021"
+
+[features]
+
+[dependencies]
+lightning-types = { version = "0.3.0", path = "../lightning-types", features = ["_test_utils"] }
+lightning-invoice = { version = "0.34.0", path = "../lightning-invoice", default-features = false }
+lightning-macros = { version = "0.2", path = "../lightning-macros" }
+lightning = { version = "0.2", path = "../lightning", features = ["_test_utils"] }
+lightning_0_1 = { package = "lightning", version = "0.1.1", features = ["_test_utils"] }
+
+bitcoin = { version = "0.32.2", default-features = false }
+
+[dev-dependencies]
+
+
+[lints]
+workspace = true
