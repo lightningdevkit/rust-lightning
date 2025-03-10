@@ -12608,6 +12608,23 @@ where
 				);
 
 				if self.default_configuration.manually_handle_bolt12_invoices {
+					// Prevent duplicate `InvoiceReceived` events by checking if this invoice was already processed.
+					let already_present = self.pending_events.lock().unwrap().iter().any(|(e, _)| {
+						matches!(e, Event::InvoiceReceived { payment_id: existing_id, .. } if existing_id == &payment_id)
+					});
+
+					if already_present {
+						return None;
+					}
+
+					match self.pending_outbound_payments.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+						hash_map::Entry::Occupied(entry) => match entry.get() {
+							PendingOutboundPayment::AwaitingInvoice { .. } => (),
+							_ => return None
+						},
+						hash_map::Entry::Vacant(_) => return None,
+					}
+
 					let event = Event::InvoiceReceived {
 						payment_id, invoice, context, responder,
 					};
