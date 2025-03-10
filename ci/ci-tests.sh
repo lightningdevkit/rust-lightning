@@ -44,6 +44,7 @@ WORKSPACE_MEMBERS=(
 	lightning-macros
 	lightning-dns-resolver
 	lightning-liquidity
+	lightning-test
 	possiblyrandom
 )
 

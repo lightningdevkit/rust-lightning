@@ -14,8 +14,9 @@ use lightning_0_1::ln::functional_test_utils as lightning_0_1_utils;
 use lightning_0_1::get_monitor as get_monitor_0_1;
 use lightning_0_1::util::ser::Writeable;
 
-use crate::ln::functional_test_utils::*;
-use crate::types::payment::PaymentPreimage;
+use lightning::ln::functional_test_utils::*;
+
+use lightning_types::payment::PaymentPreimage;
 
 #[test]
 fn simple_upgrade() {
