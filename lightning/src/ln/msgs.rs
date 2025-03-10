@@ -2355,10 +2355,10 @@ pub(crate) struct OnionErrorPacket {
 	pub(crate) data: Vec<u8>,
 }
 
-impl From<&UpdateFailHTLC> for OnionErrorPacket {
-	fn from(msg: &UpdateFailHTLC) -> Self {
+impl From<UpdateFailHTLC> for OnionErrorPacket {
+	fn from(msg: UpdateFailHTLC) -> Self {
 		OnionErrorPacket {
-			data: msg.reason.clone(),
+			data: msg.reason,
 		}
 	}
 }

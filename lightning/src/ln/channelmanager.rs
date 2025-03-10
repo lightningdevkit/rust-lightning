@@ -4440,7 +4440,7 @@ where
 		HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
-			reason: failure.data.clone(),
+			reason: failure.data,
 		})
 	}
 
@@ -5824,7 +5824,7 @@ where
 				let failure = match htlc_fail {
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
 						htlc_id: fail_htlc.htlc_id,
-						err_packet: (&fail_htlc).into(),
+						err_packet: fail_htlc.into(),
 					},
 					HTLCFailureMsg::Malformed(fail_malformed_htlc) => HTLCForwardInfo::FailMalformedHTLC {
 						htlc_id: fail_malformed_htlc.htlc_id,
