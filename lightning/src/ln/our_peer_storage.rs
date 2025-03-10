@@ -58,10 +58,7 @@ impl OurPeerStorage {
 
 	/// Create serialised [`OurPeerStorage`] from the given ser_channels data.
 	pub fn create_from_data(key: [u8; 32], ser_channels: Vec<u8>) -> Vec<u8> {
-		let our_peer_storage = Self {
-			version: 1,
-			ser_channels,
-		};
+		let our_peer_storage = Self { version: 1, ser_channels };
 
 		let n = 0u64;
 		let mut peer_storage = VecWriter(Vec::new());
@@ -81,7 +78,9 @@ impl OurPeerStorage {
 
 	/// Decrypt `OurPeerStorage` using the `key`, result is stored inside the `res`.
 	/// Returns an error if the the `cyphertext` is not correct.
-	pub fn decrypt_our_peer_storage(res: &mut [u8], cyphertext: &[u8], key: [u8; 32]) -> Result<(), ()> {
+	pub fn decrypt_our_peer_storage(
+		res: &mut [u8], cyphertext: &[u8], key: [u8; 32],
+	) -> Result<(), ()> {
 		const MIN_CYPHERTEXT_LEN: usize = 16;
 
 		// Ensure the cyphertext is at least as large as the MIN_CYPHERTEXT_LEN.
