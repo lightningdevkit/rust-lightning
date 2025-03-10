@@ -53,7 +53,7 @@ use {
 	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger},
 	crate::routing::gossip::{NetworkGraph, P2PGossipSync},
-	crate::sign::KeysManager,
+	crate::sign::{KeysManager, InMemorySigner},
 	crate::sync::Arc,
 };
 
@@ -710,7 +710,7 @@ impl Peer {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
+pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, C, Arc<L>>>,
@@ -718,7 +718,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	Arc<L>,
 	IgnoringMessageHandler,
 	Arc<KeysManager>,
-	Arc<ChainMonitor<Arc<M>, Arc<C>, Arc<T>, Arc<F>, Arc<L>, Arc<KeysManager>>>,
+	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>>>,
 >;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
