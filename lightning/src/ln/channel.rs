@@ -2477,6 +2477,28 @@ impl<'a> From<&'a Transaction> for ConfirmedTransaction<'a> {
 	}
 }
 
+#[cfg(splicing)]
+impl PendingSplice {
+	#[inline]
+	fn add_checked(base: u64, delta: i64) -> u64 {
+		if delta >= 0 {
+			base.saturating_add(delta as u64)
+		} else {
+			base.saturating_sub(delta.abs() as u64)
+		}
+	}
+
+	// /// Compute the post-splice channel value from the pre-splice values and the peer contributions
+	// pub fn compute_post_splice_value(
+	// 	pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64,
+	// ) -> u64 {
+	// 	Self::add_checked(
+	// 		pre_channel_value,
+	// 		our_funding_contribution.saturating_add(their_funding_contribution),
+	// 	)
+	// }
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref>
 where
@@ -10839,35 +10861,37 @@ where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			pending_splice
-		} else {
-			return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
-		};
+		let funding_negotiation_context = {
+			let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
+				pending_splice
+			} else {
+				return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
+			};
 
-		// TODO(splicing): Add check that we are the splice (quiescence) initiator
+			// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
-		let funding_negotiation_context = match pending_splice.funding_negotiation.take() {
-			Some(FundingNegotiation::AwaitingAck(context)) => context,
-			Some(FundingNegotiation::ConstructingTransaction(funding, constructor)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::ConstructingTransaction(funding, constructor));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			Some(FundingNegotiation::AwaitingSignatures(funding)) => {
-				pending_splice.funding_negotiation =
-					Some(FundingNegotiation::AwaitingSignatures(funding));
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Got unexpected splice_ack; splice negotiation already in progress"
-				)));
-			},
-			None => {
-				return Err(ChannelError::Ignore(format!(
-					"Got unexpected splice_ack; no splice negotiation in progress"
-				)));
-			},
+			match pending_splice.funding_negotiation.take() {
+				Some(FundingNegotiation::AwaitingAck(context)) => context,
+				Some(FundingNegotiation::ConstructingTransaction(funding, constructor)) => {
+					pending_splice.funding_negotiation =
+						Some(FundingNegotiation::ConstructingTransaction(funding, constructor));
+					return Err(ChannelError::WarnAndDisconnect(format!(
+						"Got unexpected splice_ack; splice negotiation already in progress"
+					)));
+				},
+				Some(FundingNegotiation::AwaitingSignatures(funding)) => {
+					pending_splice.funding_negotiation =
+						Some(FundingNegotiation::AwaitingSignatures(funding));
+					return Err(ChannelError::WarnAndDisconnect(format!(
+						"Got unexpected splice_ack; splice negotiation already in progress"
+					)));
+				},
+				None => {
+					return Err(ChannelError::Ignore(format!(
+						"Got unexpected splice_ack; no splice negotiation in progress"
+					)));
+				},
+			}
 		};
 
 		let our_funding_contribution_satoshis =
@@ -10882,8 +10906,28 @@ where
 			msg.funding_pubkey,
 		)?;
 
-		// TODO(splicing): Pre-check for reserve requirement
+		// Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
+		let pre_channel_value = self.funding.get_value_satoshis();
+		let post_channel_value = self.funding.compute_post_splice_value(
+			our_funding_contribution_satoshis,
+			their_funding_contribution_satoshis,
+		);
+		let pre_balance_self = self.funding.value_to_self_msat;
+		let post_balance_self =
+			PendingSplice::add_checked(pre_balance_self, our_funding_contribution_satoshis);
+		let pre_balance_counterparty = pre_channel_value.saturating_sub(pre_balance_self);
+		let post_balance_counterparty = post_channel_value.saturating_sub(post_balance_self);
+		// Pre-check for reserve requirement
+		// This will also be checked later at tx_complete
+		let _res = self.check_splice_balances_meet_v2_reserve_requirements(
+			pre_balance_self,
+			post_balance_self,
+			pre_balance_counterparty,
+			post_balance_counterparty,
+			pre_channel_value,
+			post_channel_value,
+		)?;
 
 		log_info!(
 			logger,
@@ -10910,6 +10954,11 @@ where
 		let tx_msg_opt = interactive_tx_constructor.take_initiator_first_message();
 
 		debug_assert!(self.interactive_tx_signing_session.is_none());
+		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
+			pending_splice
+		} else {
+			return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
+		};
 		pending_splice.funding_negotiation = Some(FundingNegotiation::ConstructingTransaction(
 			splice_funding,
 			interactive_tx_constructor,
@@ -10969,6 +11018,84 @@ where
 			logger,
 		))
 	}
+
+	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well.
+	/// In case of error, it returns the minimum channel reserve that was violated (in sats)
+	#[cfg(splicing)]
+	pub fn check_splice_balance_meets_v2_reserve_requirement(
+		&self, pre_balance_msat: u64, post_balance_msat: u64, pre_channel_value_sats: u64,
+		post_channel_value_sats: u64, dust_limit_sats: u64,
+	) -> Result<(), u64> {
+		let post_channel_reserve_sats =
+			get_v2_channel_reserve_satoshis(post_channel_value_sats, dust_limit_sats);
+		if post_balance_msat >= (post_channel_reserve_sats * 1000) {
+			return Ok(());
+		}
+		// We're not allowed to dip below the reserve once we've been above,
+		// check differently for originally v1 and v2 channels
+		if self.is_v2_established() {
+			let pre_channel_reserve_sats =
+				get_v2_channel_reserve_satoshis(pre_channel_value_sats, dust_limit_sats);
+			if pre_balance_msat >= (pre_channel_reserve_sats * 1000) {
+				return Err(post_channel_reserve_sats);
+			}
+		} else {
+			if pre_balance_msat >= (self.funding.holder_selected_channel_reserve_satoshis * 1000) {
+				return Err(post_channel_reserve_sats);
+			}
+			if let Some(cp_reserve) = self.funding.counterparty_selected_channel_reserve_satoshis {
+				if pre_balance_msat >= (cp_reserve * 1000) {
+					return Err(post_channel_reserve_sats);
+				}
+			}
+		}
+		// Make sure we either remain with the same balance or move towards the reserve.
+		if post_balance_msat >= pre_balance_msat {
+			Ok(())
+		} else {
+			Err(post_channel_reserve_sats)
+		}
+	}
+
+	/// Check that balances (self and counterparty) meet the channel reserve requirements or violates them (below reserve).
+	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
+	/// to check with new channel value (before being committed to it).
+	#[cfg(splicing)]
+	pub fn check_splice_balances_meet_v2_reserve_requirements(
+		&self, self_balance_pre_msat: u64, self_balance_post_msat: u64,
+		counterparty_balance_pre_msat: u64, counterparty_balance_post_msat: u64,
+		channel_value_pre_sats: u64, channel_value_post_sats: u64,
+	) -> Result<(), ChannelError> {
+		let is_ok_self = self.check_splice_balance_meets_v2_reserve_requirement(
+			self_balance_pre_msat,
+			self_balance_post_msat,
+			channel_value_pre_sats,
+			channel_value_post_sats,
+			self.context.holder_dust_limit_satoshis,
+		);
+		if let Err(channel_reserve_self) = is_ok_self {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve, mandated by holder, {} vs {}",
+				self_balance_post_msat, channel_reserve_self,
+			)));
+		}
+		let is_ok_cp = self.check_splice_balance_meets_v2_reserve_requirement(
+			counterparty_balance_pre_msat,
+			counterparty_balance_post_msat,
+			channel_value_pre_sats,
+			channel_value_post_sats,
+			self.context.counterparty_dust_limit_satoshis,
+		);
+		if let Err(channel_reserve_cp) = is_ok_cp {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve mandated by counterparty, {} vs {}",
+				counterparty_balance_post_msat, channel_reserve_cp,
+			)));
+		}
+		Ok(())
+	}
+
+	// Send stuff to our remote peers:
 
 	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
