@@ -25,10 +25,11 @@ use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::chainmonitor::Persist;
 use crate::chain::Filter;
 use crate::events::bump_transaction::Utxo;
-use crate::ln::chan_utils::MAX_HTLCS;
+use crate::ln::chan_utils::max_htlcs;
 use crate::ln::channelmanager::AChannelManager;
 use crate::prelude::new_hash_set;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::Amount;
@@ -178,7 +179,8 @@ impl Default for AnchorChannelReserveContext {
 fn get_reserve_per_channel_with_input(
 	context: &AnchorChannelReserveContext, initial_input_weight: Weight,
 ) -> Amount {
-	let expected_accepted_htlcs = min(context.expected_accepted_htlcs, MAX_HTLCS) as u64;
+	let max_max_htlcs = max_htlcs(&ChannelTypeFeatures::only_static_remote_key());
+	let expected_accepted_htlcs = min(context.expected_accepted_htlcs, max_max_htlcs) as u64;
 	let weight = Weight::from_wu(
 		COMMITMENT_TRANSACTION_BASE_WEIGHT +
 		// Reserves are calculated in terms of accepted HTLCs, as their timeout defines the urgency of
