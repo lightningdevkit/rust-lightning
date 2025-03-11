@@ -1421,6 +1421,8 @@ pub struct CommitmentTransaction {
 	to_countersignatory_value_sat: Amount,
 	to_broadcaster_delay: Option<u16>, // Added in 0.0.117
 	feerate_per_kw: u32,
+	// The set of non-dust HTLCs included in the commitment. They must be sorted in increasing
+	// output index order.
 	htlcs: Vec<HTLCOutputInCommitment>,
 	// Note that on upgrades, some features of existing outputs may be missed.
 	channel_type_features: ChannelTypeFeatures,
@@ -1570,6 +1572,13 @@ impl CommitmentTransaction {
 		}
 	}
 
+	// Builds the set of outputs for the commitment transaction. There will be an output per
+	// non-dust HTLC, one output for the holder, another for the counterparty, and possibly anchor
+	// output(s).
+	//
+	// The set of outputs are sorted according to BIP-69 ordering, guaranteeing that HTLCs are
+	// returned in increasing output index order.
+	//
 	// This is used in two cases:
 	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
 	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
