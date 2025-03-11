@@ -297,14 +297,14 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 }
 
 #[inline]
-fn construct_onion_keys_generic_callback<T, H, FType>(
-	secp_ctx: &Secp256k1<T>, hops: &[H], blinded_tail: Option<&BlindedTail>,
+fn construct_onion_keys_generic_callback<'a, T, H, FType>(
+	secp_ctx: &Secp256k1<T>, hops: &'a [H], blinded_tail: Option<&BlindedTail>,
 	session_priv: &SecretKey, mut callback: FType,
 ) -> Result<(), secp256k1::Error>
 where
 	T: secp256k1::Signing,
 	H: HopInfo,
-	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&H>, usize),
+	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&'a H>, usize),
 {
 	let mut blinded_priv = session_priv.clone();
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
@@ -974,6 +974,30 @@ where
 	const NODE: u16 = 0x2000;
 	const UPDATE: u16 = 0x1000;
 
+	enum ErrorHop<'a> {
+		RouteHop(&'a RouteHop),
+	}
+
+	impl<'a> ErrorHop<'a> {
+		fn fee_msat(&self) -> u64 {
+			match self {
+				ErrorHop::RouteHop(rh) => rh.fee_msat,
+			}
+		}
+
+		fn pubkey(&self) -> &PublicKey {
+			match self {
+				ErrorHop::RouteHop(rh) => rh.node_pubkey(),
+			}
+		}
+
+		fn short_channel_id(&self) -> Option<u64> {
+			match self {
+				ErrorHop::RouteHop(rh) => Some(rh.short_channel_id),
+			}
+		}
+	}
+
 	let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
 	let mut onion_keys = Vec::with_capacity(path.hops.len() + num_blinded_hops);
 	construct_onion_keys_generic_callback(
@@ -982,7 +1006,7 @@ where
 		path.blinded_tail.as_ref(),
 		session_priv,
 		|shared_secret, _, _, route_hop_option: Option<&RouteHop>, _| {
-			onion_keys.push((route_hop_option.cloned(), shared_secret))
+			onion_keys.push((route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret))
 		},
 	)
 	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
@@ -1051,7 +1075,7 @@ where
 			}
 		};
 
-		let amt_to_forward = htlc_msat - route_hop.fee_msat;
+		let amt_to_forward = htlc_msat - route_hop.fee_msat();
 		htlc_msat = amt_to_forward;
 
 		crypt_failure_packet(shared_secret.as_ref(), &mut encrypted_packet);
@@ -1068,13 +1092,13 @@ where
 			match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&encrypted_packet.data)) {
 				Ok(p) => p,
 				Err(_) => {
-					log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey);
+					log_warn!(logger, "Unreadable failure from {}", route_hop.pubkey());
 
 					let network_update = Some(NetworkUpdate::NodeFailure {
-						node_id: route_hop.pubkey,
+						node_id: *route_hop.pubkey(),
 						is_permanent: true,
 					});
-					let short_channel_id = Some(route_hop.short_channel_id);
+					let short_channel_id = route_hop.short_channel_id();
 					res = Some(FailureLearnings {
 						network_update,
 						short_channel_id,
@@ -1090,13 +1114,13 @@ where
 			None => {
 				// Useless packet that we can't use but it passed HMAC, so it definitely came from the peer
 				// in question
-				log_warn!(logger, "Missing error code in failure from {}", route_hop.pubkey);
+				log_warn!(logger, "Missing error code in failure from {}", route_hop.pubkey());
 
 				let network_update = Some(NetworkUpdate::NodeFailure {
-					node_id: route_hop.pubkey,
+					node_id: *route_hop.pubkey(),
 					is_permanent: true,
 				});
-				let short_channel_id = Some(route_hop.short_channel_id);
+				let short_channel_id = route_hop.short_channel_id();
 				res = Some(FailureLearnings {
 					network_update,
 					short_channel_id,
@@ -1130,22 +1154,26 @@ where
 			// entirely, but we can't be confident in that, as it would allow any node to get us to
 			// completely ban one of its counterparties. Instead, we simply remove the channel in
 			// question.
-			network_update = Some(NetworkUpdate::ChannelFailure {
-				short_channel_id: failing_route_hop.short_channel_id,
-				is_permanent: true,
-			});
-		} else if error_code & NODE == NODE {
-			let is_permanent = error_code & PERM == PERM;
-			network_update =
-				Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
-			short_channel_id = Some(route_hop.short_channel_id);
-		} else if error_code & PERM == PERM {
-			if !payment_failed {
+			if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
 				network_update = Some(NetworkUpdate::ChannelFailure {
 					short_channel_id: failing_route_hop.short_channel_id,
 					is_permanent: true,
 				});
-				short_channel_id = Some(failing_route_hop.short_channel_id);
+			}
+		} else if error_code & NODE == NODE {
+			let is_permanent = error_code & PERM == PERM;
+			network_update =
+				Some(NetworkUpdate::NodeFailure { node_id: *route_hop.pubkey(), is_permanent });
+			short_channel_id = route_hop.short_channel_id();
+		} else if error_code & PERM == PERM {
+			if !payment_failed {
+				if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
+					network_update = Some(NetworkUpdate::ChannelFailure {
+						short_channel_id: failing_route_hop.short_channel_id,
+						is_permanent: true,
+					});
+				}
+				short_channel_id = failing_route_hop.short_channel_id();
 			}
 		} else if error_code & UPDATE == UPDATE {
 			if let Some(update_len_slice) =
@@ -1158,37 +1186,41 @@ where
 					.get(debug_field_size + 4..debug_field_size + 4 + update_len)
 					.is_some()
 				{
-					network_update = Some(NetworkUpdate::ChannelFailure {
-						short_channel_id: failing_route_hop.short_channel_id,
-						is_permanent: false,
-					});
-					short_channel_id = Some(failing_route_hop.short_channel_id);
+					if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
+						network_update = Some(NetworkUpdate::ChannelFailure {
+							short_channel_id: failing_route_hop.short_channel_id,
+							is_permanent: false,
+						});
+					}
+					short_channel_id = failing_route_hop.short_channel_id();
 				}
 			}
 			if network_update.is_none() {
 				// They provided an UPDATE which was obviously bogus, not worth
 				// trying to relay through them anymore.
 				network_update = Some(NetworkUpdate::NodeFailure {
-					node_id: route_hop.pubkey,
+					node_id: *route_hop.pubkey(),
 					is_permanent: true,
 				});
 			}
 			if short_channel_id.is_none() {
-				short_channel_id = Some(route_hop.short_channel_id);
+				short_channel_id = route_hop.short_channel_id();
 			}
 		} else if payment_failed {
 			// Only blame the hop when a value in the HTLC doesn't match the corresponding value in the
 			// onion.
 			short_channel_id = match error_code & 0xff {
-				18 | 19 => Some(route_hop.short_channel_id),
+				18 | 19 => route_hop.short_channel_id(),
 				_ => None,
 			};
 		} else {
 			// We can't understand their error messages and they failed to forward...they probably can't
 			// understand our forwards so it's really not worth trying any further.
-			network_update =
-				Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent: true });
-			short_channel_id = Some(route_hop.short_channel_id);
+			network_update = Some(NetworkUpdate::NodeFailure {
+				node_id: *route_hop.pubkey(),
+				is_permanent: true,
+			});
+			short_channel_id = route_hop.short_channel_id()
 		}
 
 		res = Some(FailureLearnings {
@@ -1203,7 +1235,7 @@ where
 			log_info!(
 				logger,
 				"Onion Error[from {}: {}({:#x}) {}({})] {}",
-				route_hop.pubkey,
+				route_hop.pubkey(),
 				title,
 				error_code,
 				debug_field,
@@ -1214,7 +1246,7 @@ where
 			log_info!(
 				logger,
 				"Onion Error[from {}: {}({:#x})] {}",
-				route_hop.pubkey,
+				route_hop.pubkey(),
 				title,
 				error_code,
 				description
