@@ -25,7 +25,7 @@ pub trait CustomMessageReader {
 	/// implementation and the message could be decoded, must return `Ok(Some(message))`. If the
 	/// message type is unknown to the implementation, must return `Ok(None)`. If a decoding error
 	/// occur, must return `Err(DecodeError::X)` where `X` details the encountered error.
-	fn read<R: io::Read>(
+	fn read<R: LengthLimitedRead>(
 		&self, message_type: u16, buffer: &mut R,
 	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }

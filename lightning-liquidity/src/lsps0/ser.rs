@@ -18,9 +18,9 @@ use crate::lsps2::msgs::{
 };
 use crate::prelude::{HashMap, String};
 
-use lightning::ln::msgs::LightningError;
+use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::wire;
-use lightning::util::ser::WithoutLength;
+use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -168,9 +168,10 @@ impl lightning::util::ser::Writeable for RawLSPSMessage {
 	}
 }
 
-impl lightning::util::ser::Readable for RawLSPSMessage {
-	fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, lightning::ln::msgs::DecodeError> {
-		let payload_without_length = WithoutLength::read(r)?;
+impl LengthReadable for RawLSPSMessage {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let payload_without_length: WithoutLength<String> =
+			LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(Self { payload: payload_without_length.0 })
 	}
 }

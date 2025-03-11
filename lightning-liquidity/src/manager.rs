@@ -27,7 +27,7 @@ use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
-use lightning::util::ser::Readable;
+use lightning::util::ser::{LengthLimitedRead, LengthReadable};
 
 use lightning_types::features::{InitFeatures, NodeFeatures};
 
@@ -449,11 +449,13 @@ where
 {
 	type CustomMessage = RawLSPSMessage;
 
-	fn read<RD: lightning::io::Read>(
+	fn read<RD: LengthLimitedRead>(
 		&self, message_type: u16, buffer: &mut RD,
 	) -> Result<Option<Self::CustomMessage>, lightning::ln::msgs::DecodeError> {
 		match message_type {
-			LSPS_MESSAGE_TYPE_ID => Ok(Some(RawLSPSMessage::read(buffer)?)),
+			LSPS_MESSAGE_TYPE_ID => {
+				Ok(Some(RawLSPSMessage::read_from_fixed_length_buffer(buffer)?))
+			},
 			_ => Ok(None),
 		}
 	}
