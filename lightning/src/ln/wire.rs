@@ -358,10 +358,14 @@ where
 			LengthReadable::read_from_fixed_length_buffer(buffer)?,
 		)),
 		msgs::ChannelAnnouncement::TYPE => {
-			Ok(Message::ChannelAnnouncement(Readable::read(buffer)?))
+			Ok(Message::ChannelAnnouncement(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::NodeAnnouncement::TYPE => Ok(Message::NodeAnnouncement(Readable::read(buffer)?)),
-		msgs::ChannelUpdate::TYPE => Ok(Message::ChannelUpdate(Readable::read(buffer)?)),
+		msgs::NodeAnnouncement::TYPE => {
+			Ok(Message::NodeAnnouncement(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::ChannelUpdate::TYPE => {
+			Ok(Message::ChannelUpdate(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		msgs::QueryShortChannelIds::TYPE => {
 			Ok(Message::QueryShortChannelIds(Readable::read(buffer)?))
 		},

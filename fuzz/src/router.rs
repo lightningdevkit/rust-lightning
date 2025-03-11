@@ -30,7 +30,7 @@ use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResu
 use lightning::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::*;
-use lightning::util::ser::Readable;
+use lightning::util::ser::LengthReadable;
 
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
@@ -146,10 +146,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	macro_rules! decode_msg {
 		($MsgType: path, $len: expr) => {{
-			let mut reader = ::lightning::io::Cursor::new(get_slice!($len));
-			match <$MsgType>::read(&mut reader) {
+			let data = get_slice!($len);
+			let mut reader = &data[..];
+			match <$MsgType>::read_from_fixed_length_buffer(&mut reader) {
 				Ok(msg) => {
-					assert_eq!(reader.position(), $len as u64);
+					assert_eq!(reader.len(), $len);
 					msg
 				},
 				Err(e) => match e {

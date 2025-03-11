@@ -1330,14 +1330,14 @@ impl<T: Writeable> Writeable for Option<T> {
 	}
 }
 
-impl<T: Readable> Readable for Option<T> {
+impl<T: LengthReadable> Readable for Option<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: BigSize = Readable::read(r)?;
 		match len.0 {
 			0 => Ok(None),
 			len => {
 				let mut reader = FixedLengthReader::new(r, len - 1);
-				Ok(Some(Readable::read(&mut reader)?))
+				Ok(Some(LengthReadable::read_from_fixed_length_buffer(&mut reader)?))
 			},
 		}
 	}

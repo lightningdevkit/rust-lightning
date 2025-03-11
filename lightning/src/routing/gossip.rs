@@ -2730,7 +2730,7 @@ pub(crate) mod tests {
 	use crate::types::features::InitFeatures;
 	use crate::util::config::UserConfig;
 	use crate::util::scid_utils::scid_from_parts;
-	use crate::util::ser::{Hostname, Readable, ReadableArgs, Writeable};
+	use crate::util::ser::{Hostname, LengthReadable, Readable, ReadableArgs, Writeable};
 	use crate::util::test_utils;
 
 	use super::STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS;
@@ -4301,7 +4301,8 @@ pub(crate) mod tests {
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
 		let announcement_message = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000122013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010000701fffefdfc2607").unwrap();
 		let announcement_message =
-			NodeAnnouncement::read(&mut announcement_message.as_slice()).unwrap();
+			NodeAnnouncement::read_from_fixed_length_buffer(&mut announcement_message.as_slice())
+				.unwrap();
 		let valid_node_ann_info = NodeAnnouncementInfo::Relayed(announcement_message);
 
 		let mut encoded_valid_node_ann_info = Vec::new();

@@ -71,12 +71,13 @@ macro_rules! test_msg_simple {
 #[macro_export]
 macro_rules! test_msg_exact {
 	($MsgType: path, $data: ident) => {{
-		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::lightning::io::Cursor::new($data);
-		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+		use lightning::util::ser::{LengthReadable, Writeable};
+		if let Ok(msg) =
+			<$MsgType as LengthReadable>::read_from_fixed_length_buffer(&mut &$data[..])
+		{
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();
-			assert_eq!(&r.into_inner()[..], &w.0[..]);
+			assert_eq!(&$data[..], &w.0[..]);
 			assert_eq!(msg.serialized_length(), w.0.len());
 		}
 	}};
