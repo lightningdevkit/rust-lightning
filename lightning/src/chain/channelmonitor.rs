@@ -531,6 +531,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		/// Note that LDK after 0.0.115 supports this only containing dust HTLCs (implying the
 		/// `Signature` field is never filled in). At that point, non-dust HTLCs are implied by the
 		/// HTLC fields in `commitment_tx` and the sources passed via `nondust_htlc_sources`.
+		/// Starting with 0.2, the non-dust HTLC sources will always be provided separately, and
+		/// `htlc_outputs` will only include dust HTLCs. We still have to track the
+		/// `Option<Signature>` for backwards compatibility.
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
 		nondust_htlc_sources: Vec<HTLCSource>,
