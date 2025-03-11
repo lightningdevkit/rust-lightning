@@ -466,12 +466,12 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
-	pub(crate) fn get_prev_holder_commitment_to_self_value(&self) -> Option<u64> {
-		self.prev_holder_commitment.as_ref().map(|commitment| commitment.to_broadcaster_value_sat())
+	pub(crate) fn prev_holder_commitment_tx(&self) -> Option<&HolderCommitmentTransaction> {
+		self.prev_holder_commitment.as_ref()
 	}
 
-	pub(crate) fn get_cur_holder_commitment_to_self_value(&self) -> u64 {
-		self.holder_commitment.to_broadcaster_value_sat()
+	pub(crate) fn current_holder_commitment_tx(&self) -> &HolderCommitmentTransaction {
+		&self.holder_commitment
 	}
 
 	pub(crate) fn get_and_clear_pending_claim_events(&mut self) -> Vec<(ClaimId, ClaimEvent)> {

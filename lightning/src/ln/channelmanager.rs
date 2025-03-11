@@ -708,9 +708,11 @@ impl core::hash::Hash for HTLCSource {
 	}
 }
 impl HTLCSource {
-	#[cfg(all(ldk_test_vectors, test))]
+	#[cfg(any(ldk_test_vectors, test))]
 	pub fn dummy() -> Self {
+		#[cfg(ldk_test_vectors)]
 		assert!(cfg!(not(feature = "grind_signatures")));
+
 		HTLCSource::OutboundRoute {
 			path: Path { hops: Vec::new(), blinded_tail: None },
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
