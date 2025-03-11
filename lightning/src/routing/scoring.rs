@@ -1817,7 +1817,7 @@ fn powf64(n: f64, exp: f64) -> f64 {
 }
 #[cfg(not(feature = "std"))]
 fn powf64(n: f64, exp: f64) -> f64 {
-	libm::powf(n as f32, exp as f32) as f64
+	libm::pow(n, exp)
 }
 
 mod bucketed_history {
