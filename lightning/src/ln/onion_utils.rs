@@ -10,6 +10,7 @@
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
+use crate::events::HTLCDestinationFailure;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
@@ -1458,6 +1459,21 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
+
+impl Into<HTLCDestinationFailure> for HTLCFailReason {
+	fn into(self) -> HTLCDestinationFailure {
+		match self.0 {
+			HTLCFailReasonRepr::LightningError { .. } => HTLCDestinationFailure::Downstream,
+			HTLCFailReasonRepr::Reason { reason, .. } => HTLCDestinationFailure::Local { reason },
+		}
+	}
+}
+
+impl Into<HTLCDestinationFailure> for LocalHTLCFailureReason {
+	fn into(self) -> HTLCDestinationFailure {
+		HTLCDestinationFailure::Local { reason: self }
+	}
+}
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
