@@ -11,6 +11,7 @@ use super::msgs::OnionErrorPacket;
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
+use crate::events::HTLCHandlingFailure;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
@@ -1271,6 +1272,15 @@ pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
 enum HTLCFailReasonRepr {
 	LightningError { err: msgs::OnionErrorPacket },
 	Reason { failure_code: u16, data: Vec<u8> },
+}
+
+impl From<&HTLCFailReason> for HTLCHandlingFailure {
+	fn from(value: &HTLCFailReason) -> Self {
+		match value.0 {
+			HTLCFailReasonRepr::LightningError { .. } => Self::Remote,
+			HTLCFailReasonRepr::Reason { failure_code, .. } => Self::Local { failure_code },
+		}
+	}
 }
 
 impl core::fmt::Debug for HTLCFailReason {
