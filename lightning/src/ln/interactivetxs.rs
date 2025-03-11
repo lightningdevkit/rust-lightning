@@ -322,14 +322,6 @@ impl InteractiveTxSigningSession {
 		}
 	}
 
-	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.has_received_commitment_signed {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
-	}
-
 	/// Handles a `tx_signatures` message received from the counterparty.
 	///
 	/// If the holder is required to send their `tx_signatures` message and these signatures have
