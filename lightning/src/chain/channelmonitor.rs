@@ -544,6 +544,12 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		to_broadcaster_value_sat: Option<u64>,
 		to_countersignatory_value_sat: Option<u64>,
 	},
+	LatestCounterpartyCommitmentTX {
+		// The dust and non-dust htlcs for that commitment
+		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
+		// Contains only the non-dust htlcs
+		commitment_tx: CommitmentTransaction,
+	},
 	PaymentPreimage {
 		payment_preimage: PaymentPreimage,
 		/// If this preimage was from an inbound payment claim, information about the claim should
@@ -571,6 +577,7 @@ impl ChannelMonitorUpdateStep {
 		match self {
 			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. } => "LatestHolderCommitmentTXInfo",
 			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } => "LatestCounterpartyCommitmentTXInfo",
+			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { .. } => "LatestCounterpartyCommitmentTX",
 			ChannelMonitorUpdateStep::PaymentPreimage { .. } => "PaymentPreimage",
 			ChannelMonitorUpdateStep::CommitmentSecret { .. } => "CommitmentSecret",
 			ChannelMonitorUpdateStep::ChannelForceClosed { .. } => "ChannelForceClosed",
@@ -608,6 +615,10 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(5, ShutdownScript) => {
 		(0, scriptpubkey, required),
+	},
+	(6, LatestCounterpartyCommitmentTX) => {
+		(0, htlc_outputs, required_vec),
+		(2, commitment_tx, required),
 	},
 );
 
@@ -1019,6 +1030,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// Ordering of tuple data: (their_per_commitment_point, feerate_per_kw, to_broadcaster_sats,
 	/// to_countersignatory_sats)
 	initial_counterparty_commitment_info: Option<(PublicKey, u32, u64, u64)>,
+	/// Initial counterparty commitment transaction
+	///
+	/// We previously used the field above to re-build the counterparty commitment transaction,
+	/// we now provide the transaction outright.
+	initial_counterparty_commitment_tx: Option<CommitmentTransaction>,
 
 	/// The first block height at which we had no remaining claimable balances.
 	balances_empty_height: Option<u32>,
@@ -1242,6 +1258,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(23, self.holder_pays_commitment_tx_fee, option),
 			(25, self.payment_preimages, required),
 			(27, self.first_confirmed_funding_txo, required),
+			(29, self.initial_counterparty_commitment_tx, option),
 		});
 
 		Ok(())
@@ -1454,6 +1471,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			best_block,
 			counterparty_node_id: counterparty_node_id,
 			initial_counterparty_commitment_info: None,
+			initial_counterparty_commitment_tx: None,
 			balances_empty_height: None,
 
 			failed_back_htlc_ids: new_hash_set(),
@@ -1486,24 +1504,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// A variant of `Self::provide_latest_counterparty_commitment_tx` used to provide
-	/// additional information to the monitor to store in order to recreate the initial
-	/// counterparty commitment transaction during persistence (mainly for use in third-party
-	/// watchtowers).
+	/// the counterparty commitment transaction to the monitor so that the transaction
+	/// can be retrieved during the initial persistence of the monitor (mainly for use in
+	/// third-party watchtowers).
 	///
-	/// This is used to provide the counterparty commitment information directly to the monitor
+	/// This is used to provide the counterparty commitment transaction directly to the monitor
 	/// before the initial persistence of a new channel.
 	pub(crate) fn provide_initial_counterparty_commitment_tx<L: Deref>(
-		&self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
-		commitment_number: u64, their_cur_per_commitment_point: PublicKey, feerate_per_kw: u32,
-		to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, logger: &L,
-	)
-	where L::Target: Logger
+		&self, commitment_tx: CommitmentTransaction, logger: &L,
+	) where L::Target: Logger
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.provide_initial_counterparty_commitment_tx(txid,
-			htlc_outputs, commitment_number, their_cur_per_commitment_point, feerate_per_kw,
-			to_broadcaster_value_sat, to_countersignatory_value_sat, &logger);
+		inner.provide_initial_counterparty_commitment_tx(commitment_tx, &logger);
 	}
 
 	/// Informs this monitor of the latest counterparty (ie non-broadcastable) commitment transaction.
@@ -2872,20 +2885,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	fn provide_initial_counterparty_commitment_tx<L: Deref>(
-		&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
-		commitment_number: u64, their_per_commitment_point: PublicKey, feerate_per_kw: u32,
-		to_broadcaster_value: u64, to_countersignatory_value: u64, logger: &WithChannelMonitor<L>,
+		&mut self, commitment_tx: CommitmentTransaction, logger: &WithChannelMonitor<L>,
 	) where L::Target: Logger {
-		self.initial_counterparty_commitment_info = Some((their_per_commitment_point.clone(),
-			feerate_per_kw, to_broadcaster_value, to_countersignatory_value));
+		// We populate this field for downgrades
+		self.initial_counterparty_commitment_info = Some((commitment_tx.per_commitment_point(),
+			commitment_tx.feerate_per_kw(), commitment_tx.to_broadcaster_value_sat(), commitment_tx.to_countersignatory_value_sat()));
 
 		#[cfg(debug_assertions)] {
 			let rebuilt_commitment_tx = self.initial_counterparty_commitment_tx().unwrap();
-			debug_assert_eq!(rebuilt_commitment_tx.trust().txid(), txid);
+			debug_assert_eq!(rebuilt_commitment_tx.trust().txid(), commitment_tx.trust().txid());
 		}
 
-		self.provide_latest_counterparty_commitment_tx(txid, htlc_outputs, commitment_number,
-				their_per_commitment_point, logger);
+		self.provide_latest_counterparty_commitment_tx(commitment_tx.trust().txid(), Vec::new(), commitment_tx.commitment_number(),
+				commitment_tx.per_commitment_point(), logger);
+		// Soon, we will only populate this field
+		self.initial_counterparty_commitment_tx = Some(commitment_tx);
 	}
 
 	fn provide_latest_counterparty_commitment_tx<L: Deref>(
@@ -3223,9 +3237,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if self.lockdown_from_offchain { panic!(); }
 					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs, nondust_htlc_sources.clone());
 				}
+				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitmentTX`.
+				// For now we just add the code to handle the new updates.
+				// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTX` variant.
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
 					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point, logger)
+				},
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { htlc_outputs, commitment_tx } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
+					self.provide_latest_counterparty_commitment_tx(commitment_tx.trust().txid(), htlc_outputs.clone(), commitment_tx.commitment_number(), commitment_tx.per_commitment_point(), logger)
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage, payment_info } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
@@ -3289,6 +3310,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. }
 					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }
+					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { .. }
 					|ChannelMonitorUpdateStep::ShutdownScript { .. }
 					|ChannelMonitorUpdateStep::CommitmentSecret { .. } =>
 						is_pre_close_update = true,
@@ -3419,14 +3441,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	fn initial_counterparty_commitment_tx(&mut self) -> Option<CommitmentTransaction> {
-		let (their_per_commitment_point, feerate_per_kw, to_broadcaster_value,
-			to_countersignatory_value) = self.initial_counterparty_commitment_info?;
-		let htlc_outputs = vec![];
+		self.initial_counterparty_commitment_tx.clone().or_else(|| {
+			// This provides forward compatibility; an old monitor will not contain the full
+			// transaction; only enough information to rebuild it
+			self.initial_counterparty_commitment_info.map(
+				|(
+					their_per_commitment_point,
+					feerate_per_kw,
+					to_broadcaster_value,
+					to_countersignatory_value,
+				)| {
+					let htlc_outputs = vec![];
 
-		let commitment_tx = self.build_counterparty_commitment_tx(INITIAL_COMMITMENT_NUMBER,
-			&their_per_commitment_point, to_broadcaster_value, to_countersignatory_value,
-			feerate_per_kw, htlc_outputs);
-		Some(commitment_tx)
+					let commitment_tx = self.build_counterparty_commitment_tx(
+						INITIAL_COMMITMENT_NUMBER,
+						&their_per_commitment_point,
+						to_broadcaster_value,
+						to_countersignatory_value,
+						feerate_per_kw,
+						htlc_outputs,
+					);
+					// Take the opportunity to populate this recently introduced field
+					self.initial_counterparty_commitment_tx = Some(commitment_tx.clone());
+					commitment_tx
+				},
+			)
+		})
 	}
 
 	fn build_counterparty_commitment_tx(
@@ -3454,6 +3494,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
 		update.updates.iter().filter_map(|update| {
+			// Soon we will drop the first branch here in favor of the second.
+			// In preparation, we just add the second branch without deleting the first.
+			// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTX` variant.
 			match update {
 				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
 					ref htlc_outputs, commitment_number, their_per_commitment_point,
@@ -3472,6 +3515,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
 
 					Some(commitment_tx)
+				},
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX {
+					htlc_outputs: _, ref commitment_tx,
+				} => {
+					Some(commitment_tx.clone())
 				},
 				_ => None,
 			}
@@ -5043,6 +5091,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut spendable_txids_confirmed = Some(Vec::new());
 		let mut counterparty_fulfilled_htlcs = Some(new_hash_map());
 		let mut initial_counterparty_commitment_info = None;
+		let mut initial_counterparty_commitment_tx = None;
 		let mut balances_empty_height = None;
 		let mut channel_id = None;
 		let mut holder_pays_commitment_tx_fee = None;
@@ -5063,6 +5112,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(23, holder_pays_commitment_tx_fee, option),
 			(25, payment_preimages_with_info, option),
 			(27, first_confirmed_funding_txo, (default_value, funding_info.0)),
+			(29, initial_counterparty_commitment_tx, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -5166,6 +5216,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			best_block,
 			counterparty_node_id: counterparty_node_id.unwrap(),
 			initial_counterparty_commitment_info,
+			initial_counterparty_commitment_tx,
 			balances_empty_height,
 			failed_back_htlc_ids: new_hash_set(),
 		})))

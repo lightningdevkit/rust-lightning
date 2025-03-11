@@ -2062,7 +2062,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 	fn initial_commitment_signed<L: Deref>(
 		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
-		counterparty_commitment_number: u64, best_block: BestBlock, signer_provider: &SP, logger: &L,
+		best_block: BestBlock, signer_provider: &SP, logger: &L,
 	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, CommitmentTransaction), ChannelError>
 	where
 		L::Target: Logger
@@ -2140,14 +2140,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		                                          funding_redeemscript.clone(), funding.get_value_satoshis(),
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
-		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_bitcoin_tx.txid, Vec::new(),
-			counterparty_commitment_number,
-			context.counterparty_cur_commitment_point.unwrap(),
-			counterparty_initial_commitment_tx.feerate_per_kw(),
-			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
-			counterparty_initial_commitment_tx.to_countersignatory_value_sat(),
-			logger);
+		channel_monitor.provide_initial_counterparty_commitment_tx(counterparty_initial_commitment_tx.clone(), logger);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
@@ -5681,8 +5674,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "initial commitment_signed");
 
 		let (channel_monitor, _) = self.initial_commitment_signed(
-			self.context.channel_id(), msg.signature, holder_commitment_point,
-			self.context.cur_counterparty_commitment_transaction_number, best_block, signer_provider, logger)?;
+			self.context.channel_id(), msg.signature, holder_commitment_point, best_block, signer_provider, logger)?;
 		self.holder_commitment_point = *holder_commitment_point;
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
@@ -8743,6 +8735,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
+			// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
+			// and provide the full commit tx instead of the information needed to rebuild it.
 			updates: vec![ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
 				commitment_txid: counterparty_commitment_txid,
 				htlc_outputs: htlcs.clone(),
@@ -9465,8 +9459,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let (channel_monitor, _) = match self.initial_commitment_signed(
 			self.context.channel_id(), msg.signature,
-			&mut holder_commitment_point, self.context.cur_counterparty_commitment_transaction_number,
-			best_block, signer_provider, logger
+			&mut holder_commitment_point, best_block, signer_provider, logger
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
@@ -9735,8 +9728,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let (channel_monitor, counterparty_initial_commitment_tx) = match self.initial_commitment_signed(
 			ChannelId::v1_from_funding_outpoint(funding_txo), msg.signature,
-			&mut holder_commitment_point, self.context.cur_counterparty_commitment_transaction_number,
-			best_block, signer_provider, logger
+			&mut holder_commitment_point, best_block, signer_provider, logger
 		) {
 			Ok(channel_monitor) => channel_monitor,
 			Err(err) => return Err((self, err)),
