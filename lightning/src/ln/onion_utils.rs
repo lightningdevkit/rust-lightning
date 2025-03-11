@@ -937,23 +937,58 @@ pub(crate) struct DecodedOnionFailure {
 	pub(crate) onion_error_data: Option<Vec<u8>>,
 }
 
-/// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
-/// OutboundRoute).
-#[inline]
 pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
-	mut encrypted_packet: OnionErrorPacket,
+	encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
 where
 	L::Target: Logger,
 {
-	let (path, session_priv, first_hop_htlc_msat) = match htlc_source {
-		HTLCSource::OutboundRoute {
-			ref path, ref session_priv, ref first_hop_htlc_msat, ..
-		} => (path, session_priv, first_hop_htlc_msat),
-		_ => {
-			unreachable!()
+	let (path, primary_session_priv) = match htlc_source {
+		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+		_ => unreachable!(),
+	};
+
+	if path.has_trampoline_hops() {
+		// If we have Trampoline hops, the outer onion session_priv is a hash of the inner one.
+		let session_priv_hash = Sha256::hash(&primary_session_priv.secret_bytes()).to_byte_array();
+		let outer_session_priv =
+			SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!");
+		process_onion_failure_inner(
+			secp_ctx,
+			logger,
+			htlc_source,
+			&outer_session_priv,
+			Some(primary_session_priv),
+			encrypted_packet,
+		)
+	} else {
+		process_onion_failure_inner(
+			secp_ctx,
+			logger,
+			htlc_source,
+			primary_session_priv,
+			None,
+			encrypted_packet,
+		)
+	}
+}
+
+/// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
+/// OutboundRoute).
+#[inline]
+pub(super) fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
+	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, outer_session_priv: &SecretKey,
+	inner_session_priv: Option<&SecretKey>, mut encrypted_packet: OnionErrorPacket,
+) -> DecodedOnionFailure
+where
+	L::Target: Logger,
+{
+	let (path, first_hop_htlc_msat) = match htlc_source {
+		HTLCSource::OutboundRoute { ref path, ref first_hop_htlc_msat, .. } => {
+			(path, first_hop_htlc_msat)
 		},
+		_ => unreachable!(),
 	};
 
 	// Learnings from the HTLC failure to inform future payment retries and scoring.
@@ -967,7 +1002,7 @@ where
 	let mut htlc_msat = *first_hop_htlc_msat;
 	let mut _error_code_ret = None;
 	let mut _error_packet_ret = None;
-	let mut is_from_final_node = false;
+	let mut is_from_final_non_blinded_node = false;
 
 	const BADONION: u16 = 0x8000;
 	const PERM: u16 = 0x4000;
@@ -976,40 +1011,68 @@ where
 
 	enum ErrorHop<'a> {
 		RouteHop(&'a RouteHop),
+		TrampolineHop(&'a TrampolineHop),
 	}
 
 	impl<'a> ErrorHop<'a> {
 		fn fee_msat(&self) -> u64 {
 			match self {
 				ErrorHop::RouteHop(rh) => rh.fee_msat,
+				ErrorHop::TrampolineHop(th) => th.fee_msat,
 			}
 		}
 
 		fn pubkey(&self) -> &PublicKey {
 			match self {
 				ErrorHop::RouteHop(rh) => rh.node_pubkey(),
+				ErrorHop::TrampolineHop(th) => th.node_pubkey(),
 			}
 		}
 
 		fn short_channel_id(&self) -> Option<u64> {
 			match self {
 				ErrorHop::RouteHop(rh) => Some(rh.short_channel_id),
+				ErrorHop::TrampolineHop(_) => None,
 			}
 		}
 	}
 
-	let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
-	let mut onion_keys = Vec::with_capacity(path.hops.len() + num_blinded_hops);
+	let (num_blinded_hops, num_trampoline_hops) =
+		path.blinded_tail.as_ref().map_or((0, 0), |bt| (bt.hops.len(), bt.trampoline_hops.len()));
+
+	// We are first collecting all the unblinded `RouteHop`s inside `onion_keys`. Then, if applicable,
+	// we will add all the `TrampolineHop`s, and finally, the blinded hops.
+	let mut onion_keys =
+		Vec::with_capacity(path.hops.len() + num_trampoline_hops + num_blinded_hops);
+
 	construct_onion_keys_generic_callback(
 		secp_ctx,
 		&path.hops,
-		path.blinded_tail.as_ref(),
-		session_priv,
+		// if we have Trampoline hops, the blinded hops are part of the inner Trampoline onion
+		if path.has_trampoline_hops() { None } else { path.blinded_tail.as_ref() },
+		outer_session_priv,
 		|shared_secret, _, _, route_hop_option: Option<&RouteHop>, _| {
 			onion_keys.push((route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret))
 		},
 	)
 	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+
+	if path.has_trampoline_hops() {
+		construct_onion_keys_generic_callback(
+			secp_ctx,
+			// Trampoline hops are part of the blinded tail, so this can never panic
+			&path.blinded_tail.as_ref().unwrap().trampoline_hops,
+			path.blinded_tail.as_ref(),
+			inner_session_priv.expect("Trampoline hops always have an inner session priv"),
+			|shared_secret, _, _, trampoline_hop_option: Option<&TrampolineHop>, _| {
+				onion_keys.push((
+					trampoline_hop_option.map(|th| ErrorHop::TrampolineHop(th)),
+					shared_secret,
+				))
+			},
+		)
+		.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+	}
 
 	// Handle packed channel/node updates for passing back for the route handler
 	let mut iterator = onion_keys.into_iter().peekable();
@@ -1032,12 +1095,12 @@ where
 
 		// The failing hop includes either the inbound channel to the recipient or the outbound channel
 		// from the current hop (i.e., the next hop's inbound channel).
-		// For 1-hop blinded paths, the final `path.hops` entry is the recipient.
+		// For 1-hop blinded paths, the final `ErrorHop` entry is the recipient.
 		// In our case that means that if we're on the last iteration, and there is no more than one
 		// blinded hop, the current iteration references the last non-blinded hop.
 		let next_hop = iterator.peek();
-		is_from_final_node = next_hop.is_none() && num_blinded_hops <= 1;
-		let failing_route_hop = if is_from_final_node {
+		is_from_final_non_blinded_node = next_hop.is_none() && num_blinded_hops <= 1;
+		let failing_route_hop = if is_from_final_non_blinded_node {
 			route_hop
 		} else {
 			match next_hop {
@@ -1102,7 +1165,7 @@ where
 					res = Some(FailureLearnings {
 						network_update,
 						short_channel_id,
-						payment_failed_permanently: is_from_final_node,
+						payment_failed_permanently: is_from_final_non_blinded_node,
 						failed_within_blinded_path: false,
 					});
 					break;
@@ -1124,7 +1187,7 @@ where
 				res = Some(FailureLearnings {
 					network_update,
 					short_channel_id,
-					payment_failed_permanently: is_from_final_node,
+					payment_failed_permanently: is_from_final_non_blinded_node,
 					failed_within_blinded_path: false,
 				});
 				break;
@@ -1141,7 +1204,7 @@ where
 		let payment_failed = match error_code & 0xff {
 			15 | 16 | 17 | 18 | 19 | 23 => true,
 			_ => false,
-		} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
+		} && is_from_final_non_blinded_node; // PERM bit observed below even if this error is from the intermediate nodes
 
 		let mut network_update = None;
 		let mut short_channel_id = None;
@@ -1226,7 +1289,7 @@ where
 		res = Some(FailureLearnings {
 			network_update,
 			short_channel_id,
-			payment_failed_permanently: error_code & PERM == PERM && is_from_final_node,
+			payment_failed_permanently: error_code & PERM == PERM && is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 		});
 
@@ -1285,7 +1348,7 @@ where
 		DecodedOnionFailure {
 			network_update: None,
 			short_channel_id: None,
-			payment_failed_permanently: is_from_final_node,
+			payment_failed_permanently: is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_code: None,
@@ -2008,11 +2071,11 @@ mod tests {
 	use crate::prelude::*;
 	use crate::util::test_utils::TestLogger;
 
+	use super::*;
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
-
-	use super::*;
+	use types::features::Features;
 
 	fn get_test_session_key() -> SecretKey {
 		let hex = "4141414141414141414141414141414141414141414141414141414141414141";
@@ -2369,8 +2432,254 @@ mod tests {
 		// Assert that the original failure can be retrieved and that all hmacs check out.
 		let decrypted_failure =
 			process_onion_failure(&ctx_full, &logger, &htlc_source, onion_error);
-
 		assert_eq!(decrypted_failure.onion_error_code, Some(0x2002));
+	}
+
+	fn build_trampoline_test_path() -> Path {
+		Path {
+			hops: vec![
+				// Bob
+				RouteHop {
+					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()).unwrap(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 3_000,
+					cltv_expiry_delta: 24,
+					maybe_announced_channel: false,
+				},
+
+				// Carol
+				RouteHop {
+					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+					node_features: NodeFeatures::empty(),
+					short_channel_id: (572330 << 40) + (42 << 16) + 2821,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 153_000,
+					cltv_expiry_delta: 0,
+					maybe_announced_channel: false,
+				},
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![
+					// Carol's pubkey
+					TrampolineHop {
+						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+						node_features: Features::empty(),
+						fee_msat: 2_500,
+						cltv_expiry_delta: 24,
+					},
+
+					// Dave's pubkey
+					TrampolineHop {
+						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()).unwrap(),
+						node_features: Features::empty(),
+						fee_msat: 2_500,
+						cltv_expiry_delta: 24,
+					},
+
+					// Emily's pubkey
+					TrampolineHop {
+						pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()).unwrap(),
+						node_features: Features::empty(),
+						fee_msat: 150_500,
+						cltv_expiry_delta: 36,
+					},
+				],
+
+				// Dummy blinded hop (because LDK doesn't allow unblinded Trampoline receives)
+				hops: vec![
+					// Emily's dummy blinded node id
+					BlindedHop {
+						blinded_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be").unwrap()).unwrap(),
+						encrypted_payload: vec![],
+					}
+				],
+				blinding_point: PublicKey::from_slice(&<Vec<u8>>::from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e").unwrap()).unwrap(),
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 150_000_000,
+			}),
+		}
+	}
+
+	#[test]
+	fn test_trampoline_onion_error_cryptography() {
+		// TODO(arik): check intermediate hops' perspectives once we have implemented forwarding
+
+		let secp_ctx = Secp256k1::new();
+		let logger: Arc<TestLogger> = Arc::new(TestLogger::new());
+		let dummy_amt_msat = 150_000_000;
+
+		{
+			// test vector per https://github.com/lightning/bolts/blob/079f761bf68caa48544bd6bf0a29591d43425b0b/bolt04/trampoline-onion-error-test.json
+			// all dummy values
+			let trampoline_session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+			let outer_session_priv = SecretKey::from_slice(&[4; 32]).unwrap();
+
+			let htlc_source = HTLCSource::OutboundRoute {
+				path: build_trampoline_test_path(),
+				session_priv: trampoline_session_priv,
+				first_hop_htlc_msat: dummy_amt_msat,
+				payment_id: PaymentId([1; 32]),
+			};
+
+			let error_packet_hex = "f8941a320b8fde4ad7b9b920c69cbf334114737497d93059d77e591eaa78d6334d3e2aeefcb0cc83402eaaf91d07d695cd895d9cad1018abdaf7d2a49d7657b1612729db7f393f0bb62b25afaaaa326d72a9214666025385033f2ec4605dcf1507467b5726d806da180ea224a7d8631cd31b0bdd08eead8bfe14fc8c7475e17768b1321b54dd4294aecc96da391efe0ca5bd267a45ee085c85a60cf9a9ac152fa4795fff8700a3ea4f848817f5e6943e855ab2e86f6929c9e885d8b20c49b14d2512c59ed21f10bd38691110b0d82c00d9fa48a20f10c7550358724c6e8e2b966e56a0aadf458695b273768062fa7c6e60eb72d4cdc67bf525c194e4a17fdcaa0e9d80480b586bf113f14eea530b6728a1c53fe5cee092e24a90f21f4b764015e7ed5e23";
+			let error_packet =
+				OnionErrorPacket { data: <Vec<u8>>::from_hex(error_packet_hex).unwrap() };
+			let decrypted_failure = process_onion_failure_inner(
+				&secp_ctx,
+				&logger,
+				&htlc_source,
+				&outer_session_priv,
+				Some(&trampoline_session_priv),
+				error_packet,
+			);
+			assert_eq!(decrypted_failure.onion_error_code, Some(0x400f));
+		}
+
+		{
+			// shared secret cryptography sanity tests
+			let session_priv = get_test_session_key();
+			let path = build_trampoline_test_path();
+
+			let trampoline_onion_keys = construct_trampoline_onion_keys(
+				&secp_ctx,
+				&path.blinded_tail.as_ref().unwrap(),
+				&session_priv,
+			)
+			.unwrap();
+
+			let outer_onion_keys = {
+				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
+				let outer_session_priv = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
+				construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv).unwrap()
+			};
+
+			let htlc_source = HTLCSource::OutboundRoute {
+				path,
+				session_priv,
+				first_hop_htlc_msat: dummy_amt_msat,
+				payment_id: PaymentId([1; 32]),
+			};
+
+			{
+				// Ensure error decryption works without the Trampoline hops having been hit.
+				let error_code = 0x2002;
+				let mut first_hop_error_packet = build_unencrypted_failure_packet(
+					outer_onion_keys[0].shared_secret.as_ref(),
+					error_code,
+					&[0; 0],
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[0].shared_secret.as_ref(),
+					&mut first_hop_error_packet,
+				);
+
+				let decrypted_failure =
+					process_onion_failure(&secp_ctx, &logger, &htlc_source, first_hop_error_packet);
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+			};
+
+			{
+				// Ensure error decryption works from the first Trampoline hop, but at the outer onion.
+				let error_code = 0x2003;
+				let mut trampoline_outer_hop_error_packet = build_unencrypted_failure_packet(
+					outer_onion_keys[1].shared_secret.as_ref(),
+					error_code,
+					&[0; 0],
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[1].shared_secret.as_ref(),
+					&mut trampoline_outer_hop_error_packet,
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[0].shared_secret.as_ref(),
+					&mut trampoline_outer_hop_error_packet,
+				);
+
+				let decrypted_failure = process_onion_failure(
+					&secp_ctx,
+					&logger,
+					&htlc_source,
+					trampoline_outer_hop_error_packet,
+				);
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+			};
+
+			{
+				// Ensure error decryption works from the Trampoline inner onion.
+				let error_code = 0x2004;
+				let mut trampoline_inner_hop_error_packet = build_unencrypted_failure_packet(
+					trampoline_onion_keys[0].shared_secret.as_ref(),
+					error_code,
+					&[0; 0],
+				);
+
+				crypt_failure_packet(
+					trampoline_onion_keys[0].shared_secret.as_ref(),
+					&mut trampoline_inner_hop_error_packet,
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[1].shared_secret.as_ref(),
+					&mut trampoline_inner_hop_error_packet,
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[0].shared_secret.as_ref(),
+					&mut trampoline_inner_hop_error_packet,
+				);
+
+				let decrypted_failure = process_onion_failure(
+					&secp_ctx,
+					&logger,
+					&htlc_source,
+					trampoline_inner_hop_error_packet,
+				);
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+			}
+
+			{
+				// Ensure error decryption works from a later hop in the Trampoline inner onion.
+				let error_code = 0x2005;
+				let mut trampoline_second_hop_error_packet = build_unencrypted_failure_packet(
+					trampoline_onion_keys[1].shared_secret.as_ref(),
+					error_code,
+					&[0; 0],
+				);
+
+				crypt_failure_packet(
+					trampoline_onion_keys[1].shared_secret.as_ref(),
+					&mut trampoline_second_hop_error_packet,
+				);
+
+				crypt_failure_packet(
+					trampoline_onion_keys[0].shared_secret.as_ref(),
+					&mut trampoline_second_hop_error_packet,
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[1].shared_secret.as_ref(),
+					&mut trampoline_second_hop_error_packet,
+				);
+
+				crypt_failure_packet(
+					outer_onion_keys[0].shared_secret.as_ref(),
+					&mut trampoline_second_hop_error_packet,
+				);
+
+				let decrypted_failure = process_onion_failure(
+					&secp_ctx,
+					&logger,
+					&htlc_source,
+					trampoline_second_hop_error_packet,
+				);
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+			}
+		}
 	}
 
 	#[test]
