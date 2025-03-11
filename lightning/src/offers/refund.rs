@@ -102,7 +102,9 @@ use crate::offers::signer::{self, Metadata, MetadataMaterial};
 use crate::sign::EntropySource;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::types::payment::PaymentHash;
-use crate::util::ser::{CursorReadable, Readable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{
+	CursorReadable, LengthLimitedRead, LengthReadable, WithoutLength, Writeable, Writer,
+};
 use crate::util::string::PrintableString;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
@@ -822,9 +824,11 @@ impl RefundContents {
 	}
 }
 
-impl Readable for Refund {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+impl LengthReadable for Refund {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(reader)?;
 		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }

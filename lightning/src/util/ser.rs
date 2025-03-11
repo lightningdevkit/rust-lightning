@@ -740,10 +740,10 @@ impl Writeable for WithoutLength<&String> {
 		w.write_all(self.0.as_bytes())
 	}
 }
-impl Readable for WithoutLength<String> {
+impl LengthReadable for WithoutLength<String> {
 	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(Self(String::from_utf8(v.0).map_err(|_| DecodeError::InvalidValue)?))
 	}
 }
@@ -772,10 +772,10 @@ impl Writeable for WithoutLength<&UntrustedString> {
 		WithoutLength(&self.0 .0).write(w)
 	}
 }
-impl Readable for WithoutLength<UntrustedString> {
+impl LengthReadable for WithoutLength<UntrustedString> {
 	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let s: WithoutLength<String> = Readable::read(r)?;
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let s: WithoutLength<String> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(Self(UntrustedString(s.0)))
 	}
 }
@@ -808,9 +808,11 @@ impl<S: AsWriteableSlice> Writeable for WithoutLength<S> {
 	}
 }
 
-impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
+impl<T: MaybeReadable> LengthReadable for WithoutLength<Vec<T>> {
 	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
 		let mut values = Vec::new();
 		loop {
 			let mut track_read = ReadTrackingReader::new(reader);
@@ -841,10 +843,10 @@ impl Writeable for WithoutLength<&ScriptBuf> {
 	}
 }
 
-impl Readable for WithoutLength<ScriptBuf> {
+impl LengthReadable for WithoutLength<ScriptBuf> {
 	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(WithoutLength(script::Builder::from(v.0).into_script()))
 	}
 }

@@ -409,7 +409,7 @@ macro_rules! _decode_tlv {
 		$field = $trait::read(&mut $reader $(, $read_arg)*)?;
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, required_vec) => {{
-		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
+		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
 		$field = f.0;
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, option) => {{
@@ -427,7 +427,7 @@ macro_rules! _decode_tlv {
 		_decode_tlv!($outer_reader, $reader, $field, required);
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, optional_vec) => {{
-		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
+		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
 		$field = Some(f.0);
 	}};
 	// `upgradable_required` indicates we're reading a required TLV that may have been upgraded
