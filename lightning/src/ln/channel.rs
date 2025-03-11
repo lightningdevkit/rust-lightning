@@ -7029,49 +7029,51 @@ impl<SP: Deref> FundedChannel<SP> where
 					// if next_funding_txid matches the latest interactive funding transaction:
 					if session.unsigned_tx().compute_txid() == next_funding_txid {
 						debug_assert_eq!(session.unsigned_tx().compute_txid(), self.maybe_get_next_funding_txid().unwrap());
-						// if it has not received tx_signatures for that funding transaction:
-						if !session.counterparty_sent_tx_signatures() {
+
+						let commitment_update = if !session.counterparty_sent_tx_signatures() && msg.next_local_commitment_number == 0 {
+							// if it has not received tx_signatures for that funding transaction AND
 							// if next_commitment_number is zero:
-							let commitment_update = if msg.next_local_commitment_number == 0 {
-								// MUST retransmit its commitment_signed for that funding transaction.
-								let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)?;
-								Some(msgs::CommitmentUpdate {
-									commitment_signed,
-									update_add_htlcs: vec![],
-									update_fulfill_htlcs: vec![],
-									update_fail_htlcs: vec![],
-									update_fail_malformed_htlcs: vec![],
-									update_fee: None,
-								})
-							} else { None };
-							// if it has already received commitment_signed and it should sign first, as specified in the tx_signatures requirements:
-							if session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first() {
-								// MUST send its tx_signatures for that funding transaction.
-								if self.context.channel_state.is_monitor_update_in_progress() {
-									log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-									self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
-									// We can still send the initial commitment transaction if a monitor update is pending.
-									(commitment_update, None, None)
-								} else {
-									(commitment_update, session.holder_tx_signatures().clone(), None)
-								}
-							} else {
-								(commitment_update, None, None)
-							}
-						} else {
-							// if it has already received tx_signatures for that funding transaction:
-							// MUST send its tx_signatures for that funding transaction.
+							//   MUST retransmit its commitment_signed for that funding transaction.
+							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)?;
+							Some(msgs::CommitmentUpdate {
+								commitment_signed,
+								update_add_htlcs: vec![],
+								update_fulfill_htlcs: vec![],
+								update_fail_htlcs: vec![],
+								update_fail_malformed_htlcs: vec![],
+								update_fee: None,
+							})
+						} else { None };
+						// if it has not received tx_signatures for that funding transaction AND
+						// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
+						//   MUST send its tx_signatures for that funding transaction.
+						// else if it HAS received commitment_signed AND has received tx_signatures for that funding transaction:
+						//   MUST send its tx_signatures for that funding transaction.
+						let tx_signatures = if session.has_received_commitment_signed() && ((
+							!session.counterparty_sent_tx_signatures() &&
+							session.holder_sends_tx_signatures_first()
+						) || session.counterparty_sent_tx_signatures()) {
+							// This should have already been set in `commitment_signed_initial_v2`, but check again
+							// just in case.
 							if self.context.channel_state.is_monitor_update_in_progress() {
 								log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-								self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
-								(None, None, None)
+								if self.context.monitor_pending_tx_signatures.is_none() {
+									self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
+								}
+								None
 							} else {
 								// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
 								// when the holder provides their witnesses as this will queue a `tx_signatures` if the
 								// holder must send one.
-								(None, session.holder_tx_signatures().clone(), None)
+								session.holder_tx_signatures().clone()
 							}
-						}
+						} else {
+							if !session.has_received_commitment_signed() {
+								self.context.expecting_peer_commitment_signed = true;
+							}
+							None
+						};
+						(commitment_update, tx_signatures, None)
 					} else {
 						// MUST send tx_abort to let the sending node know that they can forget this funding transaction.
 						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
@@ -7080,6 +7082,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					return Err(ChannelError::close("Counterparty set `next_funding_txid` at incorrect state".into()));
 				}
 			} else {
+				// Don't send anything related to interactive signing if `next_funding_txid` is not set.
 				(None, None, None)
 			};
 
