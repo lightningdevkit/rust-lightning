@@ -30,16 +30,16 @@ impl Writer for VecWriter {
 #[macro_export]
 macro_rules! test_msg {
 	($MsgType: path, $data: ident) => {{
-		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::lightning::io::Cursor::new($data);
-		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
-			let p = r.position() as usize;
+		use lightning::util::ser::{LengthReadable, Writeable};
+		let mut r = &$data[..];
+		if let Ok(msg) = <$MsgType as LengthReadable>::read_from_fixed_length_buffer(&mut r) {
+			let p = $data.len() - r.len() as usize;
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();
 
 			assert_eq!(w.0.len(), p);
 			assert_eq!(msg.serialized_length(), p);
-			assert_eq!(&r.into_inner()[..p], &w.0[..p]);
+			assert_eq!(&$data[..p], &w.0[..p]);
 		}
 	}};
 }
@@ -88,17 +88,18 @@ macro_rules! test_msg_exact {
 #[macro_export]
 macro_rules! test_msg_hole {
 	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {{
-		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::lightning::io::Cursor::new($data);
-		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+		use lightning::util::ser::{LengthReadable, Writeable};
+		if let Ok(msg) =
+			<$MsgType as LengthReadable>::read_from_fixed_length_buffer(&mut &$data[..])
+		{
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();
 			let p = w.0.len() as usize;
 			assert_eq!(msg.serialized_length(), p);
 
 			assert_eq!(w.0.len(), p);
-			assert_eq!(&r.get_ref()[..$hole], &w.0[..$hole]);
-			assert_eq!(&r.get_ref()[$hole + $hole_len..p], &w.0[$hole + $hole_len..]);
+			assert_eq!(&$data[..$hole], &w.0[..$hole]);
+			assert_eq!(&$data[$hole + $hole_len..p], &w.0[$hole + $hole_len..]);
 		}
 	}};
 }

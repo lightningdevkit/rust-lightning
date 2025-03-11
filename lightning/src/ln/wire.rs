@@ -257,21 +257,39 @@ where
 	H::Target: CustomMessageReader<CustomMessage = T>,
 {
 	match message_type {
-		msgs::Init::TYPE => Ok(Message::Init(Readable::read(buffer)?)),
-		msgs::ErrorMessage::TYPE => Ok(Message::Error(Readable::read(buffer)?)),
-		msgs::WarningMessage::TYPE => Ok(Message::Warning(Readable::read(buffer)?)),
-		msgs::Ping::TYPE => Ok(Message::Ping(Readable::read(buffer)?)),
-		msgs::Pong::TYPE => Ok(Message::Pong(Readable::read(buffer)?)),
+		msgs::Init::TYPE => {
+			Ok(Message::Init(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::ErrorMessage::TYPE => {
+			Ok(Message::Error(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::WarningMessage::TYPE => {
+			Ok(Message::Warning(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::Ping::TYPE => {
+			Ok(Message::Ping(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::Pong::TYPE => {
+			Ok(Message::Pong(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		msgs::PeerStorage::TYPE => {
 			Ok(Message::PeerStorage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::PeerStorageRetrieval::TYPE => Ok(Message::PeerStorageRetrieval(
 			LengthReadable::read_from_fixed_length_buffer(buffer)?,
 		)),
-		msgs::OpenChannel::TYPE => Ok(Message::OpenChannel(Readable::read(buffer)?)),
-		msgs::OpenChannelV2::TYPE => Ok(Message::OpenChannelV2(Readable::read(buffer)?)),
-		msgs::AcceptChannel::TYPE => Ok(Message::AcceptChannel(Readable::read(buffer)?)),
-		msgs::AcceptChannelV2::TYPE => Ok(Message::AcceptChannelV2(Readable::read(buffer)?)),
+		msgs::OpenChannel::TYPE => {
+			Ok(Message::OpenChannel(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::OpenChannelV2::TYPE => {
+			Ok(Message::OpenChannelV2(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::AcceptChannel::TYPE => {
+			Ok(Message::AcceptChannel(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::AcceptChannelV2::TYPE => {
+			Ok(Message::AcceptChannelV2(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		msgs::FundingCreated::TYPE => {
 			Ok(Message::FundingCreated(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
@@ -329,7 +347,9 @@ where
 		msgs::ClosingSigned::TYPE => {
 			Ok(Message::ClosingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::OnionMessage::TYPE => Ok(Message::OnionMessage(Readable::read(buffer)?)),
+		msgs::OnionMessage::TYPE => {
+			Ok(Message::OnionMessage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		msgs::UpdateAddHTLC::TYPE => {
 			Ok(Message::UpdateAddHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
@@ -366,16 +386,18 @@ where
 		msgs::ChannelUpdate::TYPE => {
 			Ok(Message::ChannelUpdate(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::QueryShortChannelIds::TYPE => {
-			Ok(Message::QueryShortChannelIds(Readable::read(buffer)?))
-		},
+		msgs::QueryShortChannelIds::TYPE => Ok(Message::QueryShortChannelIds(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::ReplyShortChannelIdsEnd::TYPE => Ok(Message::ReplyShortChannelIdsEnd(
 			LengthReadable::read_from_fixed_length_buffer(buffer)?,
 		)),
 		msgs::QueryChannelRange::TYPE => {
 			Ok(Message::QueryChannelRange(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::ReplyChannelRange::TYPE => Ok(Message::ReplyChannelRange(Readable::read(buffer)?)),
+		msgs::ReplyChannelRange::TYPE => {
+			Ok(Message::ReplyChannelRange(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
 		msgs::GossipTimestampFilter::TYPE => Ok(Message::GossipTimestampFilter(
 			LengthReadable::read_from_fixed_length_buffer(buffer)?,
 		)),

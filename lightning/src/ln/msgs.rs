@@ -2412,8 +2412,8 @@ impl Writeable for AcceptChannel {
 	}
 }
 
-impl Readable for AcceptChannel {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for AcceptChannel {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
 		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
@@ -2497,8 +2497,8 @@ impl Writeable for AcceptChannelV2 {
 	}
 }
 
-impl Readable for AcceptChannelV2 {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for AcceptChannelV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_satoshis: u64 = Readable::read(r)?;
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
@@ -2760,8 +2760,8 @@ impl Writeable for Init {
 	}
 }
 
-impl Readable for Init {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for Init {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
 		let mut remote_network_address: Option<SocketAddress> = None;
@@ -2806,8 +2806,8 @@ impl Writeable for OpenChannel {
 	}
 }
 
-impl Readable for OpenChannel {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for OpenChannel {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_satoshis: u64 = Readable::read(r)?;
@@ -2890,8 +2890,8 @@ impl Writeable for OpenChannelV2 {
 	}
 }
 
-impl Readable for OpenChannelV2 {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for OpenChannelV2 {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_feerate_sat_per_1000_weight: u32 = Readable::read(r)?;
@@ -3052,8 +3052,8 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	(65537, skimmed_fee_msat, option)
 });
 
-impl Readable for OnionMessage {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for OnionMessage {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let blinding_point: PublicKey = Readable::read(r)?;
 		let len: u16 = Readable::read(r)?;
 		let mut packet_reader = FixedLengthReader::new(r, len as u64);
@@ -3526,8 +3526,8 @@ impl Writeable for Ping {
 	}
 }
 
-impl Readable for Ping {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for Ping {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Ping {
 			ponglen: Readable::read(r)?,
 			byteslen: {
@@ -3546,8 +3546,8 @@ impl Writeable for Pong {
 	}
 }
 
-impl Readable for Pong {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for Pong {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Pong {
 			byteslen: {
 				let byteslen = Readable::read(r)?;
@@ -3680,8 +3680,8 @@ impl Writeable for ErrorMessage {
 	}
 }
 
-impl Readable for ErrorMessage {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for ErrorMessage {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
@@ -3707,8 +3707,8 @@ impl Writeable for WarningMessage {
 	}
 }
 
-impl Readable for WarningMessage {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for WarningMessage {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
@@ -3826,8 +3826,8 @@ impl LengthReadable for NodeAnnouncement {
 	}
 }
 
-impl Readable for QueryShortChannelIds {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for QueryShortChannelIds {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 
 		let encoding_len: u16 = Readable::read(r)?;
@@ -3902,8 +3902,8 @@ impl_writeable_msg!(QueryChannelRange, {
 	number_of_blocks
 }, {});
 
-impl Readable for ReplyChannelRange {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+impl LengthReadable for ReplyChannelRange {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: ChainHash = Readable::read(r)?;
 		let first_blocknum: u32 = Readable::read(r)?;
 		let number_of_blocks: u32 = Readable::read(r)?;
@@ -5484,7 +5484,7 @@ mod tests {
 			let encoded_value = reply_channel_range.encode();
 			assert_eq!(encoded_value, target_value);
 
-			reply_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			reply_channel_range = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 			assert_eq!(reply_channel_range.chain_hash, expected_chain_hash);
 			assert_eq!(reply_channel_range.first_blocknum, 756230);
 			assert_eq!(reply_channel_range.number_of_blocks, 1500);
@@ -5494,7 +5494,7 @@ mod tests {
 			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
 			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
-			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]);
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
 	}
@@ -5518,14 +5518,14 @@ mod tests {
 			let encoded_value = query_short_channel_ids.encode();
 			assert_eq!(encoded_value, target_value);
 
-			query_short_channel_ids = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			query_short_channel_ids = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]).unwrap();
 			assert_eq!(query_short_channel_ids.chain_hash, expected_chain_hash);
 			assert_eq!(query_short_channel_ids.short_channel_ids[0], 0x000000000000008e);
 			assert_eq!(query_short_channel_ids.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(query_short_channel_ids.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
 			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
-			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = LengthReadable::read_from_fixed_length_buffer(&mut &target_value[..]);
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
 	}
