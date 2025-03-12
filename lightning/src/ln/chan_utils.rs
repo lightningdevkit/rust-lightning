@@ -984,8 +984,7 @@ impl ChannelTransactionParameters {
 		self.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
 	}
 
-	#[cfg(test)]
-	pub fn test_dummy(channel_value_satoshis: u64) -> Self {
+	pub(crate) fn dummy(channel_value_satoshis: u64) -> Self {
 		let dummy_keys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
 			revocation_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
@@ -1181,8 +1180,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 });
 
 impl HolderCommitmentTransaction {
-	#[cfg(test)]
-	pub fn dummy(channel_value_satoshis: u64, htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
+	pub(crate) fn dummy(channel_value_satoshis: u64, htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());

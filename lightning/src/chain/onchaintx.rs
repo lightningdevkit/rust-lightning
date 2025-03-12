@@ -232,7 +232,7 @@ pub(crate) enum FeerateStrategy {
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_value_satoshis: u64,
 	channel_keys_id: [u8; 32],
-	destination_script: ScriptBuf,
+	destination_script: ScriptBuf, // Deprecated as of 0.2.
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 
@@ -487,7 +487,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// connections, like on mobile.
 	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Logger>(
 		&mut self, current_height: u32, feerate_strategy: FeerateStrategy, broadcaster: &B,
-		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		conf_target: ConfirmationTarget, destination_script: &Script,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	)
 	where
 		B::Target: BroadcasterInterface,
@@ -500,7 +501,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			bump_requests.push((*claim_id, request.clone()));
 		}
 		for (claim_id, request) in bump_requests {
-			self.generate_claim(current_height, &request, &feerate_strategy, conf_target, fee_estimator, logger)
+			self.generate_claim(
+				current_height, &request, &feerate_strategy, conf_target, destination_script,
+				fee_estimator, logger,
+			)
 				.map(|(_, new_feerate, claim)| {
 					let mut feerate_was_bumped = false;
 					if let Some(mut_request) = self.pending_claim_requests.get_mut(&claim_id) {
@@ -551,8 +555,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain
 	/// events are not expected to fail, and if they do, we may lose funds.
 	fn generate_claim<F: Deref, L: Logger>(
-		&mut self, cur_height: u32, cached_request: &PackageTemplate, feerate_strategy: &FeerateStrategy,
-		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		&mut self, cur_height: u32, cached_request: &PackageTemplate,
+		feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Option<(u32, u64, OnchainClaim)>
 	where F::Target: FeeEstimator,
 	{
@@ -617,15 +622,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				}
 			}
 
-			let predicted_weight = cached_request.package_weight(&self.destination_script);
+			let predicted_weight = cached_request.package_weight(destination_script);
 			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(
-				predicted_weight, self.destination_script.minimal_non_dust().to_sat(),
+				predicted_weight, destination_script.minimal_non_dust().to_sat(),
 				feerate_strategy, conf_target, fee_estimator, logger,
 			) {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.maybe_finalize_malleable_package(
-					cur_height, self, Amount::from_sat(output_value), self.destination_script.clone(), logger
+					cur_height, self, Amount::from_sat(output_value), destination_script.into(), logger
 				).unwrap();
 				assert!(predicted_weight >= transaction.0.weight().to_wu());
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)));
@@ -727,7 +732,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// `cur_height`, however it must never be higher than `cur_height`.
 	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
 		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
-		broadcaster: &B, conf_target: ConfirmationTarget,
+		broadcaster: &B, conf_target: ConfirmationTarget, destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) where
 		B::Target: BroadcasterInterface,
@@ -815,7 +820,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for mut req in preprocessed_requests {
 			if let Some((new_timer, new_feerate, claim)) = self.generate_claim(
-				cur_height, &req, &FeerateStrategy::ForceBump, conf_target, &*fee_estimator, &*logger,
+				cur_height, &req, &FeerateStrategy::ForceBump, conf_target, destination_script,
+				&*fee_estimator, &*logger,
 			) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
@@ -881,7 +887,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Logger>(
 		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
 		cur_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1032,7 +1038,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 		for (claim_id, request) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
-				cur_height, &request, &FeerateStrategy::ForceBump, conf_target, &*fee_estimator, &*logger,
+				cur_height, &request, &FeerateStrategy::ForceBump, conf_target, destination_script,
+				&*fee_estimator, &*logger,
 			) {
 				match bump_claim {
 					OnchainClaim::Tx(bump_tx) => {
@@ -1068,6 +1075,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		txid: &Txid,
 		broadcaster: B,
 		conf_target: ConfirmationTarget,
+		destination_script: &Script,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) where
@@ -1083,13 +1091,15 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 
 		if let Some(height) = height {
-			self.block_disconnected(height, broadcaster, conf_target, fee_estimator, logger);
+			self.block_disconnected(
+				height, broadcaster, conf_target, destination_script, fee_estimator, logger,
+			);
 		}
 	}
 
 	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Logger>(
 		&mut self, height: u32, broadcaster: B, conf_target: ConfirmationTarget,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	)
 		where B::Target: BroadcasterInterface,
 			F::Target: FeeEstimator,
@@ -1122,7 +1132,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			// `height` is the height being disconnected, so our `current_height` is 1 lower.
 			let current_height = height - 1;
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
-				current_height, &request, &FeerateStrategy::ForceBump, conf_target, fee_estimator, logger
+				current_height, &request, &FeerateStrategy::ForceBump, conf_target,
+				destination_script, fee_estimator, logger
 			) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
@@ -1375,10 +1386,11 @@ mod tests {
 			));
 		}
 		let holder_commit = HolderCommitmentTransaction::dummy(1000000, &mut htlcs);
+		let destination_script = ScriptBuf::new();
 		let mut tx_handler = OnchainTxHandler::new(
 			1000000,
 			[0; 32],
-			ScriptBuf::new(),
+			destination_script.clone(),
 			signer,
 			chan_params,
 			holder_commit,
@@ -1418,6 +1430,7 @@ mod tests {
 			1,
 			&&broadcaster,
 			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
 			&fee_estimator,
 			&logger,
 		);
@@ -1441,6 +1454,7 @@ mod tests {
 			2,
 			&&broadcaster,
 			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
 			&fee_estimator,
 			&logger,
 		);
