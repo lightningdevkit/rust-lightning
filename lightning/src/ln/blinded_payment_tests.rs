@@ -1009,7 +1009,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
 
 			nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
-			nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &payment_event_1_2.commitment_msg);
+			nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &payment_event_1_2.commitment_msg);
 			check_added_monitors!(nodes[2], 1);
 
 			nodes[2].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
@@ -1051,7 +1051,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		assert_eq!(events.len(), 2);
 		events.into_iter().find_map(|ev| {
 			match ev {
-				MessageSendEvent:: UpdateHTLCs { node_id, updates } => {
+				MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
 					assert_eq!(node_id, nodes[0].node.get_our_node_id());
 					return Some(updates)
 				},

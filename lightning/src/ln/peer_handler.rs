@@ -2307,13 +2307,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
-						MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(commitment_signed.channel_id), None), "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
+						MessageSendEvent::UpdateHTLCs { ref node_id, ref channel_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(*channel_id), None), "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails, {} commits for channel {}",
 									log_pubkey!(node_id),
 									update_add_htlcs.len(),
 									update_fulfill_htlcs.len(),
 									update_fail_htlcs.len(),
-									&commitment_signed.channel_id);
+									commitment_signed.len(),
+									channel_id);
 							let mut peer = get_peer_for_forwarding!(node_id)?;
 							for msg in update_add_htlcs {
 								self.enqueue_message(&mut *peer, msg);
@@ -2330,7 +2331,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							if let &Some(ref msg) = update_fee {
 								self.enqueue_message(&mut *peer, msg);
 							}
-							self.enqueue_message(&mut *peer, commitment_signed);
+							for msg in commitment_signed {
+								self.enqueue_message(&mut *peer, msg);
+							}
 						},
 						MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None), "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",

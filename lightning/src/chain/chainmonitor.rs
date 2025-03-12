@@ -1008,20 +1008,20 @@ mod tests {
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_first_raa, as_first_update) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
 		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_first_update);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_update);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage_2, None, false, false);
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
 		expect_payment_path_successful!(nodes[0]);
@@ -1030,7 +1030,7 @@ mod tests {
 
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
 		check_added_monitors!(nodes[1], 1);
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_second_update);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_update);
 		check_added_monitors!(nodes[1], 1);
 		let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 

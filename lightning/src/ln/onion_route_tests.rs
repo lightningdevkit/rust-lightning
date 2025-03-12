@@ -1391,7 +1391,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let (update_fail_htlc, commitment_signed) = match events[0] {
-		MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, channel_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(update_fulfill_htlcs.is_empty());
 			assert_eq!(update_fail_htlcs.len(), 1);

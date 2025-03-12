@@ -724,7 +724,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	check_added_monitors(&nodes[0], 1);
 	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
-	let (update_fee, commit_sig) = if let MessageSendEvent::UpdateHTLCs { node_id, mut updates } = msg_events.pop().unwrap() {
+	let (update_fee, commit_sig) = if let MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, mut updates } = msg_events.pop().unwrap() {
 		assert_eq!(node_id, nodes[1].node.get_our_node_id());
 		(updates.update_fee.take().unwrap(), updates.commitment_signed)
 	} else {

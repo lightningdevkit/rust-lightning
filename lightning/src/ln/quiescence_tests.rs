@@ -105,7 +105,9 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	// Attempt to send an HTLC, but don't fully commit it yet.
 	let update_add = get_htlc_update_msgs!(local_node, remote_node_id);
 	remote_node.node.handle_update_add_htlc(local_node_id, &update_add.update_add_htlcs[0]);
-	remote_node.node.handle_commitment_signed(local_node_id, &update_add.commitment_signed);
+	remote_node
+		.node
+		.handle_commitment_signed_batch_test(local_node_id, &update_add.commitment_signed);
 	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(remote_node, local_node_id);
 	local_node.node.handle_revoke_and_ack(remote_node_id, &revoke_and_ack);
 	check_added_monitors(local_node, 1);
@@ -132,7 +134,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 
 	// Continue exchanging messages until the HTLC is irrevocably committed and eventually failed
 	// back as we are shutting down.
-	local_node.node.handle_commitment_signed(remote_node_id, &commit_sig);
+	local_node.node.handle_commitment_signed_batch_test(remote_node_id, &commit_sig);
 	check_added_monitors(local_node, 1);
 
 	let last_revoke_and_ack =
@@ -148,12 +150,14 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 
 	let update_fail = get_htlc_update_msgs!(remote_node, local_node_id);
 	local_node.node.handle_update_fail_htlc(remote_node_id, &update_fail.update_fail_htlcs[0]);
-	local_node.node.handle_commitment_signed(remote_node_id, &update_fail.commitment_signed);
+	local_node
+		.node
+		.handle_commitment_signed_batch_test(remote_node_id, &update_fail.commitment_signed);
 
 	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(local_node, remote_node_id);
 	remote_node.node.handle_revoke_and_ack(local_node_id, &revoke_and_ack);
 	check_added_monitors(remote_node, 1);
-	remote_node.node.handle_commitment_signed(local_node_id, &commit_sig);
+	remote_node.node.handle_commitment_signed_batch_test(local_node_id, &commit_sig);
 	check_added_monitors(remote_node, 1);
 
 	let last_revoke_and_ack =
@@ -196,7 +200,7 @@ fn test_quiescence_tracks_monitor_update_in_progress_and_waits_for_async_signer(
 
 	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
 	nodes[0].node.handle_update_fulfill_htlc(node_id_1, &update.update_fulfill_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(node_id_1, &update.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 
 	// While settling back the payment, propose quiescence from nodes[1]. We won't see its `stfu` go
@@ -210,7 +214,7 @@ fn test_quiescence_tracks_monitor_update_in_progress_and_waits_for_async_signer(
 	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(&nodes[0], node_id_1);
 	nodes[1].node.handle_revoke_and_ack(node_id_0, &revoke_and_ack);
 	check_added_monitors(&nodes[1], 1);
-	nodes[1].node.handle_commitment_signed(node_id_0, &commit_sig);
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &commit_sig);
 	check_added_monitors(&nodes[1], 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());

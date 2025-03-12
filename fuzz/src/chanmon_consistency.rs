@@ -1089,7 +1089,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				for event in &mut events_iter {
 					had_events = true;
 					match event {
-						MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
+						MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
@@ -1127,7 +1127,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
 									if $limit_events != ProcessMessages::AllMessages && processed_change {
 										// If we only want to process some messages, don't deliver the CS until later.
-										extra_ev = Some(MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate {
+										extra_ev = Some(MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates: CommitmentUpdate {
 											update_add_htlcs: Vec::new(),
 											update_fail_htlcs: Vec::new(),
 											update_fulfill_htlcs: Vec::new(),
@@ -1138,7 +1138,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										break;
 									}
 									out.locked_write(format!("Delivering commitment_signed from node {} to node {}.\n", $node, idx).as_bytes());
-									dest.handle_commitment_signed(nodes[$node].get_our_node_id(), &commitment_signed);
+									dest.handle_commitment_signed_batch_test(nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
 							}
