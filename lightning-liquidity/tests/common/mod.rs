@@ -39,7 +39,7 @@ use lightning_persister::fs_store::FilesystemStore;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -134,7 +134,6 @@ pub(crate) struct Node {
 	>,
 	pub(crate) liquidity_manager:
 		Arc<LiquidityManager<Arc<KeysManager>, Arc<ChannelManager>, Arc<dyn Filter + Send + Sync>>>,
-	pub(crate) check_msgs_processed: Arc<AtomicBool>,
 	pub(crate) chain_monitor: Arc<ChainMonitor>,
 	pub(crate) kv_store: Arc<FilesystemStore>,
 	pub(crate) tx_broadcaster: Arc<test_utils::TestBroadcaster>,
@@ -472,21 +471,12 @@ pub(crate) fn create_liquidity_node(
 	let peer_manager =
 		Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), keys_manager.clone()));
 
-	// Rather than registering PeerManager's process_events, we handle messages manually and use a
-	// bool to check whether PeerManager would have been called as expected.
-	let check_msgs_processed = Arc::new(AtomicBool::new(false));
-
-	let process_msgs_flag = Arc::clone(&check_msgs_processed);
-	let process_msgs_callback = move || process_msgs_flag.store(true, Ordering::Release);
-	liquidity_manager.set_process_msgs_callback(process_msgs_callback);
-
 	Node {
 		channel_manager,
 		keys_manager,
 		p2p_gossip_sync,
 		peer_manager,
 		liquidity_manager,
-		check_msgs_processed,
 		chain_monitor,
 		kv_store,
 		tx_broadcaster,
@@ -634,8 +624,6 @@ pub(crate) use handle_funding_generation_ready;
 
 macro_rules! get_lsps_message {
 	($node: expr, $expected_target_node_id: expr) => {{
-		use std::sync::atomic::Ordering;
-		assert!($node.check_msgs_processed.swap(false, Ordering::AcqRel));
 		let msgs = $node.liquidity_manager.get_and_clear_pending_msg();
 		assert_eq!(msgs.len(), 1);
 		let (target_node_id, message) = msgs.into_iter().next().unwrap();
