@@ -343,19 +343,6 @@ impl From<&HolderCommitment> for HolderSignedTx {
 	}
 }
 
-impl HolderSignedTx {
-	fn non_dust_htlcs(&self) -> Vec<HTLCOutputInCommitment> {
-		self.htlc_outputs.iter().filter_map(|(htlc, _, _)| {
-			if htlc.transaction_output_index.is_some() {
-				Some(htlc.clone())
-			} else {
-				None
-			}
-		})
-		.collect()
-	}
-}
-
 /// We use this to track static counterparty commitment transaction data and to generate any
 /// justice or 2nd-stage preimage/timeout transactions.
 #[derive(Clone, PartialEq, Eq)]
