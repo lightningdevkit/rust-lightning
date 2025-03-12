@@ -22,7 +22,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
-	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, HTLCOutputInCommitment
+	HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT, HTLCOutputInCommitment, shared_anchor_script_pubkey,
 };
 use crate::prelude::*;
 use crate::sign::{
@@ -62,8 +62,17 @@ impl AnchorDescriptor {
 	/// Returns the UTXO to be spent by the anchor input, which can be obtained via
 	/// [`Self::unsigned_tx_input`].
 	pub fn previous_utxo(&self) -> TxOut {
+		let tx_params = &self.channel_derivation_parameters.transaction_parameters;
+		let script_pubkey =
+			if tx_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+				let channel_params = tx_params.as_holder_broadcastable();
+				chan_utils::get_keyed_anchor_redeemscript(&channel_params.broadcaster_pubkeys().funding_pubkey)
+			} else {
+				assert!(tx_params.channel_type_features.supports_anchor_zero_fee_commitments());
+				shared_anchor_script_pubkey()
+			};
 		TxOut {
-			script_pubkey: self.witness_script().to_p2wsh(),
+			script_pubkey,
 			value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
 		}
 	}
@@ -79,17 +88,17 @@ impl AnchorDescriptor {
 		}
 	}
 
-	/// Returns the witness script of the anchor output in the commitment transaction.
-	pub fn witness_script(&self) -> ScriptBuf {
-		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		chan_utils::get_anchor_redeemscript(&channel_params.broadcaster_pubkeys().funding_pubkey)
-	}
-
 	/// Returns the fully signed witness required to spend the anchor output in the commitment
 	/// transaction.
 	pub fn tx_input_witness(&self, signature: &Signature) -> Witness {
-		let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
-		chan_utils::build_anchor_input_witness(&channel_params.broadcaster_pubkeys().funding_pubkey, signature)
+		let tx_params = &self.channel_derivation_parameters.transaction_parameters;
+		if tx_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+			let channel_params = self.channel_derivation_parameters.transaction_parameters.as_holder_broadcastable();
+			chan_utils::build_keyed_anchor_input_witness(&channel_params.broadcaster_pubkeys().funding_pubkey, signature)
+		} else {
+			debug_assert!(tx_params.channel_type_features.supports_anchor_zero_fee_commitments());
+			Witness::from_slice(&[&[]])
+		}
 	}
 }
 
@@ -111,9 +120,9 @@ pub enum BumpTransactionEvent {
 	/// The consumer should be able to sign for any of the additional inputs included within the
 	/// child anchor transaction. To sign its anchor input, an [`EcdsaChannelSigner`] should be
 	/// re-derived through [`SignerProvider::derive_channel_signer`]. The anchor input signature
-	/// can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`], which can then be
-	/// provided to [`build_anchor_input_witness`] along with the `funding_pubkey` to obtain the
-	/// full witness required to spend.
+	/// can be computed with [`EcdsaChannelSigner::sign_holder_keyed_anchor_input`], which can then
+	/// be provided to [`build_keyed_anchor_input_witness`] along with the `funding_pubkey` to
+	/// obtain the full witness required to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid child anchor
 	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
@@ -133,8 +142,8 @@ pub enum BumpTransactionEvent {
 	/// be not urgent.
 	///
 	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
-	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_anchor_input
-	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
+	/// [`EcdsaChannelSigner::sign_holder_keyed_anchor_input`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_keyed_anchor_input
+	/// [`build_keyed_anchor_input_witness`]: crate::ln::chan_utils::build_keyed_anchor_input_witness
 	ChannelClose {
 		/// The `channel_id` of the channel which has been closed.
 		channel_id: ChannelId,
@@ -678,7 +687,7 @@ where
 
 			let signer = self.signer_provider.derive_channel_signer(anchor_descriptor.channel_derivation_parameters.keys_id);
 			let channel_parameters = &anchor_descriptor.channel_derivation_parameters.transaction_parameters;
-			let anchor_sig = signer.sign_holder_anchor_input(channel_parameters, &anchor_tx, 0, &self.secp)?;
+			let anchor_sig = signer.sign_holder_keyed_anchor_input(channel_parameters, &anchor_tx, 0, &self.secp)?;
 			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
 
 			#[cfg(debug_assertions)] {
@@ -850,6 +859,7 @@ mod tests {
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
 	use crate::sign::KeysManager;
+	use crate::types::features::ChannelTypeFeatures;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
@@ -934,6 +944,10 @@ mod tests {
 		let logger = TestLogger::new();
 		let handler = BumpTransactionEventHandler::new(&broadcaster, &source, &signer, &logger);
 
+		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+
 		handler.handle_event(&BumpTransactionEvent::ChannelClose {
 			channel_id: ChannelId([42; 32]),
 			counterparty_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
@@ -945,7 +959,7 @@ mod tests {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: 42_000_000,
 					keys_id: [42; 32],
-					transaction_parameters: ChannelTransactionParameters::test_dummy(42_000_000),
+					transaction_parameters,
 				},
 				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
 			},

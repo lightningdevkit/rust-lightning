@@ -1141,7 +1141,7 @@ mod tests {
 		ext_from_hex("030020", &mut test);
 		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
 		ext_from_hex(
-			"0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000",
+			"0010 00021aaa 0008aaa208aa2a0a9aaa 03000000000000000000000000000000",
 			&mut test,
 		);
 
@@ -1245,7 +1245,7 @@ mod tests {
 		ext_from_hex("030120", &mut test);
 		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
 		ext_from_hex(
-			"0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000",
+			"0010 00021aaa 0008aaa208aa2a0a9aaa 01000000000000000000000000000000",
 			&mut test,
 		);
 

@@ -5149,7 +5149,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		{
 			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_point;
 			counterparty_payment_script =
-				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_p2wsh();
+				chan_utils::get_to_countersigner_keyed_anchor_redeemscript(&payment_point).to_p2wsh();
 		}
 
 		let channel_id = channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint));

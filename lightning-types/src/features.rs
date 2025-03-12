@@ -76,6 +76,8 @@
 //! 	(see [BOLT PR #1110](https://github.com/lightning/bolts/pull/1110) for more info).
 //! - `Quiescence` - protocol to quiesce a channel by indicating that "SomeThing Fundamental is Underway"
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
+//! - `ZeroFeeCommitments` - A channel type which always uses zero transaction fee on commitment transactions.
+//! 	(see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -156,7 +158,7 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy,
+			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
 			ZeroConf,
 			// Byte 7
@@ -177,7 +179,7 @@ mod sealed {
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
-			ProvideStorage | ChannelType | SCIDPrivacy,
+			ProvideStorage | ChannelType | SCIDPrivacy | AnchorZeroFeeCommitments,
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
@@ -242,7 +244,7 @@ mod sealed {
 		// Byte 4
 		,
 		// Byte 5
-		SCIDPrivacy,
+		SCIDPrivacy | AnchorZeroFeeCommitments,
 		// Byte 6
 		ZeroConf,
 	]);
@@ -251,7 +253,7 @@ mod sealed {
 	/// useful for manipulating feature flags.
 	macro_rules! define_feature {
 		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr, $optional_setter: ident,
-		 $required_setter: ident, $supported_getter: ident) => {
+		 $required_setter: ident, $clear: ident, $supported_getter: ident) => {
 			#[doc = $doc]
 			///
 			/// See [BOLT #9] for details.
@@ -354,6 +356,11 @@ mod sealed {
 					<T as $feature>::set_required_bit(&mut self.flags);
 				}
 
+				/// Unsets this feature.
+				pub fn $clear(&mut self) {
+					<T as $feature>::clear_bits(&mut self.flags);
+				}
+
 				/// Checks if this feature is supported.
 				pub fn $supported_getter(&self) -> bool {
 					<T as $feature>::supports_feature(&self.flags)
@@ -377,8 +384,8 @@ mod sealed {
 			)*
 		};
 		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr, $optional_setter: ident,
-		 $required_setter: ident, $supported_getter: ident, $required_getter: ident) => {
-			define_feature!($odd_bit, $feature, [$($context),+], $doc, $optional_setter, $required_setter, $supported_getter);
+		 $required_setter: ident, $clear: ident, $supported_getter: ident, $required_getter: ident) => {
+			define_feature!($odd_bit, $feature, [$($context),+], $doc, $optional_setter, $required_setter, $clear, $supported_getter);
 			impl <T: $feature> Features<T> {
 				/// Checks if this feature is required.
 				pub fn $required_getter(&self) -> bool {
@@ -395,6 +402,7 @@ mod sealed {
 		"Feature flags for `option_data_loss_protect`.",
 		set_data_loss_protect_optional,
 		set_data_loss_protect_required,
+		clear_data_loss_protect,
 		supports_data_loss_protect,
 		requires_data_loss_protect
 	);
@@ -406,6 +414,7 @@ mod sealed {
 		"Feature flags for `initial_routing_sync`.",
 		set_initial_routing_sync_optional,
 		set_initial_routing_sync_required,
+		clear_initial_routing_sync,
 		initial_routing_sync
 	);
 	define_feature!(
@@ -415,6 +424,7 @@ mod sealed {
 		"Feature flags for `option_upfront_shutdown_script`.",
 		set_upfront_shutdown_script_optional,
 		set_upfront_shutdown_script_required,
+		clear_upfront_shutdown_script,
 		supports_upfront_shutdown_script,
 		requires_upfront_shutdown_script
 	);
@@ -425,6 +435,7 @@ mod sealed {
 		"Feature flags for `gossip_queries`.",
 		set_gossip_queries_optional,
 		set_gossip_queries_required,
+		clear_gossip_queries,
 		supports_gossip_queries,
 		requires_gossip_queries
 	);
@@ -435,6 +446,7 @@ mod sealed {
 		"Feature flags for `var_onion_optin`.",
 		set_variable_length_onion_optional,
 		set_variable_length_onion_required,
+		clear_variable_length_onion,
 		supports_variable_length_onion,
 		requires_variable_length_onion
 	);
@@ -445,6 +457,7 @@ mod sealed {
 		"Feature flags for `option_static_remotekey`.",
 		set_static_remote_key_optional,
 		set_static_remote_key_required,
+		clear_static_remote_key,
 		supports_static_remote_key,
 		requires_static_remote_key
 	);
@@ -455,6 +468,7 @@ mod sealed {
 		"Feature flags for `payment_secret`.",
 		set_payment_secret_optional,
 		set_payment_secret_required,
+		clear_payment_secret,
 		supports_payment_secret,
 		requires_payment_secret
 	);
@@ -465,6 +479,7 @@ mod sealed {
 		"Feature flags for `basic_mpp`.",
 		set_basic_mpp_optional,
 		set_basic_mpp_required,
+		clear_basic_mpp,
 		supports_basic_mpp,
 		requires_basic_mpp
 	);
@@ -475,6 +490,7 @@ mod sealed {
 		"Feature flags for `option_support_large_channel` (aka wumbo channels).",
 		set_wumbo_optional,
 		set_wumbo_required,
+		clear_wumbo,
 		supports_wumbo,
 		requires_wumbo
 	);
@@ -485,6 +501,7 @@ mod sealed {
 		"Feature flags for `option_anchors_nonzero_fee_htlc_tx`.",
 		set_anchors_nonzero_fee_htlc_tx_optional,
 		set_anchors_nonzero_fee_htlc_tx_required,
+		clear_anchors_nonzero_fee_htlc_tx,
 		supports_anchors_nonzero_fee_htlc_tx,
 		requires_anchors_nonzero_fee_htlc_tx
 	);
@@ -495,6 +512,7 @@ mod sealed {
 		"Feature flags for `option_anchors_zero_fee_htlc_tx`.",
 		set_anchors_zero_fee_htlc_tx_optional,
 		set_anchors_zero_fee_htlc_tx_required,
+		clear_anchors_zero_fee_htlc_tx,
 		supports_anchors_zero_fee_htlc_tx,
 		requires_anchors_zero_fee_htlc_tx
 	);
@@ -505,6 +523,7 @@ mod sealed {
 		"Feature flags for `option_route_blinding`.",
 		set_route_blinding_optional,
 		set_route_blinding_required,
+		clear_route_blinding,
 		supports_route_blinding,
 		requires_route_blinding
 	);
@@ -515,6 +534,7 @@ mod sealed {
 		"Feature flags for `opt_shutdown_anysegwit`.",
 		set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required,
+		clear_shutdown_anysegwit,
 		supports_shutdown_anysegwit,
 		requires_shutdown_anysegwit
 	);
@@ -525,6 +545,7 @@ mod sealed {
 		"Feature flags for `option_dual_fund`.",
 		set_dual_fund_optional,
 		set_dual_fund_required,
+		clear_dual_fund,
 		supports_dual_fund,
 		requires_dual_fund
 	);
@@ -535,6 +556,7 @@ mod sealed {
 		"Feature flags for `option_taproot`.",
 		set_taproot_optional,
 		set_taproot_required,
+		clear_taproot,
 		supports_taproot,
 		requires_taproot
 	);
@@ -545,6 +567,7 @@ mod sealed {
 		"Feature flags for `option_quiesce`.",
 		set_quiescence_optional,
 		set_quiescence_required,
+		clear_quiescence,
 		supports_quiescence,
 		requires_quiescence
 	);
@@ -555,8 +578,20 @@ mod sealed {
 		"Feature flags for `option_onion_messages`.",
 		set_onion_messages_optional,
 		set_onion_messages_required,
+		clear_onion_messages,
 		supports_onion_messages,
 		requires_onion_messages
+	);
+	define_feature!(
+		41,
+		AnchorZeroFeeCommitments,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_zero_fee_commitments`.",
+		set_anchor_zero_fee_commitments_optional,
+		set_anchor_zero_fee_commitments_required,
+		clear_anchor_zero_fee_commitments,
+		supports_anchor_zero_fee_commitments,
+		requires_anchor_zero_fee_commitments
 	);
 	define_feature!(
 		43,
@@ -565,6 +600,7 @@ mod sealed {
 		"Feature flags for `option_provide_storage`.",
 		set_provide_storage_optional,
 		set_provide_storage_required,
+		clear_provide_storage,
 		supports_provide_storage,
 		requires_provide_storage
 	);
@@ -575,12 +611,20 @@ mod sealed {
 		"Feature flags for `option_channel_type`.",
 		set_channel_type_optional,
 		set_channel_type_required,
+		clear_channel_type,
 		supports_channel_type,
 		requires_channel_type
 	);
-	define_feature!(47, SCIDPrivacy, [InitContext, NodeContext, ChannelTypeContext],
+	define_feature!(47,
+		SCIDPrivacy,
+		[InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",
-		set_scid_privacy_optional, set_scid_privacy_required, supports_scid_privacy, requires_scid_privacy);
+		set_scid_privacy_optional,
+		set_scid_privacy_required,
+		clear_scid_privacy,
+		supports_scid_privacy,
+		requires_scid_privacy
+	);
 	define_feature!(
 		49,
 		PaymentMetadata,
@@ -588,6 +632,7 @@ mod sealed {
 		"Feature flags for payment metadata in invoices.",
 		set_payment_metadata_optional,
 		set_payment_metadata_required,
+		clear_payment_metadata,
 		supports_payment_metadata,
 		requires_payment_metadata
 	);
@@ -601,6 +646,7 @@ mod sealed {
 		"Feature flags for keysend payments.",
 		set_keysend_optional,
 		set_keysend_required,
+		clear_keysend,
 		supports_keysend,
 		requires_keysend
 	);
@@ -611,6 +657,7 @@ mod sealed {
 		"Feature flags for Trampoline routing.",
 		set_trampoline_routing_optional,
 		set_trampoline_routing_required,
+		clear_trampoline_routing,
 		supports_trampoline_routing,
 		requires_trampoline_routing
 	);
@@ -621,6 +668,7 @@ mod sealed {
 		"Feature flags for DNS resolving.",
 		set_dns_resolution_optional,
 		set_dns_resolution_required,
+		clear_dns_resolution,
 		supports_dns_resolution,
 		requires_dns_resolution
 	);
@@ -643,6 +691,7 @@ mod sealed {
 		"Feature flags for an unknown feature used in testing.",
 		set_unknown_feature_optional,
 		set_unknown_feature_required,
+		clear_unknown_feature,
 		supports_unknown_test_feature,
 		requires_unknown_test_feature
 	);
@@ -1035,51 +1084,6 @@ impl<T: sealed::Context> Features<T> {
 		self.flags[byte_offset] |= mask;
 
 		Ok(())
-	}
-}
-
-impl<T: sealed::UpfrontShutdownScript> Features<T> {
-	/// Unsets the `upfront_shutdown_script` feature
-	pub fn clear_upfront_shutdown_script(mut self) -> Self {
-		<T as sealed::UpfrontShutdownScript>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
-impl<T: sealed::ShutdownAnySegwit> Features<T> {
-	/// Unsets the `shutdown_anysegwit` feature
-	pub fn clear_shutdown_anysegwit(mut self) -> Self {
-		<T as sealed::ShutdownAnySegwit>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
-impl<T: sealed::Wumbo> Features<T> {
-	/// Unsets the `wumbo` feature
-	pub fn clear_wumbo(mut self) -> Self {
-		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
-impl<T: sealed::SCIDPrivacy> Features<T> {
-	/// Unsets the `scid_privacy` feature
-	pub fn clear_scid_privacy(&mut self) {
-		<T as sealed::SCIDPrivacy>::clear_bits(&mut self.flags);
-	}
-}
-
-impl<T: sealed::AnchorsZeroFeeHtlcTx> Features<T> {
-	/// Unsets the `anchors_zero_fee_htlc_tx` feature
-	pub fn clear_anchors_zero_fee_htlc_tx(&mut self) {
-		<T as sealed::AnchorsZeroFeeHtlcTx>::clear_bits(&mut self.flags);
-	}
-}
-
-impl<T: sealed::RouteBlinding> Features<T> {
-	/// Unsets the `route_blinding` feature
-	pub fn clear_route_blinding(&mut self) {
-		<T as sealed::RouteBlinding>::clear_bits(&mut self.flags);
 	}
 }
 
