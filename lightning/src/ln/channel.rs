@@ -7002,7 +7002,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		log_trace!(logger, "Regenerating latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
-		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger).map(|(cu, _)| cu) {
+		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
 			if self.context.signer_pending_commitment_update {
 				log_trace!(logger, "Commitment update generated: clearing signer_pending_commitment_update");
 				self.context.signer_pending_commitment_update = false;
@@ -8917,7 +8917,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
 	/// generation when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
+	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<msgs::CommitmentSigned, ChannelError> where L::Target: Logger {
 		// Get the fee tests from `build_commitment_no_state_update`
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(logger);
@@ -8960,14 +8960,14 @@ impl<SP: Deref> FundedChannel<SP> where
 					}
 				}
 
-				Ok((msgs::CommitmentSigned {
+				Ok(msgs::CommitmentSigned {
 					channel_id: self.context.channel_id,
 					signature,
 					htlc_signatures,
 					batch: None,
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
-				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
+				})
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
