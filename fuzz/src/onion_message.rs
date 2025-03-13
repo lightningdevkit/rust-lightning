@@ -26,20 +26,23 @@ use lightning::onion_message::packet::OnionMessageContents;
 use lightning::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use lightning::types::features::InitFeatures;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, Writeable, Writer};
+use lightning::util::ser::{LengthReadable, Writeable, Writer};
 use lightning::util::test_channel_signer::TestChannelSigner;
 
 use lightning_invoice::RawBolt11Invoice;
 
 use crate::utils::test_logger;
 
-use lightning::io::{self, Cursor};
+use lightning::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[inline]
 /// Actual fuzz test, method signature and name are fixed
 pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
-	if let Ok(msg) = <msgs::OnionMessage as Readable>::read(&mut Cursor::new(data)) {
+	let mut reader = &data[..];
+	if let Ok(msg) =
+		<msgs::OnionMessage as LengthReadable>::read_from_fixed_length_buffer(&mut reader)
+	{
 		let mut secret_bytes = [1; 32];
 		secret_bytes[31] = 2;
 		let secret = SecretKey::from_slice(&secret_bytes).unwrap();

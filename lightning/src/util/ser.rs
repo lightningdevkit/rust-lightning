@@ -226,10 +226,10 @@ impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
 	}
 }
 
-impl<'a, R: Read> LengthRead for FixedLengthReader<'a, R> {
+impl<'a, R: Read> LengthLimitedRead for FixedLengthReader<'a, R> {
 	#[inline]
-	fn total_bytes(&self) -> u64 {
-		self.total_bytes
+	fn remaining_bytes(&self) -> u64 {
+		self.total_bytes.saturating_sub(self.bytes_read)
 	}
 }
 
@@ -344,25 +344,35 @@ where
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A [`io::Read`] that also provides the total bytes available to be read.
-pub trait LengthRead: Read {
-	/// The total number of bytes available to be read.
-	fn total_bytes(&self) -> u64;
+/// A [`io::Read`] that limits the amount of bytes that can be read. Implementations should ensure
+/// that the object being read will only consume a fixed number of bytes from the underlying
+/// [`io::Read`], see [`FixedLengthReader`] for an example.
+pub trait LengthLimitedRead: Read {
+	/// The number of bytes remaining to be read.
+	fn remaining_bytes(&self) -> u64;
 }
 
-/// A trait that various higher-level LDK types implement allowing them to be read in
-/// from a Read given some additional set of arguments which is required to deserialize, requiring
-/// the implementer to provide the total length of the read.
+impl LengthLimitedRead for &[u8] {
+	fn remaining_bytes(&self) -> u64 {
+		// The underlying `Read` implementation for slice updates the slice to point to the yet unread
+		// part.
+		self.len() as u64
+	}
+}
+
+/// Similar to [`LengthReadable`]. Useful when an additional set of arguments is required to
+/// deserialize.
 pub(crate) trait LengthReadableArgs<P>
 where
 	Self: Sized,
 {
-	/// Reads a `Self` in from the given [`LengthRead`].
-	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+	/// Reads a `Self` in from the given [`LengthLimitedRead`].
+	fn read<R: LengthLimitedRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A trait that allows the implementer to be read in from a [`LengthRead`], requiring
-/// the reader to provide the total length of the read.
+/// A trait that allows the implementer to be read in from a [`LengthLimitedRead`], requiring the
+/// reader to limit the number of total bytes read from its underlying [`Read`]. Useful for structs
+/// that will always consume the entire provided [`Read`] when deserializing.
 ///
 /// Any type that implements [`Readable`] also automatically has a [`LengthReadable`]
 /// implementation, but some types, most notably onion packets, only implement [`LengthReadable`].
@@ -370,13 +380,17 @@ pub trait LengthReadable
 where
 	Self: Sized,
 {
-	/// Reads a `Self` in from the given [`LengthRead`].
-	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+	/// Reads a `Self` in from the given [`LengthLimitedRead`].
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError>;
 }
 
 impl<T: Readable> LengthReadable for T {
 	#[inline]
-	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<T, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<T, DecodeError> {
 		Readable::read(reader)
 	}
 }
@@ -405,7 +419,9 @@ impl<T: Readable> MaybeReadable for T {
 pub struct RequiredWrapper<T>(pub Option<T>);
 impl<T: LengthReadable> LengthReadable for RequiredWrapper<T> {
 	#[inline]
-	fn read_from_fixed_length_buffer<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
 		Ok(Self(Some(LengthReadable::read_from_fixed_length_buffer(reader)?)))
 	}
 }
@@ -724,10 +740,10 @@ impl Writeable for WithoutLength<&String> {
 		w.write_all(self.0.as_bytes())
 	}
 }
-impl Readable for WithoutLength<String> {
+impl LengthReadable for WithoutLength<String> {
 	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(Self(String::from_utf8(v.0).map_err(|_| DecodeError::InvalidValue)?))
 	}
 }
@@ -756,10 +772,10 @@ impl Writeable for WithoutLength<&UntrustedString> {
 		WithoutLength(&self.0 .0).write(w)
 	}
 }
-impl Readable for WithoutLength<UntrustedString> {
+impl LengthReadable for WithoutLength<UntrustedString> {
 	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let s: WithoutLength<String> = Readable::read(r)?;
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let s: WithoutLength<String> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(Self(UntrustedString(s.0)))
 	}
 }
@@ -792,9 +808,11 @@ impl<S: AsWriteableSlice> Writeable for WithoutLength<S> {
 	}
 }
 
-impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
+impl<T: MaybeReadable> LengthReadable for WithoutLength<Vec<T>> {
 	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(
+		reader: &mut R,
+	) -> Result<Self, DecodeError> {
 		let mut values = Vec::new();
 		loop {
 			let mut track_read = ReadTrackingReader::new(reader);
@@ -825,10 +843,10 @@ impl Writeable for WithoutLength<&ScriptBuf> {
 	}
 }
 
-impl Readable for WithoutLength<ScriptBuf> {
+impl LengthReadable for WithoutLength<ScriptBuf> {
 	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = LengthReadable::read_from_fixed_length_buffer(r)?;
 		Ok(WithoutLength(script::Builder::from(v.0).into_script()))
 	}
 }
@@ -1012,9 +1030,7 @@ macro_rules! impl_readable_for_vec_with_element_length_prefix {
 				for _ in 0..len.0 {
 					let elem_len: CollectionLength = Readable::read(r)?;
 					let mut elem_reader = FixedLengthReader::new(r, elem_len.0);
-					if let Some(val) = MaybeReadable::read(&mut elem_reader)? {
-						ret.push(val);
-					}
+					ret.push(LengthReadable::read_from_fixed_length_buffer(&mut elem_reader)?);
 				}
 				Ok(ret)
 			}
@@ -1316,14 +1332,14 @@ impl<T: Writeable> Writeable for Option<T> {
 	}
 }
 
-impl<T: Readable> Readable for Option<T> {
+impl<T: LengthReadable> Readable for Option<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: BigSize = Readable::read(r)?;
 		match len.0 {
 			0 => Ok(None),
 			len => {
 				let mut reader = FixedLengthReader::new(r, len - 1);
-				Ok(Some(Readable::read(&mut reader)?))
+				Ok(Some(LengthReadable::read_from_fixed_length_buffer(&mut reader)?))
 			},
 		}
 	}

@@ -67,7 +67,7 @@ use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use lightning::util::ser::{LengthReadable, ReadableArgs, Writeable, Writer};
 use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
 use lightning_invoice::RawBolt11Invoice;
@@ -1103,7 +1103,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 											// update_fail_htlc as we do when we reject a payment.
 											let mut msg_ser = update_add.encode();
 											msg_ser[1000] ^= 0xff;
-											let new_msg = UpdateAddHTLC::read(&mut Cursor::new(&msg_ser)).unwrap();
+											let new_msg = UpdateAddHTLC::read_from_fixed_length_buffer(&mut &msg_ser[..]).unwrap();
 											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), &new_msg);
 										}
 									}

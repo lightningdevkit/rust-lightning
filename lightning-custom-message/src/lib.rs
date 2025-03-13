@@ -24,7 +24,7 @@
 //! use lightning::ln::peer_handler::CustomMessageHandler;
 //! use lightning::ln::wire::{CustomMessageReader, self};
 //! # use lightning::types::features::{InitFeatures, NodeFeatures};
-//! use lightning::util::ser::Writeable;
+//! use lightning::util::ser::{LengthLimitedRead, Writeable};
 //! # use lightning::util::ser::Writer;
 //!
 //! // Assume that `FooHandler` and `BarHandler` are defined in one crate and `BazHandler` is
@@ -52,7 +52,7 @@
 //! impl CustomMessageReader for FooHandler {
 //!     // ...
 //! #     type CustomMessage = Foo;
-//! #     fn read<R: io::Read>(
+//! #     fn read<R: LengthLimitedRead>(
 //! #         &self, _message_type: u16, _buffer: &mut R
 //! #     ) -> Result<Option<Self::CustomMessage>, DecodeError> {
 //! #         unimplemented!()
@@ -104,7 +104,7 @@
 //! impl CustomMessageReader for BarHandler {
 //!     // ...
 //! #     type CustomMessage = Bar;
-//! #     fn read<R: io::Read>(
+//! #     fn read<R: LengthLimitedRead>(
 //! #         &self, _message_type: u16, _buffer: &mut R
 //! #     ) -> Result<Option<Self::CustomMessage>, DecodeError> {
 //! #         unimplemented!()
@@ -156,7 +156,7 @@
 //! impl CustomMessageReader for BazHandler {
 //!     // ...
 //! #     type CustomMessage = Baz;
-//! #     fn read<R: io::Read>(
+//! #     fn read<R: LengthLimitedRead>(
 //! #         &self, _message_type: u16, _buffer: &mut R
 //! #     ) -> Result<Option<Self::CustomMessage>, DecodeError> {
 //! #         unimplemented!()
@@ -340,7 +340,7 @@ macro_rules! composite_custom_message_handler {
 
 		impl $crate::lightning::ln::wire::CustomMessageReader for $handler {
 			type CustomMessage = $message;
-			fn read<R: $crate::lightning::io::Read>(
+			fn read<R: $crate::lightning::util::ser::LengthLimitedRead>(
 				&self, message_type: u16, buffer: &mut R
 			) -> Result<Option<Self::CustomMessage>, $crate::lightning::ln::msgs::DecodeError> {
 				match message_type {

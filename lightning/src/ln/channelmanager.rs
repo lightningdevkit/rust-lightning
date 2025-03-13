@@ -83,7 +83,7 @@ use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverr
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
-use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
+use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
@@ -13016,14 +13016,14 @@ impl Readable for HTLCFailureMsg {
 			2 => {
 				let length: BigSize = Readable::read(reader)?;
 				let mut s = FixedLengthReader::new(reader, length.0);
-				let res = Readable::read(&mut s)?;
+				let res = LengthReadable::read_from_fixed_length_buffer(&mut s)?;
 				s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 				Ok(HTLCFailureMsg::Relay(res))
 			},
 			3 => {
 				let length: BigSize = Readable::read(reader)?;
 				let mut s = FixedLengthReader::new(reader, length.0);
-				let res = Readable::read(&mut s)?;
+				let res = LengthReadable::read_from_fixed_length_buffer(&mut s)?;
 				s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 				Ok(HTLCFailureMsg::Malformed(res))
 			},
