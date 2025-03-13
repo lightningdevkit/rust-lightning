@@ -678,6 +678,32 @@ pub(crate) mod string_amount_option {
 	}
 }
 
+pub(crate) mod string_offer {
+	use crate::prelude::{String, ToString};
+	use core::str::FromStr;
+	use lightning::offers::offer::Offer;
+	use serde::de::Unexpected;
+	use serde::{Deserialize, Deserializer, Serializer};
+
+	pub(crate) fn serialize<S>(x: &Offer, s: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		s.serialize_str(&x.to_string())
+	}
+
+	pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Offer, D::Error>
+	where
+		D: Deserializer<'de>,
+	{
+		let buf = String::deserialize(deserializer)?;
+
+		Offer::from_str(&buf).map_err(|_| {
+			serde::de::Error::invalid_value(Unexpected::Str(&buf), &"invalid offer string")
+		})
+	}
+}
+
 pub(crate) mod unchecked_address {
 	use crate::prelude::{String, ToString};
 	use bitcoin::Address;
