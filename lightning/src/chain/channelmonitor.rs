@@ -4004,7 +4004,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let (htlc_output, counterparty_spendable_height) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						self.funding.channel_parameters.clone(),
+						self.funding.channel_parameters.clone(), self.channel_keys_id,
 						htlc.amount_msat, htlc.cltv_expiry,
 						self.funding.current_holder_commitment.tx.clone(),
 						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
@@ -4018,7 +4018,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					};
 					let htlc_output = HolderHTLCOutput::build_accepted(
-						self.funding.channel_parameters.clone(),
+						self.funding.channel_parameters.clone(), self.channel_keys_id,
 						payment_preimage, htlc.amount_msat,
 						self.funding.current_holder_commitment.tx.clone(),
 						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
@@ -4186,7 +4186,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(vout) = htlc.transaction_output_index {
 				let (htlc_output, preimage) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						self.funding.channel_parameters.clone(), htlc.amount_msat, htlc.cltv_expiry,
+						self.funding.channel_parameters.clone(), self.channel_keys_id,
+						htlc.amount_msat, htlc.cltv_expiry,
 						self.funding.current_holder_commitment.tx.clone(),
 						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 					);
@@ -4194,7 +4195,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
 						let htlc_output = HolderHTLCOutput::build_accepted(
-							self.funding.channel_parameters.clone(), *preimage, htlc.amount_msat,
+							self.funding.channel_parameters.clone(), self.channel_keys_id,
+							*preimage, htlc.amount_msat,
 							self.funding.current_holder_commitment.tx.clone(),
 							self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 						);

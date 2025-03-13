@@ -234,7 +234,7 @@ pub(crate) enum FeerateStrategy {
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_value_satoshis: u64,
-	pub(crate) channel_keys_id: [u8; 32],
+	channel_keys_id: [u8; 32], // Deprecated as of 0.2.
 	destination_script: ScriptBuf, // Deprecated as of 0.2.
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
@@ -1207,6 +1207,11 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
 	}
+
+	// Deprecated as of 0.2, only use in cases where it was not previously available.
+	pub(crate) fn channel_keys_id(&self) -> [u8; 32] {
+		self.channel_keys_id
+	}
 }
 
 #[cfg(test)]
@@ -1339,7 +1344,7 @@ mod tests {
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(
-					tx_handler.channel_transaction_parameters.clone(),
+					tx_handler.channel_transaction_parameters.clone(), tx_handler.channel_keys_id,
 					htlc.amount_msat, htlc.cltv_expiry,
 					tx_handler.holder_commitment.clone(), tx_handler.prev_holder_commitment.clone(),
 				)),

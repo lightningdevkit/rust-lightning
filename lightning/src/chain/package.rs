@@ -376,12 +376,13 @@ pub(crate) struct HolderHTLCOutput {
 	current_holder_commitment: Option<HolderCommitmentTransaction>,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	channel_parameters: Option<ChannelTransactionParameters>,
+	channel_keys_id: Option<[u8; 32]>,
 }
 
 impl HolderHTLCOutput {
 	pub(crate) fn build_offered(
-		channel_parameters: ChannelTransactionParameters, amount_msat: u64, cltv_expiry: u32,
-		current_holder_commitment: HolderCommitmentTransaction,
+		channel_parameters: ChannelTransactionParameters, channel_keys_id: [u8; 32],
+		amount_msat: u64, cltv_expiry: u32, current_holder_commitment: HolderCommitmentTransaction,
 		prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	) -> Self {
 		let channel_type_features = channel_parameters.channel_type_features.clone();
@@ -393,11 +394,13 @@ impl HolderHTLCOutput {
 			current_holder_commitment: Some(current_holder_commitment),
 			prev_holder_commitment,
 			channel_parameters: Some(channel_parameters),
+			channel_keys_id: Some(channel_keys_id),
 		}
 	}
 
 	pub(crate) fn build_accepted(
-		channel_parameters: ChannelTransactionParameters, preimage: PaymentPreimage, amount_msat: u64,
+		channel_parameters: ChannelTransactionParameters, channel_keys_id: [u8; 32],
+		preimage: PaymentPreimage, amount_msat: u64,
 		current_holder_commitment: HolderCommitmentTransaction,
 		prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	) -> Self {
@@ -410,6 +413,7 @@ impl HolderHTLCOutput {
 			current_holder_commitment: Some(current_holder_commitment),
 			prev_holder_commitment,
 			channel_parameters: Some(channel_parameters),
+			channel_keys_id: Some(channel_keys_id),
 		}
 	}
 
@@ -419,6 +423,8 @@ impl HolderHTLCOutput {
 	) -> Option<MaybeSignedTransaction> {
 		let channel_parameters = self.channel_parameters.as_ref()
 			.unwrap_or(&onchain_tx_handler.channel_transaction_parameters);
+		let channel_keys_id = self.channel_keys_id
+			.unwrap_or(onchain_tx_handler.channel_keys_id());
 		let get_signed_htlc_tx = |holder_commitment: &HolderCommitmentTransaction| {
 			let trusted_tx = holder_commitment.trust();
 			if trusted_tx.txid() != outp.txid {
@@ -435,7 +441,7 @@ impl HolderHTLCOutput {
 			let htlc_descriptor = HTLCDescriptor {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: channel_parameters.channel_value_satoshis,
-					keys_id: onchain_tx_handler.channel_keys_id,
+					keys_id: channel_keys_id,
 					transaction_parameters: channel_parameters.clone(),
 				},
 				commitment_txid: trusted_tx.txid(),
@@ -519,6 +525,7 @@ impl Writeable for HolderHTLCOutput {
 			(9, self.current_holder_commitment, option), // Added in 0.2.
 			(11, self.prev_holder_commitment, option), // Added in 0.2.
 			(13, self.channel_parameters, option), // Added in 0.2.
+			(15, self.channel_keys_id, option), // Added in 0.2.
 		});
 		Ok(())
 	}
@@ -534,6 +541,7 @@ impl Readable for HolderHTLCOutput {
 		let mut current_holder_commitment = None;
 		let mut prev_holder_commitment = None;
 		let mut channel_parameters = None;
+		let mut channel_keys_id = None;
 
 		read_tlv_fields!(reader, {
 			(0, amount_msat, required),
@@ -544,6 +552,7 @@ impl Readable for HolderHTLCOutput {
 			(9, current_holder_commitment, option), // Added in 0.2.
 			(11, prev_holder_commitment, option), // Added in 0.2.
 			(13, channel_parameters, (option: ReadableArgs, None)), // Added in 0.2.
+			(15, channel_keys_id, option), // Added in 0.2.
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
@@ -558,6 +567,7 @@ impl Readable for HolderHTLCOutput {
 			current_holder_commitment,
 			prev_holder_commitment,
 			channel_parameters,
+			channel_keys_id,
 		})
 	}
 }
@@ -1660,7 +1670,7 @@ mod tests {
 				let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut Vec::new());
 				let preimage = PaymentPreimage([2;32]);
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(
-					channel_parameters, preimage, 0, commitment_tx, None,
+					channel_parameters, [0; 32], preimage, 0, commitment_tx, None,
 				))
 			}
 		}
@@ -1673,7 +1683,7 @@ mod tests {
 				channel_parameters.channel_type_features = $features;
 				let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut Vec::new());
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(
-					channel_parameters, 0, $cltv_expiry, commitment_tx, None,
+					channel_parameters, [0; 32], 0, $cltv_expiry, commitment_tx, None,
 				))
 			}
 		}
