@@ -479,7 +479,7 @@ impl HolderHTLCOutput {
 		preimage: &Option<PaymentPreimage>,
 	) -> Option<MaybeSignedTransaction> {
 		let channel_parameters = self.channel_parameters.as_ref()
-			.unwrap_or(&onchain_tx_handler.channel_transaction_parameters);
+			.unwrap_or(onchain_tx_handler.channel_parameters());
 		let channel_keys_id = self.channel_keys_id
 			.unwrap_or(onchain_tx_handler.channel_keys_id());
 		let get_signed_htlc_tx = |holder_commitment: &HolderCommitmentTransaction| {
@@ -534,7 +534,7 @@ impl HolderHTLCOutput {
 		preimage: &Option<PaymentPreimage>
 	) -> Option<ExternalHTLCClaim> {
 		let channel_parameters = self.channel_parameters.as_ref()
-			.unwrap_or(&onchain_tx_handler.channel_transaction_parameters);
+			.unwrap_or(onchain_tx_handler.channel_parameters());
 		let find_htlc = |holder_commitment: &HolderCommitmentTransaction| -> Option<ExternalHTLCClaim> {
 			let trusted_tx = holder_commitment.trust();
 			if outp.txid != trusted_tx.txid() {
@@ -818,7 +818,7 @@ impl PackageSolvingData {
 		}
 	}
 	fn finalize_input<Signer: EcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
-		let channel_parameters = &onchain_handler.channel_transaction_parameters;
+		let channel_parameters = onchain_handler.channel_parameters();
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
@@ -945,7 +945,7 @@ impl PackageSolvingData {
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref()
-					.unwrap_or(&onchain_handler.channel_transaction_parameters);
+					.unwrap_or(onchain_handler.channel_parameters());
 				let commitment_tx = outp.commitment_tx.as_ref()
 					.unwrap_or(&onchain_handler.current_holder_commitment_tx());
 				let maybe_signed_commitment_tx = onchain_handler.signer
