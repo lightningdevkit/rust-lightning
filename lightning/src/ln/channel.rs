@@ -434,12 +434,6 @@ macro_rules! define_state_flags {
 			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent);
 		define_state_flags!($flag_type, FundedStateFlags::LOCAL_SHUTDOWN_SENT,
 			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent);
-		define_state_flags!($flag_type, FundedStateFlags::INTERACTIVE_SIGNING,
-			is_interactive_signing, set_interactive_signing, clear_interactive_signing);
-		define_state_flags!($flag_type, FundedStateFlags::THEIR_TX_SIGNATURES_SENT,
-			is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent);
-		define_state_flags!($flag_type, FundedStateFlags::OUR_TX_SIGNATURES_SENT,
-			is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent);
 
 		impl core::ops::BitOr<FundedStateFlags> for $flag_type {
 			type Output = Self;
@@ -506,16 +500,7 @@ define_state_flags!(
 			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent),
 		("Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
 			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT,
-			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent),
-		("Indicates we have an active interactive signing session for an interactive transaction",
-			INTERACTIVE_SIGNING, state_flags::INTERACTIVE_SIGNING,
-			is_interactive_signing, set_interactive_signing, clear_interactive_singing),
-		("Indicates they sent us a `tx_signatures` message.",
-			THEIR_TX_SIGNATURES_SENT, state_flags::THEIR_TX_SIGNATURES_SENT,
-			is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent),
-		("Indicates we sent them a `tx_signatures` message.",
-			OUR_TX_SIGNATURES_SENT, state_flags::OUR_TX_SIGNATURES_SENT,
-			is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent)
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent)
 	]
 );
 
@@ -526,6 +511,21 @@ define_state_flags!(
 			OUR_INIT_SENT, state_flags::OUR_INIT_SENT, is_our_init_sent, set_our_init_sent, clear_our_init_sent),
 		("Indicates we have received their `open_channel`/`accept_channel` message.",
 			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT, is_their_init_sent, set_their_init_sent, clear_their_init_sent)
+	]
+);
+
+define_state_flags!(
+	"Flags that only apply to [`ChannelState::FundingNegotiated`].",
+	FUNDED_STATE, FundingNegotiatedFlags, [
+		("Indicates we have an active interactive signing session for an interactive transaction",
+			INTERACTIVE_SIGNING, state_flags::INTERACTIVE_SIGNING,
+			is_interactive_signing, set_interactive_signing, clear_interactive_signing),
+		("Indicates they sent us a `tx_signatures` message.",
+			THEIR_TX_SIGNATURES_SENT, state_flags::THEIR_TX_SIGNATURES_SENT,
+			is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent),
+		("Indicates we sent them a `tx_signatures` message.",
+			OUR_TX_SIGNATURES_SENT, state_flags::OUR_TX_SIGNATURES_SENT,
+			is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent)
 	]
 );
 
@@ -588,7 +588,7 @@ enum ChannelState {
 	/// `AwaitingChannelReady`. Note that this is nonsense for an inbound channel as we immediately generate
 	/// `funding_signed` upon receipt of `funding_created`, so simply skip this state. For dual-funded (V2)
 	/// channels, this state is also skipped.
-	FundingNegotiated,
+	FundingNegotiated(FundingNegotiatedFlags),
 	/// We've received/sent `funding_created` and `funding_signed` and are thus now waiting on the
 	/// funding transaction to confirm.
 	AwaitingChannelReady(AwaitingChannelReadyFlags),
@@ -631,7 +631,7 @@ macro_rules! impl_state_flag {
 		}
 	};
 	($get: ident, $set: ident, $clear: ident, FUNDED_STATES) => {
-		impl_state_flag!($get, $set, $clear, [AwaitingChannelReady, ChannelReady]);
+		impl_state_flag!($get, $set, $clear, [FundingNegotiated, AwaitingChannelReady, ChannelReady]);
 	};
 	($get: ident, $set: ident, $clear: ident, $state: ident) => {
 		impl_state_flag!($get, $set, $clear, [$state]);
@@ -641,10 +641,12 @@ macro_rules! impl_state_flag {
 impl ChannelState {
 	fn from_u32(state: u32) -> Result<Self, ()> {
 		match state {
-			state_flags::FUNDING_NEGOTIATED => Ok(ChannelState::FundingNegotiated),
 			state_flags::SHUTDOWN_COMPLETE => Ok(ChannelState::ShutdownComplete),
 			val => {
-				if val & state_flags::AWAITING_CHANNEL_READY == state_flags::AWAITING_CHANNEL_READY {
+				if val & state_flags::FUNDING_NEGOTIATED == state_flags::FUNDING_NEGOTIATED {
+					FundingNegotiatedFlags::from_u32(val & !state_flags::FUNDING_NEGOTIATED)
+						.map(|flags| ChannelState::FundingNegotiated(flags))
+				} else if val & state_flags::AWAITING_CHANNEL_READY == state_flags::AWAITING_CHANNEL_READY {
 					AwaitingChannelReadyFlags::from_u32(val & !state_flags::AWAITING_CHANNEL_READY)
 						.map(|flags| ChannelState::AwaitingChannelReady(flags))
 				} else if val & state_flags::CHANNEL_READY == state_flags::CHANNEL_READY {
@@ -662,7 +664,7 @@ impl ChannelState {
 	fn to_u32(self) -> u32 {
 		match self {
 			ChannelState::NegotiatingFunding(flags) => flags.0,
-			ChannelState::FundingNegotiated => state_flags::FUNDING_NEGOTIATED,
+			ChannelState::FundingNegotiated(flags) => state_flags::FUNDING_NEGOTIATED | flags.0,
 			ChannelState::AwaitingChannelReady(flags) => state_flags::AWAITING_CHANNEL_READY | flags.0,
 			ChannelState::ChannelReady(flags) => state_flags::CHANNEL_READY | flags.0,
 			ChannelState::ShutdownComplete => state_flags::SHUTDOWN_COMPLETE,
@@ -670,7 +672,7 @@ impl ChannelState {
 	}
 
 	fn is_pre_funded_state(&self) -> bool {
-		matches!(self, ChannelState::NegotiatingFunding(_)|ChannelState::FundingNegotiated)
+		matches!(self, ChannelState::NegotiatingFunding(_)|ChannelState::FundingNegotiated(_))
 	}
 
 	fn is_both_sides_shutdown(&self) -> bool {
@@ -704,9 +706,9 @@ impl ChannelState {
 	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress, FUNDED_STATES);
 	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent, FUNDED_STATES);
 	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent, FUNDED_STATES);
-	impl_state_flag!(is_interactive_signing, set_interactive_signing, clear_interactive_signing, FUNDED_STATES);
-	impl_state_flag!(is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent, FUNDED_STATES);
-	impl_state_flag!(is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent, FUNDED_STATES);
+	impl_state_flag!(is_interactive_signing, set_interactive_signing, clear_interactive_signing, FundingNegotiated);
+	impl_state_flag!(is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent, FundingNegotiated);
+	impl_state_flag!(is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent, FundingNegotiated);
 	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready, AwaitingChannelReady);
 	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready, AwaitingChannelReady);
 	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch, AwaitingChannelReady);
@@ -2375,7 +2377,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			)));
 		};
 
-		let mut channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		channel_state.set_interactive_signing();
 		self.context.channel_state = channel_state;
 
@@ -3468,7 +3470,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	fn unset_funding_info(&mut self, funding: &mut FundingScope) {
 		debug_assert!(
-			matches!(self.channel_state, ChannelState::FundingNegotiated)
+			matches!(self.channel_state, ChannelState::FundingNegotiated(_))
 				|| matches!(self.channel_state, ChannelState::AwaitingChannelReady(_))
 		);
 		funding.channel_transaction_parameters.funding_outpoint = None;
@@ -4460,11 +4462,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	fn if_unbroadcasted_funding<F, O>(&self, f: F) -> Option<O> where F: Fn() -> Option<O> {
 		match self.channel_state {
-			ChannelState::FundingNegotiated => f(),
+			ChannelState::FundingNegotiated(_) => f(),
 			ChannelState::AwaitingChannelReady(flags) =>
 				if flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) ||
-					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) ||
-					(flags.is_set(FundedStateFlags::THEIR_TX_SIGNATURES_SENT.into()) && flags.is_set(FundedStateFlags::OUR_TX_SIGNATURES_SENT.into()))
+					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into())
 				{
 					f()
 				} else {
@@ -5671,7 +5672,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
 	where L::Target: Logger
 	{
-		if !matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
+		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
 			return Err(ChannelError::Close(
 				(
 					"Received initial commitment_signed before funding transaction constructed!".to_owned(),
@@ -6277,7 +6278,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<Option<msgs::TxSignatures>, ChannelError>
 		where L::Target: Logger
 	{
-		if !matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if flags.is_interactive_signing()) {
+		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(flags) if flags.is_interactive_signing()) {
 			return Err(ChannelError::close("Received tx_signatures in strange state!".to_owned()));
 		}
 
@@ -6334,6 +6335,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				self.context.channel_state.set_our_tx_signatures_sent();
 			}
 
+			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			let need_channel_ready = self.check_get_channel_ready(0, logger).is_some()
+				|| self.context.signer_pending_channel_ready;
+			self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 			Ok(holder_tx_signatures_opt)
 		} else {
 			Err(ChannelError::Close((
@@ -6556,7 +6561,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// first received the funding_signed.
 		let mut funding_broadcastable = None;
 		if let Some(funding_transaction) = &self.funding.funding_transaction {
-			if (self.funding.is_outbound() || (self.is_v2_established() && self.context.channel_state.is_their_tx_signatures_sent())) &&
+			if (self.funding.is_outbound() || self.is_v2_established()) &&
 				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
@@ -9441,7 +9446,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// Now that we're past error-generating stuff, update our local state:
 
-		self.context.channel_state = ChannelState::FundingNegotiated;
+		self.context.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 
 		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
@@ -9558,7 +9563,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		if !self.funding.is_outbound() {
 			return Err((self, ChannelError::close("Received funding_signed for an inbound channel?".to_owned())));
 		}
-		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
+		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated(_)) {
 			return Err((self, ChannelError::close("Received funding_signed in strange state!".to_owned())));
 		}
 		let mut holder_commitment_point = match self.unfunded_context.holder_commitment_point {
@@ -11299,11 +11304,12 @@ mod tests {
 	#[test]
 	fn test_channel_state_order() {
 		use crate::ln::channel::NegotiatingFundingFlags;
+		use crate::ln::channel::FundingNegotiatedFlags;
 		use crate::ln::channel::AwaitingChannelReadyFlags;
 		use crate::ln::channel::ChannelReadyFlags;
 
-		assert!(ChannelState::NegotiatingFunding(NegotiatingFundingFlags::new()) < ChannelState::FundingNegotiated);
-		assert!(ChannelState::FundingNegotiated < ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()));
+		assert!(ChannelState::NegotiatingFunding(NegotiatingFundingFlags::new()) < ChannelState::FundingNegotiated(FundingNegotiatedFlags::new()));
+		assert!(ChannelState::FundingNegotiated(FundingNegotiatedFlags::new()) < ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()));
 		assert!(ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()) < ChannelState::ChannelReady(ChannelReadyFlags::new()));
 		assert!(ChannelState::ChannelReady(ChannelReadyFlags::new()) < ChannelState::ShutdownComplete);
 	}
