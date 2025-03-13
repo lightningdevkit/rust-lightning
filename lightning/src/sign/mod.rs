@@ -1856,46 +1856,52 @@ impl KeysManager {
 	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
+		// Constants for key derivation path indices used in this function.
+		const NODE_SECRET_INDEX: ChildNumber = ChildNumber::Hardened { index: 0 };
+		const DESTINATION_SCRIPT_INDEX: ChildNumber = ChildNumber::Hardened { index: (1) };
+		const SHUTDOWN_PUBKEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (2) };
+		const CHANNEL_MASTER_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (3) };
+		const INBOUND_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (5) };
+		const PEER_STORAGE_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (6) };
+
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
 		match Xpriv::new_master(Network::Testnet, seed) {
 			Ok(master_key) => {
 				let node_secret = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(0).unwrap())
+					.derive_priv(&secp_ctx, &NODE_SECRET_INDEX)
 					.expect("Your RNG is busted")
 					.private_key;
 				let node_id = PublicKey::from_secret_key(&secp_ctx, &node_secret);
-				let destination_script = match master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(1).unwrap())
-				{
-					Ok(destination_key) => {
-						let wpubkey_hash = WPubkeyHash::hash(
-							&Xpub::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes(),
-						);
-						Builder::new()
-							.push_opcode(opcodes::all::OP_PUSHBYTES_0)
-							.push_slice(&wpubkey_hash.to_byte_array())
-							.into_script()
-					},
-					Err(_) => panic!("Your RNG is busted"),
-				};
-				let shutdown_pubkey = match master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(2).unwrap())
-				{
-					Ok(shutdown_key) => Xpub::from_priv(&secp_ctx, &shutdown_key).public_key,
-					Err(_) => panic!("Your RNG is busted"),
-				};
+				let destination_script =
+					match master_key.derive_priv(&secp_ctx, &DESTINATION_SCRIPT_INDEX) {
+						Ok(destination_key) => {
+							let wpubkey_hash = WPubkeyHash::hash(
+								&Xpub::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes(),
+							);
+							Builder::new()
+								.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+								.push_slice(&wpubkey_hash.to_byte_array())
+								.into_script()
+						},
+						Err(_) => panic!("Your RNG is busted"),
+					};
+				let shutdown_pubkey =
+					match master_key.derive_priv(&secp_ctx, &SHUTDOWN_PUBKEY_INDEX) {
+						Ok(shutdown_key) => Xpub::from_priv(&secp_ctx, &shutdown_key).public_key,
+						Err(_) => panic!("Your RNG is busted"),
+					};
 				let channel_master_key = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(3).unwrap())
+					.derive_priv(&secp_ctx, &CHANNEL_MASTER_KEY_INDEX)
 					.expect("Your RNG is busted");
 				let inbound_payment_key: SecretKey = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(5).unwrap())
+					.derive_priv(&secp_ctx, &INBOUND_PAYMENT_KEY_INDEX)
 					.expect("Your RNG is busted")
 					.private_key;
 				let mut inbound_pmt_key_bytes = [0; 32];
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
-				let peer_storage_key: SecretKey = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(6).unwrap())
+				let peer_storage_key = master_key
+					.derive_priv(&secp_ctx, &PEER_STORAGE_KEY_INDEX)
 					.expect("Your RNG is busted")
 					.private_key;
 
