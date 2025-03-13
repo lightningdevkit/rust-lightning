@@ -683,8 +683,6 @@ pub(crate) fn set_max_path_length(
 /// the hops can be of variable length.
 pub(crate) const ONION_DATA_LEN: usize = 20 * 65;
 
-pub(super) const INVALID_ONION_BLINDING: u16 = 0x8000 | 0x4000 | 24;
-
 #[inline]
 fn shift_slice_right(arr: &mut [u8], amt: usize) {
 	for i in (amt..arr.len()).rev() {
@@ -968,11 +966,6 @@ where
 	let mut error_code_ret = None;
 	let mut error_packet_ret = None;
 	let mut is_from_final_node = false;
-
-	const BADONION: u16 = 0x8000;
-	const PERM: u16 = 0x4000;
-	const NODE: u16 = 0x2000;
-	const UPDATE: u16 = 0x1000;
 
 	// Handle packed channel/node updates for passing back for the route handler
 	let callback = |shared_secret, _, _, route_hop_opt: Option<&RouteHop>, route_hop_idx| {
@@ -1258,6 +1251,165 @@ where
 	}
 }
 
+const BADONION: u16 = 0x8000;
+const PERM: u16 = 0x4000;
+const NODE: u16 = 0x2000;
+const UPDATE: u16 = 0x1000;
+
+/// The reason that a HTLC was failed by the local node. These errors either represent direct,
+/// human-readable mappings of BOLT04 error codes or provide additional information that would
+/// otherwise be erased by the BOLT04 error code.
+///
+/// For example:
+/// [`Self::FeeInsufficient`] is a direct representation of its underlying BOLT04 error code.
+/// [`Self::PrivateChanelForward`] provides additional information that is not provided by its
+///  BOLT04 error code.
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub enum LocalHTLCFailureReason {
+	TemporaryNodeFailure,
+	PermanentNodeFailure,
+	RequiredNodeFeature,
+	InvalidOnionVersion,
+	InvalidOnionHMAC,
+	InvalidOnionKey,
+	TemporaryChannelFailure,
+	PermanentChannelFailure,
+	RequiredChannelFeature,
+	UnknownNextPeer,
+	AmountBelowMinimum,
+	FeeInsufficient,
+	IncorrectCLTVExpiry,
+	CLTVExpiryTooSoon,
+	IncorrectPaymentDetails,
+	FinalIncorrectCLTVExpiry,
+	FinalIncorrectHTLCAmount,
+	ChannelDisabled,
+	CLTVExpiryTooFar,
+	InvalidOnionPayload,
+	MPPTimeout,
+	InvalidOnionBlinding,
+
+	// The values below provide additional information to the BOLT04 codes enumerated above.
+	ForwardExpiryBuffer,
+	InvalidTrampolineForward,
+	PaymentClaimBuffer,
+	DustLimitHolder,
+	DustLimitCounterparty,
+	FeeSpikeBuffer,
+	ShutdownSent,
+	PrivateChannelForward,
+	RealSCIDForward,
+	ChannelNotReady,
+	InvalidKeysendPreimage,
+	InvalidTrampolineHop,
+	PaymentSecretRequired,
+	OutgoingCLTVTooSoon,
+	ChannelClosed,
+
+	/// UnknownFaliureCode represents BOLT04 failure codes that we are not familiar with. We will
+	/// encounter this if:
+	/// - A peer sends us a new failure code that LDK has not yet been upgraded to understand.
+	/// - We read a deprecated failure code from disk that LDK no longer uses.
+	UnknownFailureCode {
+		code: u16,
+	},
+}
+
+impl LocalHTLCFailureReason {
+	pub(super) fn failure_code(&self) -> u16 {
+		match self {
+			Self::TemporaryNodeFailure | Self::ForwardExpiryBuffer => NODE | 2,
+			Self::PermanentNodeFailure => PERM | NODE | 2,
+			Self::RequiredNodeFeature | Self::PaymentSecretRequired => PERM | NODE | 3,
+			Self::InvalidOnionVersion => BADONION | PERM | 4,
+			Self::InvalidOnionHMAC => BADONION | PERM | 5,
+			Self::InvalidOnionKey => BADONION | PERM | 6,
+			Self::TemporaryChannelFailure
+			| Self::DustLimitHolder
+			| Self::DustLimitCounterparty
+			| Self::FeeSpikeBuffer
+			| Self::ChannelNotReady => UPDATE | 7,
+			Self::PermanentChannelFailure | Self::ChannelClosed | Self::ShutdownSent => PERM | 8,
+			Self::RequiredChannelFeature => PERM | 9,
+			Self::UnknownNextPeer
+			| Self::PrivateChannelForward
+			| Self::RealSCIDForward
+			| Self::InvalidTrampolineForward => PERM | 10,
+			Self::AmountBelowMinimum => UPDATE | 11,
+			Self::FeeInsufficient => UPDATE | 12,
+			Self::IncorrectCLTVExpiry => UPDATE | 13,
+			Self::CLTVExpiryTooSoon | Self::OutgoingCLTVTooSoon => UPDATE | 14,
+			Self::IncorrectPaymentDetails | Self::PaymentClaimBuffer => UPDATE | 15,
+			Self::FinalIncorrectCLTVExpiry => 18,
+			Self::FinalIncorrectHTLCAmount => 19,
+			Self::ChannelDisabled => UPDATE | 20,
+			Self::CLTVExpiryTooFar => 21,
+			Self::InvalidOnionPayload
+			| Self::InvalidTrampolineHop
+			| Self::InvalidKeysendPreimage => PERM | 22,
+			Self::MPPTimeout => 23,
+			Self::InvalidOnionBlinding => BADONION | PERM | 24,
+			Self::UnknownFailureCode { code } => *code,
+		}
+	}
+
+	pub(super) fn is_temporary(&self) -> bool {
+		self.failure_code() & 0x1000 == 0x1000
+	}
+}
+
+impl Into<LocalHTLCFailureReason> for u16 {
+	fn into(self) -> LocalHTLCFailureReason {
+		if self == (NODE | 2) {
+			LocalHTLCFailureReason::TemporaryNodeFailure
+		} else if self == (PERM | NODE | 2) {
+			LocalHTLCFailureReason::PermanentNodeFailure
+		} else if self == (PERM | NODE | 3) {
+			LocalHTLCFailureReason::RequiredNodeFeature
+		} else if self == (BADONION | PERM | 4) {
+			LocalHTLCFailureReason::InvalidOnionVersion
+		} else if self == (BADONION | PERM | 5) {
+			LocalHTLCFailureReason::InvalidOnionHMAC
+		} else if self == (BADONION | PERM | 6) {
+			LocalHTLCFailureReason::InvalidOnionKey
+		} else if self == (UPDATE | 7) {
+			LocalHTLCFailureReason::TemporaryChannelFailure
+		} else if self == (PERM | 8) {
+			LocalHTLCFailureReason::PermanentChannelFailure
+		} else if self == (PERM | 9) {
+			LocalHTLCFailureReason::RequiredChannelFeature
+		} else if self == (PERM | 10) {
+			LocalHTLCFailureReason::UnknownNextPeer
+		} else if self == (UPDATE | 11) {
+			LocalHTLCFailureReason::AmountBelowMinimum
+		} else if self == (UPDATE | 12) {
+			LocalHTLCFailureReason::FeeInsufficient
+		} else if self == (UPDATE | 13) {
+			LocalHTLCFailureReason::IncorrectCLTVExpiry
+		} else if self == (UPDATE | 14) {
+			LocalHTLCFailureReason::CLTVExpiryTooSoon
+		} else if self == (UPDATE | 15) {
+			LocalHTLCFailureReason::IncorrectPaymentDetails
+		} else if self == 18 {
+			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
+		} else if self == 19 {
+			LocalHTLCFailureReason::FinalIncorrectHTLCAmount
+		} else if self == (UPDATE | 20) {
+			LocalHTLCFailureReason::ChannelDisabled
+		} else if self == 21 {
+			LocalHTLCFailureReason::CLTVExpiryTooFar
+		} else if self == (PERM | 22) {
+			LocalHTLCFailureReason::InvalidOnionPayload
+		} else if self == 23 {
+			LocalHTLCFailureReason::MPPTimeout
+		} else if self == (BADONION | PERM | 24) {
+			LocalHTLCFailureReason::InvalidOnionBlinding
+		} else {
+			LocalHTLCFailureReason::UnknownFailureCode { code: self }
+		}
+	}
+}
+
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
@@ -1304,50 +1456,78 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 );
 
 impl HTLCFailReason {
-	#[rustfmt::skip]
-	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
-		const BADONION: u16 = 0x8000;
-		const PERM: u16 = 0x4000;
-		const NODE: u16 = 0x2000;
-		const UPDATE: u16 = 0x1000;
-
-		if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 2  | PERM | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 3  | PERM | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 4  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 5  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 6  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 7  | UPDATE {
-			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
-		else if failure_code == 8  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 9  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 10 | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 11 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
-		else if failure_code == 12 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
-		else if failure_code == 13 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 4, u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize) }
-		else if failure_code == 14 | UPDATE {
-			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
-		else if failure_code == 15 | PERM { debug_assert_eq!(data.len(), 12) }
-		else if failure_code == 18 { debug_assert_eq!(data.len(), 4) }
-		else if failure_code == 19 { debug_assert_eq!(data.len(), 8) }
-		else if failure_code == 20 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 2, u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize) }
-		else if failure_code == 21 { debug_assert!(data.is_empty()) }
-		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
-		else if failure_code == 23 { debug_assert!(data.is_empty()) }
-		else if failure_code & BADONION != 0 {
-			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
+	pub(super) fn reason(failure_reason: LocalHTLCFailureReason, data: Vec<u8>) -> Self {
+		match failure_reason {
+			LocalHTLCFailureReason::TemporaryNodeFailure
+			| LocalHTLCFailureReason::ForwardExpiryBuffer => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::PermanentNodeFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::RequiredNodeFeature
+			| LocalHTLCFailureReason::PaymentSecretRequired => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::InvalidOnionVersion => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::InvalidOnionHMAC => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::InvalidOnionKey => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::TemporaryChannelFailure
+			| LocalHTLCFailureReason::DustLimitHolder
+			| LocalHTLCFailureReason::DustLimitCounterparty
+			| LocalHTLCFailureReason::FeeSpikeBuffer
+			| LocalHTLCFailureReason::ChannelNotReady => {
+				debug_assert_eq!(
+					data.len() - 2,
+					u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+				)
+			},
+			LocalHTLCFailureReason::PermanentChannelFailure
+			| LocalHTLCFailureReason::ChannelClosed
+			| LocalHTLCFailureReason::ShutdownSent => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::RequiredChannelFeature => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::UnknownNextPeer
+			| LocalHTLCFailureReason::PrivateChannelForward
+			| LocalHTLCFailureReason::RealSCIDForward
+			| LocalHTLCFailureReason::InvalidTrampolineForward => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::AmountBelowMinimum => debug_assert_eq!(
+				data.len() - 2 - 8,
+				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::FeeInsufficient => debug_assert_eq!(
+				data.len() - 2 - 8,
+				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::IncorrectCLTVExpiry => debug_assert_eq!(
+				data.len() - 2 - 4,
+				u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::CLTVExpiryTooSoon
+			| LocalHTLCFailureReason::OutgoingCLTVTooSoon => debug_assert_eq!(
+				data.len() - 2,
+				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::IncorrectPaymentDetails
+			| LocalHTLCFailureReason::PaymentClaimBuffer => debug_assert_eq!(data.len(), 12),
+			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry => debug_assert_eq!(data.len(), 4),
+			LocalHTLCFailureReason::FinalIncorrectHTLCAmount => debug_assert_eq!(data.len(), 8),
+			LocalHTLCFailureReason::ChannelDisabled => debug_assert_eq!(
+				data.len() - 2 - 2,
+				u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::CLTVExpiryTooFar => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::InvalidOnionPayload
+			| LocalHTLCFailureReason::InvalidTrampolineHop
+			| LocalHTLCFailureReason::InvalidKeysendPreimage => debug_assert!(data.len() <= 11),
+			LocalHTLCFailureReason::MPPTimeout => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::InvalidOnionBlinding => debug_assert_eq!(data.len(), 24),
+			LocalHTLCFailureReason::UnknownFailureCode { code } => {
+				// We set some bogus BADONION failure codes in tests, so allow unknown BADONION.
+				if code & BADONION == 0 {
+					debug_assert!(false, "Unknown failure code: {}", code)
+				}
+			},
 		}
-		else { debug_assert!(false, "Unknown failure code: {}", failure_code) }
 
-		Self(HTLCFailReasonRepr::Reason { failure_code, data })
+		Self(HTLCFailReasonRepr::Reason { failure_code: failure_reason.failure_code(), data })
 	}
 
-	pub(super) fn from_failure_code(failure_code: u16) -> Self {
-		Self::reason(failure_code, Vec::new())
+	pub(super) fn from_failure_code(failure_reason: LocalHTLCFailureReason) -> Self {
+		Self::reason(failure_reason, Vec::new())
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
@@ -1568,14 +1748,14 @@ impl Hop {
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
-	Malformed { err_msg: &'static str, err_code: u16 },
+	Malformed { err_msg: &'static str, reason: LocalHTLCFailureReason },
 	/// We failed to decode the onion payload.
 	///
 	/// If the payload we failed to decode belonged to a Trampoline onion, following the successful
 	/// decoding of the outer onion, the trampoline_shared_secret field should be set.
 	Relay {
 		err_msg: &'static str,
-		err_code: u16,
+		reason: LocalHTLCFailureReason,
 		shared_secret: SharedSecret,
 		trampoline_shared_secret: Option<SharedSecret>,
 	},
@@ -1626,12 +1806,12 @@ where
 						return Err(OnionDecodeErr::Malformed {
 							err_msg:
 								"Final Node OnionHopData provided for us as an intermediary node",
-							err_code: INVALID_ONION_BLINDING,
+							reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 						});
 					}
 					Err(OnionDecodeErr::Relay {
 						err_msg: "Final Node OnionHopData provided for us as an intermediary node",
-						err_code: 0x4000 | 22,
+						reason: LocalHTLCFailureReason::InvalidOnionPayload,
 						shared_secret,
 						trampoline_shared_secret: None,
 					})
@@ -1726,12 +1906,12 @@ where
 					Ok((_, None)) => Err(OnionDecodeErr::Malformed {
 						err_msg: "Non-final Trampoline onion data provided to us as last hop",
 						// todo: find more suitable error code
-						err_code: 0x4000 | 22,
+						reason: LocalHTLCFailureReason::InvalidTrampolineHop,
 					}),
 					Ok((_, Some(_))) => Err(OnionDecodeErr::Malformed {
 						err_msg: "Final Trampoline onion data provided to us as intermediate hop",
 						// todo: find more suitable error code
-						err_code: 0x4000 | 22,
+						reason: LocalHTLCFailureReason::InvalidTrampolineHop,
 					}),
 					Err(e) => Err(e),
 				}
@@ -1740,12 +1920,12 @@ where
 				if blinding_point.is_some() {
 					return Err(OnionDecodeErr::Malformed {
 						err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-						err_code: INVALID_ONION_BLINDING,
+						reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 					});
 				}
 				Err(OnionDecodeErr::Relay {
 					err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-					err_code: 0x4000 | 22,
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
 					shared_secret,
 					trampoline_shared_secret: None,
 				})
@@ -1874,7 +2054,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &hmac_bytes) {
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
-			err_code: 0x8000 | 0x4000 | 5,
+			reason: LocalHTLCFailureReason::InvalidOnionHMAC,
 		});
 	}
 
@@ -1882,19 +2062,19 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
 	match R::read(&mut chacha_stream, read_args) {
 		Err(err) => {
-			let error_code = match err {
+			let reason = match err {
 				// Unknown realm byte
-				msgs::DecodeError::UnknownVersion => 0x8000 | 0x4000 | 1,
+				msgs::DecodeError::UnknownVersion => LocalHTLCFailureReason::InvalidOnionVersion,
 				// invalid_onion_payload
 				msgs::DecodeError::UnknownRequiredFeature
 				| msgs::DecodeError::InvalidValue
-				| msgs::DecodeError::ShortRead => 0x4000 | 22,
+				| msgs::DecodeError::ShortRead => LocalHTLCFailureReason::InvalidOnionPayload,
 				// Should never happen
-				_ => 0x2000 | 2,
+				_ => LocalHTLCFailureReason::TemporaryNodeFailure,
 			};
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data",
-				err_code: error_code,
+				reason,
 				shared_secret: SharedSecret::from_bytes(shared_secret),
 				trampoline_shared_secret: None,
 			});
@@ -1904,7 +2084,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
-					err_code: 0x4000 | 22,
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
 					shared_secret: SharedSecret::from_bytes(shared_secret),
 					trampoline_shared_secret: None,
 				});

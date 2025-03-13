@@ -1727,7 +1727,7 @@ fn route_blinding_spec_test_vector() {
 	match onion_payment::decode_incoming_update_add_htlc_onion(
 		&eve_update_add, &eve_node_signer, &logger, &secp_ctx
 	) {
-		Err(HTLCFailureMsg::Malformed(msg)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
+		Err((HTLCFailureMsg::Malformed(msg), _)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
 		_ => panic!("Unexpected error")
 	}
 }

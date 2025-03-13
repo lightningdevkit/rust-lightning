@@ -18,7 +18,7 @@ use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWA
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING, ONION_DATA_LEN};
+use crate::ln::onion_utils::{HTLCFailReason, ONION_DATA_LEN, LocalHTLCFailureReason};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
 
@@ -31,7 +31,7 @@ use core::ops::Deref;
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct InboundHTLCErr {
 	/// BOLT 4 error code.
-	pub err_code: u16,
+	pub reason: LocalHTLCFailureReason,
 	/// Data attached to this error.
 	pub err_data: Vec<u8>,
 	/// Error message text.
@@ -105,7 +105,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 				// unreachable right now since we checked it in `decode_update_add_htlc_onion`.
 				InboundHTLCErr {
 					msg: "Underflow calculating outbound amount or cltv value for blinded forward",
-					err_code: INVALID_ONION_BLINDING,
+					reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 					err_data: vec![0; 32],
 				}
 			})?;
@@ -115,14 +115,14 @@ pub(super) fn create_fwd_pending_htlc_info(
 		onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
-				err_code: 0x4000 | 22,
+				reason: LocalHTLCFailureReason::InvalidOnionPayload,
 				err_data: Vec::new(),
 			}),
 		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
-				err_code: 0x4000 | 22,
+				reason: LocalHTLCFailureReason::InvalidOnionPayload,
 				err_data: Vec::new(),
 			}),
 		#[cfg(trampoline)]
@@ -150,7 +150,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 				// unreachable right now since we checked it in `decode_update_add_htlc_onion`.
 				InboundHTLCErr {
 					msg: "Underflow calculating outbound amount or cltv value for blinded forward",
-					err_code: INVALID_ONION_BLINDING,
+					reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 					err_data: vec![0; 32],
 				}
 			})?;
@@ -198,7 +198,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 				Some(Ok(pubkey)) => pubkey,
 				_ => return Err(InboundHTLCErr {
 					msg: "Missing next Trampoline hop pubkey from intermediate Trampoline forwarding data",
-					err_code: 0x4000 | 22,
+					reason: LocalHTLCFailureReason::InvalidTrampolineHop,
 					err_data: Vec::new(),
 				}),
 			};
@@ -262,7 +262,7 @@ pub(super) fn create_recv_pending_htlc_info(
 			)
 				.map_err(|()| {
 					InboundHTLCErr {
-						err_code: INVALID_ONION_BLINDING,
+						reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 						err_data: vec![0; 32],
 						msg: "Amount or cltv_expiry violated blinded payment constraints",
 					}
@@ -276,14 +276,14 @@ pub(super) fn create_recv_pending_htlc_info(
 		onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => todo!(),
 		onion_utils::Hop::Forward { .. } => {
 			return Err(InboundHTLCErr {
-				err_code: 0x4000|22,
+				reason: LocalHTLCFailureReason::InvalidOnionPayload,
 				err_data: Vec::new(),
 				msg: "Got non final data with an HMAC of 0",
 			})
 		},
 		onion_utils::Hop::BlindedForward { .. } => {
 			return Err(InboundHTLCErr {
-				err_code: INVALID_ONION_BLINDING,
+				reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 				err_data: vec![0; 32],
 				msg: "Got blinded non final data with an HMAC of 0",
 			})
@@ -291,7 +291,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 			return Err(InboundHTLCErr {
-				err_code: 0x4000|22,
+				reason: LocalHTLCFailureReason::InvalidOnionPayload,
 				err_data: Vec::new(),
 				msg: "Got Trampoline non final data with an HMAC of 0",
 			})
@@ -301,7 +301,7 @@ pub(super) fn create_recv_pending_htlc_info(
 	if onion_cltv_expiry > cltv_expiry {
 		return Err(InboundHTLCErr {
 			msg: "Upstream node set CLTV to less than the CLTV set by the sender",
-			err_code: 18,
+			reason: LocalHTLCFailureReason::FinalIncorrectCLTVExpiry,
 			err_data: cltv_expiry.to_be_bytes().to_vec()
 		})
 	}
@@ -317,7 +317,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		err_data.extend_from_slice(&amt_msat.to_be_bytes());
 		err_data.extend_from_slice(&current_height.to_be_bytes());
 		return Err(InboundHTLCErr {
-			err_code: 0x4000 | 15, err_data,
+			reason: LocalHTLCFailureReason::PaymentClaimBuffer, err_data,
 			msg: "The final CLTV expiry is too soon to handle",
 		});
 	}
@@ -326,7 +326,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		 amt_msat.saturating_add(counterparty_skimmed_fee_msat.unwrap_or(0)))
 	{
 		return Err(InboundHTLCErr {
-			err_code: 19,
+			reason: LocalHTLCFailureReason::FinalIncorrectHTLCAmount.into(),
 			err_data: amt_msat.to_be_bytes().to_vec(),
 			msg: "Upstream node sent less than we were supposed to receive in payment",
 		});
@@ -341,7 +341,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 		if hashed_preimage != payment_hash {
 			return Err(InboundHTLCErr {
-				err_code: 0x4000|22,
+				reason: LocalHTLCFailureReason::InvalidKeysendPreimage.into(),
 				err_data: Vec::new(),
 				msg: "Payment preimage didn't match payment hash",
 			});
@@ -369,7 +369,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		}
 	} else {
 		return Err(InboundHTLCErr {
-			err_code: 0x4000|0x2000|3,
+			reason: LocalHTLCFailureReason::PaymentSecretRequired.into(),
 			err_data: Vec::new(),
 			msg: "We require payment_secrets",
 		});
@@ -404,13 +404,13 @@ where
 {
 	let (hop, next_packet_details_opt) =
 		decode_incoming_update_add_htlc_onion(msg, node_signer, logger, secp_ctx
-	).map_err(|e| {
-		let (err_code, err_data) = match e {
-			HTLCFailureMsg::Malformed(m) => (m.failure_code, Vec::new()),
-			HTLCFailureMsg::Relay(r) => (0x4000 | 22, r.reason.data),
+	).map_err(|(msg, failure_reason)| {
+		let (reason, err_data) = match msg {
+			HTLCFailureMsg::Malformed(_) => (failure_reason, Vec::new()),
+			HTLCFailureMsg::Relay(r) => (LocalHTLCFailureReason::InvalidOnionPayload, r.reason.data),
 		};
 		let msg = "Failed to decode update add htlc onion";
-		InboundHTLCErr { msg, err_code, err_data }
+		InboundHTLCErr { msg, reason, err_data }
 	})?;
 	Ok(match hop {
 		onion_utils::Hop::Forward { shared_secret, .. } |
@@ -422,17 +422,17 @@ where
 				// Forward should always include the next hop details
 				None => return Err(InboundHTLCErr {
 					msg: "Failed to decode update add htlc onion",
-					err_code: 0x4000 | 22,
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
 					err_data: Vec::new(),
 				}),
 			};
 
-			if let Err((err_msg, code)) = check_incoming_htlc_cltv(
+			if let Err((err_msg, reason)) = check_incoming_htlc_cltv(
 				cur_height, outgoing_cltv_value, msg.cltv_expiry,
 			) {
 				return Err(InboundHTLCErr {
 					msg: err_msg,
-					err_code: code,
+					reason,
 					err_data: Vec::new(),
 				});
 			}
@@ -468,32 +468,32 @@ pub(super) struct NextPacketDetails {
 
 pub(super) fn decode_incoming_update_add_htlc_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
-) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), HTLCFailureMsg>
+) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), (HTLCFailureMsg, LocalHTLCFailureReason)>
 where
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	macro_rules! return_malformed_err {
-		($msg: expr, $err_code: expr) => {
+		($msg: expr, $reason: expr) => {
 			{
 				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 				let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() {
-					([0; 32], INVALID_ONION_BLINDING)
+					([0; 32], LocalHTLCFailureReason::InvalidOnionBlinding)
 				} else {
-					(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), $err_code)
+					(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), $reason)
 				};
-				return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+				return Err((HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 					channel_id: msg.channel_id,
 					htlc_id: msg.htlc_id,
 					sha256_of_onion,
-					failure_code,
-				}));
+					failure_code: $reason.failure_code(),
+				}), failure_code));
 			}
 		}
 	}
 
 	if let Err(_) = msg.onion_routing_packet.public_key {
-		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
+		return_malformed_err!("invalid ephemeral pubkey", LocalHTLCFailureReason::InvalidOnionKey);
 	}
 
 	if msg.onion_routing_packet.version != 0 {
@@ -503,21 +503,21 @@ where
 		//receiving node would have to brute force to figure out which version was put in the
 		//packet by the node that send us the message, in the case of hashing the hop_data, the
 		//node knows the HMAC matched, so they already know what is there...
-		return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
+		return_malformed_err!("Unknown onion packet version", LocalHTLCFailureReason::InvalidOnionVersion)
 	}
 
-	let encode_relay_error = |message: &str, err_code: u16, shared_secret: [u8; 32], trampoline_shared_secret: Option<[u8; 32]>, data: &[u8]| {
+	let encode_relay_error = |message: &str, reason: LocalHTLCFailureReason, shared_secret: [u8; 32], trampoline_shared_secret: Option<[u8; 32]>, data: &[u8]| {
 		if msg.blinding_point.is_some() {
-			return_malformed_err!(message, INVALID_ONION_BLINDING)
+			return_malformed_err!(message, LocalHTLCFailureReason::InvalidOnionBlinding)
 		}
 
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
-		return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+		return Err((HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
-			reason: HTLCFailReason::reason(err_code, data.to_vec())
+			reason: HTLCFailReason::reason(reason, data.to_vec())
 				.get_encrypted_failure_packet(&shared_secret, &trampoline_shared_secret),
-		}));
+		}), reason));
 	};
 
 	let next_hop = match onion_utils::decode_next_payment_hop(
@@ -525,11 +525,11 @@ where
 		msg.payment_hash, msg.blinding_point, node_signer
 	) {
 		Ok(res) => res,
-		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-			return_malformed_err!(err_msg, err_code);
+		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
+			return_malformed_err!(err_msg, reason);
 		},
-		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, trampoline_shared_secret }) => {
-			return encode_relay_error(err_msg, err_code, shared_secret.secret_bytes(), trampoline_shared_secret.map(|tss| tss.secret_bytes()), &[0; 0]);
+		Err(onion_utils::OnionDecodeErr::Relay { err_msg, reason, shared_secret, trampoline_shared_secret }) => {
+			return encode_relay_error(err_msg, reason, shared_secret.secret_bytes(), trampoline_shared_secret.map(|tss| tss.secret_bytes()), &[0; 0]);
 		},
 	};
 
@@ -549,7 +549,7 @@ where
 				Ok((amt, cltv)) => (amt, cltv),
 				Err(()) => {
 					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded forward",
-						INVALID_ONION_BLINDING, shared_secret.secret_bytes(), None, &[0; 32]);
+						LocalHTLCFailureReason::InvalidOnionBlinding, shared_secret.secret_bytes(), None, &[0; 32]);
 				}
 			};
 			let next_packet_pubkey = onion_utils::next_hop_pubkey(&secp_ctx,
@@ -578,21 +578,19 @@ where
 
 pub(super) fn check_incoming_htlc_cltv(
 	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32
-) -> Result<(), (&'static str, u16)> {
+) -> Result<(), (&'static str, LocalHTLCFailureReason)> {
 	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
-		return Err((
-			"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
-			0x1000 | 13, // incorrect_cltv_expiry
-		));
+		return Err(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
+			LocalHTLCFailureReason::IncorrectCLTVExpiry));
 	}
 	// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
 	// but we want to be robust wrt to counterparty packet sanitization (see
 	// HTLC_FAIL_BACK_BUFFER rationale).
-	if cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
-		return Err(("CLTV expiry is too close", 0x1000 | 14));
+	if cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 {
+		return Err(("CLTV expiry is too close", LocalHTLCFailureReason::CLTVExpiryTooSoon));
 	}
-	if cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
-		return Err(("CLTV expiry is too far in the future", 21));
+	if cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 {
+		return Err(("CLTV expiry is too far in the future", LocalHTLCFailureReason::CLTVExpiryTooFar));
 	}
 	// If the HTLC expires ~now, don't bother trying to forward it to our
 	// counterparty. They should fail it anyway, but we don't want to bother with
@@ -603,7 +601,7 @@ pub(super) fn check_incoming_htlc_cltv(
 	// but there is no need to do that, and since we're a bit conservative with our
 	// risk threshold it just results in failing to forward payments.
 	if (outgoing_cltv_value) as u64 <= (cur_height + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
-		return Err(("Outgoing CLTV value is too soon", 0x1000 | 14));
+		return Err(("Outgoing CLTV value is too soon", LocalHTLCFailureReason::OutgoingCLTVTooSoon));
 	}
 
 	Ok(())
