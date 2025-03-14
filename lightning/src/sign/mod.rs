@@ -37,6 +37,7 @@ use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
 
 use lightning_invoice::RawBolt11Invoice;
 
+use crate::chain::chainmonitor::PeerStorageKey;
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
@@ -839,7 +840,7 @@ pub trait NodeSigner {
 	///
 	/// Thus, if you wish to rely on recovery using this method, you should use a key which
 	/// can be re-derived from data which would be available after state loss (eg the wallet seed)
-	fn get_peer_storage_key(&self) -> [u8; 32];
+	fn get_peer_storage_key(&self) -> PeerStorageKey;
 
 	/// Get node id based on the provided [`Recipient`].
 	///
@@ -1780,7 +1781,7 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
 	channel_child_index: AtomicUsize,
-	peer_storage_key: SecretKey,
+	peer_storage_key: PeerStorageKey,
 
 	#[cfg(test)]
 	pub(crate) entropy_source: RandomBytes,
@@ -1890,7 +1891,7 @@ impl KeysManager {
 					node_id,
 					inbound_payment_key: ExpandedKey::new(inbound_pmt_key_bytes),
 
-					peer_storage_key,
+					peer_storage_key: PeerStorageKey::new(peer_storage_key.secret_bytes()),
 
 					destination_script,
 					shutdown_pubkey,
@@ -2117,8 +2118,8 @@ impl NodeSigner for KeysManager {
 		self.inbound_payment_key.clone()
 	}
 
-	fn get_peer_storage_key(&self) -> [u8; 32] {
-		self.peer_storage_key.secret_bytes()
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.peer_storage_key.clone()
 	}
 
 	fn sign_invoice(
@@ -2282,8 +2283,8 @@ impl NodeSigner for PhantomKeysManager {
 		self.inbound_payment_key.clone()
 	}
 
-	fn get_peer_storage_key(&self) -> [u8; 32] {
-		self.inner.peer_storage_key.secret_bytes()
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.inner.peer_storage_key.clone()
 	}
 
 	fn sign_invoice(

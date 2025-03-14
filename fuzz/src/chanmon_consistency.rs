@@ -37,6 +37,7 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
+use lightning::chain::chainmonitor::PeerStorageKey;
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
@@ -338,8 +339,8 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
-	fn get_peer_storage_key(&self) -> [u8; 32] {
-		SecretKey::from_slice(&[42; 32]).unwrap().secret_bytes()
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		PeerStorageKey::new([42; 32])
 	}
 
 	fn sign_bolt12_invoice(

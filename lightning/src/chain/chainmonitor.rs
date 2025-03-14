@@ -218,7 +218,21 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 }
 
 /// Represents Secret Key used for encrypting Peer Storage.
-type PeerStorageKey = [u8; 32];
+#[derive(Clone, PartialEq, Eq)]
+pub struct PeerStorageKey ([u8; 32]);
+
+impl PeerStorageKey {
+	/// Creates a new `PeerStorageKey` from a `[u8; 32]` array.
+    pub fn new(key: [u8; 32]) -> Self {
+        PeerStorageKey(key)
+    }
+
+    /// Returns a reference to the inner `[u8; 32]` array.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///

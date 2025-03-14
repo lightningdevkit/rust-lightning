@@ -15,7 +15,7 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::chainmonitor::{ChainMonitor, Persist};
+use crate::chain::chainmonitor::{ChainMonitor, PeerStorageKey, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
@@ -1452,7 +1452,7 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
-	fn get_peer_storage_key(&self) -> [u8; 32] {
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		unreachable!()
 	}
 
@@ -1534,7 +1534,7 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.sign_invoice(invoice, recipient)
 	}
 
-	fn get_peer_storage_key(&self) -> [u8; 32] {
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		self.backing.get_peer_storage_key()
 	}
 

@@ -16362,7 +16362,7 @@ mod tests {
 #[cfg(ldk_bench)]
 pub mod bench {
 	use crate::chain::Listen;
-	use crate::chain::chainmonitor::{ChainMonitor, Persist};
+	use crate::chain::chainmonitor::{ChainMonitor, PeerStorageKey, Persist};
 	use crate::sign::{KeysManager, InMemorySigner, NodeSigner};
 	use crate::events::Event;
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};

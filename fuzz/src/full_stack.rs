@@ -34,7 +34,7 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::chainmonitor;
+use lightning::chain::chainmonitor::{self, PeerStorageKey};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::events::Event;
@@ -422,8 +422,8 @@ impl NodeSigner for KeyProvider {
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
 
-	fn get_peer_storage_key(&self) -> [u8; 32] {
-		SecretKey::from_slice(&[42; 32]).unwrap().secret_bytes()
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		PeerStorageKey::new([42; 32])
 	}
 }
 
