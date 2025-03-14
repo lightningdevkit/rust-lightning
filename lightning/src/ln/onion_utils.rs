@@ -2037,8 +2037,8 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	match R::read(&mut chacha_stream, read_args) {
 		Err(err) => {
 			let error_code = match err {
-				// Unknown realm byte
-				msgs::DecodeError::UnknownVersion => 0x4000 | 1,
+				// Unknown version
+				msgs::DecodeError::UnknownVersion => 0x8000 | 0x4000 | 4,
 				// invalid_onion_payload
 				msgs::DecodeError::UnknownRequiredFeature
 				| msgs::DecodeError::InvalidValue
