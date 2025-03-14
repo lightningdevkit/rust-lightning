@@ -18,6 +18,7 @@ use crate::blinded_path::utils::is_padded;
 use crate::events::{Event, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::chain::chainmonitor::PeerStorageKey;
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
@@ -1609,6 +1610,7 @@ fn route_blinding_spec_test_vector() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn get_peer_storage_key(&self) -> PeerStorageKey { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
@@ -1918,6 +1920,7 @@ fn test_trampoline_inbound_payment_decoding() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn get_peer_storage_key(&self) -> PeerStorageKey { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }

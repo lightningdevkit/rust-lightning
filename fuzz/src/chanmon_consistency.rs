@@ -37,6 +37,7 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
+use lightning::chain::chainmonitor::PeerStorageKey;
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
@@ -204,6 +205,7 @@ impl TestChainMonitor {
 				logger.clone(),
 				feeest,
 				Arc::clone(&persister),
+				keys.get_peer_storage_key(),
 			)),
 			logger,
 			keys,
@@ -335,6 +337,10 @@ impl NodeSigner for KeyProvider {
 		&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		PeerStorageKey::new([42; 32])
 	}
 
 	fn sign_bolt12_invoice(
