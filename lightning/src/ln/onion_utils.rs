@@ -1431,8 +1431,7 @@ impl HTLCFailReason {
 		const NODE: u16 = 0x2000;
 		const UPDATE: u16 = 0x1000;
 
-		     if failure_code == 1  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
+		if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == 2  | PERM | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == 3  | PERM | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == 4  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
