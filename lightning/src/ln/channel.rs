@@ -68,6 +68,7 @@ use crate::util::scid_utils::scid_from_parts;
 
 use crate::io;
 use crate::prelude::*;
+use core::time::Duration;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
@@ -323,6 +324,7 @@ struct OutboundHTLCOutput {
 	source: HTLCSource,
 	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
+	send_timestamp: Option<Duration>,
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
@@ -6095,10 +6097,16 @@ impl<SP: Deref> FundedChannel<SP> where
 					false
 				} else { true }
 			});
+			let now = duration_since_epoch();
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
 					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", &htlc.payment_hash);
-					if let OutboundHTLCOutcome::Failure(reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
+					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
+						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
+							let hold_time = u32::try_from((now - timestamp).as_millis()).unwrap_or(u32::MAX);
+							reason.set_hold_time(hold_time);
+						}
+
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
 						finalized_claimed_htlcs.push(htlc.source.clone());
@@ -8667,6 +8675,13 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Ok(None);
 		}
 
+		// Record the approximate time when the HTLC is sent to the peer. This timestamp is later used to calculate the
+		// htlc hold time for reporting back to the sender. There is some freedom to report a time including or
+		// excluding our own processing time. What we choose here doesn't matter all that much, because it will probably
+		// just shift sender-applied penalties between our incoming and outgoing side. So we choose measuring points
+		// that are simple to implement, and we do it on the outgoing side because then the failure message that encodes
+		// the hold time still needs to be built in channel manager.
+		let timestamp = duration_since_epoch();
 		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.context.next_holder_htlc_id,
 			amount_msat,
@@ -8676,6 +8691,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			source,
 			blinding_point,
 			skimmed_fee_msat,
+			send_timestamp: timestamp,
 		});
 
 		let res = msgs::UpdateAddHTLC {
@@ -10673,6 +10689,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				},
 				skimmed_fee_msat: None,
 				blinding_point: None,
+				send_timestamp: None,
 			});
 		}
 
@@ -11191,6 +11208,18 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 	}
 }
 
+fn duration_since_epoch() -> Option<Duration> {
+	#[cfg(not(feature = "std"))]
+	let now = None;
+
+	#[cfg(feature = "std")]
+	let now = Some(std::time::SystemTime::now()
+		.duration_since(std::time::SystemTime::UNIX_EPOCH)
+		.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH"));
+
+	now
+}
+
 #[cfg(test)]
 mod tests {
 	use std::cmp;
@@ -11426,6 +11455,7 @@ mod tests {
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			send_timestamp: None,
 		});
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
@@ -11810,6 +11840,7 @@ mod tests {
 			source: dummy_htlc_source.clone(),
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			send_timestamp: None,
 		};
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
@@ -12132,6 +12163,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 				blinding_point: None,
+				send_timestamp: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).to_byte_array();
 			out
@@ -12146,6 +12178,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 				blinding_point: None,
+				send_timestamp: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).to_byte_array();
 			out
@@ -12558,6 +12591,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 				blinding_point: None,
+				send_timestamp: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
@@ -12572,6 +12606,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				skimmed_fee_msat: None,
 				blinding_point: None,
+				send_timestamp: None,
 			};
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
