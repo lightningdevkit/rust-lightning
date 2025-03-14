@@ -1036,8 +1036,7 @@ where
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-#[inline]
-pub(super) fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
+fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
 	inner_session_priv: Option<&SecretKey>, mut encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
