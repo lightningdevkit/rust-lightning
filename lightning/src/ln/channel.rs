@@ -2229,7 +2229,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
 		change_destination_opt: Option<ScriptBuf>,
 		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
-	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
 	where ES::Target: EntropySource
 	{
 		let mut funding_inputs = Vec::new();
@@ -2239,14 +2239,13 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			funding_inputs.push(prev_funding_input);
 		}
 
-		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)
-			.map_err(|err| APIError::APIMisuseError { err: err.to_string() })?;
+		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)?;
 
 		let total_input_satoshis: u64 = funding_inputs_prev_outputs.iter().map(|txout| txout.value.to_sat()).sum();
 		if total_input_satoshis < self.dual_funding_context.our_funding_satoshis {
-			return Err(APIError::APIMisuseError {
-				err: format!("Total value of funding inputs must be at least funding amount. It was {} sats",
-					total_input_satoshis) });
+			return Err(ChannelError::Warn(format!(
+				"Total value of funding inputs must be at least funding amount. It was {} sats", total_input_satoshis,
+			)));
 		}
 
 		// Add output for funding tx
@@ -2278,19 +2277,18 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			&funding_inputs_prev_outputs, &funding_outputs,
 			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
 			self.context.holder_dust_limit_satoshis,
-		).map_err(|err| APIError::APIMisuseError {
-			err: format!("Insufficient inputs, cannot cover intended contribution of {} and fees; {}",
-				self.dual_funding_context.our_funding_satoshis, err
-			),
-		})?;
+		).map_err(|err| ChannelError::Warn(format!(
+			"Insufficient inputs, cannot cover intended contribution of {} and fees; {}",
+			self.dual_funding_context.our_funding_satoshis, err
+		)))?;
 		if let Some(change_value) = change_value_opt {
 			let change_script = if let Some(script) = change_destination_opt {
 				script
 			} else {
 				signer_provider.get_destination_script(self.context.channel_keys_id)
-					.map_err(|err| APIError::APIMisuseError {
-						err: format!("Failed to get change script as new destination script, {:?}", err),
-					})?
+					.map_err(|err| ChannelError::Warn(format!(
+						"Failed to get change script as new destination script, {:?}", err,
+					)))?
 			};
 			let mut change_output = TxOut {
 				value: Amount::from_sat(change_value),
@@ -2319,7 +2317,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			expected_remote_shared_funding_output,
 		};
 		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)
-			.map_err(|_| APIError::APIMisuseError { err: "Incorrect shared output provided".into() })?;
+			.map_err(|_| ChannelError::Warn("Incorrect shared output provided".into()))?;
 		let msg = tx_constructor.take_initiator_first_message();
 
 		self.interactive_tx_constructor = Some(tx_constructor);
