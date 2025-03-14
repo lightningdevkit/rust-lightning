@@ -1988,7 +1988,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 		Err(err) => {
 			let error_code = match err {
 				// Unknown realm byte
-				msgs::DecodeError::UnknownVersion => 0x4000 | 1,
+				msgs::DecodeError::UnknownVersion => 0x8000 | 0x4000 | 1,
 				// invalid_onion_payload
 				msgs::DecodeError::UnknownRequiredFeature
 				| msgs::DecodeError::InvalidValue
