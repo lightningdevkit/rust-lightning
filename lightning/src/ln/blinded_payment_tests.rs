@@ -385,7 +385,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 				ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
 					let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 					let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 					let cur_height = nodes[0].best_block_info().1;
 					let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
 						&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
@@ -966,7 +966,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		},
 		ReceiveCheckFail::OnionDecodeFail => {
 			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
-			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 			let cur_height = nodes[0].best_block_info().1;
 			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
@@ -2100,7 +2100,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 			// pop the last dummy hop
 			trampoline_payloads.pop();
 
-			let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key).unwrap();
+			let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key);
 			let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
 				trampoline_payloads,
 				trampoline_onion_keys,
@@ -2112,7 +2112,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 			let outer_session_priv = secret_from_hex("e52c20461ed7acd46c4e7b591a37610519179482887bd73bf3b94617f8f03677");
 
 			let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
-			let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv).unwrap();
+			let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 			let outer_packet = onion_utils::construct_onion_packet(
 				outer_payloads,
 				outer_onion_keys,
@@ -2294,7 +2294,7 @@ fn test_trampoline_unblinded_receive() {
 			cltv_expiry_height: 104,
 		});
 
-		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key).unwrap();
+		let trampoline_onion_keys = onion_utils::construct_trampoline_onion_keys(&secp_ctx, &route.paths[0].blinded_tail.as_ref().unwrap(), &trampoline_secret_key);
 		let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
 			trampoline_payloads,
 			trampoline_onion_keys,
@@ -2306,7 +2306,7 @@ fn test_trampoline_unblinded_receive() {
 		let outer_session_priv = secret_from_hex("e52c20461ed7acd46c4e7b591a37610519179482887bd73bf3b94617f8f03677");
 
 		let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
-		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv).unwrap();
+		let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 		let outer_packet = onion_utils::construct_onion_packet(
 			outer_payloads,
 			outer_onion_keys,
