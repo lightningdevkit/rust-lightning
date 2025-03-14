@@ -713,7 +713,7 @@ where C::Target: chain::Filter,
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
 
-		let our_peer_storage = OurPeerStorage::create_from_data(self.our_peerstorage_encryption_key, Vec::new());
+		let our_peer_storage = OurPeerStorage::create_from_data(self.our_peerstorage_encryption_key.clone(), Vec::new());
 		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
 		self.pending_send_only_events.lock().unwrap().push(MessageSendEvent::SendPeerStorage { node_id: their_node_id,
 			msg: msgs::PeerStorage { data: our_peer_storage.encrypted_data() } })
