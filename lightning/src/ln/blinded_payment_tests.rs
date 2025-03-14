@@ -385,7 +385,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 				ForwardCheckFail::ForwardPayloadEncodedAsReceive => {
 					let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 					let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 					let cur_height = nodes[0].best_block_info().1;
 					let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
 						&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
@@ -966,7 +966,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 		},
 		ReceiveCheckFail::OnionDecodeFail => {
 			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
-			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 			let cur_height = nodes[0].best_block_info().1;
 			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(

@@ -300,8 +300,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 fn construct_onion_keys_generic_callback<'a, T, H, FType>(
 	secp_ctx: &Secp256k1<T>, hops: &'a [H], blinded_tail: Option<&BlindedTail>,
 	session_priv: &SecretKey, mut callback: FType,
-) -> Result<(), secp256k1::Error>
-where
+) where
 	T: secp256k1::Signing,
 	H: HopInfo,
 	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&'a H>, usize),
@@ -326,19 +325,19 @@ where
 
 		let ephemeral_pubkey = blinded_pub;
 
-		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
+		blinded_priv = blinded_priv
+			.mul_tweak(&Scalar::from_be_bytes(blinding_factor).expect("You broke SHA-256"))
+			.expect("Blinding are never invalid as we picked the starting private key randomly");
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 		callback(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx);
 	}
-
-	Ok(())
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey,
-) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+) -> Vec<OnionKeys> {
 	let mut res = Vec::with_capacity(path.hops.len());
 
 	let blinded_tail = path.blinded_tail.as_ref().and_then(|t| {
@@ -365,15 +364,15 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 				mu,
 			});
 		},
-	)?;
+	);
 
-	Ok(res)
+	res
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 pub(super) fn construct_trampoline_onion_keys<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, blinded_tail: &BlindedTail, session_priv: &SecretKey,
-) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+) -> Vec<OnionKeys> {
 	let mut res = Vec::with_capacity(blinded_tail.trampoline_hops.len());
 
 	construct_onion_keys_generic_callback(
@@ -394,9 +393,9 @@ pub(super) fn construct_trampoline_onion_keys<T: secp256k1::Signing>(
 				mu,
 			});
 		},
-	)?;
+	);
 
-	Ok(res)
+	res
 }
 
 pub(super) fn build_trampoline_onion_payloads<'a>(
@@ -1069,8 +1068,7 @@ where
 		|shared_secret, _, _, route_hop_option: Option<&RouteHop>, _| {
 			onion_keys.push((route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret))
 		},
-	)
-	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+	);
 
 	if path.has_trampoline_hops() {
 		construct_onion_keys_generic_callback(
@@ -1085,8 +1083,7 @@ where
 					shared_secret,
 				))
 			},
-		)
-		.expect("Route we used spontaneously grew invalid keys in the middle of it?");
+		);
 	}
 
 	// Handle packed channel/node updates for passing back for the route handler
@@ -1960,11 +1957,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 				)?;
 
 			let onion_keys =
-				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &session_priv).map_err(
-					|_| APIError::InvalidRoute {
-						err: "Pubkey along hop was maliciously selected".to_owned(),
-					},
-				)?;
+				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &session_priv);
 			let trampoline_packet = construct_trampoline_onion_packet(
 				trampoline_payloads,
 				onion_keys,
@@ -1997,9 +1990,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 	)?;
 
 	let outer_session_priv = outer_session_priv_override.as_ref().unwrap_or(session_priv);
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, outer_session_priv).map_err(|_| {
-		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
-	})?;
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, outer_session_priv);
 	let outer_onion_prng_seed = secondary_prng_seed.unwrap_or(prng_seed);
 	let onion_packet =
 		construct_onion_packet(onion_payloads, onion_keys, outer_onion_prng_seed, payment_hash)
