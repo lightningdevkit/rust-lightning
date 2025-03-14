@@ -756,7 +756,7 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(node_a: &'a Node
 }
 
 /// Gets an RAA and CS which were sent in response to a commitment update
-pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, recipient: &PublicKey) -> (msgs::RevokeAndACK, msgs::CommitmentSigned) {
+pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, recipient: &PublicKey) -> (msgs::RevokeAndACK, Vec<msgs::CommitmentSigned>) {
 	let events = node.node().get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	(match events[0] {
@@ -1906,7 +1906,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 pub struct SendEvent {
 	pub node_id: PublicKey,
 	pub msgs: Vec<msgs::UpdateAddHTLC>,
-	pub commitment_msg: msgs::CommitmentSigned,
+	pub commitment_msg: Vec<msgs::CommitmentSigned>,
 }
 impl SendEvent {
 	pub fn from_commitment_update(node_id: PublicKey, updates: msgs::CommitmentUpdate) -> SendEvent {
@@ -2045,7 +2045,7 @@ macro_rules! commitment_signed_dance {
 		{
 			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
 			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-			$node_a.node.handle_commitment_signed($node_b.node.get_our_node_id(), &$commitment_signed);
+			$node_a.node.handle_commitment_signed_batch($node_b.node.get_our_node_id(), &$commitment_signed);
 			check_added_monitors(&$node_a, 1);
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			assert!(extra_msg_option.is_none());
@@ -2088,7 +2088,7 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	node_b.node.handle_revoke_and_ack(node_a.node.get_our_node_id(), &as_revoke_and_ack);
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(node_b, 1);
-	node_b.node.handle_commitment_signed(node_a.node.get_our_node_id(), &as_commitment_signed);
+	node_b.node.handle_commitment_signed_batch(node_a.node.get_our_node_id(), &as_commitment_signed);
 	let (bs_revoke_and_ack, extra_msg_option) = {
 		let mut events = node_b.node.get_and_clear_pending_msg_events();
 		assert!(events.len() <= 2);
@@ -2114,14 +2114,15 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 ///
 /// If `skip_last_step` is unset, also checks for the payment failure update for the previous hop
 /// on failure or that no new messages are left over on success.
-pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: bool, skip_last_step: bool) {
+pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &Vec<msgs::CommitmentSigned>, fail_backwards: bool, skip_last_step: bool) {
 	check_added_monitors!(node_a, 0);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
-	node_a.node.handle_commitment_signed(node_b.node.get_our_node_id(), commitment_signed);
+	node_a.node.handle_commitment_signed_batch(node_b.node.get_our_node_id(), commitment_signed);
 	check_added_monitors!(node_a, 1);
 
 	// If this commitment signed dance was due to a claim, don't check for an RAA monitor update.
-	let got_claim = node_a.node.test_raa_monitor_updates_held(node_b.node.get_our_node_id(), commitment_signed.channel_id);
+	let channel_id = commitment_signed[0].channel_id;
+	let got_claim = node_a.node.test_raa_monitor_updates_held(node_b.node.get_our_node_id(), channel_id);
 	if fail_backwards { assert!(!got_claim); }
 	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false, got_claim);
 
@@ -2129,7 +2130,7 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 
 	if fail_backwards {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node_a,
-			vec![crate::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id: commitment_signed.channel_id }]);
+			vec![crate::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id }]);
 		check_added_monitors!(node_a, 1);
 
 		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
@@ -2988,7 +2989,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			}
 		}
 	}
-	let mut per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, msgs::CommitmentSigned), PublicKey)> = Vec::with_capacity(expected_paths.len());
+	let mut per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, Vec<msgs::CommitmentSigned>), PublicKey)> = Vec::with_capacity(expected_paths.len());
 	let mut events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_paths.len());
 
@@ -3160,7 +3161,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	let mut expected_paths: Vec<_> = expected_paths_slice.iter().collect();
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
-	let mut per_path_msgs: Vec<((msgs::UpdateFailHTLC, msgs::CommitmentSigned), PublicKey)> = Vec::with_capacity(expected_paths.len());
+	let mut per_path_msgs: Vec<((msgs::UpdateFailHTLC, Vec<msgs::CommitmentSigned>), PublicKey)> = Vec::with_capacity(expected_paths.len());
 	let events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_paths.len());
 	for ev in events.iter() {
@@ -3880,7 +3881,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			if !pending_responding_commitment_signed.0 {
 				commitment_signed_dance!(node_a, node_b, commitment_update.commitment_signed, false);
 			} else {
-				node_a.node.handle_commitment_signed(node_b.node.get_our_node_id(), &commitment_update.commitment_signed);
+				node_a.node.handle_commitment_signed_batch(node_b.node.get_our_node_id(), &commitment_update.commitment_signed);
 				check_added_monitors!(node_a, 1);
 				let as_revoke_and_ack = get_event_msg!(node_a, MessageSendEvent::SendRevokeAndACK, node_b.node.get_our_node_id());
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
@@ -3938,7 +3939,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			if !pending_responding_commitment_signed.1 {
 				commitment_signed_dance!(node_b, node_a, commitment_update.commitment_signed, false);
 			} else {
-				node_b.node.handle_commitment_signed(node_a.node.get_our_node_id(), &commitment_update.commitment_signed);
+				node_b.node.handle_commitment_signed_batch(node_a.node.get_our_node_id(), &commitment_update.commitment_signed);
 				check_added_monitors!(node_b, 1);
 				let bs_revoke_and_ack = get_event_msg!(node_b, MessageSendEvent::SendRevokeAndACK, node_a.node.get_our_node_id());
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
