@@ -10,6 +10,8 @@
 //! `OurPeerStorage` enables versioned storage of serialized channel data.
 //! It supports encryption and decryption to maintain data integrity and security during
 //! transmission.
+//!
+use crate::chain::chainmonitor::PeerStorageKey;
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::prelude::*;
@@ -60,7 +62,7 @@ impl OurPeerStorage {
 	/// (serialised channel information), and returns a serialised [`OurPeerStorage`] as a `Vec<u8>`.
 	///
 	/// The resulting serialised data is intended to be directly used for transmission to the peers.
-	pub fn create_from_data(key: [u8; 32], mut ser_channels: Vec<u8>) -> OurPeerStorage {
+	pub fn create_from_data(key: PeerStorageKey, mut ser_channels: Vec<u8>) -> OurPeerStorage {
 		let n = 0u64;
 
 		let plaintext_len = ser_channels.len();
@@ -68,7 +70,7 @@ impl OurPeerStorage {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(&key, &nonce, b"");
+		let mut chacha = ChaCha20Poly1305RFC::new(key.as_bytes(), &nonce, b"");
 		let mut tag = [0; 16];
 		chacha.encrypt_full_message_in_place(&mut ser_channels[0..plaintext_len], &mut tag);
 
@@ -79,7 +81,7 @@ impl OurPeerStorage {
 
 	/// Decrypt `OurPeerStorage` using the `key`, result is stored inside the `res`.
 	/// Returns an error if the the `cyphertext` is not correct.
-	pub fn decrypt_our_peer_storage(mut self, key: [u8; 32]) -> Result<Vec<u8>, ()> {
+	pub fn decrypt_our_peer_storage(mut self, key: PeerStorageKey) -> Result<Vec<u8>, ()> {
 		const MIN_CYPHERTEXT_LEN: usize = 16;
 		let cyphertext_len = self.encrypted_data.len();
 
@@ -95,7 +97,7 @@ impl OurPeerStorage {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(&key, &nonce, b"");
+		let mut chacha = ChaCha20Poly1305RFC::new(key.as_bytes(), &nonce, b"");
 
 		if chacha.check_decrypt_in_place(encrypted_data, tag).is_err() {
 			return Err(());
