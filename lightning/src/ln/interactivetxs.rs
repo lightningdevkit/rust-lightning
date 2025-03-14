@@ -1677,7 +1677,7 @@ impl InteractiveTxConstructor {
 pub(super) fn calculate_change_output_value(
 	is_initiator: bool, our_contribution: u64, funding_inputs_prev_outputs: &Vec<&TxOut>,
 	funding_outputs: &Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
-	holder_dust_limit_satoshis: u64,
+	change_output_dust_limit: u64,
 ) -> Result<Option<u64>, AbortReason> {
 	let our_funding_inputs_weight =
 		funding_inputs_prev_outputs.iter().fold(0u64, |weight, prev_output| {
@@ -1705,7 +1705,7 @@ pub(super) fn calculate_change_output_value(
 		return Err(AbortReason::InsufficientFees);
 	}
 	let remaining_value = total_inputs_less_fees.saturating_sub(our_contribution);
-	if remaining_value < holder_dust_limit_satoshis {
+	if remaining_value < change_output_dust_limit {
 		// Enough to cover contribution plus fees, but leftover is below dust limit; no change
 		Ok(None)
 	} else {

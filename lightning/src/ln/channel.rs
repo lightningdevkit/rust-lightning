@@ -2269,24 +2269,24 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		};
 
 		// Optionally add change output
+		let change_script = if let Some(script) = change_destination_opt {
+			script
+		} else {
+			signer_provider.get_destination_script(self.context.channel_keys_id)
+				.map_err(|err| ChannelError::Warn(format!(
+					"Failed to get change script as new destination script, {:?}", err,
+				)))?
+		};
 		let change_value_opt = calculate_change_output_value(
 			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
 			&funding_inputs_prev_outputs, &funding_outputs,
 			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
-			self.context.holder_dust_limit_satoshis,
+			change_script.minimal_non_dust().to_sat(),
 		).map_err(|err| ChannelError::Warn(format!(
 			"Insufficient inputs, cannot cover intended contribution of {} and fees; {}",
 			self.dual_funding_context.our_funding_satoshis, err
 		)))?;
 		if let Some(change_value) = change_value_opt {
-			let change_script = if let Some(script) = change_destination_opt {
-				script
-			} else {
-				signer_provider.get_destination_script(self.context.channel_keys_id)
-					.map_err(|err| ChannelError::Warn(format!(
-						"Failed to get change script as new destination script, {:?}", err,
-					)))?
-			};
 			let mut change_output = TxOut {
 				value: Amount::from_sat(change_value),
 				script_pubkey: change_script,
