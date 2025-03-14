@@ -236,6 +236,16 @@ impl LSPSDateTime {
 			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
 		now_seconds_since_epoch > datetime_seconds_since_epoch
 	}
+
+	/// Returns the timestamp as seconds since the Unix epoch.
+	pub fn timestamp(&self) -> i64 {
+		self.0.timestamp()
+	}
+
+	/// Returns the timestamp as milliseconds since the Unix epoch.
+	pub fn now() -> Self {
+		Self(chrono::Utc::now())
+	}
 }
 
 impl FromStr for LSPSDateTime {
