@@ -534,6 +534,7 @@ where
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
 			reason: failure.data,
+			attribution_data: failure.attribution_data,
 		}));
 	};
 

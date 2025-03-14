@@ -118,7 +118,8 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		HTLCSource::OutboundRoute { path, session_priv, first_hop_htlc_msat: 0, payment_id };
 
 	let failure_len = get_u16!();
-	let encrypted_packet = OnionErrorPacket { data: get_slice!(failure_len).into() };
+	let encrypted_packet =
+		OnionErrorPacket { data: get_slice!(failure_len).into(), attribution_data: None };
 
 	lightning::ln::process_onion_failure(&secp_ctx, &logger, &htlc_source, encrypted_packet);
 }

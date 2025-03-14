@@ -912,7 +912,7 @@ fn build_unencrypted_failure_packet(
 	hmac.input(&packet.encode()[32..]);
 	packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 
-	OnionErrorPacket { data: packet.encode() }
+	OnionErrorPacket { data: packet.encode(), attribution_data: None }
 }
 
 pub(super) fn build_failure_packet(
@@ -1409,13 +1409,20 @@ impl Readable for HTLCFailReason {
 impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 	(0, LightningError) => {
 		(0, data, (legacy, Vec<u8>, |us|
-			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref data, .. } } = us {
+			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref data, .. }, .. } = us {
 				Some(data)
 			} else {
 				None
 			})
 		),
-		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)? })),
+		(1, attribution_data, (legacy, AttributionData, |us|
+			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref attribution_data, .. }, .. } = us {
+				attribution_data.as_ref()
+			} else {
+				None
+			})
+		),
+		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)?, attribution_data })),
 	},
 	(1, Reason) => {
 		(0, failure_code, required),
@@ -1473,7 +1480,10 @@ impl HTLCFailReason {
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
 		Self(HTLCFailReasonRepr::LightningError {
-			err: OnionErrorPacket { data: msg.reason.clone() },
+			err: OnionErrorPacket {
+				data: msg.reason.clone(),
+				attribution_data: msg.attribution_data.clone(),
+			},
 		})
 	}
 
@@ -2105,6 +2115,31 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	}
 }
 
+pub const HOLD_TIME_LEN: usize = 4;
+pub const MAX_HOPS: usize = 20;
+pub const HMAC_LEN: usize = 4;
+
+// Define the number of HMACs in the attributable data block. For the first node, there are 20 HMACs, and then for every
+// subsequent node, the number of HMACs decreases by 1. 20 + 19 + 18 + ... + 1 = 20 * 21 / 2 = 210.
+pub const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct AttributionData {
+	pub hold_times: [u8; MAX_HOPS * HOLD_TIME_LEN],
+	pub hmacs: [u8; HMAC_LEN * HMAC_COUNT],
+}
+
+impl AttributionData {
+	pub fn new() -> Self {
+		Self { hold_times: [0; MAX_HOPS * HOLD_TIME_LEN], hmacs: [0; HMAC_LEN * HMAC_COUNT] }
+	}
+}
+
+impl_writeable!(AttributionData, {
+	hold_times,
+	hmacs
+});
+
 #[cfg(test)]
 mod tests {
 	use std::sync::Arc;
@@ -2567,8 +2602,10 @@ mod tests {
 			let outer_session_priv = SecretKey::from_slice(&[4; 32]).unwrap();
 
 			let error_packet_hex = "f8941a320b8fde4ad7b9b920c69cbf334114737497d93059d77e591eaa78d6334d3e2aeefcb0cc83402eaaf91d07d695cd895d9cad1018abdaf7d2a49d7657b1612729db7f393f0bb62b25afaaaa326d72a9214666025385033f2ec4605dcf1507467b5726d806da180ea224a7d8631cd31b0bdd08eead8bfe14fc8c7475e17768b1321b54dd4294aecc96da391efe0ca5bd267a45ee085c85a60cf9a9ac152fa4795fff8700a3ea4f848817f5e6943e855ab2e86f6929c9e885d8b20c49b14d2512c59ed21f10bd38691110b0d82c00d9fa48a20f10c7550358724c6e8e2b966e56a0aadf458695b273768062fa7c6e60eb72d4cdc67bf525c194e4a17fdcaa0e9d80480b586bf113f14eea530b6728a1c53fe5cee092e24a90f21f4b764015e7ed5e23";
-			let error_packet =
-				OnionErrorPacket { data: <Vec<u8>>::from_hex(error_packet_hex).unwrap() };
+			let error_packet = OnionErrorPacket {
+				data: <Vec<u8>>::from_hex(error_packet_hex).unwrap(),
+				attribution_data: None,
+			};
 			let decrypted_failure = process_onion_failure_inner(
 				&secp_ctx,
 				&logger,
@@ -2729,7 +2766,7 @@ mod tests {
 	fn test_non_attributable_failure_packet_onion() {
 		// Create a failure packet with bogus data.
 		let packet = vec![1u8; 292];
-		let onion_error_packet = OnionErrorPacket { data: packet };
+		let onion_error_packet = OnionErrorPacket { data: packet, attribution_data: None };
 
 		// In the current protocol, it is unfortunately not possible to identify the failure source.
 		let logger: TestLogger = TestLogger::new();
@@ -2758,7 +2795,8 @@ mod tests {
 		let hmac = Hmac::from_engine(hmac).to_byte_array();
 		packet[..32].copy_from_slice(&hmac);
 
-		let mut onion_error_packet = OnionErrorPacket { data: packet.to_vec() };
+		let mut onion_error_packet =
+			OnionErrorPacket { data: packet.to_vec(), attribution_data: None };
 		crypt_failure_packet(shared_secret, &mut onion_error_packet);
 
 		// For the unreadable failure, it is still expected that the failing channel can be identified.
@@ -2784,7 +2822,8 @@ mod tests {
 		hmac.input(&packet.encode()[32..]);
 		packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 
-		let mut onion_error_packet = OnionErrorPacket { data: packet.encode() };
+		let mut onion_error_packet =
+			OnionErrorPacket { data: packet.encode(), attribution_data: None };
 		crypt_failure_packet(shared_secret, &mut onion_error_packet);
 
 		let logger = TestLogger::new();

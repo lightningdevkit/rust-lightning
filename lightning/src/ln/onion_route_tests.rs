@@ -685,6 +685,7 @@ fn test_onion_failure() {
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 			let mut onion_error = OnionErrorPacket {
 				data: decoded_err_packet.encode(),
+				attribution_data: None,
 			};
 			onion_utils::test_crypt_failure_packet(
 				&onion_keys[1].shared_secret.as_ref(), &mut onion_error);
@@ -719,6 +720,7 @@ fn test_onion_failure() {
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 			let mut onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
+				attribution_data: None,
 			};
 			onion_utils::test_crypt_failure_packet(
 				&onion_keys[0].shared_secret.as_ref(), &mut onion_error);
@@ -747,6 +749,7 @@ fn test_onion_failure() {
 			decoded_err_packet.hmac = Hmac::from_engine(hmac).to_byte_array();
 			let mut onion_error = OnionErrorPacket{
 				data: decoded_err_packet.encode(),
+				attribution_data: None,
 			};
 			onion_utils::test_crypt_failure_packet(
 				&onion_keys[1].shared_secret.as_ref(), &mut onion_error);
