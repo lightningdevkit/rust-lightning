@@ -9,9 +9,10 @@ use core::str::FromStr;
 use std::error;
 
 use bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
-use bech32::{Bech32, Fe32, Fe32IterExt};
+use bech32::{Fe32, Fe32IterExt};
 
 use crate::prelude::*;
+use crate::Bolt11Bech32;
 use bitcoin::hashes::sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
@@ -377,7 +378,7 @@ impl FromStr for SignedRawBolt11Invoice {
 	type Err = Bolt11ParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let parsed = CheckedHrpstring::new::<Bech32>(s)?;
+		let parsed = CheckedHrpstring::new::<Bolt11Bech32>(s)?;
 		let hrp = parsed.hrp();
 		// Access original non-packed 32 byte values (as Fe32s)
 		// Note: the type argument is needed due to the API peculiarities, but it's not used
@@ -1174,5 +1175,245 @@ mod test {
 				}
 			)
 		)
+	}
+
+	// Test some long invoice test vectors successfully roundtrip. Generated
+	// from Lexe proptest: <https://github.com/lexe-app/lexe-public/blob/4bc7018307e5221e1e1ee8b17ce366338fb11a16/common/src/ln/invoice.rs#L183>.
+	#[test]
+	fn test_deser_long_test_vectors() {
+		use crate::Bolt11Invoice;
+
+		#[track_caller]
+		fn parse_ok(invoice_str: &str) {
+			let invoice = Bolt11Invoice::from_str(invoice_str).unwrap();
+			let invoice_str2 = invoice.to_string();
+			if invoice_str != invoice_str2 {
+				panic!(
+					"Invoice does not roundtrip: invoice_str != invoice_str2\n\
+					 invoice_str: {invoice_str}\n\
+					 invoice_str2: {invoice_str2}\n\
+					 \n\
+					 {invoice:?}"
+				);
+			}
+		}
+
+		// 1024 B shrunk invoice just above previous limit of 1023 B from Lexe proptest
+		parse_ok(
+			"lnbc10000000000000000010p1qqqqqqqdtuxpqkzq8sjzqgps4pvyczqq8sjzqgpuysszq0pyyqsrp2zs0sjz\
+			 qgps4pxrcfpqyqc2slpyyqsqsv9gwz59s5zqpqyps5rc9qsrs2pqxz5ysyzcfqgysyzs0sjzqgqq8sjzqgps4p\
+			 xqqzps4pqpssqgzpxps5ruysszqrps4pg8p2zgpsc2snpuysszqzqsgqvys0pyyqsrcfpqyqvycv9gfqqrcfpq\
+			 yq7zggpq8q5zqyruysszqwpgyqxpsjqsgq7zggpqps7zggpq8sjzqgqgqq7zggpqpq7zggpq8q5zqqpuysszq0\
+			 pyyqsqs0pyyqspsnqgzpqpqlpyyqsqszpuysszqyzvzpvysrqq8sjzqgqvrp7zggpqpqxpsspp5mf45hs3cgph\
+			 h0074r5qmr74y82r26ac4pzdg4nd9mdmsvz6ffqpssp5vr4yra4pcv74h9hk3d0233nqu4gktpuykjamrafrdp\
+			 uedqugzh3q9q2sqqqqqysgqcqrpqqxq8pqqqqqqnp4qgvcxpme2q5lng36j9gruwlrtk2f86s3c5xmk87yhvyu\
+			 wdeh025q5r9yqwnqegv9hj9nzkhyxaeyq92wcrnqp36pyrc2qzrvswj5g96ey2dn6qqqqqqqqqqqqqqqqqqqqq\
+			 qqqqqqqqp9a5vs0t4z56p64xyma8s84yvdx7uhqj0gvrr424fea2wpztq2fwqqqqqqqqqqqqqqqqqqqqqqqqqq\
+			 qqqqmy9qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\
+			 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpcnsxc32du9n7amlypuhclzqrt6lkegq\
+			 0v3r7nczjv9tv30z7phq80r3dm7pvgykl7gwuenmem93h5xwdwac6ngsmzqc34khrg3qjgsq6qk6lc"
+		);
+		// 1517 B mainnet invoice from Lexe proptest
+		parse_ok(
+			"lnbc8735500635020489010p1av5kfs8deupvyk4u5ynj03hmalhhhml0fxc2jlrv9z4lg6s4hnhkz69malhhe\
+			 t3x9yqpsxru4a3kwar2qtu2q2ughx367q600s5x7c7tln4k0fu78skxqevaqm8sayhuur377zgf3uf94n57xzh\
+			 dw99u42hwc089djn5xj723w7zageflsnzdmyte89tecf2ac7xhg4y3u9f4xpuv2hwxjlsarp0e24fu8tme6rgv\
+			 0tqj08z9f4u30rw59k8emhtvs7wye0xfw6x5q5tju2p208rvtkunzwtwghtp22tlnh62gxwhfkxp4cnz7ts3rx\
+			 vlzszhv9y00h77lpdvcjyhjtmalh5dn5e8n5w8cqle0vunzduu4nza9y0734qhxday9hzywl0aa0vhzy0qmphc\
+			 64d4hduj08dv2krpgqtc2v83gptk34reelxyc7wsgnze890c6nrv6p0cmepatc269eayzjjkqk30n52rfl5dg7\
+			 wztl96f7wc2tzx34q909xuajnyt4u4lnk87lwal7z0etdz5tmece0v3u796jfp68nccn05ty54ncfelts3v8g0\
+			 sn6v6hsu87zat4r03368ersu87252dd0nswymxzc2pyxl8yy844hspuyj47w0px4u4leefq568sk0rr9th4ql9\
+			 f9ykawrczkz5hp22nstg3lrlsa6u2q2ull3kzce2sh0h77sjv0zszhzy4hfh6u0pwux5l3gpthsn72mfu47sw9\
+			 zw3hzk7srznp27z0etdp0725me00sn72mgkf0fteehruk0lg6swh34z52puaekzmjlmalhhe6m8ug7z3c8g8zh\
+			 jjspp5zj0sm85g5ufng9w7s6p4ucdk80tyvz64sg54v0cy4vgnr37f78sqsp5l6azu2hv6we30er90jrslqpvd\
+			 trnrphhesca2wg5q83k52rsu2cq9q2sqqqqqysgqcqr8h2np4qw0ha2k282hm8jh5rcfq0hsp2zhddtlc5vs23\
+			 uphyv0lv3k8sqsfgfp4qyrk86tx5xg2aa7et4cdzhnvl5s4nd33ugytt7gamk9tugn9yransr9yq08gpwsn8t2\
+			 tq4ducjfhrcz707av0ss20urjh8vldrpmehqxa0stkesvuq82txyqzfhej7qccswy7k5wvcppk63c6zpjytfda\
+			 ccadacjtn52lpe6s85rjfqlxzp6frq33xshaz2nr9xjkhd3jj8qg39nmfzvpgmayakqmy9rseakwgcudug7hs4\
+			 5wh430ywh7qhj3khczh8gle4cn93ymgfwa7rrvcw9lywyyz58k4p40a3nu9svthaf0qeg8f2ay4tw9p48p70qm\
+			 ayu3ejl2q8pj9e2l22h7775tl44hs6ke4sdfgcr6aj8wra4r2v9sj6xa5chd5ctpfg8chtrer3kkp0e6af88lk\
+			 rfxcklf2hyslv2hr0xl5lwrm5y5uttxn4ndfz8789znf78nspa3xy68"
+		);
+		// 1804 B regtest invoice from Lexe proptest
+		parse_ok(
+			"lnbcrt17124979001314909880p1y6lkcwgd76tfnxksfk2atyy4tzw4nyg6jrx3282s2ygvcxyj64gevhxsjk\
+			 2ymhzv3e0p5h5u3kfey92jt9ge44gsfnwycxynm2g3unw3ntt9qh25texe98jcfhxvcxuezxw9tngwrndpy9s4\
+			 p4x9eyze2tfe9rxm68tp5yj5jfduen2nny8prhsm6edegn2stww4n4gwp4vfjkvdthd43524n9fa8h262vwesk\
+			 g66nw3vnyafn29zhsvfeg9mxummtfp35uumzfqmhy3jwgdh55mt5xpvhgmjn25uku5e5g939wmmnvdfygnrdgd\
+			 h56uzcx4a92vfhgdcky3z9gfnrsvp4f4f55j68vak9yufhvdm8x5zrgc6955jvf429zumv89nh2a35wae5yntg\
+			 v985jumpxehyv7t92pjrwufs89yh23f5ddy5s568wgchve3cg9ek5nzewgcrzjz0dftxg3nvf4hngje52ac4zm\
+			 esxpvk6sfef4hkuetvd4vk6n29wftrw5rvg4yy2vjjwyexc5mnvfd8xknndpqkkenx0q642j35298hwve3dyc5\
+			 25jrd3295sm9v9jrqup3wpykg7zd239ns7jgtqu95jz0deaxksjh2fu56n6n2f5x6mm8wa89qjfef385sam2x9\
+			 mxcs20gfpnq460d3axzknnf3e4sw2kvf25wjjxddpyg52dw4vx7nn2w9cyu5t8vfnyxjtpg33kssjp24ch536p\
+			 d938snmtx345x6r4x93kvv2tff855um3tfekxjted4kxys2kve5hvu6g89z4ynmjgfhnw7tv892rymejgvey77\
+			 rcfqe9xjr92d85636fvajxyajndfa92k2nxycx5jtjx4zxsm2y2dyn2up50f5ku3nrfdk4g5npxehkzjjv8y69\
+			 gveev4z56denddaxy7tfwe8xx42zgf6kzmnxxpk826ze2s6xk6jrwearw6ejvd8rsvj2fpg525jtd5pp5j2tlt\
+			 28m4kakjr84w6ce4fd8e7awy6ncyswcyut760rdnem30ptssp5p5u3xgxxtr6aev8y2w9m30wcw3kyn7fgm8wm\
+			 f8qw8wzrqt34zcvq9q2sqqqqqysgqcqypmw9xq8lllllllnp4qt36twam2ca08m3s7vnhre3c0j89589wyw4vd\
+			 k7fln0lryxzkdcrur28qwqq3hnyt84vsasuldd2786eysdf4dyuggwsmvw2atftf7spkmpa9dd3efq5tenpqm2\
+			 v7vcz2a4s0s7jnqpjn0srysnstnw5y5z9taxn0ue37aqgufxcdsj6f8a2m4pm9udppdzc4shsdqzzx0u0rm4xl\
+			 js0dqz3c5zqyvglda7nsqvqfztmlyup7vyuadzav4zyuqwx90ev6nmk53nkhkt0sev9e745wxqtdvrqzgqkaka\
+			 zen7e2qmsdauk665g3llg5qtl79t3xulrhjnducehdn72gpmkjvtth7kh6ejpl9dv0qcsxv2jvzzvg0hzdmk3y\
+			 jsmydqksdk3h78kc63qnr265h8vyeslqexszppfm7y287t3gxvhw0ulg2wp0rsw3tevz03z50kpy77zdz9snxm\
+			 kkwxd76xvj4qvj2f89rrnuvdvzw947ay0kydc077pkec2jet9qwp2tud98s24u65uz07eaxk5jk3e4nggn2caa\
+			 ek2p5pkrc6mm6mxjm2ezpdu8p5jstg6tgvnttgac3ygt5ys04t4udujzlshpl7e4f3ff03xe6v24cp6aq4wa"
+		);
+		// 1870 B testnet invoice from Lexe proptest
+		parse_ok(
+			"lntb5826417333454665580p1c5rwh5edlhf33hvkj5vav5z3t02a5hxvj3vfv5kuny2f3yzj6zwf9hx3nn2fk\
+			 9gepc2a3ywvj6dax5v3jy2d5nxmp3gaxhycjkv38hx4z4d4vyznrp2p24xa6t2pg4w4rrxfens6tcxdhxvvfhx\
+			 a8xvvpkgat8xnpe2p44juz9g43hyur00989gvfhwd2kj72wfum4g4mgx5m5cs2rg9d9vnn6xe89ydnnvfpyy52\
+			 s2dxx2er4x4xxwstdd5cxwdrjw3nkxnnv2uexxnrxw4t56sjswfn52s2xv4t8xmjtwpn8xm6sfeh4q526dyu8x\
+			 3r9gceyw6fhd934qjttvdk57az5w368zdrhwfjxxu35xcmrsmmpd4g8wwtev4tkzutdd32k56mxveuy6c6v2em\
+			 yv7zkfp39zjpjgd8hx7n4xph5kceswf6xxmnyfcuxca20fp24z7ncvfhyu5jf2exhw36nwf68s7rh2a6yzjf4d\
+			 gukcenfxpchqsjn2pt5x334tf98wsm6dvcrvvfcwapxvk2cdvmk2npcfe68zue3w4f9xc6s2fvrw6nrg3fkskt\
+			 e2ftxyc20ffckcd692964sdzjwdp4yvrfdfm9q72pxp3kwat5f4j9xee5da8rss60w92857tgwych55f5w3n8z\
+			 mzexpy4jwredejrqm6txf3nxm64ffh8x460dp9yjazhw4yx6dm5xerysnn5wa455k3h2d89ss2fd9axwjp3f4r\
+			 9qdmfd4fx6stx2eg9sezrv369w7nvvfvhj4nnwaz5z3ny8qcxcdnvwd64jc2nx9uy2e2gxdrnx6r3w9ykxatxx\
+			 g6kk6rv2ekr2emwx5ehy362d3x82dzvddfxs5rcg4vn27npf564qdtg2anycc6523jnwe3e0p65unrpvccrs5m\
+			 2fuexgmnj23ay5e34v4xk5jnrwpg4xemfwqe5vjjjw9qk76zsd9yrzu6xdpv5v5ntdejxg6jtv3kx65t6gdhrg\
+			 vj3fe34sj2vv3h5kegpp57hjf5kv6clw97y2e063yuz0psrz9a6l49v836dflum00rh8qtn8qsp5gd29qycuze\
+			 08xls8l32zjaaf2uqv78v97lg9ss0c699huw980h2q9q2sqqqqqysgqcqr8ulnp4q26hcfwr7qxz7lwwlr2kjc\
+			 rws7m2u5j36mm0kxa45uxy6zvsqt2zzfppjdkrm2rlgadt9dq3d6jkv4r2cugmf2kamr28qwuleyzzyyly8a6t\
+			 u70eldahx7hzxx5x9gms7vjjr577ps8n4qyds5nern39j0v7czkch2letnt46895jupxgehf208xgxz8d6j8gu\
+			 3h2qqtsk9nr9nuquhkqjxw40h2ucpldrawmktxzxdgtkt9a3p95g98nywved8s8laj2a0c98rq5zzdnzddz6nd\
+			 w0lvr6u0av9m7859844cgz9vpeq05gw79zqae2s7jzeq66wydyueqtp56qc67g7krv6lj5aahxtmq4y208q5qy\
+			 z38cnwl9ma6m5f4nhzqaj0tjxpfrk4nr5arv9d20lvxvddvffhzygmyuvwd959uhdcgcgjejchqt2qncuwpqqk\
+			 5vws7dflw8x6esrfwhz7h3jwmhevf445k76nme926sr8drsdveqg7l7t7lnjvhaludqnwk4l2pmevkjf9pla92\
+			 4p77v76r7x8jzyy7h59hmk0lgzfsk6c8dpj37hssj7jt4q7jzvy8hq25l3pag37axxanjqnq56c47gpgy6frsy\
+			 c0str9w2aahz4h6t7axaka4cwvhwg49r6qgj8kwz2mt6vcje25l9ekvmgq5spqtn"
+		);
+	}
+
+	// Generate a valid invoice of `MAX_LENGTH` bytes and ensure that it roundtrips.
+	#[test]
+	fn test_serde_long_invoice() {
+		use crate::TaggedField::*;
+		use crate::{
+			Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency,
+			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField, Sha256,
+			SignedRawBolt11Invoice,
+		};
+		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+		use bitcoin::secp256k1::PublicKey;
+		use lightning_types::routing::{RouteHint, RouteHintHop, RoutingFees};
+
+		// Generate an `UnknownSemantics` field with a given length.
+		fn unknown_semantics_field(len: usize) -> Vec<Fe32> {
+			assert!(len <= 1023);
+			let mut field = Vec::with_capacity(len + 3);
+			// Big-endian encoded length prefix
+			field.push(Fe32::Q);
+			field.push(Fe32::try_from((len >> 5) as u8).unwrap());
+			field.push(Fe32::try_from((len & 0x1f) as u8).unwrap());
+			// Data
+			field.extend(std::iter::repeat(Fe32::P).take(len));
+			field
+		}
+
+		// Invoice fields
+		let payment_hash = sha256::Hash::from_str(
+			"0001020304050607080900010203040506070809000102030405060708090102",
+		)
+		.unwrap();
+		let description = std::iter::repeat("A").take(639).collect::<String>();
+		let fallback_addr = crate::Fallback::SegWitProgram {
+			version: bitcoin::WitnessVersion::V0,
+			program: vec![0; 32],
+		};
+		let payee_pk = PublicKey::from_slice(&[
+			0x03, 0x24, 0x65, 0x3e, 0xac, 0x43, 0x44, 0x88, 0x00, 0x2c, 0xc0, 0x6b, 0xbf, 0xb7,
+			0xf1, 0x0f, 0xe1, 0x89, 0x91, 0xe3, 0x5f, 0x9f, 0xe4, 0x30, 0x2d, 0xbe, 0xa6, 0xd2,
+			0x35, 0x3d, 0xc0, 0xab, 0x1c,
+		])
+		.unwrap();
+		let route_hints = std::iter::repeat(RouteHintHop {
+			src_node_id: payee_pk,
+			short_channel_id: 0x0102030405060708,
+			fees: RoutingFees { base_msat: 1, proportional_millionths: 20 },
+			cltv_expiry_delta: 3,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		})
+		.take(12)
+		.collect::<Vec<_>>();
+
+		// Build raw invoice
+		let raw_invoice = RawBolt11Invoice {
+			hrp: RawHrp {
+				currency: Currency::Bitcoin,
+				raw_amount: Some(10000000000000000010),
+				si_prefix: Some(crate::SiPrefix::Pico),
+			},
+			data: RawDataPart {
+				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+				tagged_fields: vec![
+					PaymentHash(Sha256(payment_hash)).into(),
+					Description(crate::Description::new(description).unwrap()).into(),
+					PayeePubKey(crate::PayeePubKey(payee_pk)).into(),
+					ExpiryTime(crate::ExpiryTime(std::time::Duration::from_secs(u64::MAX))).into(),
+					MinFinalCltvExpiryDelta(crate::MinFinalCltvExpiryDelta(u64::MAX)).into(),
+					Fallback(fallback_addr).into(),
+					PrivateRoute(crate::PrivateRoute(RouteHint(route_hints))).into(),
+					PaymentSecret(crate::PaymentSecret([17; 32])).into(),
+					PaymentMetadata(vec![0x69; 639]).into(),
+					Features(Bolt11InvoiceFeatures::from_le_bytes(vec![0xaa; 639])).into(),
+					// This invoice is 4458 B w/o unknown semantics fields.
+					// Need to add some non-standard fields to reach 7089 B limit.
+					RawTaggedField::UnknownSemantics(unknown_semantics_field(1023)),
+					RawTaggedField::UnknownSemantics(unknown_semantics_field(1023)),
+					RawTaggedField::UnknownSemantics(unknown_semantics_field(576)),
+				],
+			},
+		};
+
+		// Build signed invoice
+		let hash = [
+			0x75, 0x99, 0xe1, 0x51, 0x7f, 0xa1, 0x0e, 0xb5, 0xc0, 0x79, 0xb4, 0x6e, 0x8e, 0x62,
+			0x0c, 0x4f, 0xb0, 0x72, 0x71, 0xd2, 0x81, 0xa1, 0x92, 0x65, 0x9c, 0x90, 0x89, 0x69,
+			0xe1, 0xf3, 0xd6, 0x59,
+		];
+		let signature = &[
+			0x6c, 0xbe, 0xbe, 0xfe, 0xd3, 0xfb, 0x07, 0x68, 0xb5, 0x79, 0x98, 0x82, 0x29, 0xab,
+			0x0e, 0xcc, 0x8d, 0x3a, 0x81, 0xee, 0xee, 0x07, 0xb3, 0x5d, 0x64, 0xca, 0xb4, 0x12,
+			0x33, 0x99, 0x33, 0x2a, 0x31, 0xc2, 0x2c, 0x2b, 0x62, 0x96, 0x4e, 0x37, 0xd7, 0x96,
+			0x50, 0x5e, 0xdb, 0xe9, 0xa9, 0x5b, 0x0b, 0x3b, 0x87, 0x22, 0x89, 0xed, 0x95, 0xf1,
+			0xf1, 0xdf, 0x2d, 0xb6, 0xbd, 0xf5, 0x0a, 0x20,
+		];
+		let signature = Bolt11InvoiceSignature(
+			RecoverableSignature::from_compact(signature, RecoveryId::from_i32(1).unwrap())
+				.unwrap(),
+		);
+		let signed_invoice = SignedRawBolt11Invoice { raw_invoice, hash, signature };
+
+		// Ensure serialized invoice roundtrips
+		let invoice = Bolt11Invoice::from_signed(signed_invoice).unwrap();
+		let invoice_str = invoice.to_string();
+		assert_eq!(invoice_str.len(), crate::MAX_LENGTH);
+		assert_eq!(invoice, Bolt11Invoice::from_str(&invoice_str).unwrap());
+	}
+
+	// Test that invoices above the maximum length fail to parse with the expected error.
+	#[test]
+	fn test_deser_too_long_fails() {
+		use crate::{Bolt11Invoice, ParseOrSemanticError, MAX_LENGTH};
+		use bech32::primitives::decode::{CheckedHrpstringError, ChecksumError};
+
+		fn parse_is_code_length_err(s: &str) -> bool {
+			// Need matches! b/c ChecksumError::CodeLength(_) is marked non-exhaustive
+			matches!(
+				Bolt11Invoice::from_str(s),
+				Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(
+					CheckedHrpstringError::Checksum(ChecksumError::CodeLength(_))
+				))),
+			)
+		}
+
+		let mut too_long = String::from("lnbc1");
+		too_long.push_str(
+			String::from_utf8(vec![b'x'; (MAX_LENGTH + 1) - too_long.len()]).unwrap().as_str(),
+		);
+		assert!(parse_is_code_length_err(&too_long));
+		assert!(!parse_is_code_length_err(&too_long[..too_long.len() - 1]));
 	}
 }

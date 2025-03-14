@@ -31,7 +31,7 @@ extern crate serde;
 use std::time::SystemTime;
 
 use bech32::primitives::decode::CheckedHrpstringError;
-use bech32::Fe32;
+use bech32::{Checksum, Fe32};
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
 use lightning_types::features::Bolt11InvoiceFeatures;
@@ -146,6 +146,32 @@ pub const DEFAULT_EXPIRY_TIME: u64 = 3600;
 ///
 /// [BOLT 11]: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md
 pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
+
+/// lightning-invoice will reject BOLT11 invoices that are longer than 7089 bytes.
+///
+/// ### Rationale
+///
+/// This value matches LND's implementation, which was chosen to be "the max number
+/// of bytes that can fit in a QR code". LND's rationale is technically incorrect
+/// as QR codes actually have a max capacity of 7089 _numeric_ characters and only
+/// support up to 4296 all-uppercase alphanumeric characters. However, ecosystem-wide
+/// consistency is more important.
+pub const MAX_LENGTH: usize = 7089;
+
+/// The [`bech32::Bech32`] checksum algorithm, with extended max length suitable
+/// for BOLT11 invoices.
+pub enum Bolt11Bech32 {}
+
+impl Checksum for Bolt11Bech32 {
+	/// Extend the max length from the 1023 bytes default.
+	const CODE_LENGTH: usize = MAX_LENGTH;
+
+	// Inherit the other fields from `bech32::Bech32`.
+	type MidstateRepr = <bech32::Bech32 as Checksum>::MidstateRepr;
+	const CHECKSUM_LENGTH: usize = bech32::Bech32::CHECKSUM_LENGTH;
+	const GENERATOR_SH: [Self::MidstateRepr; 5] = bech32::Bech32::GENERATOR_SH;
+	const TARGET_RESIDUE: Self::MidstateRepr = bech32::Bech32::TARGET_RESIDUE;
+}
 
 /// Builder for [`Bolt11Invoice`]s. It's the most convenient and advised way to use this library. It
 /// ensures that only a semantically and syntactically correct invoice can be built using it.
