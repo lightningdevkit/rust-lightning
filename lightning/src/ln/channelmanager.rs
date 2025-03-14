@@ -708,26 +708,16 @@ impl core::hash::Hash for HTLCSource {
 	}
 }
 impl HTLCSource {
-	#[cfg(all(ldk_test_vectors, test))]
+	#[cfg(any(ldk_test_vectors, test))]
 	pub fn dummy() -> Self {
+		#[cfg(ldk_test_vectors)]
 		assert!(cfg!(not(feature = "grind_signatures")));
+
 		HTLCSource::OutboundRoute {
 			path: Path { hops: Vec::new(), blinded_tail: None },
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
-		}
-	}
-
-	#[cfg(debug_assertions)]
-	/// Checks whether this HTLCSource could possibly match the given HTLC output in a commitment
-	/// transaction. Useful to ensure different datastructures match up.
-	pub(crate) fn possibly_matches_output(&self, htlc: &super::chan_utils::HTLCOutputInCommitment) -> bool {
-		if let HTLCSource::OutboundRoute { first_hop_htlc_msat, .. } = self {
-			*first_hop_htlc_msat == htlc.amount_msat
-		} else {
-			// There's nothing we can check for forwarded HTLCs
-			true
 		}
 	}
 

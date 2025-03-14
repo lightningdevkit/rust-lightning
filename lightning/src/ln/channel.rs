@@ -2125,22 +2125,20 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 		let context = self.context();
 		let funding = self.funding();
-		let funding_redeemscript = funding.get_funding_redeemscript();
-		let funding_txo = funding.get_funding_txo().unwrap();
-		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&funding.get_holder_pubkeys().payment_point, &funding.get_counterparty_pubkeys().payment_point, funding.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let monitor_signer = signer_provider.derive_channel_signer(context.channel_keys_id);
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
-		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
-		                                          shutdown_script, funding.get_holder_selected_contest_delay(),
-		                                          &context.destination_script, (funding_txo, funding_txo_script),
-		                                          &funding.channel_transaction_parameters, funding.is_outbound(),
-		                                          funding_redeemscript.clone(), funding.get_value_satoshis(),
-		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id());
-		channel_monitor.provide_initial_counterparty_commitment_tx(counterparty_initial_commitment_tx.clone(), logger);
+		let channel_monitor = ChannelMonitor::new(
+			context.secp_ctx.clone(), monitor_signer, shutdown_script,
+			funding.get_holder_selected_contest_delay(), &context.destination_script,
+			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
+			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
+		);
+		channel_monitor.provide_initial_counterparty_commitment_tx(
+			counterparty_initial_commitment_tx.clone(), logger,
+		);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
@@ -3536,23 +3534,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
 		}
 
-		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
-		// `htlcs_and_sigs` vec and in the `holder_commitment_tx` itself, both of which were passed
-		// in the `ChannelMonitorUpdate`. In 0.0.115, support for having a separate set of
-		// outbound-non-dust-HTLCSources in the `ChannelMonitorUpdate` was added, however for
-		// backwards compatibility, we never use it in production. To provide test coverage, here,
-		// we randomly decide (in test/fuzzing builds) to use the new vec sometimes.
-		#[allow(unused_assignments, unused_mut)]
-		let mut separate_nondust_htlc_sources = false;
-		#[cfg(all(feature = "std", any(test, fuzzing)))] {
-			use core::hash::{BuildHasher, Hasher};
-			// Get a random value using the only std API to do so - the DefaultHasher
-			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-			separate_nondust_htlc_sources = rand_val % 2 == 0;
-		}
-
-		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
-		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
+		let mut nondust_htlc_sources = Vec::with_capacity(commitment_stats.num_nondust_htlcs);
+		let mut dust_htlcs = Vec::with_capacity(htlcs_cloned.len() - commitment_stats.num_nondust_htlcs);
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
@@ -3568,16 +3551,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
 					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 				}
-				if !separate_nondust_htlc_sources {
-					htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source_opt.take()));
+				if htlc.offered {
+					if let Some(source) = source_opt.take() {
+						nondust_htlc_sources.push(source);
+					} else {
+						assert!(false, "Missing outbound HTLC source");
+					}
 				}
 			} else {
-				htlcs_and_sigs.push((htlc, None, source_opt.take()));
-			}
-			if separate_nondust_htlc_sources {
-				if let Some(source) = source_opt.take() {
-					nondust_htlc_sources.push(source);
-				}
+				dust_htlcs.push((htlc, None, source_opt.take()));
 			}
 			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
 		}
@@ -3595,7 +3577,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		Ok(LatestHolderCommitmentTXInfo {
 			commitment_tx: holder_commitment_tx,
-			htlc_outputs: htlcs_and_sigs,
+			htlc_outputs: dust_htlcs,
 			nondust_htlc_sources,
 		})
 	}
