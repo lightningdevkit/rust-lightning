@@ -52,7 +52,7 @@ pub(crate) struct OnionKeys {
 #[inline]
 pub(crate) fn gen_rho_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
-	let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
+	let mut hmac = HmacEngine::<Sha256>::new(b"rho");
 	hmac.input(&shared_secret);
 	Hmac::from_engine(hmac).to_byte_array()
 }
@@ -74,7 +74,7 @@ pub(crate) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], 
 #[inline]
 pub(super) fn gen_um_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
-	let mut hmac = HmacEngine::<Sha256>::new(&[0x75, 0x6d]); // um
+	let mut hmac = HmacEngine::<Sha256>::new(b"um");
 	hmac.input(&shared_secret);
 	Hmac::from_engine(hmac).to_byte_array()
 }
@@ -82,7 +82,7 @@ pub(super) fn gen_um_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 #[inline]
 pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
-	let mut hmac = HmacEngine::<Sha256>::new(&[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
+	let mut hmac = HmacEngine::<Sha256>::new(b"ammag");
 	hmac.input(&shared_secret);
 	Hmac::from_engine(hmac).to_byte_array()
 }
@@ -91,7 +91,7 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 #[inline]
 pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
-	let mut hmac = HmacEngine::<Sha256>::new(&[0x70, 0x61, 0x64]); // pad
+	let mut hmac = HmacEngine::<Sha256>::new(b"pad");
 	hmac.input(&shared_secret);
 	Hmac::from_engine(hmac).to_byte_array()
 }
