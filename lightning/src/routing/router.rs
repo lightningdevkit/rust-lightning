@@ -519,6 +519,11 @@ impl Path {
 			None => self.hops.last().map(|hop| hop.cltv_expiry_delta)
 		}
 	}
+
+	/// True if this [`Path`] has at least one Trampoline hop.
+	pub fn has_trampoline_hops(&self) -> bool {
+		self.blinded_tail.as_ref().map_or(false, |bt| !bt.trampoline_hops.is_empty())
+	}
 }
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
