@@ -2232,6 +2232,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
 	where ES::Target: EntropySource
 	{
+		debug_assert!(self.interactive_tx_constructor.is_none());
+
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
 
@@ -2241,14 +2243,9 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)?;
 
-		let total_input_satoshis: u64 = funding_inputs_prev_outputs.iter().map(|txout| txout.value.to_sat()).sum();
-		if total_input_satoshis < self.dual_funding_context.our_funding_satoshis {
-			return Err(ChannelError::Warn(format!(
-				"Total value of funding inputs must be at least funding amount. It was {} sats", total_input_satoshis,
-			)));
-		}
-
 		// Add output for funding tx
+		// Note: For the error case when the inputs are insufficient, it will be handled after
+		// the `calculate_change_output_value` call below
 		let mut funding_outputs = Vec::new();
 		let funding_output_value_satoshis = self.funding.get_value_satoshis();
 		let funding_output_script_pubkey = self.funding.get_funding_redeemscript().to_p2wsh();

@@ -1699,19 +1699,17 @@ pub(super) fn calculate_change_output_value(
 
 	// Note: in case of additional outputs, they will have to be subtracted here
 
-	let min_contribution_and_fees = our_contribution.saturating_add(fees_sats);
-	if total_input_satoshis < min_contribution_and_fees {
+	let total_inputs_less_fees = total_input_satoshis.saturating_sub(fees_sats);
+	if total_inputs_less_fees < our_contribution {
 		// Not enough to cover contribution plus fees
 		return Err(AbortReason::InsufficientFees);
 	}
-	let min_contribution_and_fees_and_dust =
-		min_contribution_and_fees.saturating_add(holder_dust_limit_satoshis);
-	if total_input_satoshis < min_contribution_and_fees_and_dust {
+	let remaining_value = total_inputs_less_fees.saturating_sub(our_contribution);
+	if remaining_value < holder_dust_limit_satoshis {
 		// Enough to cover contribution plus fees, but leftover is below dust limit; no change
 		Ok(None)
 	} else {
 		// Enough to have over-dust change
-		let remaining_value = total_input_satoshis.saturating_sub(min_contribution_and_fees);
 		Ok(Some(remaining_value))
 	}
 }
