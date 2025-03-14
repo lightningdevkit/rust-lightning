@@ -5,7 +5,7 @@ use common::{create_service_and_client_nodes, get_lsps_message};
 
 use lightning::util::hash_tables::HashSet;
 use lightning_liquidity::events::LiquidityEvent;
-use lightning_liquidity::lsps0::ser::LSPSRequestId;
+use lightning_liquidity::lsps0::ser::{LSPSDateTime, LSPSRequestId};
 use lightning_liquidity::lsps5::client::LSPS5ClientConfig;
 use lightning_liquidity::lsps5::event::{LSPS5ClientEvent, LSPS5ServiceEvent};
 use lightning_liquidity::lsps5::msgs::WebhookNotificationMethod;
@@ -70,7 +70,10 @@ impl HttpClient for MockHttpClientWrapper {
 
 #[test]
 fn webhook_registration_flow() {
-	let lsps5_service_config: LSPS5ServiceConfig = LSPS5ServiceConfig::default();
+	let mock_client = Arc::new(MockHttpClient::new(true));
+	let mut lsps5_service_config: LSPS5ServiceConfig = LSPS5ServiceConfig::default();
+	lsps5_service_config =
+		lsps5_service_config.with_http_client(MockHttpClientWrapper(mock_client));
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
@@ -153,6 +156,8 @@ fn webhook_registration_flow() {
 		},
 		_ => panic!("Unexpected event"),
 	}
+
+	service_node.liquidity_manager.next_event().unwrap(); // Skip the WebhookNotificationSent event
 
 	// Test list_webhooks - now capture the request ID
 	let list_request_id = client_handler
@@ -256,6 +261,8 @@ fn webhook_registration_flow() {
 		_ => panic!("Unexpected event"),
 	}
 
+	service_node.liquidity_manager.next_event().unwrap(); // Skip the WebhookNotificationSent event
+
 	// Test remove_webhook - now capture the request ID
 	let remove_request_id = client_handler
 		.remove_webhook(service_node_id, app_name.to_string())
@@ -300,7 +307,10 @@ fn webhook_registration_flow() {
 
 #[test]
 fn webhook_error_handling_test() {
-	let lsps5_service_config: LSPS5ServiceConfig = LSPS5ServiceConfig::default();
+	let mock_client = Arc::new(MockHttpClient::new(true));
+	let mut lsps5_service_config: LSPS5ServiceConfig = LSPS5ServiceConfig::default();
+	lsps5_service_config =
+		lsps5_service_config.with_http_client(MockHttpClientWrapper(mock_client));
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
@@ -987,7 +997,7 @@ fn unknown_method_and_malformed_notification_test() {
 
 	// Test Case 1: Unknown notification method
 	// Spec: "Notification delivery services MUST ignore any notification method it does not recognize."
-	let timestamp1 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp1 = LSPSDateTime::now().to_rfc3339();
 	let unknown_notification = create_notification("lsps5.unknown_method", json!({"some": "data"}));
 	let body1 = unknown_notification.to_string();
 	let signature1 = sign_notification_with_key(&body1, &timestamp1);
@@ -1008,7 +1018,7 @@ fn unknown_method_and_malformed_notification_test() {
 	})
 	.to_string();
 
-	let timestamp2 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp2 = LSPSDateTime::now().to_rfc3339();
 	let signature2 = sign_notification_with_key(&invalid_jsonrpc, &timestamp2);
 
 	let invalid_jsonrpc_result = client_handler.parse_webhook_notification(
@@ -1030,7 +1040,7 @@ fn unknown_method_and_malformed_notification_test() {
 	})
 	.to_string();
 
-	let timestamp3 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp3 = LSPSDateTime::now().to_rfc3339();
 	let signature3 = sign_notification_with_key(&missing_params, &timestamp3);
 
 	let missing_params_result = client_handler.parse_webhook_notification(
@@ -1045,7 +1055,7 @@ fn unknown_method_and_malformed_notification_test() {
 
 	// Test Case 4: Extra unrecognized parameters in notification
 	// Spec: "Notification delivery services MUST ignore any parameters it does not recognize."
-	let timestamp4 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp4 = LSPSDateTime::now().to_rfc3339();
 	let extra_params_notification = create_notification(
 		"lsps5.expiry_soon",
 		json!({
@@ -1068,7 +1078,7 @@ fn unknown_method_and_malformed_notification_test() {
 
 	// Test Case 5: Valid signature verification
 	// Spec requires validating the signature against the timestamp and notification body
-	let timestamp5 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp5 = LSPSDateTime::now().to_rfc3339();
 	let valid_notification = create_notification("lsps5.payment_incoming", json!({}));
 	let body5 = valid_notification.to_string();
 	let signature5 = sign_notification_with_key(&body5, &timestamp5);
@@ -1081,7 +1091,7 @@ fn unknown_method_and_malformed_notification_test() {
 
 	// Test Case 6: Invalid signature
 	// Spec: The notification delivery service "MUST validate the signature against the message template"
-	let timestamp6 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp6 = LSPSDateTime::now().to_rfc3339();
 	let notification6 = create_notification("lsps5.payment_incoming", json!({}));
 	let body6 = notification6.to_string();
 	let invalid_signature = "lspsig:abcdef1234567890"; // Invalid signature
@@ -1098,7 +1108,7 @@ fn unknown_method_and_malformed_notification_test() {
 
 	// Test Case 7: Invalid JSON
 	// Spec requires the body to be a valid JSON-RPC 2.0 Notification Object
-	let timestamp7 = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+	let timestamp7 = LSPSDateTime::now().to_rfc3339();
 	let invalid_json = "{not valid json";
 	let signature7 = sign_notification_with_key(invalid_json, &timestamp7);
 
@@ -1123,7 +1133,7 @@ fn unknown_method_and_malformed_notification_test() {
 	];
 
 	for (method, params) in standard_methods.iter() {
-		let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+		let timestamp = LSPSDateTime::now().to_rfc3339();
 		let notification = create_notification(method, params.clone());
 		let body = notification.to_string();
 		let signature = sign_notification_with_key(&body, &timestamp);
