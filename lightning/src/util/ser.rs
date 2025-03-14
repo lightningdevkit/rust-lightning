@@ -15,6 +15,7 @@
 
 use crate::io::{self, BufRead, Read, Write};
 use crate::io_extras::{copy, sink};
+use crate::ln::onion_utils::{HMAC_COUNT, HMAC_LEN, HOLD_TIME_LEN, MAX_HOPS};
 use crate::prelude::*;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
@@ -727,6 +728,10 @@ impl_array!(1300, u8); // for OnionPacket.hop_data
 
 impl_array!(8, u16);
 impl_array!(32, u16);
+
+// Implement array serialization for attribution_data.
+impl_array!(MAX_HOPS * HOLD_TIME_LEN, u8);
+impl_array!(HMAC_LEN * HMAC_COUNT, u8);
 
 /// A type for variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.

@@ -7114,6 +7114,7 @@ pub fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 		channel_id: chan.2,
 		htlc_id: 0,
 		reason: Vec::new(),
+		attribution_data: None,
 	};
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_msg);
