@@ -1668,7 +1668,7 @@ impl_writeable_tlv_based!(FundingScope, {
 	(2, holder_selected_channel_reserve_satoshis, required),
 	(3, holder_max_commitment_tx_output, required),
 	(4, counterparty_max_commitment_tx_output, required),
-	(5, channel_transaction_parameters, (required: ReadableArgs, 0)), // FIXME: This won't work
+	(5, channel_transaction_parameters, (required: ReadableArgs, None)),
 	(6, funding_transaction, option),
 });
 
@@ -1679,7 +1679,7 @@ impl_writeable_tlv_based!(FundingScope, {
 	(2, holder_selected_channel_reserve_satoshis, required),
 	(3, holder_max_commitment_tx_output, required),
 	(4, counterparty_max_commitment_tx_output, required),
-	(5, channel_transaction_parameters, (required: ReadableArgs, 0)),
+	(5, channel_transaction_parameters, (required: ReadableArgs, None)),
 	(6, funding_transaction, option),
 	(126, next_local_commitment_tx_fee_info_cached, required), // FIXME: This won't work
 	(127, next_remote_commitment_tx_fee_info_cached, required), // FIXME: This won't work
@@ -10795,7 +10795,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let mut channel_parameters: ChannelTransactionParameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
+		let mut channel_parameters: ChannelTransactionParameters = ReadableArgs::<Option<u64>>::read(reader, Some(channel_value_satoshis))?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
