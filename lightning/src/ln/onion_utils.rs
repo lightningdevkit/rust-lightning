@@ -41,6 +41,8 @@ use core::ops::Deref;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+const DEFAULT_MIN_FAILURE_PACKET_LEN: usize = 256;
+
 pub(crate) struct OnionKeys {
 	#[cfg(test)]
 	pub(crate) shared_secret: SharedSecret,
@@ -889,15 +891,16 @@ fn process_chacha(key: &[u8; 32], packet: &mut [u8]) {
 }
 
 fn build_unencrypted_failure_packet(
-	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
+	shared_secret: &[u8], failure_type: u16, failure_data: &[u8], min_packet_len: usize,
 ) -> OnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
-	assert!(failure_data.len() <= 256 - 2);
+	assert!(failure_data.len() <= 64531);
 
 	// Failure len is 2 bytes type plus the data.
 	let failure_len = 2 + failure_data.len();
 
-	let pad_len = 256 - failure_len;
+	// The remaining length is the padding.
+	let pad_len = min_packet_len.saturating_sub(failure_len);
 
 	// Total len is a 32 bytes HMAC, 2 bytes failure len, failure, 2 bytes pad len and pad.
 	let total_len = 32 + 2 + failure_len + 2 + pad_len;
@@ -929,8 +932,12 @@ fn build_unencrypted_failure_packet(
 pub(super) fn build_failure_packet(
 	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
 ) -> OnionErrorPacket {
-	let mut onion_error_packet =
-		build_unencrypted_failure_packet(shared_secret, failure_type, failure_data);
+	let mut onion_error_packet = build_unencrypted_failure_packet(
+		shared_secret,
+		failure_type,
+		failure_data,
+		DEFAULT_MIN_FAILURE_PACKET_LEN,
+	);
 
 	crypt_failure_packet(shared_secret, &mut onion_error_packet);
 
@@ -2170,7 +2177,8 @@ mod tests {
 
 	use crate::io;
 	use crate::ln::channelmanager::PaymentId;
-	use crate::ln::msgs;
+	use crate::ln::msgs::{self, UpdateFailHTLC};
+	use crate::ln::types::ChannelId;
 	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::types::payment::PaymentHash;
@@ -2504,6 +2512,7 @@ mod tests {
 			onion_keys[4].shared_secret.as_ref(),
 			0x2002,
 			&[0; 0],
+			DEFAULT_MIN_FAILURE_PACKET_LEN,
 		);
 		let hex = "4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 		assert_eq!(onion_error.data, <Vec<u8>>::from_hex(hex).unwrap());
@@ -2673,6 +2682,7 @@ mod tests {
 					outer_onion_keys[0].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
 
 				crypt_failure_packet(
@@ -2692,6 +2702,7 @@ mod tests {
 					outer_onion_keys[1].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
 
 				crypt_failure_packet(
@@ -2720,6 +2731,7 @@ mod tests {
 					trampoline_onion_keys[0].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
 
 				crypt_failure_packet(
@@ -2753,6 +2765,7 @@ mod tests {
 					trampoline_onion_keys[1].shared_secret.as_ref(),
 					error_code,
 					&[0; 0],
+					DEFAULT_MIN_FAILURE_PACKET_LEN,
 				);
 
 				crypt_failure_packet(
@@ -2905,5 +2918,46 @@ mod tests {
 		route_params.payment_params.max_total_cltv_expiry_delta = u32::MAX;
 		let recipient_onion = RecipientOnionFields::spontaneous_empty();
 		set_max_path_length(&mut route_params, &recipient_onion, None, None, 42).unwrap();
+	}
+
+	#[test]
+	fn test_failure_packet_max_size() {
+		// Create a failure message of the maximum size of 65535 bytes. It is composed of:
+		// - 32 bytes channel id
+		// - 8 bytes htlc id
+		// - 2 bytes reason length
+		//    - 32 bytes of hmac
+		//    - 2 bytes of failure type
+		//    - 2 bytes of failure length
+		//    - 64531 bytes of failure data
+		//    - 2 bytes of pad len (0)
+		// - 1 byte attribution data tlv type
+		// - 3 bytes attribution data tlv length
+		//    - 80 bytes of attribution data hold times
+		//    - 840 bytes of attribution data hmacs
+		let failure_data = vec![0; 64531];
+
+		let shared_secret = [0; 32];
+		let onion_error = super::build_unencrypted_failure_packet(
+			&shared_secret,
+			0x2002,
+			&failure_data,
+			DEFAULT_MIN_FAILURE_PACKET_LEN,
+		);
+
+		let msg = UpdateFailHTLC {
+			channel_id: ChannelId([0; 32]),
+			htlc_id: 0,
+			reason: onion_error.data,
+			attribution_data: Some(AttributionData {
+				hold_times: [0; MAX_HOPS * HOLD_TIME_LEN],
+				hmacs: [0; HMAC_LEN * HMAC_COUNT],
+			}),
+		};
+
+		let mut buffer = Vec::new();
+		msg.write(&mut buffer).unwrap();
+
+		assert_eq!(buffer.len(), 65535);
 	}
 }
