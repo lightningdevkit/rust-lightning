@@ -35,7 +35,8 @@ use crate::prelude::*;
 /// ## Example
 /// ```
 /// use lightning::ln::our_peer_storage::OurPeerStorage;
-/// let key = [0u8; 32];
+/// use lightning::chain::chainmonitor::PeerStorageKey;
+/// let key = PeerStorageKey::new([0u8; 32]);
 /// let our_peer_storage = OurPeerStorage::create_from_data(key.clone(), vec![1,2,3]);
 /// let decrypted_data = our_peer_storage.decrypt_our_peer_storage(key).unwrap();
 /// assert_eq!(decrypted_data, vec![1 , 2, 3]);
