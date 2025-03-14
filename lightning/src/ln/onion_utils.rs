@@ -1095,44 +1095,39 @@ where
 		}
 	}
 
-	let (num_blinded_hops, num_trampoline_hops) =
-		path.blinded_tail.as_ref().map_or((0, 0), |bt| (bt.hops.len(), bt.trampoline_hops.len()));
-
-	// We are first collecting all the unblinded `RouteHop`s inside `onion_keys`. Then, if applicable,
-	// we will add all the `TrampolineHop`s, and finally, the blinded hops.
-	let mut onion_keys =
-		Vec::with_capacity(path.hops.len() + num_trampoline_hops + num_blinded_hops);
+	let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
 
 	// if we have Trampoline hops, the blinded hops are part of the inner Trampoline onion
-	let nontrampoline_bp =
+	let nontrampoline_bt =
 		if path.has_trampoline_hops() { None } else { path.blinded_tail.as_ref() };
-	let nontrampoline_hops =
-		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bp, outer_session_priv);
-	for (shared_secret, _, _, route_hop_option, _) in nontrampoline_hops {
-		onion_keys.push((route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret));
-	}
+	let nontrampolines =
+		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bt, outer_session_priv)
+			.map(|(shared_secret, _, _, route_hop_option, _)| {
+				(route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret)
+			});
 
-	if path.has_trampoline_hops() {
+	let trampolines = if path.has_trampoline_hops() {
 		// Trampoline hops are part of the blinded tail, so this can never panic
 		let blinded_tail = path.blinded_tail.as_ref();
 		let hops = &blinded_tail.unwrap().trampoline_hops;
 		let inner_session_priv =
 			inner_session_priv.expect("Trampoline hops always have an inner session priv");
-		let trampoline_hops =
-			construct_onion_keys_generic(secp_ctx, hops, blinded_tail, inner_session_priv);
-		for (shared_secret, _, _, trampoline_hop_option, _) in trampoline_hops {
-			onion_keys
-				.push((trampoline_hop_option.map(|th| ErrorHop::TrampolineHop(th)), shared_secret));
-		}
-	}
+		Some(construct_onion_keys_generic(secp_ctx, hops, blinded_tail, inner_session_priv).map(
+			|(shared_secret, _, _, route_hop_option, _)| {
+				(route_hop_option.map(|tram_hop| ErrorHop::TrampolineHop(tram_hop)), shared_secret)
+			},
+		))
+	} else {
+		None
+	};
 
 	// In the best case, paths can be up to 27 hops. But attribution data can only be conveyed back to the sender from
 	// the first 20 hops. Determine the number of hops to be used for attribution data.
 	let attributable_hop_count = usize::min(path.hops.len(), MAX_HOPS);
 
 	// Handle packed channel/node updates for passing back for the route handler
-	let mut iterator = onion_keys.into_iter().enumerate().peekable();
-	while let Some((route_hop_idx, (route_hop_option, shared_secret))) = iterator.next() {
+	let mut iter = nontrampolines.chain(trampolines.into_iter().flatten()).enumerate().peekable();
+	while let Some((route_hop_idx, (route_hop_option, shared_secret))) = iter.next() {
 		let route_hop = match route_hop_option.as_ref() {
 			Some(hop) => hop,
 			None => {
@@ -1154,7 +1149,7 @@ where
 		// For 1-hop blinded paths, the final `ErrorHop` entry is the recipient.
 		// In our case that means that if we're on the last iteration, and there is no more than one
 		// blinded hop, the current iteration references the last non-blinded hop.
-		let next_hop = iterator.peek();
+		let next_hop = iter.peek();
 		is_from_final_non_blinded_node = next_hop.is_none() && num_blinded_hops <= 1;
 		let failing_route_hop = if is_from_final_non_blinded_node {
 			route_hop
