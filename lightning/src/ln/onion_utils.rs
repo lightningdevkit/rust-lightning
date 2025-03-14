@@ -1378,8 +1378,19 @@ pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 enum HTLCFailReasonRepr {
-	LightningError { err: msgs::OnionErrorPacket },
+	LightningError { err: msgs::OnionErrorPacket, hold_time: Option<u32> },
 	Reason { failure_code: u16, data: Vec<u8> },
+}
+
+impl HTLCFailReason {
+	pub fn set_hold_time(&mut self, hold_time: u32) {
+		match self.0 {
+			HTLCFailReasonRepr::LightningError { hold_time: ref mut current_hold_time, .. } => {
+				*current_hold_time = Some(hold_time);
+			},
+			_ => {},
+		}
+	}
 }
 
 impl core::fmt::Debug for HTLCFailReason {
@@ -1422,6 +1433,7 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 				None
 			})
 		),
+		(3, hold_time, option),
 		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)?, attribution_data })),
 	},
 	(1, Reason) => {
@@ -1484,6 +1496,7 @@ impl HTLCFailReason {
 				data: msg.reason.clone(),
 				attribution_data: msg.attribution_data.clone(),
 			},
+			hold_time: None,
 		})
 	}
 
@@ -1508,7 +1521,7 @@ impl HTLCFailReason {
 					build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..])
 				}
 			},
-			HTLCFailReasonRepr::LightningError { ref err } => {
+			HTLCFailReasonRepr::LightningError { ref err, .. } => {
 				let mut err = err.clone();
 
 				crypt_failure_packet(incoming_packet_shared_secret, &mut err);
@@ -1525,7 +1538,7 @@ impl HTLCFailReason {
 		L::Target: Logger,
 	{
 		match self.0 {
-			HTLCFailReasonRepr::LightningError { ref err } => {
+			HTLCFailReasonRepr::LightningError { ref err, .. } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
 			},
 			#[allow(unused)]
