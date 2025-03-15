@@ -295,7 +295,7 @@ fn test_fee_failures() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config)]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1), create_announced_chan_between_nodes(&nodes, 1, 2)];
 
@@ -351,7 +351,7 @@ fn test_onion_failure() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(node_2_cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config), Some(node_2_cfg)]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1), create_announced_chan_between_nodes(&nodes, 1, 2)];
 	for node in nodes.iter() {
@@ -756,7 +756,7 @@ fn test_onion_failure() {
 fn test_overshoot_final_cltv() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None; 3]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
@@ -920,7 +920,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 		.find(|channel| channel.channel_id == channel_to_update.0).unwrap()
 		.config.unwrap();
 	config.forwarding_fee_base_msat = u32::max_value();
-	let msg = update_and_get_channel_update(&config, true, None, false).unwrap();
+	let msg = update_and_get_channel_update(&config.clone(), true, None, false).unwrap();
 
 	// The old policy should still be in effect until a new block is connected.
 	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[2]]], PAYMENT_AMT,
@@ -957,7 +957,7 @@ fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	let config_after_restart = {
 		let chan_1_monitor_serialized = get_monitor!(nodes[1], other_channel.3).encode();
 		let chan_2_monitor_serialized = get_monitor!(nodes[1], channel_to_update.0).encode();
-		reload_node!(nodes[1], *nodes[1].node.get_current_default_configuration(), &nodes[1].node.encode(),
+		reload_node!(nodes[1], nodes[1].node.get_current_default_configuration().clone(), &nodes[1].node.encode(),
 			&[&chan_1_monitor_serialized, &chan_2_monitor_serialized], persister, chain_monitor, channel_manager_1_deserialized);
 		nodes[1].node.list_channels().iter()
 			.find(|channel| channel.channel_id == channel_to_update.0).unwrap()

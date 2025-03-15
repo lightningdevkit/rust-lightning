@@ -217,7 +217,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
-				_encode_varint_length_prefixed_tlv!(w, { (4, *encrypted_bytes, required_vec) })
+				_encode_varint_length_prefixed_tlv!(w, { (4, encrypted_bytes, required_vec) })
 			},
 			Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes),
@@ -226,7 +226,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, *encrypted_bytes, required_vec),
+					(4, encrypted_bytes, required_vec),
 					(message.tlv_type(), message, required)
 				})
 			},

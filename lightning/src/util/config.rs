@@ -807,7 +807,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 ///
 /// `Default::default()` provides sane defaults for most configurations
 /// (but currently with zero relay fees!)
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct UserConfig {
 	/// Channel handshake config that we propose to our counterparty.
 	pub channel_handshake_config: ChannelHandshakeConfig,

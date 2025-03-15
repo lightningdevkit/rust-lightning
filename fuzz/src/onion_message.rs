@@ -343,8 +343,7 @@ mod tests {
 			assert_eq!(
 				log_entries.get(&(
 					"lightning::onion_message::messenger".to_string(),
-					"Received an onion message with a reply_path: Custom(TestCustomMessage)"
-						.to_string()
+					"Received an onion message with a reply_path: TestCustomMessage".to_string()
 				)),
 				Some(&1)
 			);

@@ -105,7 +105,7 @@ pub fn test_insane_channel_opens() {
 	cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Instantiate channel parameters where we push the maximum msats given our
@@ -2912,7 +2912,7 @@ pub fn test_multiple_package_conflicts() {
 	user_cfg.manually_accept_inbound_channels = true;
 
 	let node_chanmgrs =
-		create_node_chanmgrs(3, &node_cfgs, &[Some(user_cfg), Some(user_cfg), Some(user_cfg)]);
+		create_node_chanmgrs(3, &node_cfgs, &[Some(user_cfg.clone()), Some(user_cfg.clone()), Some(user_cfg)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Since we're using anchor channels, make sure each node has a UTXO for paying fees.
@@ -10615,7 +10615,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	config.channel_handshake_config.our_htlc_minimum_msat = 1;
 	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Leave enough on the funder side to let it pay the mining fees for a commit tx with tons of htlcs
@@ -11803,7 +11803,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut min_depth_1_block_cfg = test_default_channel_config();
 	min_depth_1_block_cfg.channel_handshake_config.minimum_depth = 1;
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(min_depth_1_block_cfg), Some(min_depth_1_block_cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(min_depth_1_block_cfg.clone()), Some(min_depth_1_block_cfg)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
@@ -11892,7 +11892,7 @@ pub fn test_manual_funding_abandon() {
 	cfg.channel_handshake_config.minimum_depth = 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg), Some(cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).is_ok());
@@ -11934,7 +11934,7 @@ pub fn test_funding_signed_event() {
 	cfg.channel_handshake_config.minimum_depth = 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg), Some(cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).is_ok());

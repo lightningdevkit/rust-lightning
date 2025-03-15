@@ -3144,7 +3144,7 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 			},
 			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point } => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(10, **encrypted_tlvs, required_vec),
+					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option)
 				});
 			},
@@ -3165,7 +3165,7 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
-					(10, **encrypted_tlvs, required_vec),
+					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
 					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
 				}, custom_tlvs.iter());
@@ -3206,7 +3206,7 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 			},
 			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point} => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(10, **encrypted_tlvs, required_vec),
+					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option)
 				});
 			},
@@ -3214,7 +3214,7 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
-					(10, **encrypted_tlvs, required_vec),
+					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
 					(18, HighZeroBytesDroppedBigSize(*total_msat), required),
 					(20, keysend_preimage, option)
@@ -5592,7 +5592,7 @@ mod tests {
 		let test_bytes = vec![42u8; 1000];
 		if let msgs::OutboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } = payload {
 			_encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
-				(1, test_bytes, required_vec),
+				(1, &test_bytes, required_vec),
 				(2, HighZeroBytesDroppedBigSize(amt_to_forward), required),
 				(4, HighZeroBytesDroppedBigSize(outgoing_cltv_value), required),
 				(6, short_channel_id, required)
