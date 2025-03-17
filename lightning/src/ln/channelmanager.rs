@@ -5984,7 +5984,7 @@ where
 													onion_packet.hmac, payment_hash, None, &*self.node_signer
 												) {
 													Ok(res) => res,
-													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code, .. }) => {
 														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
 														// In this scenario, the phantom would have sent us an
 														// `update_fail_malformed_htlc`, meaning here we encrypt the error as
