@@ -2078,7 +2078,7 @@ mod fuzzy_internal_msgs {
 	pub struct InboundTrampolineEntrypointPayload {
 		pub amt_to_forward: u64,
 		pub outgoing_cltv_value: u32,
-		pub multipath_trampoline_data: FinalOnionHopData,
+		pub multipath_trampoline_data: Option<FinalOnionHopData>,
 		pub trampoline_packet: TrampolineOnionPacket,
 		/// The blinding point this hop needs to decrypt its Trampoline onion.
 		/// This is used for Trampoline hops that are not the blinded path intro hop.
@@ -3272,7 +3272,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			return Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
-				multipath_trampoline_data: payment_data.ok_or(DecodeError::InvalidValue)?,
+				multipath_trampoline_data: payment_data,
 				trampoline_packet: trampoline_onion_packet,
 				current_path_key: intro_node_blinding_point,
 			}))
