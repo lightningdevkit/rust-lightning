@@ -65,6 +65,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdat
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
+use crate::offers::flow::OFFERS_MESSAGE_REQUEST_LIMIT;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
@@ -10340,13 +10341,6 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		Ok(builder.into())
 	}
 } }
-
-/// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
-/// along different paths.
-/// Sending multiple requests increases the chances of successful delivery in case some
-/// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
-/// even if multiple invoices are received.
-const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
