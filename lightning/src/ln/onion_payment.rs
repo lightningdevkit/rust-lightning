@@ -265,7 +265,36 @@ pub(super) fn create_recv_pending_htlc_info(
 			 sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
 			 intro_node_blinding_point.is_none(), true, invoice_request)
 		}
-		onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => todo!(),
+		onion_utils::Hop::TrampolineReceive {
+			trampoline_hop_data: msgs::InboundOnionReceivePayload {
+				payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+				cltv_expiry_height, payment_metadata, ..
+			}, ..
+		} =>
+			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+				cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None),
+		onion_utils::Hop::TrampolineBlindedReceive {
+			trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload {
+				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
+				intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
+				custom_tlvs, invoice_request
+			}, ..
+		} => {
+			check_blinded_payment_constraints(
+				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints,
+			)
+				.map_err(|()| {
+					InboundHTLCErr {
+						err_code: INVALID_ONION_BLINDING,
+						err_data: vec![0; 32],
+						msg: "Amount or cltv_expiry violated blinded payment constraints within Trampoline onion",
+					}
+				})?;
+			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
+			(Some(payment_data), keysend_preimage, custom_tlvs,
+				sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
+				intro_node_blinding_point.is_none(), true, invoice_request)
+		},
 		onion_utils::Hop::Forward { .. } => {
 			return Err(InboundHTLCErr {
 				err_code: 0x4000|22,
