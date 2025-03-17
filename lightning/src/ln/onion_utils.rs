@@ -22,7 +22,9 @@ use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::{self, APIError};
 use crate::util::logger::Logger;
-use crate::util::ser::{LengthCalculatingWriter, Readable, ReadableArgs, Writeable, Writer};
+use crate::util::ser::{
+	LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer,
+};
 
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -892,27 +894,36 @@ fn build_unencrypted_failure_packet(
 	assert_eq!(shared_secret.len(), 32);
 	assert!(failure_data.len() <= 256 - 2);
 
+	// Failure len is 2 bytes type plus the data.
+	let failure_len = 2 + failure_data.len();
+
+	let pad_len = 256 - failure_len;
+
+	// Total len is a 32 bytes HMAC, 2 bytes failure len, failure, 2 bytes pad len and pad.
+	let total_len = 32 + 2 + failure_len + 2 + pad_len;
+
+	let mut writer = VecWriter(Vec::with_capacity(total_len));
+
+	// Reserve space for the HMAC.
+	writer.0.extend_from_slice(&[0; 32]);
+
+	// Write failure len, type and data.
+	(failure_len as u16).write(&mut writer).unwrap();
+	failure_type.write(&mut writer).unwrap();
+	writer.0.extend_from_slice(&failure_data[..]);
+
+	// Write pad len and resize to match padding.
+	(pad_len as u16).write(&mut writer).unwrap();
+	writer.0.resize(total_len, 0);
+
+	// Calculate and store HMAC.
 	let um = gen_um_from_shared_secret(&shared_secret);
-
-	let failuremsg = {
-		let mut res = Vec::with_capacity(2 + failure_data.len());
-		res.push(((failure_type >> 8) & 0xff) as u8);
-		res.push(((failure_type >> 0) & 0xff) as u8);
-		res.extend_from_slice(&failure_data[..]);
-		res
-	};
-	let pad = {
-		let mut res = Vec::with_capacity(256 - 2 - failure_data.len());
-		res.resize(256 - 2 - failure_data.len(), 0);
-		res
-	};
-	let mut packet = msgs::DecodedOnionErrorPacket { hmac: [0; 32], failuremsg, pad };
-
 	let mut hmac = HmacEngine::<Sha256>::new(&um);
-	hmac.input(&packet.encode()[32..]);
-	packet.hmac = Hmac::from_engine(hmac).to_byte_array();
+	hmac.input(&writer.0[32..]);
+	let hmac = Hmac::from_engine(hmac).to_byte_array();
+	writer.0[..32].copy_from_slice(&hmac);
 
-	OnionErrorPacket { data: packet.encode(), attribution_data: None }
+	OnionErrorPacket { data: writer.0, attribution_data: None }
 }
 
 pub(super) fn build_failure_packet(
