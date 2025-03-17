@@ -592,10 +592,10 @@ impl Readable for BlindedPaymentTlvs {
 impl Readable for BlindedTrampolineTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_stream!(r, {
+			(4, next_trampoline, option),
 			(8, next_blinding_override, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
-			(14, next_trampoline, option),
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
