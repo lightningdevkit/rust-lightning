@@ -1225,7 +1225,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 					$($tuple_variant_id => {
 						let length: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
 						let mut s = $crate::util::ser::FixedLengthReader::new(reader, length.0);
-						let res = $crate::util::ser::Readable::read(&mut s)?;
+						let res = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut s)?;
 						if s.bytes_remain() {
 							s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 							return Err($crate::ln::msgs::DecodeError::InvalidValue);
