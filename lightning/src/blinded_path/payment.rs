@@ -514,6 +514,24 @@ impl Writeable for ForwardTlvs {
 	}
 }
 
+#[cfg(trampoline)]
+impl Writeable for TrampolineForwardTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let features_opt = if self.features == BlindedHopFeatures::empty() {
+			None
+		} else {
+			Some(WithoutLength(&self.features))
+		};
+		encode_tlv_stream!(w, {
+			(4, self.next_trampoline, required),
+			(10, self.payment_relay, required),
+			(12, self.payment_constraints, required),
+			(14, features_opt, option)
+		});
+		Ok(())
+	}
+}
+
 impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		encode_tlv_stream!(w, {
