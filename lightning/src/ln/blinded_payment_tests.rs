@@ -41,6 +41,9 @@ use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
 use crate::blinded_path::BlindedHop;
 
+#[cfg(trampoline)]
+use crate::routing::router::Route;
+
 pub fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
@@ -1957,4 +1960,104 @@ fn test_trampoline_inbound_payment_decoding() {
 	} else {
 		panic!();
 	};
+}
+
+#[test]
+#[cfg(trampoline)]
+fn test_successful_trampoline_single_hop_receive() {
+	// Simulate a payment of A (0) -> B (1) -> C(Trampoline (blinded intro)) (2)
+
+	const TOTAL_NODE_COUNT: usize = 3;
+	let secp_ctx = Secp256k1::new();
+
+	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
+	let node_cfgs = create_node_cfgs(TOTAL_NODE_COUNT, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(TOTAL_NODE_COUNT, &node_cfgs, &vec![None; TOTAL_NODE_COUNT]);
+	let mut nodes = create_network(TOTAL_NODE_COUNT, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	for i in 0..TOTAL_NODE_COUNT { // connect all nodes' blocks
+		connect_blocks(&nodes[i], (TOTAL_NODE_COUNT as u32) * CHAN_CONFIRM_DEPTH + 1 - nodes[i].best_block_info().1);
+	}
+
+	let bob_node_id = nodes[1].node().get_our_node_id();
+	let carol_node_id = nodes[2].node().get_our_node_id();
+
+	let alice_bob_scid = nodes[0].node().list_channels().iter().find(|c| c.channel_id == chan_id_alice_bob).unwrap().short_channel_id.unwrap();
+	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
+
+	let amt_msat = 1000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: amt_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = nodes[2].keys_manager.get_inbound_payment_key();
+	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+	let carol_unblinded_tlvs = payee_tlvs.encode();
+
+	let path = [(carol_node_id, WithoutLength(&carol_unblinded_tlvs))];
+	let carol_alice_trampoline_session_priv = secret_from_hex("a0f4b8d7b6c2d0ffdfaf718f76e9decaef4d9fb38a8c4addb95c4007cc3eee03");
+	let carol_blinding_point = PublicKey::from_secret_key(&secp_ctx, &carol_alice_trampoline_session_priv);
+	let carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
+		&secp_ctx, path.into_iter(), &carol_alice_trampoline_session_priv
+	).unwrap();
+
+	let route = Route {
+		paths: vec![Path {
+			hops: vec![
+				// Bob
+				RouteHop {
+					pubkey: bob_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: alice_bob_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 1000,
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				},
+
+				// Carol
+				RouteHop {
+					pubkey: carol_node_id,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: bob_carol_scid,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0,
+					cltv_expiry_delta: 48,
+					maybe_announced_channel: false,
+				}
+			],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![
+					// Carol
+					TrampolineHop {
+						pubkey: carol_node_id,
+						node_features: Features::empty(),
+						fee_msat: amt_msat,
+						cltv_expiry_delta: 24,
+					},
+				],
+				hops: carol_blinded_hops,
+				blinding_point: carol_blinding_point,
+				excess_final_cltv_expiry_delta: 39,
+				final_value_msat: amt_msat,
+			})
+		}],
+		route_params: None,
+	};
+
+	nodes[0].node.send_payment_with_route(route, payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
+
+	check_added_monitors!(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
