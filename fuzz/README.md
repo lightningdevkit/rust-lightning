@@ -15,6 +15,7 @@ easily.
 We support multiple fuzzing engines such as `honggfuzz`, `libFuzzer` and `AFL`. You typically won't
 need to run the entire suite of different fuzzing tools. For local execution, `honggfuzz`should be
 more than sufficient.
+> MacOS users should prefer using `libFuzzer` since `honggfuzz` is not actively maintained for MacOS based systems
 
 ### Setup
 #### Honggfuzz
