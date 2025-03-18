@@ -273,7 +273,37 @@ pub(super) fn create_recv_pending_htlc_info(
 			 intro_node_blinding_point.is_none(), true, invoice_request)
 		}
 		#[cfg(trampoline)]
-		onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => todo!(),
+		onion_utils::Hop::TrampolineReceive {
+			trampoline_hop_data: msgs::InboundOnionReceivePayload {
+				payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+				cltv_expiry_height, payment_metadata, ..
+			}, ..
+		} =>
+			(payment_data, keysend_preimage, custom_tlvs, sender_intended_htlc_amt_msat,
+				cltv_expiry_height, payment_metadata, None, false, keysend_preimage.is_none(), None),
+		#[cfg(trampoline)]
+		onion_utils::Hop::TrampolineBlindedReceive {
+			trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload {
+				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
+				intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
+				custom_tlvs, invoice_request
+			}, ..
+		} => {
+			check_blinded_payment_constraints(
+				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints,
+			)
+				.map_err(|()| {
+					InboundHTLCErr {
+						err_code: INVALID_ONION_BLINDING,
+						err_data: vec![0; 32],
+						msg: "Amount or cltv_expiry violated blinded payment constraints",
+					}
+				})?;
+			let payment_data = msgs::FinalOnionHopData { payment_secret, total_msat };
+			(Some(payment_data), keysend_preimage, custom_tlvs,
+				sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
+				intro_node_blinding_point.is_none(), true, invoice_request)
+		},
 		onion_utils::Hop::Forward { .. } => {
 			return Err(InboundHTLCErr {
 				err_code: 0x4000|22,
@@ -474,10 +504,10 @@ where
 	L::Target: Logger,
 {
 	macro_rules! return_malformed_err {
-		($msg: expr, $err_code: expr) => {
+		($msg: expr, $err_code: expr, $force_blinding_error: expr) => {
 			{
 				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-				let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() {
+				let (sha256_of_onion, failure_code) = if $force_blinding_error || msg.blinding_point.is_some() {
 					([0; 32], INVALID_ONION_BLINDING)
 				} else {
 					(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), $err_code)
@@ -493,7 +523,7 @@ where
 	}
 
 	if let Err(_) = msg.onion_routing_packet.public_key {
-		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
+		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6, false);
 	}
 
 	if msg.onion_routing_packet.version != 0 {
@@ -503,12 +533,12 @@ where
 		//receiving node would have to brute force to figure out which version was put in the
 		//packet by the node that send us the message, in the case of hashing the hop_data, the
 		//node knows the HMAC matched, so they already know what is there...
-		return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
+		return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4, false);
 	}
 
 	let encode_relay_error = |message: &str, err_code: u16, shared_secret: [u8; 32], trampoline_shared_secret: Option<[u8; 32]>, data: &[u8]| {
 		if msg.blinding_point.is_some() {
-			return_malformed_err!(message, INVALID_ONION_BLINDING)
+			return_malformed_err!(message, INVALID_ONION_BLINDING, false)
 		}
 
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
@@ -526,8 +556,8 @@ where
 		msg.payment_hash, msg.blinding_point, node_signer
 	) {
 		Ok(res) => res,
-		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-			return_malformed_err!(err_msg, err_code);
+		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code, trampoline_onion_blinding }) => {
+			return_malformed_err!(err_msg, err_code, trampoline_onion_blinding);
 		},
 		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, trampoline_shared_secret }) => {
 			return encode_relay_error(err_msg, err_code, shared_secret.secret_bytes(), trampoline_shared_secret.map(|tss| tss.secret_bytes()), &[0; 0]);

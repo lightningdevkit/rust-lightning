@@ -1673,7 +1673,10 @@ impl Hop {
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
-	Malformed { err_msg: &'static str, err_code: u16 },
+	///
+	/// If the malformed onion packet was a blinded Trampoline hop, we communicate it up the call
+	/// stack for appropriate error handling.
+	Malformed { err_msg: &'static str, err_code: u16, trampoline_onion_blinding: bool },
 	/// We failed to decode the onion payload.
 	///
 	/// If the payload we failed to decode belonged to a Trampoline onion, following the successful
@@ -1732,6 +1735,7 @@ where
 							err_msg:
 								"Final Node OnionHopData provided for us as an intermediary node",
 							err_code: INVALID_ONION_BLINDING,
+							trampoline_onion_blinding: false,
 						});
 					}
 					Err(OnionDecodeErr::Relay {
@@ -1828,15 +1832,36 @@ where
 							trampoline_shared_secret,
 						),
 					}),
-					Ok((_, None)) => Err(OnionDecodeErr::Malformed {
+					Ok((msgs::InboundTrampolinePayload::BlindedForward(_), None)) => {
+						Err(OnionDecodeErr::Malformed {
+							err_msg: "Non-final Trampoline onion data provided to us as last hop",
+							err_code: INVALID_ONION_BLINDING,
+							trampoline_onion_blinding: true,
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::BlindedReceive(_), Some(_))) => {
+						Err(OnionDecodeErr::Malformed {
+							err_msg:
+								"Final Trampoline onion data provided to us as intermediate hop",
+							err_code: INVALID_ONION_BLINDING,
+							trampoline_onion_blinding: true,
+						})
+					},
+					Ok((_, None)) => Err(OnionDecodeErr::Relay {
 						err_msg: "Non-final Trampoline onion data provided to us as last hop",
-						// todo: find more suitable error code
 						err_code: 0x4000 | 22,
+						shared_secret,
+						trampoline_shared_secret: Some(SharedSecret::from_bytes(
+							trampoline_shared_secret,
+						)),
 					}),
-					Ok((_, Some(_))) => Err(OnionDecodeErr::Malformed {
+					Ok((_, Some(_))) => Err(OnionDecodeErr::Relay {
 						err_msg: "Final Trampoline onion data provided to us as intermediate hop",
-						// todo: find more suitable error code
 						err_code: 0x4000 | 22,
+						shared_secret,
+						trampoline_shared_secret: Some(SharedSecret::from_bytes(
+							trampoline_shared_secret,
+						)),
 					}),
 					Err(e) => Err(e),
 				}
@@ -1846,6 +1871,7 @@ where
 					return Err(OnionDecodeErr::Malformed {
 						err_msg: "Intermediate Node OnionHopData provided for us as a final node",
 						err_code: INVALID_ONION_BLINDING,
+						trampoline_onion_blinding: false,
 					});
 				}
 				Err(OnionDecodeErr::Relay {
@@ -1980,6 +2006,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
 			err_code: 0x8000 | 0x4000 | 5,
+			trampoline_onion_blinding: false,
 		});
 	}
 
