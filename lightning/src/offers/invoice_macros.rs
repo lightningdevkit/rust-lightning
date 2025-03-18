@@ -87,7 +87,7 @@ macro_rules! invoice_builder_methods_test_common { (
 	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr
 	$(, $self_mut: tt)?
 ) => {
-	#[cfg_attr(c_bindings, allow(dead_code))]
+	#[allow(dead_code)]
 	pub(crate) fn features_unchecked(
 		$($self_mut)* $self: $self_type, features: Bolt12InvoiceFeatures
 	) -> $return_type {
