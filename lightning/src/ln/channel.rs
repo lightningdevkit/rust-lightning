@@ -5745,6 +5745,11 @@ impl<SP: Deref> FundedChannel<SP> where
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
 		}
+
+		if msg.batch.is_some() {
+			return Err(ChannelError::close("Peer sent initial commitment_signed with a batch".to_owned()));
+		}
+
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
 		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "initial commitment_signed");
 
