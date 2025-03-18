@@ -5813,6 +5813,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					return Ok(None);
 				}
 
+				// Any commitment_signed not associated with a FundingScope is ignored below if a
+				// pending splice transaction has confirmed since receiving the batch.
 				let commitment_signed_batch: BTreeMap<_, _> = self.commitment_signed_batch
 					.drain(..)
 					.map(|msg| (msg.batch.as_ref().expect("commitment_signed should have a batch").funding_txid, msg))
