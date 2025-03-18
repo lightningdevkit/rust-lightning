@@ -8860,20 +8860,27 @@ impl<SP: Deref> FundedChannel<SP> where
 		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
 			let (mut htlcs_ref, counterparty_commitment_tx) =
 				self.build_commitment_no_state_update(funding, logger);
-			let counterparty_commitment_txid = counterparty_commitment_tx.trust().txid();
-			let htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
+			let htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
 				htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
-			// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
-			// and provide the full commit tx instead of the information needed to rebuild it.
-			updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
-				commitment_txid: counterparty_commitment_txid,
-				htlc_outputs: htlcs.clone(),
-				commitment_number: self.context.cur_counterparty_commitment_transaction_number,
-				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
-				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
-				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
-				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
-			});
+
+			if self.pending_funding.is_empty() {
+				// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
+				// and provide the full commit tx instead of the information needed to rebuild it.
+				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+					commitment_txid: counterparty_commitment_tx.trust().txid(),
+					htlc_outputs,
+					commitment_number: self.context.cur_counterparty_commitment_transaction_number,
+					their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
+					feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+					to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
+					to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
+				});
+			} else {
+				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX {
+					htlc_outputs,
+					commitment_tx: counterparty_commitment_tx,
+				});
+			}
 		}
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent {
