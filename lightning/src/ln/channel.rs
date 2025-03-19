@@ -66,7 +66,7 @@ use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
 use crate::prelude::*;
@@ -1517,7 +1517,7 @@ impl<SP: Deref> Channel<SP> where
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
 					pending_funding: vec![],
-					commitment_signed_batch: vec![],
+					commitment_signed_batch: BTreeMap::new(),
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -4952,7 +4952,7 @@ pub(super) struct DualFundingChannelContext {
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
 	pending_funding: Vec<FundingScope>,
-	commitment_signed_batch: Vec<msgs::CommitmentSigned>,
+	commitment_signed_batch: BTreeMap<Txid, msgs::CommitmentSigned>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -5798,6 +5798,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			// No pending splice
 			None => {
 				debug_assert!(self.pending_funding.is_empty());
+				debug_assert!(self.commitment_signed_batch.is_empty());
 				self.context
 					.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
 					.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
@@ -5808,23 +5809,24 @@ impl<SP: Deref> FundedChannel<SP> where
 			},
 			// May or may not have a pending splice
 			Some(batch) => {
-				self.commitment_signed_batch.push(msg.clone());
+				match self.commitment_signed_batch.entry(batch.funding_txid) {
+					btree_map::Entry::Vacant(entry) => { entry.insert(msg.clone()); },
+					btree_map::Entry::Occupied(entry) => {
+						return Err(ChannelError::close(format!("Peer sent commitment_signed with duplicate funding_txid {} in a batch", entry.key())));
+					},
+				}
+
 				if self.commitment_signed_batch.len() < batch.batch_size as usize {
 					return Ok(None);
 				}
 
 				// Any commitment_signed not associated with a FundingScope is ignored below if a
 				// pending splice transaction has confirmed since receiving the batch.
-				let commitment_signed_batch: BTreeMap<_, _> = self.commitment_signed_batch
-					.drain(..)
-					.map(|msg| (msg.batch.as_ref().expect("commitment_signed should have a batch").funding_txid, msg))
-					.collect();
-
 				core::iter::once(&self.funding)
 					.chain(self.pending_funding.iter())
 					.map(|funding| {
 						let funding_txid = funding.get_funding_txo().unwrap().txid;
-						let msg = commitment_signed_batch
+						let msg = self.commitment_signed_batch
 							.get(&funding_txid)
 							.ok_or_else(|| ChannelError::close(format!("Peer did not send a commitment_signed for pending splice transaction: {}", funding_txid)))?;
 						self.context
@@ -5839,6 +5841,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					.collect::<Result<Vec<_>, ChannelError>>()?
 			},
 		};
+		self.commitment_signed_batch.clear();
 
 		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
 			// We only fail to advance our commitment point/number if we're currently
@@ -9601,7 +9604,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = FundedChannel {
 			funding: self.funding,
 			pending_funding: vec![],
-			commitment_signed_batch: vec![],
+			commitment_signed_batch: BTreeMap::new(),
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -9879,7 +9882,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = FundedChannel {
 			funding: self.funding,
 			pending_funding: vec![],
-			commitment_signed_batch: vec![],
+			commitment_signed_batch: BTreeMap::new(),
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -11146,7 +11149,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				funding_transaction,
 			},
 			pending_funding: pending_funding.unwrap(),
-			commitment_signed_batch: vec![],
+			commitment_signed_batch: BTreeMap::new(),
 			context: ChannelContext {
 				user_id,
 
