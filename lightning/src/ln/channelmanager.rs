@@ -8590,14 +8590,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let tx_signatures_opt = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_entry);
+						let (funding_tx_opt, tx_signatures_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
 							});
 						}
-						if let Some(ref funding_tx) = chan.context.unbroadcasted_funding(&chan.funding) {
+						if let Some(ref funding_tx) = funding_tx_opt {
 							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 							{
 								let mut pending_events = self.pending_events.lock().unwrap();
