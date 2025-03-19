@@ -5164,6 +5164,13 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
 	pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
+	/// The signing session for the current interactive tx construction, if any.
+	///
+	/// This is populated when the interactive tx construction phase completes
+	/// (i.e., upon receiving a consecutive `tx_complete`) and the channel enters
+	/// the signing phase (`FundingNegotiated` state with the `INTERACTIVE_SIGNING` flag set).
+	///
+	/// This field is cleared once our counterparty sends a `channel_ready`.
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
@@ -11089,6 +11096,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
+			(58, self.interactive_tx_signing_session, option) // Added in 0.2
 		});
 
 		Ok(())
@@ -11405,6 +11413,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		let mut pending_funding = Some(Vec::new());
 
+		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -11443,6 +11453,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(54, pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
+			(58, interactive_tx_signing_session, option), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -11729,7 +11740,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 				is_holder_quiescence_initiator: None,
 			},
-			interactive_tx_signing_session: None,
+			interactive_tx_signing_session,
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
