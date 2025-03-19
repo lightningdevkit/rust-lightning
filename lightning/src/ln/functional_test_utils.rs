@@ -3265,6 +3265,10 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &
 }
 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
+	create_chanmon_cfgs_with_keys(node_count, None)
+}
+
+pub fn create_chanmon_cfgs_with_keys(node_count: usize, predefined_keys_ids: Option<Vec<[u8; 32]>>) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster::new(Network::Testnet);
@@ -3275,6 +3279,13 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 		let scorer = RwLock::new(test_utils::TestScorer::new());
+
+		// Set predefined keys_id if provided
+		if let Some(keys_ids) = &predefined_keys_ids {
+			if let Some(keys_id) = keys_ids.get(i) {
+				keys_manager.set_next_keys_id(*keys_id);
+			}
+		}
 
 		chan_mon_cfgs.push(TestChanMonCfg { tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, scorer });
 	}
