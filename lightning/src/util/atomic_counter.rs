@@ -33,16 +33,4 @@ impl AtomicCounter {
 			*mtx - 1
 		}
 	}
-	#[cfg(test)]
-	pub(crate) fn set_counter(&self, count: u64) {
-		#[cfg(target_has_atomic = "64")]
-		{
-			self.counter.store(count, Ordering::Release);
-		}
-		#[cfg(not(target_has_atomic = "64"))]
-		{
-			let mut mtx = self.counter.lock().unwrap();
-			*mtx = count;
-		}
-	}
 }

@@ -1496,6 +1496,7 @@ pub struct TestKeysInterface {
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 	pub unavailable_signers_ops: Mutex<HashMap<[u8; 32], HashSet<SignerOp>>>,
 	pub next_signer_disabled_ops: Mutex<HashSet<SignerOp>>,
+	pub override_next_keys_id: Mutex<Option<[u8; 32]>>,
 }
 
 impl EntropySource for TestKeysInterface {
@@ -1546,6 +1547,13 @@ impl SignerProvider for TestKeysInterface {
 	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
+		let mut override_keys = self.override_next_keys_id.lock().unwrap();
+
+		if let Some(keys_id) = *override_keys {
+			// Reset after use
+			*override_keys = None;
+			return keys_id;
+		}
 		self.backing.generate_channel_keys_id(inbound, user_channel_id)
 	}
 
@@ -1625,6 +1633,7 @@ impl TestKeysInterface {
 			expectations: Mutex::new(None),
 			unavailable_signers_ops: Mutex::new(new_hash_map()),
 			next_signer_disabled_ops: Mutex::new(new_hash_set()),
+			override_next_keys_id: Mutex::new(None),
 		}
 	}
 
@@ -1651,6 +1660,11 @@ impl TestKeysInterface {
 		}
 		let cell = states.get(&keys_id).unwrap();
 		Arc::clone(cell)
+	}
+
+	pub fn set_next_keys_id(&self, keys_id: [u8; 32]) -> &Self {
+		*self.override_next_keys_id.lock().unwrap() = Some(keys_id);
+		self
 	}
 }
 

@@ -2313,7 +2313,11 @@ fn test_claimable_balance_correct_while_payment_pending() {
 
 fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool) {
 	// Tests that we'll retry packages that were previously timelocked after we've restored them.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node0_key_id = <[u8; 32]>::from_hex("0000000000000000000000004D49E5DA0000000000000000000000000000002A").unwrap();
+	let node1_key_id = <[u8; 32]>::from_hex("0000000000000000000000004D49E5DAD000D6201F116BAFD379F1D61DF161B9").unwrap();
+	let predefined_keys_ids = Some(vec![node0_key_id, node1_key_id]);
+
+	let chanmon_cfgs = create_chanmon_cfgs_with_keys(2, predefined_keys_ids);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let persister;
 	let new_chain_monitor;
@@ -2322,10 +2326,6 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	let node_deserialized;
 
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	// Reset our RNG counters to mirror the RNG output from when this test was written.
-	nodes[0].keys_manager.backing.inner.set_counter(0x1_0000_0004);
-	nodes[1].keys_manager.backing.inner.set_counter(0x1_0000_0004);
 
 	// Open a channel, lock in an HTLC, and immediately broadcast the commitment transaction. This
 	// ensures that the HTLC timeout package is held until we reach its expiration height.
