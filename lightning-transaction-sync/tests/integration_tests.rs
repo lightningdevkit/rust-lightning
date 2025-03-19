@@ -17,9 +17,9 @@ use bitcoin::block::Header;
 use bitcoin::constants::genesis_block;
 use bitcoin::network::Network;
 use bitcoin::{Amount, BlockHash, Txid};
-use bitcoind::bitcoincore_rpc::RpcApi;
-use electrsd::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
-use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
+
+use electrsd::corepc_node::Node as BitcoinD;
+use electrsd::{corepc_node, ElectrsD};
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -28,10 +28,10 @@ use std::time::Duration;
 
 pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 	let bitcoind_exe =
-		env::var("BITCOIND_EXE").ok().or_else(|| bitcoind::downloaded_exe_path().ok()).expect(
+		env::var("BITCOIND_EXE").ok().or_else(|| corepc_node::downloaded_exe_path().ok()).expect(
 			"you need to provide an env var BITCOIND_EXE or specify a bitcoind version feature",
 		);
-	let mut bitcoind_conf = bitcoind::Conf::default();
+	let mut bitcoind_conf = corepc_node::Conf::default();
 	bitcoind_conf.network = "regtest";
 	let bitcoind = BitcoinD::with_conf(bitcoind_exe, &bitcoind_conf).unwrap();
 
@@ -47,14 +47,15 @@ pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 }
 
 pub fn generate_blocks_and_wait(bitcoind: &BitcoinD, electrsd: &ElectrsD, num: usize) {
-	let cur_height = bitcoind.client.get_block_count().expect("failed to get current block height");
-	let address = bitcoind
+	let cur_height = bitcoind
 		.client
-		.get_new_address(Some("test"), Some(AddressType::Legacy))
-		.expect("failed to get new address")
-		.assume_checked();
+		.get_block_count()
+		.expect("failed to get current block height")
+		.into_model()
+		.0;
+	let address = bitcoind.client.new_address().expect("failed to get new address");
 	// TODO: expect this Result once the WouldBlock issue is resolved upstream.
-	let _block_hashes_res = bitcoind.client.generate_to_address(num as u64, &address);
+	let _block_hashes_res = bitcoind.client.generate_to_address(num, &address);
 	wait_for_block(electrsd, cur_height as usize + num);
 }
 
@@ -175,36 +176,20 @@ macro_rules! test_syncing {
 		assert_eq!(events.len(), 1);
 
 		// Check registered confirmed transactions are marked confirmed
-		let new_address = $bitcoind
-			.client
-			.get_new_address(Some("test"), Some(AddressType::Legacy))
-			.unwrap()
-			.assume_checked();
+		let new_address = $bitcoind.client.new_address().unwrap();
 		let txid = $bitcoind
 			.client
-			.send_to_address(
-				&new_address,
-				Amount::from_sat(5000),
-				None,
-				None,
-				None,
-				None,
-				None,
-				None,
-			)
+			.send_to_address(&new_address, Amount::from_sat(5000))
+			.unwrap()
+			.0
+			.parse()
 			.unwrap();
 		let second_txid = $bitcoind
 			.client
-			.send_to_address(
-				&new_address,
-				Amount::from_sat(5000),
-				None,
-				None,
-				None,
-				None,
-				None,
-				None,
-			)
+			.send_to_address(&new_address, Amount::from_sat(5000))
+			.unwrap()
+			.0
+			.parse()
 			.unwrap();
 		$tx_sync.register_tx(&txid, &new_address.script_pubkey());
 
@@ -224,16 +209,12 @@ macro_rules! test_syncing {
 		assert!($confirmable.unconfirmed_txs.lock().unwrap().is_empty());
 
 		// Now take an arbitrary output of the second transaction and check we'll confirm its spend.
-		let tx_res = $bitcoind.client.get_transaction(&second_txid, None).unwrap();
-		let block_hash = tx_res.info.blockhash.unwrap();
-		let tx = tx_res.transaction().unwrap();
+		let tx_res = $bitcoind.client.get_transaction(second_txid).unwrap().into_model().unwrap();
+		let block_hash = tx_res.block_hash.unwrap();
+		let tx = tx_res.tx;
 		let prev_outpoint = tx.input.first().unwrap().previous_output;
-		let prev_tx = $bitcoind
-			.client
-			.get_transaction(&prev_outpoint.txid, None)
-			.unwrap()
-			.transaction()
-			.unwrap();
+		let prev_tx =
+			$bitcoind.client.get_transaction(prev_outpoint.txid).unwrap().into_model().unwrap().tx;
 		let prev_script_pubkey = prev_tx.output[prev_outpoint.vout as usize].script_pubkey.clone();
 		let output = WatchedOutput {
 			block_hash: Some(block_hash),
@@ -251,19 +232,26 @@ macro_rules! test_syncing {
 		assert!($confirmable.unconfirmed_txs.lock().unwrap().is_empty());
 
 		// Check previously confirmed transactions are marked unconfirmed when they are reorged.
-		let best_block_hash = $bitcoind.client.get_best_block_hash().unwrap();
-		$bitcoind.client.invalidate_block(&best_block_hash).unwrap();
+		let best_block_hash =
+			$bitcoind.client.get_best_block_hash().unwrap().into_model().unwrap().0;
+		$bitcoind.client.invalidate_block(best_block_hash).unwrap();
 
 		// We're getting back to the previous height with a new tip, but best block shouldn't change.
 		generate_blocks_and_wait(&$bitcoind, &$electrsd, 1);
-		assert_ne!($bitcoind.client.get_best_block_hash().unwrap(), best_block_hash);
+		assert_ne!(
+			$bitcoind.client.get_best_block_hash().unwrap().into_model().unwrap().0,
+			best_block_hash
+		);
 		maybe_await!($tx_sync.sync(vec![&$confirmable])).unwrap();
 		let events = std::mem::take(&mut *$confirmable.events.lock().unwrap());
 		assert_eq!(events.len(), 0);
 
 		// Now we're surpassing previous height, getting new tip.
 		generate_blocks_and_wait(&$bitcoind, &$electrsd, 1);
-		assert_ne!($bitcoind.client.get_best_block_hash().unwrap(), best_block_hash);
+		assert_ne!(
+			$bitcoind.client.get_best_block_hash().unwrap().into_model().unwrap().0,
+			best_block_hash
+		);
 		maybe_await!($tx_sync.sync(vec![&$confirmable])).unwrap();
 
 		// Transactions still confirmed but under new tip.
