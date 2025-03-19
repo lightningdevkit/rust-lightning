@@ -2630,10 +2630,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => {
-				self.funding.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
-				commitment_signed
-			},
+			Ok(commitment_signed) => commitment_signed,
 			Err(err) => {
 				self.funding.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
@@ -6863,10 +6860,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.channel_state.set_their_tx_signatures_sent();
 
 			if funding_tx_opt.is_some() {
-				// We have a finalized funding transaction, so we can set the funding transaction and reset the
-				// signing session fields.
+				// We have a finalized funding transaction, so we can set the funding transaction.
 				self.funding.funding_transaction = funding_tx_opt.clone();
-				self.interactive_tx_signing_session = None;
 			}
 
 			// Note that `holder_tx_signatures_opt` will be `None` if we sent `tx_signatures` first, so this
