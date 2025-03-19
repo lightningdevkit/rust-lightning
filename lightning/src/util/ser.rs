@@ -15,6 +15,7 @@
 
 use crate::io::{self, BufRead, Read, Write};
 use crate::io_extras::{copy, sink};
+use crate::ln::interactivetxs::{InteractiveTxInput, InteractiveTxOutput};
 use crate::prelude::*;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
@@ -43,9 +44,9 @@ use bitcoin::{consensus, Witness};
 use dnssec_prover::rr::Name;
 
 use crate::chain::ClaimId;
-use crate::ln::msgs::DecodeError;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
+use crate::ln::msgs::{DecodeError, SerialId};
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use core::time::Duration;
 
@@ -1074,6 +1075,9 @@ impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
+impl_for_vec!(SerialId);
+impl_for_vec!(InteractiveTxInput);
+impl_for_vec!(InteractiveTxOutput);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
 impl_for_vec!(crate::routing::router::TrampolineHop);
