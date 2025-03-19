@@ -189,6 +189,18 @@ pub(crate) struct ConstructedTransaction {
 	holder_sends_tx_signatures_first: bool,
 }
 
+impl_writeable_tlv_based!(ConstructedTransaction, {
+	(1, holder_is_initiator, required),
+	(3, inputs, required),
+	(5, outputs, required),
+	(7, local_inputs_value_satoshis, required),
+	(9, local_outputs_value_satoshis, required),
+	(11, remote_inputs_value_satoshis, required),
+	(13, remote_outputs_value_satoshis, required),
+	(15, lock_time, required),
+	(17, holder_sends_tx_signatures_first, required),
+});
+
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Self {
 		let local_inputs_value_satoshis = context
@@ -438,6 +450,13 @@ impl InteractiveTxSigningSession {
 		}
 	}
 }
+
+impl_writeable_tlv_based!(InteractiveTxSigningSession, {
+	(1, unsigned_tx, required),
+	(3, holder_sends_tx_signatures_first, required),
+	(5, has_received_commitment_signed, required),
+	(7, holder_tx_signatures, required),
+});
 
 #[derive(Debug)]
 struct NegotiationContext {
@@ -1162,6 +1181,11 @@ enum AddingRole {
 	Remote,
 }
 
+impl_writeable_tlv_based_enum!(AddingRole,
+	(1, Local) => {},
+	(3, Remote) => {},
+);
+
 /// Represents an input -- local or remote (both have the same fields)
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOrRemoteInput {
@@ -1170,6 +1194,12 @@ pub struct LocalOrRemoteInput {
 	prev_output: TxOut,
 }
 
+impl_writeable_tlv_based!(LocalOrRemoteInput, {
+	(1, serial_id, required),
+	(3, input, required),
+	(5, prev_output, required),
+});
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum InteractiveTxInput {
 	Local(LocalOrRemoteInput),
@@ -1177,11 +1207,21 @@ pub(crate) enum InteractiveTxInput {
 	// TODO(splicing) SharedInput should be added
 }
 
+impl_writeable_tlv_based_enum!(InteractiveTxInput,
+	{1, Local} => (),
+	{3, Remote} => (),
+);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SharedOwnedOutput {
 	tx_out: TxOut,
 	local_owned: u64,
 }
+
+impl_writeable_tlv_based!(SharedOwnedOutput, {
+	(1, tx_out, required),
+	(3, local_owned, required),
+});
 
 impl SharedOwnedOutput {
 	pub fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
@@ -1209,6 +1249,11 @@ pub(super) enum OutputOwned {
 	/// Output with shared control and value split between the two ends (or fully at one side)
 	Shared(SharedOwnedOutput),
 }
+
+impl_writeable_tlv_based_enum!(OutputOwned,
+	{1, Single} => (),
+	{3, Shared} => (),
+);
 
 impl OutputOwned {
 	pub fn tx_out(&self) -> &TxOut {
@@ -1263,6 +1308,12 @@ pub(crate) struct InteractiveTxOutput {
 	added_by: AddingRole,
 	output: OutputOwned,
 }
+
+impl_writeable_tlv_based!(InteractiveTxOutput, {
+	(1, serial_id, required),
+	(3, added_by, required),
+	(5, output, required),
+});
 
 impl InteractiveTxOutput {
 	pub fn tx_out(&self) -> &TxOut {
