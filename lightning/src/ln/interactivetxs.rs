@@ -289,7 +289,6 @@ impl ConstructedTransaction {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractiveTxSigningSession {
 	unsigned_tx: ConstructedTransaction,
-	counterparty_sent_tx_signatures: bool,
 	holder_sends_tx_signatures_first: bool,
 	has_received_commitment_signed: bool,
 	holder_tx_signatures: Option<TxSignatures>,
@@ -298,10 +297,6 @@ pub(crate) struct InteractiveTxSigningSession {
 impl InteractiveTxSigningSession {
 	pub fn unsigned_tx(&self) -> &ConstructedTransaction {
 		&self.unsigned_tx
-	}
-
-	pub fn counterparty_sent_tx_signatures(&self) -> bool {
-		self.counterparty_sent_tx_signatures
 	}
 
 	pub fn holder_sends_tx_signatures_first(&self) -> bool {
@@ -319,14 +314,6 @@ impl InteractiveTxSigningSession {
 	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
 		self.has_received_commitment_signed = true;
 		if self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
-	}
-
-	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.has_received_commitment_signed {
 			self.holder_tx_signatures.clone()
 		} else {
 			None
@@ -351,7 +338,6 @@ impl InteractiveTxSigningSession {
 			return Err(());
 		}
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
-		self.counterparty_sent_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
@@ -1009,7 +995,6 @@ macro_rules! define_state_transitions {
 					unsigned_tx: tx,
 					has_received_commitment_signed: false,
 					holder_tx_signatures: None,
-					counterparty_sent_tx_signatures: false,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
