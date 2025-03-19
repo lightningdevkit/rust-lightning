@@ -924,6 +924,18 @@ impl ClaimablePayment {
 			self.htlcs.iter().map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id))
 		)
 	}
+
+	/// Returns the inbound `channel_id`s for all HTLCs associated with the payment.
+	fn get_channel_ids(&self) -> Vec<ChannelId> {
+		self.htlcs.iter().map(|htlc| htlc.prev_hop.channel_id).collect()
+	}
+
+	/// Returns the inbound `user_channel_id`s for all HTLCs associated with the payment.
+	///
+	/// Note: This list will be incomplete for HTLCs created using LDK version 0.0.112 or earlier.
+	fn get_user_channel_ids(&self) -> Vec<u128> {
+		self.htlcs.iter().filter_map(|htlc| htlc.prev_hop.user_channel_id).collect()
+	}
 }
 
 /// Represent the channel funding transaction type.
@@ -6377,8 +6389,8 @@ where
 												purpose: $purpose,
 												amount_msat,
 												counterparty_skimmed_fee_msat,
-												via_channel_id: Some(prev_channel_id),
-												via_user_channel_id: Some(prev_user_channel_id),
+												via_channel_ids: claimable_payment.get_channel_ids(),
+												via_user_channel_ids: claimable_payment.get_user_channel_ids(),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
 												onion_fields: claimable_payment.onion_fields.clone(),
 												payment_id: Some(payment_id),

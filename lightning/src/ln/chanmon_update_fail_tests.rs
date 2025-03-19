@@ -165,11 +165,11 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
 	match events_3[0] {
-		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, .. } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_ids, .. } => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(via_channel_id, Some(channel_id));
+			assert_eq!(*via_channel_ids.last().unwrap(), channel_id);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -547,11 +547,11 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, .. } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_ids, .. } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(via_channel_id, Some(channel_id));
+			assert_eq!(*via_channel_ids.last().unwrap(), channel_id);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -665,11 +665,11 @@ fn test_monitor_update_fail_cs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentClaimable { payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, .. } => {
+		Event::PaymentClaimable { payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_ids, .. } => {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(via_channel_id, Some(channel_id));
+			assert_eq!(*via_channel_ids.last().unwrap(), channel_id);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -1678,12 +1678,12 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id, .. } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_ids, ref via_user_channel_ids, .. } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
-			assert_eq!(via_channel_id, Some(channel_id));
-			assert_eq!(via_user_channel_id, Some(42));
+			assert_eq!(*via_channel_ids.last().unwrap(), channel_id);
+			assert_eq!(*via_user_channel_ids.last().unwrap(), 42);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -1695,11 +1695,11 @@ fn test_monitor_update_fail_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, .. } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_ids, .. } => {
 			assert_eq!(payment_hash_3, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
-			assert_eq!(via_channel_id, Some(channel_id));
+			assert_eq!(*via_channel_ids.last().unwrap(), channel_id);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
