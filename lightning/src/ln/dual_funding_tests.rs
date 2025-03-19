@@ -206,13 +206,6 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	assert!(events.is_empty());
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::ChannelPending { channel_id: chan_id, .. } => assert_eq!(chan_id, channel_id),
-		_ => panic!("Unexpected event"),
-	};
-
 	let tx_signatures_msg = get_event_msg!(
 		nodes[1],
 		MessageSendEvent::SendTxSignatures,
@@ -233,6 +226,13 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 			shared_input_signature: None,
 		},
 	);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelPending { channel_id: chan_id, .. } => assert_eq!(chan_id, channel_id),
+		_ => panic!("Unexpected event"),
+	};
 
 	// For an inbound channel V2 channel the transaction should be broadcast once receiving a
 	// tx_signature and applying local tx_signatures:
