@@ -1627,6 +1627,34 @@ impl From<u16> for LocalHTLCFailureReason {
 	}
 }
 
+impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
+	(1, TemporaryNodeFailure) => {},
+	(3, PermanentNodeFailure) => {},
+	(5, RequiredNodeFeature) => {},
+	(7, InvalidOnionVersion) => {},
+	(9, InvalidOnionHMAC) => {},
+	(11, InvalidOnionKey) => {},
+	(13, TemporaryChannelFailure) => {},
+	(15, PermanentChannelFailure) => {},
+	(17, RequiredChannelFeature) => {},
+	(19, UnknownNextPeer) => {},
+	(21, AmountBelowMinimum) => {},
+	(23, FeeInsufficient) => {},
+	(25, IncorrectCLTVExpiry) => {},
+	(27, CLTVExpiryTooSoon) => {},
+	(29, IncorrectPaymentDetails) => {},
+	(31, FinalIncorrectCLTVExpiry) => {},
+	(33, FinalIncorrectHTLCAmount) => {},
+	(35, ChannelDisabled) => {},
+	(37, CLTVExpiryTooFar) => {},
+	(39, InvalidOnionPayload) => {},
+	(41, MPPTimeout) => {},
+	(43, InvalidOnionBlinding) => {},
+	(45, UnknownFailureCode) => {
+		(0, code, required),
+	},
+);
+
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
@@ -1635,7 +1663,7 @@ pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
 #[cfg_attr(test, derive(PartialEq))]
 enum HTLCFailReasonRepr {
 	LightningError { err: msgs::OnionErrorPacket, hold_time: Option<u32> },
-	Reason { failure_code: u16, data: Vec<u8> },
+	Reason { data: Vec<u8>, failure_reason: LocalHTLCFailureReason },
 }
 
 impl HTLCFailReason {
@@ -1652,8 +1680,13 @@ impl HTLCFailReason {
 impl core::fmt::Debug for HTLCFailReason {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		match self.0 {
-			HTLCFailReasonRepr::Reason { ref failure_code, .. } => {
-				write!(f, "HTLC error code {}", failure_code)
+			HTLCFailReasonRepr::Reason { ref failure_reason, .. } => {
+				write!(
+					f,
+					"HTLC failure {:?} error code {}",
+					failure_reason,
+					failure_reason.failure_code()
+				)
 			},
 			HTLCFailReasonRepr::LightningError { .. } => {
 				write!(f, "pre-built LightningError")
@@ -1693,7 +1726,14 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)?, attribution_data })),
 	},
 	(1, Reason) => {
-		(0, failure_code, required),
+		(0, _failure_code, (legacy, u16,
+			|r: &HTLCFailReasonRepr| match r {
+				HTLCFailReasonRepr::LightningError{ .. } => None,
+				HTLCFailReasonRepr::Reason{ failure_reason, .. } => Some(failure_reason.failure_code())
+			})),
+		// failure_code was required, and is replaced by reason in 0.2 so any time we do not have a
+		// reason available failure_code will be Some and can be expressed as a reason.
+		(1, failure_reason, (default_value, LocalHTLCFailureReason::from(_failure_code.ok_or(DecodeError::InvalidValue)?))),
 		(2, data, required_vec),
 	},
 );
@@ -1749,7 +1789,7 @@ impl HTLCFailReason {
 			},
 		}
 
-		Self(HTLCFailReasonRepr::Reason { failure_code: failure_reason.failure_code(), data })
+		Self(HTLCFailReasonRepr::Reason { data, failure_reason })
 	}
 
 	pub(super) fn from_failure_code(failure_reason: LocalHTLCFailureReason) -> Self {
@@ -1775,7 +1815,7 @@ impl HTLCFailReason {
 		&self, incoming_packet_shared_secret: &[u8; 32], secondary_shared_secret: &Option<[u8; 32]>,
 	) -> msgs::OnionErrorPacket {
 		match self.0 {
-			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
+			HTLCFailReasonRepr::Reason { ref data, ref failure_reason } => {
 				// Final hop always reports zero hold time.
 				let hold_time: u32 = 0;
 
@@ -1783,7 +1823,7 @@ impl HTLCFailReason {
 					// Phantom hop always reports zero hold time too.
 					let mut packet = build_failure_packet(
 						secondary_shared_secret,
-						u16::into(*failure_code),
+						*failure_reason,
 						&data[..],
 						hold_time,
 					);
@@ -1795,7 +1835,7 @@ impl HTLCFailReason {
 				} else {
 					build_failure_packet(
 						incoming_packet_shared_secret,
-						u16::into(*failure_code),
+						*failure_reason,
 						&data[..],
 						hold_time,
 					)
@@ -1824,7 +1864,7 @@ impl HTLCFailReason {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
 			},
 			#[allow(unused)]
-			HTLCFailReasonRepr::Reason { ref failure_code, ref data, .. } => {
+			HTLCFailReasonRepr::Reason { ref data, ref failure_reason } => {
 				// we get a fail_malformed_htlc from the first hop
 				// TODO: We'd like to generate a NetworkUpdate for temporary
 				// failures here, but that would be insufficient as find_route
@@ -1838,7 +1878,7 @@ impl HTLCFailReason {
 						failed_within_blinded_path: false,
 						hold_times: Vec::new(),
 						#[cfg(any(test, feature = "_test_utils"))]
-						onion_error_code: Some(*failure_code),
+						onion_error_code: Some(failure_reason.failure_code()),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
 					}
