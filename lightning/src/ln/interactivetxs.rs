@@ -8,12 +8,13 @@
 // licenses.
 
 use crate::io_extras::sink;
-use crate::prelude::*;
+use crate::{io, prelude::*};
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::hashes::Hash;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
@@ -26,10 +27,12 @@ use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
-use crate::util::ser::TransactionU16LenLimited;
+use crate::util::ser::{Readable, TransactionU16LenLimited, Writeable, Writer};
 
 use core::fmt::Display;
 use core::ops::Deref;
+
+use super::msgs::DecodeError;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
@@ -168,6 +171,61 @@ pub(crate) struct ConstructedTransaction {
 	holder_sends_tx_signatures_first: bool,
 }
 
+impl Writeable for ConstructedTransaction {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let lock_time = self.lock_time.to_consensus_u32();
+		write_tlv_fields!(writer, {
+			(1, self.holder_is_initiator, required),
+			(3, self.inputs, required),
+			(5, self.outputs, required),
+			(7, self.local_inputs_value_satoshis, required),
+			(9, self.local_outputs_value_satoshis, required),
+			(11, self.remote_inputs_value_satoshis, required),
+			(13, self.remote_outputs_value_satoshis, required),
+			(15, lock_time, required),
+			(17, self.holder_sends_tx_signatures_first, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ConstructedTransaction {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut holder_is_initiator = false;
+		let mut inputs: Vec<InteractiveTxInput> = vec![];
+		let mut outputs: Vec<InteractiveTxOutput> = vec![];
+		let mut local_inputs_value_satoshis: u64 = 0;
+		let mut local_outputs_value_satoshis: u64 = 0;
+		let mut remote_inputs_value_satoshis: u64 = 0;
+		let mut remote_outputs_value_satoshis: u64 = 0;
+		let mut lock_time: u32 = 0;
+		let mut holder_sends_tx_signatures_first = false;
+		read_tlv_fields!(reader, {
+			(1, holder_is_initiator, required),
+			(3, inputs, required),
+			(5, outputs, required),
+			(7, local_inputs_value_satoshis, required),
+			(9, local_outputs_value_satoshis, required),
+			(11, remote_inputs_value_satoshis, required),
+			(13, remote_outputs_value_satoshis, required),
+			(15, lock_time, required),
+			(17, holder_sends_tx_signatures_first, required),
+		});
+		let lock_time = AbsoluteLockTime::from_consensus(lock_time);
+		Ok(ConstructedTransaction {
+			holder_is_initiator,
+			inputs,
+			outputs,
+			local_inputs_value_satoshis,
+			local_outputs_value_satoshis,
+			remote_inputs_value_satoshis,
+			remote_outputs_value_satoshis,
+			lock_time,
+			holder_sends_tx_signatures_first,
+		})
+	}
+}
+
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Self {
 		let local_inputs_value_satoshis = context
@@ -288,25 +346,32 @@ impl ConstructedTransaction {
 /// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#sharing-funding-signatures-tx_signatures
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InteractiveTxSigningSession {
-	pub unsigned_tx: ConstructedTransaction,
+	unsigned_tx: ConstructedTransaction,
 	holder_sends_tx_signatures_first: bool,
-	received_commitment_signed: bool,
+	has_received_commitment_signed: bool,
 	holder_tx_signatures: Option<TxSignatures>,
-	counterparty_sent_tx_signatures: bool,
 }
 
 impl InteractiveTxSigningSession {
-	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
-		self.received_commitment_signed = true;
-		if self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
+	pub fn unsigned_tx(&self) -> &ConstructedTransaction {
+		&self.unsigned_tx
 	}
 
-	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.received_commitment_signed {
+	pub fn holder_sends_tx_signatures_first(&self) -> bool {
+		self.holder_sends_tx_signatures_first
+	}
+
+	pub fn has_received_commitment_signed(&self) -> bool {
+		self.has_received_commitment_signed
+	}
+
+	pub fn holder_tx_signatures(&self) -> &Option<TxSignatures> {
+		&self.holder_tx_signatures
+	}
+
+	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
+		self.has_received_commitment_signed = true;
+		if self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
 		} else {
 			None
@@ -331,7 +396,6 @@ impl InteractiveTxSigningSession {
 			return Err(());
 		}
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
-		self.counterparty_sent_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
@@ -411,6 +475,13 @@ impl InteractiveTxSigningSession {
 		}
 	}
 }
+
+impl_writeable_tlv_based!(InteractiveTxSigningSession, {
+	(1, unsigned_tx, required),
+	(3, holder_sends_tx_signatures_first, required),
+	(5, has_received_commitment_signed, required),
+	(7, holder_tx_signatures, required),
+});
 
 #[derive(Debug)]
 struct NegotiationContext {
@@ -987,9 +1058,8 @@ macro_rules! define_state_transitions {
 				let signing_session = InteractiveTxSigningSession {
 					holder_sends_tx_signatures_first: tx.holder_sends_tx_signatures_first,
 					unsigned_tx: tx,
-					received_commitment_signed: false,
+					has_received_commitment_signed: false,
 					holder_tx_signatures: None,
-					counterparty_sent_tx_signatures: false,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
@@ -1136,12 +1206,56 @@ enum AddingRole {
 	Remote,
 }
 
+impl_writeable_tlv_based_enum!(AddingRole,
+	(1, Local) => {},
+	(3, Remote) => {},
+);
+
 /// Represents an input -- local or remote (both have the same fields)
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOrRemoteInput {
 	serial_id: SerialId,
 	input: TxIn,
 	prev_output: TxOut,
+}
+
+impl Writeable for LocalOrRemoteInput {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(1, self.serial_id, required),
+			(3, self.input.sequence.0, required),
+			(5, self.input.previous_output, required),
+			(7, self.input.script_sig, required),
+			(9, self.input.witness, required),
+			(11, self.prev_output, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for LocalOrRemoteInput {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut serial_id: u64 = 0;
+		let mut sequence: u32 = 0;
+		let mut previous_output = OutPoint::new(Txid::from_byte_array([0; 32]), 0);
+		let mut script_sig = ScriptBuf::default();
+		let mut witness = Witness::new();
+		let mut prev_output =
+			TxOut { value: Amount::default(), script_pubkey: ScriptBuf::default() };
+		read_tlv_fields!(reader, {
+			(1, serial_id, required),
+			(3, sequence, required),
+			(5, previous_output, required),
+			(7, script_sig, required),
+			(9, witness, required),
+			(11, prev_output, required),
+		});
+		Ok(LocalOrRemoteInput {
+			serial_id,
+			input: TxIn { previous_output, script_sig, sequence: Sequence(sequence), witness },
+			prev_output,
+		})
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1151,11 +1265,21 @@ pub(crate) enum InteractiveTxInput {
 	// TODO(splicing) SharedInput should be added
 }
 
+impl_writeable_tlv_based_enum!(InteractiveTxInput,
+	{1, Local} => (),
+	{3, Remote} => (),
+);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SharedOwnedOutput {
 	tx_out: TxOut,
 	local_owned: u64,
 }
+
+impl_writeable_tlv_based!(SharedOwnedOutput, {
+	(1, tx_out, required),
+	(3, local_owned, required),
+});
 
 impl SharedOwnedOutput {
 	fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
@@ -1185,6 +1309,12 @@ pub enum OutputOwned {
 	/// Output with shared control and joint ownership
 	Shared(SharedOwnedOutput),
 }
+
+impl_writeable_tlv_based_enum!(OutputOwned,
+	{1, Single} => (),
+	{3, SharedControlFullyOwned} => (),
+	{5, Shared} => (),
+);
 
 impl OutputOwned {
 	fn tx_out(&self) -> &TxOut {
@@ -1244,6 +1374,12 @@ pub(crate) struct InteractiveTxOutput {
 	added_by: AddingRole,
 	output: OutputOwned,
 }
+
+impl_writeable_tlv_based!(InteractiveTxOutput, {
+	(1, serial_id, required),
+	(3, added_by, required),
+	(5, output, required),
+});
 
 impl InteractiveTxOutput {
 	pub fn tx_out(&self) -> &TxOut {
