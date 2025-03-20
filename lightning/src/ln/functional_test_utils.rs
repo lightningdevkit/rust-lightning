@@ -2035,9 +2035,12 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 #[macro_export]
 /// Performs the "commitment signed dance" - the series of message exchanges which occur after a
 /// commitment update.
+///
+/// If `fail_backwards` is true, asserts that `node_b` failed a HTLC back to `node_a` in the
+/// exchange. Use [`commitment_signed_dance`] if a different failure type is required.
 macro_rules! commitment_signed_dance {
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
-		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, true);
+		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, if $fail_backwards { Some(FailureType::Downstream) } else { None }, true);
 	};
 	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */, true /* return last RAA */) => {
 		$crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards)
@@ -2057,7 +2060,7 @@ macro_rules! commitment_signed_dance {
 		assert!($crate::ln::functional_test_utils::commitment_signed_dance_through_cp_raa(&$node_a, &$node_b, $fail_backwards, $incl_claim).is_none());
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
-		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, false);
+		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, if $fail_backwards { Some(FailureType::Downstream) } else { None }, false);
 	}
 }
 
@@ -2110,12 +2113,24 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	(extra_msg_option, bs_revoke_and_ack)
 }
 
+/// Describes the type of HTLC that's being failed backwards.
+#[derive(Copy, Clone)]
+pub enum FailureType {
+	/// Payment was failed within a blinded route.
+	Blinded,
+	/// Payment was failed by the downstream peer.
+	Downstream,
+}
+
 /// Runs a full commitment_signed dance, delivering a commitment_signed, the responding
 /// `revoke_and_ack` and `commitment_signed`, and then the final `revoke_and_ack` response.
 ///
 /// If `skip_last_step` is unset, also checks for the payment failure update for the previous hop
 /// on failure or that no new messages are left over on success.
-pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: bool, skip_last_step: bool) {
+///
+/// `fail_backwards` should be Some if a HTLC is expected to be failed backwards by the commitment
+/// update.
+pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: Option<FailureType>, skip_last_step: bool) {
 	check_added_monitors!(node_a, 0);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	node_a.node.handle_commitment_signed(node_b.node.get_our_node_id(), commitment_signed);
@@ -2123,12 +2138,12 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 
 	// If this commitment signed dance was due to a claim, don't check for an RAA monitor update.
 	let got_claim = node_a.node.test_raa_monitor_updates_held(node_b.node.get_our_node_id(), commitment_signed.channel_id);
-	if fail_backwards { assert!(!got_claim); }
-	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false, got_claim);
+	if fail_backwards.is_some() { assert!(!got_claim); }
+	commitment_signed_dance!(node_a, node_b, (), fail_backwards.is_some(), true, false, got_claim);
 
 	if skip_last_step { return; }
 
-	if fail_backwards {
+	if fail_backwards.is_some() {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node_a,
 			vec![crate::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id: commitment_signed.channel_id }]);
 		check_added_monitors!(node_a, 1);

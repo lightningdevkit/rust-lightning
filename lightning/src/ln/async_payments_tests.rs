@@ -186,7 +186,13 @@ fn invalid_keysend_payment_secret() {
 	nodes[1]
 		.node
 		.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
+	do_commitment_signed_dance(
+		&nodes[1],
+		&nodes[2],
+		&updates_2_1.commitment_signed,
+		Some(FailureType::Blinded),
+		false,
+	);
 
 	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
@@ -194,7 +200,7 @@ fn invalid_keysend_payment_secret() {
 		nodes[1].node.get_our_node_id(),
 		&updates_1_0.update_fail_htlcs[0],
 	);
-	commitment_signed_dance!(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, None, false);
 	expect_payment_failed_conditions(
 		&nodes[0],
 		payment_hash,

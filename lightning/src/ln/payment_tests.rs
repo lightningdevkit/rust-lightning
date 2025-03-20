@@ -398,7 +398,7 @@ fn do_test_keysend_payments(public_node: bool) {
 	check_added_monitors!(nodes[0], 1);
 	let send_event = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
-	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, None, false);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	// Previously, a refactor caused us to stop including the payment preimage in the onion which
 	// is sent as a part of keysend payments. Thus, to be extra careful here, we scope the preimage
@@ -2097,7 +2097,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	// Forward the intercepted payments.
 	for (idx, ev) in events.into_iter().enumerate() {
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &ev.msgs[0]);
-		do_commitment_signed_dance(&nodes[1], &nodes[0], &ev.commitment_msg, false, true);
+		commitment_signed_dance!(&nodes[1], &nodes[0], &ev.commitment_msg, false, true);
 		expect_pending_htlcs_forwardable!(nodes[1]);
 
 		let events = nodes[1].node.get_and_clear_pending_events();
@@ -2125,7 +2125,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 			SendEvent::from_event(events.remove(0))
 		};
 		nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
-		do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event.commitment_msg, false, true);
+		commitment_signed_dance!(&nodes[2], &nodes[1], &payment_event.commitment_msg, false, true);
 		if idx == num_mpp_parts - 1 {
 			expect_pending_htlcs_forwardable!(nodes[2]);
 		}

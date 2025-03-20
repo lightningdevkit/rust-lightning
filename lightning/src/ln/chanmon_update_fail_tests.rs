@@ -2955,7 +2955,7 @@ fn test_blocked_chan_preimage_release() {
 
 	let cs_htlc_fulfill_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), &cs_htlc_fulfill_updates.update_fulfill_htlcs[0]);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &cs_htlc_fulfill_updates.commitment_signed, false, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &cs_htlc_fulfill_updates.commitment_signed, None, false);
 	check_added_monitors(&nodes[1], 0);
 
 	// Now claim the second payment on nodes[0], which will ultimately result in nodes[1] trying to
@@ -2998,7 +2998,7 @@ fn test_blocked_chan_preimage_release() {
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[2].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_htlc_fulfill_updates.update_fulfill_htlcs[0]);
-	do_commitment_signed_dance(&nodes[2], &nodes[1], &bs_htlc_fulfill_updates.commitment_signed, false, false);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &bs_htlc_fulfill_updates.commitment_signed, None, false);
 	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
 }
 
@@ -3153,7 +3153,7 @@ fn do_test_inverted_mon_completion_order(with_latest_manager: bool, complete_bc_
 	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
-	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, None, false);
 
 	expect_payment_forwarded!(nodes[1], &nodes[0], &nodes[2], Some(1_000), false, !with_latest_manager);
 
