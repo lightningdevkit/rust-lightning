@@ -10,7 +10,7 @@
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
 use bitcoin::script::{Script, ScriptBuf, Builder, WScriptHash};
-use bitcoin::transaction::{Transaction, TxIn};
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
@@ -30,9 +30,9 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
-	get_output_weight, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
-	InteractiveTxConstructorArgs, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
-	TX_COMMON_FIELDS_WEIGHT,
+	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
+	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
+	OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -2213,6 +2213,102 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 }
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
+	/// Prepare and start interactive transaction negotiation.
+	/// `change_destination_opt` - Optional destination for optional change; if None,
+	///   default destination address is used.
+	/// If error occurs, it is caused by our side, not the counterparty.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
+	fn begin_interactive_funding_tx_construction<ES: Deref>(
+		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
+		change_destination_opt: Option<ScriptBuf>,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
+	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
+	where ES::Target: EntropySource
+	{
+		debug_assert!(self.interactive_tx_constructor.is_none());
+
+		let mut funding_inputs = Vec::new();
+		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
+
+		if let Some(prev_funding_input) = prev_funding_input {
+			funding_inputs.push(prev_funding_input);
+		}
+
+		let funding_inputs_prev_outputs = DualFundingChannelContext::txouts_from_input_prev_txs(&funding_inputs)?;
+
+		// Add output for funding tx
+		// Note: For the error case when the inputs are insufficient, it will be handled after
+		// the `calculate_change_output_value` call below
+		let mut funding_outputs = Vec::new();
+		let funding_output_value_satoshis = self.funding.get_value_satoshis();
+		let funding_output_script_pubkey = self.funding.get_funding_redeemscript().to_p2wsh();
+		let expected_remote_shared_funding_output = if self.funding.is_outbound() {
+			let tx_out = TxOut {
+				value: Amount::from_sat(funding_output_value_satoshis),
+				script_pubkey: funding_output_script_pubkey,
+			};
+			funding_outputs.push(
+				if self.dual_funding_context.their_funding_satoshis.unwrap_or(0) == 0 {
+					OutputOwned::SharedControlFullyOwned(tx_out)
+				} else {
+					OutputOwned::Shared(SharedOwnedOutput::new(
+						tx_out, self.dual_funding_context.our_funding_satoshis
+					))
+				}
+			);
+			None
+		} else {
+			Some((funding_output_script_pubkey, funding_output_value_satoshis))
+		};
+
+		// Optionally add change output
+		let change_script = if let Some(script) = change_destination_opt {
+			script
+		} else {
+			signer_provider.get_destination_script(self.context.channel_keys_id)
+				.map_err(|_err| AbortReason::InternalErrorGettingDestinationScript)?
+		};
+		let change_value_opt = calculate_change_output_value(
+			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
+			&funding_inputs_prev_outputs, &funding_outputs,
+			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
+			change_script.minimal_non_dust().to_sat(),
+		)?;
+		if let Some(change_value) = change_value_opt {
+			let mut change_output = TxOut {
+				value: Amount::from_sat(change_value),
+				script_pubkey: change_script,
+			};
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee = fee_for_weight(self.dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > self.context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				funding_outputs.push(OutputOwned::Single(change_output));
+			}
+		}
+
+		let constructor_args = InteractiveTxConstructorArgs {
+			entropy_source,
+			holder_node_id,
+			counterparty_node_id: self.context.counterparty_node_id,
+			channel_id: self.context.channel_id(),
+			feerate_sat_per_kw: self.dual_funding_context.funding_feerate_sat_per_1000_weight,
+			is_initiator: self.funding.is_outbound(),
+			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
+			inputs_to_contribute: funding_inputs,
+			outputs_to_contribute: funding_outputs,
+			expected_remote_shared_funding_output,
+		};
+		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)?;
+		let msg = tx_constructor.take_initiator_first_message();
+
+		self.interactive_tx_constructor = Some(tx_constructor);
+
+		Ok(msg)
+	}
+
 	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match &mut self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
@@ -4869,6 +4965,9 @@ fn check_v2_funding_inputs_sufficient(
 pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
+	/// The amount in satoshis our counterparty will be contributing to the channel.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
+	pub their_funding_satoshis: Option<u64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
 	pub funding_tx_locktime: LockTime,
@@ -4880,8 +4979,32 @@ pub(super) struct DualFundingChannelContext {
 	/// Note that the `our_funding_satoshis` field is equal to the total value of `our_funding_inputs`
 	/// minus any fees paid for our contributed weight. This means that change will never be generated
 	/// and the maximum value possible will go towards funding the channel.
+	///
+	/// Note that this field may be emptied once the interactive negotiation has been started.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+}
+
+impl DualFundingChannelContext {
+	/// Obtain prev outputs for each supplied input and matching transaction.
+	/// Will error when a prev tx does not have an output for the specified vout.
+	/// Also checks for matching of transaction IDs.
+	fn txouts_from_input_prev_txs(inputs: &Vec<(TxIn, TransactionU16LenLimited)>) -> Result<Vec<&TxOut>, AbortReason> {
+		let mut prev_outputs: Vec<&TxOut> = Vec::with_capacity(inputs.len());
+		// Check that vouts exist for each TxIn in provided transactions.
+		for (idx, (txin, tx)) in inputs.iter().enumerate() {
+			let txid = tx.as_transaction().compute_txid();
+			if txin.previous_output.txid != txid {
+				return Err(AbortReason::ProvidedInputsAndPrevtxsTxIdMismatch(idx as u32));
+			}
+			if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
+				prev_outputs.push(output);
+			} else {
+				return Err(AbortReason::ProvidedInputsAndPrevtxsVoutNotFound(idx as u32));
+			}
+		}
+		Ok(prev_outputs)
+	}
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -9844,16 +9967,18 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
+		let dual_funding_context = DualFundingChannelContext {
+			our_funding_satoshis: funding_satoshis,
+			their_funding_satoshis: None,
+			funding_tx_locktime,
+			funding_feerate_sat_per_1000_weight,
+			our_funding_inputs: funding_inputs,
+		};
 		let chan = Self {
 			funding,
 			context,
 			unfunded_context,
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: funding_satoshis,
-				funding_tx_locktime,
-				funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
-			},
+			dual_funding_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
 		};
@@ -9995,6 +10120,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 		let dual_funding_context = DualFundingChannelContext {
 			our_funding_satoshis: our_funding_satoshis,
+			their_funding_satoshis: Some(msg.common_fields.funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			our_funding_inputs: our_funding_inputs.clone(),

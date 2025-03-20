@@ -108,6 +108,12 @@ pub(crate) enum AbortReason {
 	/// if funding output is provided by the peer this is an interop error,
 	/// if provided by the same node than internal input consistency error.
 	InvalidLowFundingOutputValue,
+	/// TxId mismatch in the provided inputs and previous transactions, input index in data
+	ProvidedInputsAndPrevtxsTxIdMismatch(u32),
+	/// A vout provided in an input is not found in the matching previous transaction, input index in data
+	ProvidedInputsAndPrevtxsVoutNotFound(u32),
+	/// Internal error, error while getting destination script
+	InternalErrorGettingDestinationScript,
 }
 
 impl AbortReason {
@@ -118,34 +124,44 @@ impl AbortReason {
 
 impl Display for AbortReason {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		f.write_str(match self {
-			AbortReason::InvalidStateTransition => "State transition was invalid",
-			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
-			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
-			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
+		f.write_str(&match self {
+			AbortReason::InvalidStateTransition => "State transition was invalid".into(),
+			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message".into(),
+			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received".into(),
+			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received".into(),
 			AbortReason::IncorrectInputSequenceValue => {
-				"Input has a sequence value greater than 0xFFFFFFFD"
+				"Input has a sequence value greater than 0xFFFFFFFD".into()
 			},
-			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
-			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
-			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
-			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
+			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect".into(),
+			AbortReason::SerialIdUnknown => "The `serial_id` is unknown".into(),
+			AbortReason::DuplicateSerialId => "The `serial_id` already exists".into(),
+			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output".into(),
 			AbortReason::ExceededMaximumSatsAllowed => {
-				"Output amount exceeded total bitcoin supply"
+				"Output amount exceeded total bitcoin supply".into()
 			},
-			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
-			AbortReason::TransactionTooLarge => "Transaction weight is too large",
-			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
-			AbortReason::InvalidOutputScript => "The output script is non-standard",
-			AbortReason::InsufficientFees => "Insufficient fees paid",
+			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs".into(),
+			AbortReason::TransactionTooLarge => "Transaction weight is too large".into(),
+			AbortReason::BelowDustLimit => "Output amount is below the dust limit".into(),
+			AbortReason::InvalidOutputScript => "The output script is non-standard".into(),
+			AbortReason::InsufficientFees => "Insufficient fees paid".into(),
 			AbortReason::OutputsValueExceedsInputsValue => {
-				"Total value of outputs exceeds total value of inputs"
+				"Total value of outputs exceeds total value of inputs".into()
 			},
-			AbortReason::InvalidTx => "The transaction is invalid",
-			AbortReason::MissingFundingOutput => "No shared funding output found",
-			AbortReason::DuplicateFundingOutput => "More than one funding output found",
+			AbortReason::InvalidTx => "The transaction is invalid".into(),
+			AbortReason::MissingFundingOutput => "No shared funding output found".into(),
+			AbortReason::DuplicateFundingOutput => "More than one funding output found".into(),
 			AbortReason::InvalidLowFundingOutputValue => {
-				"Local part of funding output value is greater than the funding output value"
+				"Local part of funding output value is greater than the funding output value".into()
+			},
+			AbortReason::ProvidedInputsAndPrevtxsTxIdMismatch(idx) => format!(
+				"TxId mismatch in the provided inputs and previous transactions, input index {}",
+				idx
+			),
+			AbortReason::ProvidedInputsAndPrevtxsVoutNotFound(idx) => format!(
+				"Vout provided in an input is not found in the previous transaction, input index {}",
+				idx),
+			AbortReason::InternalErrorGettingDestinationScript => {
+				"Internal error getting destination script".into()
 			},
 		})
 	}
@@ -1152,13 +1168,13 @@ pub(crate) enum InteractiveTxInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SharedOwnedOutput {
+pub(super) struct SharedOwnedOutput {
 	tx_out: TxOut,
 	local_owned: u64,
 }
 
 impl SharedOwnedOutput {
-	fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
+	pub fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
 		debug_assert!(
 			local_owned <= tx_out.value.to_sat(),
 			"SharedOwnedOutput: Inconsistent local_owned value {}, larger than output value {}",
@@ -1177,7 +1193,7 @@ impl SharedOwnedOutput {
 /// its control -- exclusive by the adder or shared --, and
 /// its ownership -- value fully owned by the adder or jointly
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OutputOwned {
+pub(super) enum OutputOwned {
 	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
 	Single(TxOut),
 	/// Output with shared control, but fully belonging to local node
@@ -1187,7 +1203,7 @@ pub enum OutputOwned {
 }
 
 impl OutputOwned {
-	fn tx_out(&self) -> &TxOut {
+	pub fn tx_out(&self) -> &TxOut {
 		match self {
 			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => tx_out,
 			OutputOwned::Shared(output) => &output.tx_out,
@@ -1663,14 +1679,66 @@ impl InteractiveTxConstructor {
 	}
 }
 
+/// Determine whether a change output should be added, and if yes, of what size,
+/// considering our given inputs & outputs, and intended contribution.
+/// Computes the fees, takes into account the fees and the dust limit.
+/// Three outcomes are possible:
+/// - Inputs are sufficient for intended contribution, fees, and a larger-than-dust change:
+///   `Ok(Some(change_amount))`
+/// - Inputs are sufficient for intended contribution and fees, but not for a change:
+///   `Ok(None)`
+/// - Insputs are not sufficent to cover contribution and fees:
+///   `Err(AbortReason::InsufficientFees)`
+#[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
+pub(super) fn calculate_change_output_value(
+	is_initiator: bool, our_contribution: u64, funding_inputs_prev_outputs: &Vec<&TxOut>,
+	funding_outputs: &Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
+	change_output_dust_limit: u64,
+) -> Result<Option<u64>, AbortReason> {
+	let our_funding_inputs_weight =
+		funding_inputs_prev_outputs.iter().fold(0u64, |weight, prev_output| {
+			weight.saturating_add(estimate_input_weight(prev_output).to_wu())
+		});
+	let our_funding_outputs_weight = funding_outputs.iter().fold(0u64, |weight, out| {
+		weight.saturating_add(get_output_weight(&out.tx_out().script_pubkey).to_wu())
+	});
+	let mut weight = our_funding_outputs_weight.saturating_add(our_funding_inputs_weight);
+
+	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
+	if is_initiator {
+		weight = weight.saturating_add(TX_COMMON_FIELDS_WEIGHT);
+	}
+
+	let fees_sats = fee_for_weight(funding_feerate_sat_per_1000_weight, weight);
+	let total_input_satoshis: u64 =
+		funding_inputs_prev_outputs.iter().map(|out| out.value.to_sat()).sum();
+
+	// Note: in case of additional outputs, they will have to be subtracted here
+
+	let total_inputs_less_fees = total_input_satoshis.saturating_sub(fees_sats);
+	if total_inputs_less_fees < our_contribution {
+		// Not enough to cover contribution plus fees
+		return Err(AbortReason::InsufficientFees);
+	}
+	let remaining_value = total_inputs_less_fees.saturating_sub(our_contribution);
+	if remaining_value < change_output_dust_limit {
+		// Enough to cover contribution plus fees, but leftover is below dust limit; no change
+		Ok(None)
+	} else {
+		// Enough to have over-dust change
+		Ok(Some(remaining_value))
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::interactivetxs::{
-		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
-		InteractiveTxConstructorArgs, InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT,
-		MAX_RECEIVED_TX_ADD_INPUT_COUNT, MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
+		calculate_change_output_value, generate_holder_serial_id, AbortReason,
+		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
+		InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
+		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
 	};
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
@@ -2594,5 +2662,95 @@ mod tests {
 		// Initiators should have even serial id, non-initiators should have odd serial id.
 		assert_eq!(generate_holder_serial_id(&&entropy_source, true) % 2, 0);
 		assert_eq!(generate_holder_serial_id(&&entropy_source, false) % 2, 1)
+	}
+
+	#[test]
+	fn test_calculate_change_output_value_open() {
+		let input_prevouts_owned = vec![
+			TxOut { value: Amount::from_sat(70_000), script_pubkey: ScriptBuf::new() },
+			TxOut { value: Amount::from_sat(60_000), script_pubkey: ScriptBuf::new() },
+		];
+		let input_prevouts: Vec<&TxOut> = input_prevouts_owned.iter().collect();
+		let our_contributed = 110_000;
+		let txout = TxOut { value: Amount::from_sat(128_000), script_pubkey: ScriptBuf::new() };
+		let outputs = vec![OutputOwned::SharedControlFullyOwned(txout)];
+		let funding_feerate_sat_per_1000_weight = 3000;
+
+		let total_inputs: u64 = input_prevouts.iter().map(|o| o.value.to_sat()).sum();
+		let gross_change = total_inputs - our_contributed;
+		let fees = 1746;
+		let common_fees = 126;
+		{
+			// There is leftover for change
+			let res = calculate_change_output_value(
+				true,
+				our_contributed,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				300,
+			);
+			assert_eq!(res.unwrap().unwrap(), gross_change - fees - common_fees);
+		}
+		{
+			// There is leftover for change, without common fees
+			let res = calculate_change_output_value(
+				false,
+				our_contributed,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				300,
+			);
+			assert_eq!(res.unwrap().unwrap(), gross_change - fees);
+		}
+		{
+			// Larger fee, smaller change
+			let res = calculate_change_output_value(
+				true,
+				our_contributed,
+				&input_prevouts,
+				&outputs,
+				9000,
+				300,
+			);
+			assert_eq!(res.unwrap().unwrap(), 14384);
+		}
+		{
+			// Insufficient inputs, no leftover
+			let res = calculate_change_output_value(
+				false,
+				130_000,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				300,
+			);
+			assert_eq!(res.err().unwrap(), AbortReason::InsufficientFees);
+		}
+		{
+			// Very small leftover
+			let res = calculate_change_output_value(
+				false,
+				128_100,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				300,
+			);
+			assert!(res.unwrap().is_none());
+		}
+		{
+			// Small leftover, but not dust
+			let res = calculate_change_output_value(
+				false,
+				128_100,
+				&input_prevouts,
+				&outputs,
+				funding_feerate_sat_per_1000_weight,
+				100,
+			);
+			assert_eq!(res.unwrap().unwrap(), 154);
+		}
 	}
 }
