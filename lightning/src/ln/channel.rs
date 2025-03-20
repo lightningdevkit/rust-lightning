@@ -10548,11 +10548,23 @@ where
 		if post_balance >= post_channel_reserve_sats * 1000 {
 			return Ok(());
 		}
-		let pre_channel_reserve_sats =
-			get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
-		if pre_balance >= pre_channel_reserve_sats * 1000 {
-			// We're not allowed to dip below the reserve once we've been above.
-			return Err(post_channel_reserve_sats);
+		// We're not allowed to dip below the reserve once we've been above,
+		// check differently for originally v1 and v2 channels
+		if self.is_v2_established() {
+			let pre_channel_reserve_sats =
+				get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
+			if pre_balance >= pre_channel_reserve_sats * 1000 {
+				return Err(post_channel_reserve_sats);
+			}
+		} else {
+			if pre_balance >= self.funding.holder_selected_channel_reserve_satoshis * 1000 {
+				return Err(post_channel_reserve_sats);
+			}
+			if let Some(cp_reserve) = self.funding.counterparty_selected_channel_reserve_satoshis {
+				if pre_balance >= cp_reserve * 1000 {
+					return Err(post_channel_reserve_sats);
+				}
+			}
 		}
 		// Make sure we either remain with the same balance or move towards the reserve.
 		if post_balance >= pre_balance {
