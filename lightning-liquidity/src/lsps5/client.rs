@@ -29,6 +29,7 @@ use core::str::FromStr;
 
 use crate::prelude::{new_hash_map, HashMap, String};
 
+use super::msgs::{Lsps5AppName, Lsps5WebhookUrl};
 use super::url_utils::Url;
 use chrono::Duration;
 use lightning::sign::EntropySource;
@@ -51,9 +52,10 @@ impl Default for LSPS5ClientConfig {
 }
 
 struct PeerState {
-	pending_set_webhook_requests: HashMap<LSPSRequestId, (String, String, LSPSDateTime)>, // RequestId -> (app_name, webhook_url, timestamp)
+	pending_set_webhook_requests:
+		HashMap<LSPSRequestId, (Lsps5AppName, Lsps5WebhookUrl, LSPSDateTime)>, // RequestId -> (app_name, webhook_url, timestamp)
 	pending_list_webhooks_requests: HashMap<LSPSRequestId, LSPSDateTime>, // RequestId -> timestamp
-	pending_remove_webhook_requests: HashMap<LSPSRequestId, (String, LSPSDateTime)>, // RequestId -> (app_name, timestamp)
+	pending_remove_webhook_requests: HashMap<LSPSRequestId, (Lsps5AppName, LSPSDateTime)>, // RequestId -> (app_name, timestamp)
 	// Last cleanup time for garbage collection
 	last_cleanup: LSPSDateTime, // Seconds since epoch
 }
@@ -168,25 +170,18 @@ where
 	pub fn set_webhook(
 		&self, counterparty_node_id: PublicKey, app_name: String, webhook: String,
 	) -> Result<LSPSRequestId, LightningError> {
-		if app_name.len() > MAX_APP_NAME_LENGTH {
-			return Err(LightningError {
-				err: format!("App name exceeds maximum length of {} bytes", MAX_APP_NAME_LENGTH),
-				action: ErrorAction::IgnoreAndLog(Level::Error),
-			});
-		}
+		let app_name = match Lsps5AppName::new(app_name) {
+			Ok(app_name) => app_name,
+			Err(e) => return Err(e),
+		};
 
-		if webhook.len() > MAX_WEBHOOK_URL_LENGTH {
-			return Err(LightningError {
-				err: format!(
-					"Webhook URL exceeds maximum length of {} bytes",
-					MAX_WEBHOOK_URL_LENGTH
-				),
-				action: ErrorAction::IgnoreAndLog(Level::Error),
-			});
-		}
+		let webhook = match Lsps5WebhookUrl::new(webhook) {
+			Ok(webhook) => webhook,
+			Err(e) => return Err(e),
+		};
 
 		// Validate URL format and protocol according to spec
-		let url = match Url::parse(&webhook) {
+		let url = match Url::parse(&webhook.as_str()) {
 			Ok(url) => url,
 			Err(e) => {
 				return Err(LightningError {
@@ -208,8 +203,7 @@ where
 			return Err(e);
 		}
 
-		// Generate a unique request ID
-		let request_id = LSPSRequestId(format!("lsps5:webhook:{}", self.generate_random_id()));
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		// Track this request with current timestamp
 		self.with_peer_state(counterparty_node_id, |peer_state| {
@@ -243,8 +237,7 @@ where
 	pub fn list_webhooks(
 		&self, counterparty_node_id: PublicKey,
 	) -> Result<LSPSRequestId, LightningError> {
-		// Generate a unique request ID
-		let request_id = LSPSRequestId(format!("lsps5:list:{}", self.generate_random_id()));
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		// Track this request with current timestamp
 		self.with_peer_state(counterparty_node_id, |peer_state| {
@@ -280,8 +273,13 @@ where
 	pub fn remove_webhook(
 		&self, counterparty_node_id: PublicKey, app_name: String,
 	) -> Result<LSPSRequestId, LightningError> {
+		let app_name = match Lsps5AppName::new(app_name) {
+			Ok(app_name) => app_name,
+			Err(e) => return Err(e),
+		};
+
 		// Generate a unique request ID
-		let request_id = LSPSRequestId(format!("lsps5:remove:{}", self.generate_random_id()));
+		let request_id = crate::utils::generate_request_id(&self.entropy_source);
 
 		// Track this request with current timestamp
 		self.with_peer_state(counterparty_node_id, |peer_state| {
@@ -365,23 +363,25 @@ where
 						match response {
 							LSPS5Response::SetWebhook(response) => {
 								self.pending_events.enqueue(LSPS5ClientEvent::WebhookRegistered {
-									lsp: *counterparty_node_id,
+									counterparty_node_id: *counterparty_node_id,
 									num_webhooks: response.num_webhooks,
 									max_webhooks: response.max_webhooks,
 									no_change: response.no_change,
 									app_name,
 									url: webhook_url,
+									request_id,
 								});
 								result = Ok(());
 							},
 							LSPS5Response::SetWebhookError(error) => {
 								self.pending_events.enqueue(
 									LSPS5ClientEvent::WebhookRegistrationFailed {
-										lsp: *counterparty_node_id,
+										counterparty_node_id: *counterparty_node_id,
 										error_code: error.code,
 										error_message: error.message,
 										app_name,
 										url: webhook_url,
+										request_id,
 									},
 								);
 								result = Ok(());
@@ -403,17 +403,19 @@ where
 						match response {
 							LSPS5Response::ListWebhooks(response) => {
 								self.pending_events.enqueue(LSPS5ClientEvent::WebhooksListed {
-									lsp: *counterparty_node_id,
+									counterparty_node_id: *counterparty_node_id,
 									app_names: response.app_names,
 									max_webhooks: response.max_webhooks,
+									request_id,
 								});
 								result = Ok(());
 							},
 							LSPS5Response::ListWebhooksError(error) => {
 								self.pending_events.enqueue(LSPS5ClientEvent::WebhooksListFailed {
-									lsp: *counterparty_node_id,
+									counterparty_node_id: *counterparty_node_id,
 									error_code: error.code,
 									error_message: error.message,
+									request_id,
 								});
 								result = Ok(());
 							},
@@ -433,18 +435,20 @@ where
 							LSPS5Response::RemoveWebhook(_) => {
 								// Emit event
 								self.pending_events.enqueue(LSPS5ClientEvent::WebhookRemoved {
-									lsp: *counterparty_node_id,
+									counterparty_node_id: *counterparty_node_id,
 									app_name,
+									request_id,
 								});
 								result = Ok(());
 							},
 							LSPS5Response::RemoveWebhookError(error) => {
 								self.pending_events.enqueue(
 									LSPS5ClientEvent::WebhookRemovalFailed {
-										lsp: *counterparty_node_id,
+										counterparty_node_id: *counterparty_node_id,
 										error_code: error.code,
 										error_message: error.message,
 										app_name,
+										request_id,
 									},
 								);
 								result = Ok(());
@@ -663,13 +667,6 @@ where
 			Err(e) => Err(e),
 		}
 	}
-
-	// Helper method to generate random IDs for requests
-	fn generate_random_id(&self) -> String {
-		let mut bytes = [0u8; 16];
-		bytes.copy_from_slice(&self.entropy_source.get_secure_random_bytes()[0..16]);
-		DisplayHex::to_lower_hex_string(&bytes)
-	}
 }
 
 impl<ES: Deref> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES>
@@ -680,9 +677,9 @@ where
 	const PROTOCOL_NUMBER: Option<u16> = Some(5);
 
 	fn handle_message(
-		&self, message: Self::ProtocolMessage, counterparty_node_id: &PublicKey,
+		&self, message: Self::ProtocolMessage, lsp_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
-		self.handle_message(message, counterparty_node_id)
+		self.handle_message(message, lsp_node_id)
 	}
 }
 
@@ -754,11 +751,13 @@ mod tests {
 	#[test]
 	fn test_pending_request_tracking() {
 		let (client, _, _, peer, _) = setup_test_client();
-
+		const APP_NAME: &str = "test-app";
+		const WEBHOOK_URL: &str = "https://example.com/hook";
+		let lsps5_app_name = Lsps5AppName::new(APP_NAME.to_string()).unwrap();
+		let lsps5_webhook_url = Lsps5WebhookUrl::new(WEBHOOK_URL.to_string()).unwrap();
 		// Create various requests
-		let set_req_id = client
-			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
-			.unwrap();
+		let set_req_id =
+			client.set_webhook(peer, APP_NAME.to_string(), WEBHOOK_URL.to_string()).unwrap();
 		let list_req_id = client.list_webhooks(peer).unwrap();
 		let remove_req_id = client.remove_webhook(peer, "test-app".to_string()).unwrap();
 
@@ -771,8 +770,8 @@ mod tests {
 			assert_eq!(
 				peer_state.pending_set_webhook_requests.get(&set_req_id).unwrap(),
 				&(
-					"test-app".to_string(),
-					"https://example.com/hook".to_string(),
+					lsps5_app_name.clone(),
+					lsps5_webhook_url,
 					peer_state.pending_set_webhook_requests.get(&set_req_id).unwrap().2.clone()
 				)
 			);
@@ -783,7 +782,7 @@ mod tests {
 			// Check remove_webhook tracking
 			assert_eq!(
 				peer_state.pending_remove_webhook_requests.get(&remove_req_id).unwrap().0,
-				"test-app"
+				lsps5_app_name
 			);
 		}
 	}
@@ -825,6 +824,12 @@ mod tests {
 
 	#[test]
 	fn test_cleanup_expired_responses() {
+		const OLD_APP_NAME: &str = "test-app-old";
+		const NEW_APP_NAME: &str = "test-app-new";
+		const WEBHOOK_URL: &str = "https://example.com/hook";
+		let lsps5_old_app_name = Lsps5AppName::new(OLD_APP_NAME.to_string()).unwrap();
+		let lsps5_new_app_name = Lsps5AppName::new(NEW_APP_NAME.to_string()).unwrap();
+		let lsps5_webhook_url = Lsps5WebhookUrl::new(WEBHOOK_URL.to_string()).unwrap();
 		// The current time for setting request timestamps
 		let now = LSPSDateTime::now();
 		// Create a mock PeerState with a very old cleanup time
@@ -839,8 +844,8 @@ mod tests {
 		peer_state.pending_set_webhook_requests.insert(
 			old_request_id.clone(),
 			(
-				"test-app-old".to_string(),
-				"https://example.com/hook".to_string(),
+				lsps5_old_app_name,
+				lsps5_webhook_url.clone(),
 				now.checked_sub_signed(Duration::seconds(7200)).unwrap(),
 			), // 2 hours old
 		);
@@ -849,8 +854,8 @@ mod tests {
 		peer_state.pending_set_webhook_requests.insert(
 			new_request_id.clone(),
 			(
-				"test-app-new".to_string(),
-				"https://example.com/hook".to_string(),
+				lsps5_new_app_name,
+				lsps5_webhook_url,
 				now.checked_sub_signed(Duration::seconds(600)).unwrap(),
 			), // 10 minutes old
 		);

@@ -30,11 +30,11 @@ use serde_json::json;
 
 use super::event::LSPS5ServiceEvent;
 use super::msgs::{
-	LSPS5Message, LSPS5Request, LSPS5Response, LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE,
-	LSPS5_TOO_LONG_ERROR_CODE, LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE,
-	LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE, LSPS5_URL_PARSE_ERROR_CODE,
+	LSPS5Message, LSPS5Request, LSPS5Response, Lsps5AppName, Lsps5WebhookUrl,
+	LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE, LSPS5_TOO_LONG_ERROR_CODE,
+	LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE, LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE,
+	LSPS5_URL_PARSE_ERROR_CODE, MAX_APP_NAME_LENGTH, MAX_WEBHOOK_URL_LENGTH,
 };
-use super::{MAX_APP_NAME_LENGTH, MAX_WEBHOOK_URL_LENGTH};
 use chrono::Duration;
 
 /// Minimum number of days to retain webhooks after a client's last channel is closed
@@ -44,11 +44,11 @@ pub const MIN_WEBHOOK_RETENTION_DAYS: u32 = 30;
 #[derive(Debug, Clone)]
 struct StoredWebhook {
 	/// App name identifier for this webhook
-	_app_name: String,
+	_app_name: Lsps5AppName,
 	/// The webhook URL
-	url: String,
+	url: Lsps5WebhookUrl,
 	/// Client node ID
-	_client_id: PublicKey,
+	_counterparty_node_id: PublicKey,
 	/// Last time this webhook was used
 	last_used: LSPSDateTime,
 	/// Map of notification methods to last time they were sent
@@ -177,7 +177,7 @@ pub struct LSPS5ServiceHandler {
 	/// Configuration parameters
 	config: LSPS5ServiceConfig,
 	/// Map of client node IDs to their registered webhooks
-	webhooks: Arc<Mutex<HashMap<PublicKey, HashMap<String, StoredWebhook>>>>,
+	webhooks: Arc<Mutex<HashMap<PublicKey, HashMap<Lsps5AppName, StoredWebhook>>>>,
 	/// Map of client node IDs to their channel counts
 	client_channel_counts: Arc<Mutex<HashMap<PublicKey, u32>>>,
 	/// Map of recently used signatures to prevent replay attacks
@@ -227,7 +227,7 @@ impl LSPS5ServiceHandler {
 	/// Validates a webhook URL
 	///
 	/// Returns Ok if valid, or a LightningError if invalid
-	fn validate_webhook_url(&self, webhook_url: &str) -> Result<Url, LSPSResponseError> {
+	fn validate_webhook_url(&self, webhook_url: &Lsps5WebhookUrl) -> Result<(), LSPSResponseError> {
 		// Validate URL length
 		if webhook_url.len() > MAX_WEBHOOK_URL_LENGTH {
 			return Err(LSPSResponseError {
@@ -241,7 +241,7 @@ impl LSPS5ServiceHandler {
 		}
 
 		// Parse and validate URL format
-		let url = match Url::parse(webhook_url) {
+		let url = match Url::parse(webhook_url.as_str()) {
 			Ok(url) => url,
 			Err(e) => {
 				return Err(LSPSResponseError {
@@ -261,7 +261,7 @@ impl LSPS5ServiceHandler {
 			});
 		}
 
-		Ok(url)
+		Ok(())
 	}
 
 	/// Handle a set_webhook request
@@ -290,8 +290,8 @@ impl LSPS5ServiceHandler {
 		}
 
 		// Validate URL
-		let _url = match self.validate_webhook_url(&params.webhook) {
-			Ok(url) => url,
+		match self.validate_webhook_url(&params.webhook) {
+			Ok(_) => (),
 			Err(e) => {
 				let error_message = e.message.clone();
 				let msg =
@@ -349,7 +349,7 @@ impl LSPS5ServiceHandler {
 		let stored_webhook = StoredWebhook {
 			_app_name: params.app_name.clone(),
 			url: params.webhook.clone(),
-			_client_id: counterparty_node_id,
+			_counterparty_node_id: counterparty_node_id,
 			last_used: LSPSDateTime::now(),
 			last_notification_sent: new_hash_map(),
 		};
@@ -364,7 +364,7 @@ impl LSPS5ServiceHandler {
 		};
 		// Emit webhook registration event
 		self.event_queue.enqueue(LSPS5ServiceEvent::WebhookRegistered {
-			client: counterparty_node_id,
+			counterparty_node_id,
 			app_name: params.app_name.clone(),
 			url: params.webhook.clone(),
 			request_id: request_id.clone(),
@@ -377,8 +377,8 @@ impl LSPS5ServiceHandler {
 		if !no_change {
 			let _ = self.send_webhook_registered_notification(
 				counterparty_node_id,
-				params.app_name.clone(),
-				params.webhook.clone(),
+				params.app_name,
+				params.webhook,
 			);
 		}
 
@@ -402,7 +402,7 @@ impl LSPS5ServiceHandler {
 
 		// Emit webhook list event
 		self.event_queue.enqueue(LSPS5ServiceEvent::WebhooksListed {
-			client: counterparty_node_id,
+			counterparty_node_id,
 			app_names: app_names.clone(),
 			max_webhooks: self.config.max_webhooks_per_client,
 			request_id: request_id.clone(),
@@ -434,7 +434,7 @@ impl LSPS5ServiceHandler {
 				.into();
 				self.pending_messages.enqueue(&counterparty_node_id, msg);
 				self.event_queue.enqueue(LSPS5ServiceEvent::WebhookRemoved {
-					client: counterparty_node_id,
+					counterparty_node_id,
 					app_name: params.app_name,
 					request_id: request_id.clone(),
 				});
@@ -466,18 +466,18 @@ impl LSPS5ServiceHandler {
 	/// "Only the newly-registered webhook is notified.
 	/// Only the newly-registered webhook is contacted for this notification"
 	fn send_webhook_registered_notification(
-		&self, client_id: PublicKey, app_name: String, url: String,
+		&self, client_node_id: PublicKey, app_name: Lsps5AppName, url: Lsps5WebhookUrl,
 	) -> Result<(), LightningError> {
 		// Create the notification
 		let notification = WebhookNotification::webhook_registered();
 
 		// Send the notification
 		self.send_notification(
-			client_id,
+			client_node_id,
 			app_name.clone(),
 			url.clone(),
 			notification,
-			WebhookNotificationMethod::WebhookRegistered,
+			WebhookNotificationMethod::LSPS5WebhookRegistered,
 		)
 	}
 
@@ -487,7 +487,7 @@ impl LSPS5ServiceHandler {
 		self.broadcast_notification(
 			client_id,
 			notification,
-			WebhookNotificationMethod::PaymentIncoming,
+			WebhookNotificationMethod::LSPS5PaymentIncoming,
 		)
 	}
 
@@ -496,7 +496,11 @@ impl LSPS5ServiceHandler {
 		&self, client_id: PublicKey, timeout: u32,
 	) -> Result<(), LightningError> {
 		let notification = WebhookNotification::expiry_soon(timeout);
-		self.broadcast_notification(client_id, notification, WebhookNotificationMethod::ExpirySoon)
+		self.broadcast_notification(
+			client_id,
+			notification,
+			WebhookNotificationMethod::LSPS5ExpirySoon,
+		)
 	}
 
 	/// Send a liquidity_management_request notification to all of a client's webhooks
@@ -507,7 +511,7 @@ impl LSPS5ServiceHandler {
 		self.broadcast_notification(
 			client_id,
 			notification,
-			WebhookNotificationMethod::LiquidityManagementRequest,
+			WebhookNotificationMethod::LSPS5LiquidityManagementRequest,
 		)
 	}
 
@@ -519,7 +523,7 @@ impl LSPS5ServiceHandler {
 		self.broadcast_notification(
 			client_id,
 			notification,
-			WebhookNotificationMethod::OnionMessageIncoming,
+			WebhookNotificationMethod::LSPS5OnionMessageIncoming,
 		)
 	}
 
@@ -585,7 +589,7 @@ impl LSPS5ServiceHandler {
 
 	/// Send a notification to a webhook URL
 	fn send_notification(
-		&self, client_id: PublicKey, app_name: String, url: String,
+		&self, counterparty_node_id: PublicKey, app_name: Lsps5AppName, url: Lsps5WebhookUrl,
 		notification: WebhookNotification, method: WebhookNotificationMethod,
 	) -> Result<(), LightningError> {
 		// Create timestamp in ISO8601 format using chrono
@@ -614,12 +618,12 @@ impl LSPS5ServiceHandler {
 		];
 
 		// Use the HTTP client to send the request synchronously
-		let result = self.http_client.post(&url, headers, notification_json);
+		let result = self.http_client.post(&url.as_str(), headers, notification_json);
 
 		// Record successful notifications through event queue
 		if result.is_ok() {
 			self.event_queue.enqueue(LSPS5ServiceEvent::WebhookNotificationSent {
-				client: client_id,
+				counterparty_node_id,
 				app_name,
 				url,
 				method,
