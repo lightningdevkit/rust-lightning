@@ -1934,7 +1934,7 @@ pub trait ChannelMessageHandler : BaseMessageHandler {
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK);
 
-	#[cfg(test)]
+	#[cfg(any(test, fuzzing))]
 	/// Handle a batch of incoming `commitment_signed` message from the given peer.
 	fn handle_commitment_signed_batch(&self, their_node_id: PublicKey, batch: &Vec<CommitmentSigned>) {
 		for msg in batch {
