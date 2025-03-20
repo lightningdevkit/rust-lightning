@@ -38,7 +38,7 @@ use core::ops::Deref;
 /// A blinded path to be used for sending or receiving a message, hiding the identity of the
 /// recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct BlindedMessagePath(pub(super) BlindedPath);
+pub struct BlindedMessagePath(pub BlindedPath);
 
 impl Writeable for BlindedMessagePath {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
