@@ -57,6 +57,9 @@ use std::time::Instant;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 
+#[cfg(feature = "std")]
+use std::marker::PhantomData;
+
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
 /// responsibilities are:
@@ -1045,6 +1048,193 @@ impl BackgroundProcessor {
 			Some(handle) => handle.join().unwrap(),
 			None => Ok(()),
 		}
+	}
+
+	/// Creates a new [`BackgroundProcessorBuilder`] to construct a   [`BackgroundProcessor`] with optional components.
+	pub fn builder<
+		'a,
+		UL: 'static + Deref + Send + Sync,
+		CF: 'static + Deref + Send + Sync,
+		T: 'static + Deref + Send + Sync,
+		F: 'static + Deref + Send + Sync,
+		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
+		L: 'static + Deref + Send + Sync,
+		P: 'static + Deref + Send + Sync,
+		EH: 'static + EventHandler + Send,
+		PS: 'static + Deref + Send,
+		M: 'static
+			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Send
+			+ Sync,
+		CM: 'static + Deref + Send + Sync,
+		OM: 'static + Deref + Send + Sync,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+		PM: 'static + Deref + Send + Sync,
+		S: 'static + Deref<Target = SC> + Send + Sync,
+		SC: for<'b> WriteableScore<'b>,
+	>(
+		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
+		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
+	) -> BackgroundProcessorBuilder<'a, UL, CF, T, F, G, L, P, EH, PS, M, CM, OM, PGS, RGS, PM, S, SC>
+	where
+		UL::Target: 'static + UtxoLookup,
+		CF::Target: 'static + chain::Filter,
+		T::Target: 'static + BroadcasterInterface,
+		F::Target: 'static + FeeEstimator,
+		L::Target: 'static + Logger,
+		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+		PS::Target: 'static + Persister<'a, CM, L, S>,
+		CM::Target: AChannelManager + Send + Sync,
+		OM::Target: AOnionMessenger + Send + Sync,
+		PM::Target: APeerManager + Send + Sync,
+	{
+		BackgroundProcessorBuilder::new(
+			persister,
+			event_handler,
+			chain_monitor,
+			channel_manager,
+			gossip_sync,
+			peer_manager,
+			logger,
+		)
+	}
+}
+
+/// A builder for constructing a [`BackgroundProcessor`] with optional components.
+///
+/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessor`]
+/// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
+/// concrete types for components that aren't being used.
+///
+/// Use [`BackgroundProcessor::builder`] to create a new builder instance.
+#[cfg(feature = "std")]
+pub struct BackgroundProcessorBuilder<
+	'a,
+	UL: 'static + Deref + Send + Sync,
+	CF: 'static + Deref + Send + Sync,
+	T: 'static + Deref + Send + Sync,
+	F: 'static + Deref + Send + Sync,
+	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
+	L: 'static + Deref + Send + Sync,
+	P: 'static + Deref + Send + Sync,
+	EH: 'static + EventHandler + Send,
+	PS: 'static + Deref + Send,
+	M: 'static
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+		+ Send
+		+ Sync,
+	CM: 'static + Deref + Send + Sync,
+	OM: 'static + Deref + Send + Sync,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+	PM: 'static + Deref + Send + Sync,
+	S: 'static + Deref<Target = SC> + Send + Sync,
+	SC: for<'b> WriteableScore<'b>,
+> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	CM::Target: AChannelManager + Send + Sync,
+	OM::Target: AOnionMessenger + Send + Sync,
+	PM::Target: APeerManager + Send + Sync,
+{
+	persister: PS,
+	event_handler: EH,
+	chain_monitor: M,
+	channel_manager: CM,
+	onion_messenger: Option<OM>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>,
+	peer_manager: PM,
+	logger: L,
+	scorer: Option<S>,
+	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
+}
+
+#[cfg(feature = "std")]
+impl<
+		'a,
+		UL: 'static + Deref + Send + Sync,
+		CF: 'static + Deref + Send + Sync,
+		T: 'static + Deref + Send + Sync,
+		F: 'static + Deref + Send + Sync,
+		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
+		L: 'static + Deref + Send + Sync,
+		P: 'static + Deref + Send + Sync,
+		EH: 'static + EventHandler + Send,
+		PS: 'static + Deref + Send,
+		M: 'static
+			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Send
+			+ Sync,
+		CM: 'static + Deref + Send + Sync,
+		OM: 'static + Deref + Send + Sync,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+		PM: 'static + Deref + Send + Sync,
+		S: 'static + Deref<Target = SC> + Send + Sync,
+		SC: for<'b> WriteableScore<'b>,
+	> BackgroundProcessorBuilder<'a, UL, CF, T, F, G, L, P, EH, PS, M, CM, OM, PGS, RGS, PM, S, SC>
+where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	CM::Target: AChannelManager + Send + Sync,
+	OM::Target: AOnionMessenger + Send + Sync,
+	PM::Target: APeerManager + Send + Sync,
+{
+	/// Creates a new builder instance. This is an internal method - use [`BackgroundProcessor::builder`] instead.
+	pub fn new(
+		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
+		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
+	) -> Self {
+		Self {
+			persister,
+			event_handler,
+			chain_monitor,
+			channel_manager,
+			onion_messenger: None,
+			gossip_sync,
+			peer_manager,
+			logger,
+			scorer: None,
+			_phantom: PhantomData,
+		}
+	}
+
+	/// Sets the optional onion messenger component.
+	pub fn with_onion_messenger(&mut self, onion_messenger: OM) -> &mut Self {
+		self.onion_messenger = Some(onion_messenger);
+		self
+	}
+
+	/// Sets the optional scorer component.
+	pub fn with_scorer(&mut self, scorer: S) -> &mut Self {
+		self.scorer = Some(scorer);
+		self
+	}
+
+	/// Builds and starts the [`BackgroundProcessor`].
+	pub fn build(self) -> BackgroundProcessor {
+		BackgroundProcessor::start(
+			self.persister,
+			self.event_handler,
+			self.chain_monitor,
+			self.channel_manager,
+			self.onion_messenger,
+			self.gossip_sync,
+			self.peer_manager,
+			self.logger,
+			self.scorer,
+		)
 	}
 }
 
@@ -2720,5 +2910,104 @@ mod tests {
 		let (r1, r2) = tokio::join!(t1, t2);
 		r1.unwrap().unwrap();
 		r2.unwrap()
+	}
+
+	#[test]
+	fn test_background_processor_builder() {
+		// Test that when a new channel is created, the ChannelManager needs to be re-persisted with
+		// updates. Also test that when new updates are available, the manager signals that it needs
+		// re-persistence and is successfully re-persisted.
+		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_builder");
+
+		// Go through the channel creation process so that each node has something to persist. Since
+		// open_channel consumes events, it must complete before starting BackgroundProcessor to
+		// avoid a race with processing events.
+		let tx = open_channel!(nodes[0], nodes[1], 100000);
+
+		// Initiate the background processors to watch each node.
+		let data_dir = nodes[0].kv_store.get_data_dir();
+		let persister = Arc::new(Persister::new(data_dir));
+		let event_handler = |_: _| Ok(());
+		let bg_processor = BackgroundProcessor::builder(
+			persister,
+			event_handler,
+			nodes[0].chain_monitor.clone(),
+			nodes[0].node.clone(),
+			nodes[0].p2p_gossip_sync(),
+			nodes[0].peer_manager.clone(),
+			nodes[0].logger.clone(),
+		)
+		.with_onion_messenger(nodes[0].messenger.clone())
+		.with_scorer(nodes[0].scorer.clone())
+		.build();
+
+		macro_rules! check_persisted_data {
+			($node: expr, $filepath: expr) => {
+				let mut expected_bytes = Vec::new();
+				loop {
+					expected_bytes.clear();
+					match $node.write(&mut expected_bytes) {
+						Ok(()) => match std::fs::read($filepath) {
+							Ok(bytes) => {
+								if bytes == expected_bytes {
+									break;
+								} else {
+									continue;
+								}
+							},
+							Err(_) => continue,
+						},
+						Err(e) => panic!("Unexpected error: {}", e),
+					}
+				}
+			};
+		}
+
+		// Check that the initial data is persisted as expected
+		let filepath =
+			get_full_filepath(format!("{}_persister_0", &persist_dir), "manager".to_string());
+		check_persisted_data!(nodes[0].node, filepath.clone());
+
+		loop {
+			if !nodes[0].node.get_event_or_persist_condvar_value() {
+				break;
+			}
+		}
+
+		// Force-close the channel.
+		let error_message = "Channel force-closed";
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(
+				&ChannelId::v1_from_funding_outpoint(OutPoint {
+					txid: tx.compute_txid(),
+					index: 0,
+				}),
+				&nodes[1].node.get_our_node_id(),
+				error_message.to_string(),
+			)
+			.unwrap();
+
+		// Check that the force-close updates are persisted
+		check_persisted_data!(nodes[0].node, manager_path.clone());
+		loop {
+			if !nodes[0].node.get_event_or_persist_condvar_value() {
+				break;
+			}
+		}
+
+		// Check network graph is persisted
+		let filepath =
+			get_full_filepath(format!("{}_persister_0", &persist_dir), "network_graph".to_string());
+		check_persisted_data!(nodes[0].network_graph, filepath);
+
+		// Check scorer is persisted
+		let filepath =
+			get_full_filepath(format!("{}_persister_0", &persist_dir), "scorer".to_string());
+		check_persisted_data!(nodes[0].scorer, filepath);
+
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 }
