@@ -11,7 +11,7 @@
 //! It supports encryption and decryption to maintain data integrity and security during
 //! transmission.
 //!
-use crate::chain::chainmonitor::PeerStorageKey;
+use crate::sign::PeerStorageKey;
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::prelude::*;
@@ -35,11 +35,11 @@ use crate::prelude::*;
 /// ## Example
 /// ```
 /// use lightning::ln::our_peer_storage::OurPeerStorage;
-/// use lightning::chain::chainmonitor::PeerStorageKey;
-/// let key = PeerStorageKey::new([0u8; 32]);
-/// let our_peer_storage = OurPeerStorage::create_from_data(key.clone(), vec![1,2,3]);
+/// use lightning::sign::PeerStorageKey;
+/// let key = PeerStorageKey{inner: [0u8; 32]};
+/// let our_peer_storage = OurPeerStorage::create_from_data(key.clone(), vec![1, 2, 3]);
 /// let decrypted_data = our_peer_storage.decrypt_our_peer_storage(key).unwrap();
-/// assert_eq!(decrypted_data, vec![1 , 2, 3]);
+/// assert_eq!(decrypted_data, vec![1, 2, 3]);
 /// ```
 #[derive(PartialEq)]
 pub struct OurPeerStorage {
@@ -71,7 +71,7 @@ impl OurPeerStorage {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(key.as_bytes(), &nonce, b"");
+		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
 		let mut tag = [0; 16];
 		chacha.encrypt_full_message_in_place(&mut ser_channels[0..plaintext_len], &mut tag);
 
@@ -98,7 +98,7 @@ impl OurPeerStorage {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(key.as_bytes(), &nonce, b"");
+		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
 
 		if chacha.check_decrypt_in_place(encrypted_data, tag).is_err() {
 			return Err(());
