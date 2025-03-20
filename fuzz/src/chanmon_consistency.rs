@@ -37,7 +37,6 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::chainmonitor::PeerStorageKey;
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{
@@ -63,7 +62,9 @@ use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessa
 use lightning::routing::router::{
 	InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router,
 };
-use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
+use lightning::sign::{
+	EntropySource, InMemorySigner, NodeSigner, PeerStorageKey, Recipient, SignerProvider,
+};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::*;

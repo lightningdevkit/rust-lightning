@@ -37,7 +37,6 @@ use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
 
 use lightning_invoice::RawBolt11Invoice;
 
-use crate::chain::chainmonitor::PeerStorageKey;
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
@@ -793,6 +792,13 @@ pub trait ChannelSigner {
 	///
 	/// This method is *not* asynchronous. Instead, the value must be cached locally.
 	fn channel_keys_id(&self) -> [u8; 32];
+}
+
+/// Represents Secret Key used for encrypting Peer Storage.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PeerStorageKey {
+	/// Represents the key used to encrypt and decrypt Peer Storage.
+	pub inner: [u8; 32],
 }
 
 /// Specifies the recipient of an invoice.
@@ -1891,7 +1897,7 @@ impl KeysManager {
 					node_id,
 					inbound_payment_key: ExpandedKey::new(inbound_pmt_key_bytes),
 
-					peer_storage_key: PeerStorageKey::new(peer_storage_key.secret_bytes()),
+					peer_storage_key: PeerStorageKey { inner: peer_storage_key.secret_bytes() },
 
 					destination_script,
 					shutdown_pubkey,

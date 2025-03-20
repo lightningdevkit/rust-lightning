@@ -4,7 +4,6 @@ use crate::prelude::*;
 
 use core::any::Any;
 
-use crate::chain::chainmonitor::PeerStorageKey;
 use crate::ln::chan_utils::{
 	ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
 	HTLCOutputInCommitment, HolderCommitmentTransaction,
@@ -18,7 +17,9 @@ use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::ChannelSigner;
 use crate::sign::InMemorySigner;
 use crate::sign::{EntropySource, HTLCDescriptor, OutputSpender, PhantomKeysManager};
-use crate::sign::{NodeSigner, Recipient, SignerProvider, SpendableOutputDescriptor};
+use crate::sign::{
+	NodeSigner, PeerStorageKey, Recipient, SignerProvider, SpendableOutputDescriptor,
+};
 use bitcoin;
 use bitcoin::absolute::LockTime;
 use bitcoin::secp256k1::All;

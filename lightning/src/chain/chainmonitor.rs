@@ -35,6 +35,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
 use crate::ln::our_peer_storage::OurPeerStorage;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::PeerStorageKey;
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
@@ -216,23 +217,6 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 		&self.lock.get(&self.channel_id).expect("Checked at construction").monitor
 	}
 }
-
-/// Represents Secret Key used for encrypting Peer Storage.
-#[derive(Clone, PartialEq, Eq)]
-pub struct PeerStorageKey ([u8; 32]);
-
-impl PeerStorageKey {
-	/// Creates a new `PeerStorageKey` from a `[u8; 32]` array.
-    pub fn new(key: [u8; 32]) -> Self {
-        PeerStorageKey(key)
-    }
-
-    /// Returns a reference to the inner `[u8; 32]` array.
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///
@@ -702,7 +686,7 @@ where C::Target: chain::Filter,
 	///
 	/// This function collects the counterparty node IDs from all monitors into a `HashSet`,
 	/// ensuring unique IDs are returned.
-	fn get_peer_node_ids(&self) -> HashSet<PublicKey> {
+	fn all_counterparty_node_ids(&self) -> HashSet<PublicKey> {
 		let mon = self.monitors.read().unwrap();
 		mon
 		.values()

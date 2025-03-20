@@ -15,7 +15,7 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::chainmonitor::{ChainMonitor, PeerStorageKey, Persist};
+use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
@@ -46,7 +46,7 @@ use crate::routing::router::{
 use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::sign;
-use crate::sign::ChannelSigner;
+use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::config::UserConfig;
