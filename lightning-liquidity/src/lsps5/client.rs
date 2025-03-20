@@ -18,10 +18,9 @@ use crate::lsps5::msgs::{
 use crate::message_queue::MessageQueue;
 use crate::prelude::*;
 
-use bitcoin::hashes::{sha256, Hash};
-use bitcoin::hex::{DisplayHex, FromHex};
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use bitcoin::secp256k1::PublicKey;
 use lightning::ln::msgs::{ErrorAction, LightningError};
+use lightning::util::message_signing;
 
 use crate::sync::{Arc, Mutex, RwLock};
 use core::ops::Deref;
@@ -501,7 +500,7 @@ where
 	/// * On success: `true` if the signature is valid
 	/// * On error: LightningError with error description
 	pub fn verify_notification_signature(
-		&self, counterparty_node_id: PublicKey, timestamp: &str, signature: &str,
+		counterparty_node_id: PublicKey, timestamp: &str, signature: &str,
 		notification: &WebhookNotification,
 	) -> Result<bool, LightningError> {
 		// Check timestamp format
@@ -540,91 +539,19 @@ where
 			},
 		};
 
+		// Create the message in the same format as used in sign_notification
 		let message = format!(
 			"LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {} I notify {}",
 			timestamp, notification_json
 		);
 
-		// Remove the "lspsig:" prefix if present
-		let signature_data =
-			if signature.starts_with("lspsig:") { &signature[7..] } else { signature };
-
-		// Decode the hex signature
-		let signature_bytes: Vec<u8> = match FromHex::from_hex(signature_data) {
-			Ok(bytes) => bytes,
-			Err(e) => {
-				return Err(LightningError {
-					err: format!("Failed to decode signature from hex: {}", e),
-					action: ErrorAction::IgnoreAndLog(Level::Error),
-				});
-			},
-		};
-
-		if signature_bytes.len() != 65 {
-			return Err(LightningError {
-				err: format!("Invalid signature length: {}, expected 65", signature_bytes.len()),
+		if message_signing::verify(message.as_bytes(), signature, &counterparty_node_id) {
+			Ok(true)
+		} else {
+			Err(LightningError {
+				err: "Invalid signature".to_string(),
 				action: ErrorAction::IgnoreAndLog(Level::Error),
-			});
-		}
-
-		// Extract recovery ID and signature data
-		let recovery_id =
-			match bitcoin::secp256k1::ecdsa::RecoveryId::from_i32(signature_bytes[0] as i32) {
-				Ok(id) => id,
-				Err(e) => {
-					return Err(LightningError {
-						err: format!("Invalid recovery ID: {}", e),
-						action: ErrorAction::IgnoreAndLog(Level::Error),
-					});
-				},
-			};
-
-		// Create recoverable signature
-		let mut sig_data = [0u8; 64];
-		sig_data.copy_from_slice(&signature_bytes[1..65]);
-
-		let recoverable_sig = match bitcoin::secp256k1::ecdsa::RecoverableSignature::from_compact(
-			&sig_data,
-			recovery_id,
-		) {
-			Ok(sig) => sig,
-			Err(e) => {
-				return Err(LightningError {
-					err: format!("Invalid recoverable signature: {}", e),
-					action: ErrorAction::IgnoreAndLog(Level::Error),
-				});
-			},
-		};
-
-		// Hash the message
-		let message_hash = sha256::Hash::hash(message.as_bytes());
-		let message_to_verify =
-			match bitcoin::secp256k1::Message::from_digest_slice(message_hash.as_ref()) {
-				Ok(msg) => msg,
-				Err(e) => {
-					return Err(LightningError {
-						err: format!("Invalid message hash: {}", e),
-						action: ErrorAction::IgnoreAndLog(Level::Error),
-					});
-				},
-			};
-
-		// Verify signature and recover key
-		let secp = Secp256k1::verification_only();
-		match secp.recover_ecdsa(&message_to_verify, &recoverable_sig) {
-			Ok(recovered_key) => {
-				if recovered_key != counterparty_node_id {
-					return Err(LightningError {
-						err: "Recovered key does not match LSP key".to_string(),
-						action: ErrorAction::IgnoreAndLog(Level::Error),
-					});
-				}
-				Ok(true)
-			},
-			Err(e) => Err(LightningError {
-				err: format!("Failed to recover key: {}", e),
-				action: ErrorAction::IgnoreAndLog(Level::Error),
-			}),
+			})
 		}
 	}
 
@@ -643,8 +570,7 @@ where
 	/// * On success: The parsed webhook notification
 	/// * On error: LightningError with error description
 	pub fn parse_webhook_notification(
-		&self, counterparty_node_id: PublicKey, timestamp: &str, signature: &str,
-		notification_json: &str,
+		counterparty_node_id: PublicKey, timestamp: &str, signature: &str, notification_json: &str,
 	) -> Result<WebhookNotification, LightningError> {
 		// Parse the notification JSON
 		let notification: WebhookNotification = match serde_json::from_str(notification_json) {
@@ -657,7 +583,7 @@ where
 			},
 		};
 		// Verify signature
-		match self.verify_notification_signature(
+		match Self::verify_notification_signature(
 			counterparty_node_id,
 			timestamp,
 			signature,
@@ -689,7 +615,7 @@ mod tests {
 	use crate::{
 		lsps0::ser::LSPSRequestId, lsps5::msgs::SetWebhookResponse, tests::utils::TestEntropy,
 	};
-	use bitcoin::secp256k1::SecretKey;
+	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
 
 	fn setup_test_client() -> (
 		LSPS5ClientHandler<Arc<TestEntropy>>,

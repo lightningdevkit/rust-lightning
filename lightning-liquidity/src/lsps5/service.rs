@@ -24,6 +24,7 @@ use crate::prelude::*;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::util::logger::Level;
+use lightning::util::message_signing;
 
 use crate::sync::{Arc, Mutex};
 use serde_json::json;
@@ -604,7 +605,7 @@ impl LSPS5ServiceHandler {
 
 		// Sign the notification using our utility function
 		let signature_hex =
-			sign_notification(&notification_json, &timestamp, &self.config.signing_key)?;
+			Self::sign_notification(&notification_json, &timestamp, &self.config.signing_key)?;
 
 		// Store the signature to prevent replay attacks
 		// According to spec: "MUST remember the signature for at least 20 minutes"
@@ -634,6 +635,37 @@ impl LSPS5ServiceHandler {
 		// Ignore errors per spec (just don't emit the event)
 
 		Ok(())
+	}
+
+	/// Sign a webhook notification with an LSP's signing key
+	///
+	/// This function takes a notification body and timestamp and returns a signature
+	/// in the format required by the LSPS5 specification.
+	///
+	/// # Arguments
+	///
+	/// * `body` - The serialized notification JSON
+	/// * `timestamp` - The ISO8601 timestamp string
+	/// * `signing_key` - The LSP private key used for signing
+	///
+	/// # Returns
+	///
+	/// * The zbase32 encoded signature as specified in LSPS0, or an error if signing fails
+	pub fn sign_notification(
+		body: &str, timestamp: &str, signing_key: &SecretKey,
+	) -> Result<String, LightningError> {
+		// Create the message to sign
+		// According to spec:
+		// The message to be signed is: "LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {} I notify {}",
+		let message = format!(
+			"LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {} I notify {}",
+			timestamp, body
+		);
+
+		// Use the canonical message signing implementation from lightning::util::message_signing
+		let signature = message_signing::sign(message.as_bytes(), signing_key);
+
+		Ok(signature)
 	}
 
 	/// Store a signature with timestamp for replay attack prevention
