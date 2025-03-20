@@ -15,144 +15,211 @@ use crate::prelude::String;
 use crate::prelude::Vec;
 use bitcoin::secp256k1::PublicKey;
 
-/// Events emitted by the LSPS5 webhook service (LSP side)
+use super::msgs::Lsps5AppName;
+use super::msgs::Lsps5WebhookUrl;
+
+/// An event which an bLIP-55 / LSPS5 server should take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LSPS5ServiceEvent {
 	/// A webhook was registered by a client
+	///
+	/// This event occurs when a client successfully registers a webhook via `lsps5.set_webhook`.
+	/// You should store this information to be able to contact the client when they are offline.
 	WebhookRegistered {
-		/// Client node ID
-		client: PublicKey,
-		/// App name
-		app_name: String,
-		/// Webhook URL
-		url: String,
-		/// Request ID for tracking
+		/// Client node ID that registered the webhook
+		counterparty_node_id: PublicKey,
+		/// App name provided by the client (up to 64 bytes in UTF-8 format)
+		app_name: Lsps5AppName,
+		/// Webhook URL (HTTPS) that should be contacted to notify the client (up to 1024 ASCII characters)
+		url: Lsps5WebhookUrl,
+		/// The identifier of the issued bLIP-50 / LSPS5 webhook registration request
+		///
+		/// This can be used to track which request this event corresponds to.
 		request_id: LSPSRequestId,
-		/// Whether this was a new registration or an update to existing one
+		/// Whether this was a new registration or an update to existing one with no changes
+		/// If false, a notification should be sent to the registered webhook
 		no_change: bool,
 	},
 
 	/// Webhooks were listed for a client
+	///
+	/// This event occurs when a client requests their registered webhooks via `lsps5.list_webhooks`.
 	WebhooksListed {
-		/// Client node ID
-		client: PublicKey,
-		/// App names with registered webhooks
-		app_names: Vec<String>,
-		/// Maximum number of webhooks allowed
+		/// Client node ID that requested their webhooks
+		counterparty_node_id: PublicKey,
+		/// App names with registered webhooks for this client
+		app_names: Vec<Lsps5AppName>,
+		/// The identifier of the issued bLIP-50 / LSPS5 webhook listing request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
+		/// Maximum number of webhooks allowed by LSP per client
 		max_webhooks: u32,
-		/// Request ID for tracking
-		request_id: LSPSRequestId,
 	},
 
-	/// A webhook was removed
+	/// A webhook was removed by a client
+	///
+	/// This event occurs when a client successfully removes a webhook via `lsps5.remove_webhook`.
 	WebhookRemoved {
-		/// Client node ID
-		client: PublicKey,
-		/// App name
-		app_name: String,
-		/// Request ID for tracking
+		/// Client node ID that removed the webhook
+		counterparty_node_id: PublicKey,
+		/// App name that was removed
+		app_name: Lsps5AppName,
+		/// The identifier of the issued bLIP-50 / LSPS5 webhook removal request
+		///
+		/// This can be used to track which request this event corresponds to.
 		request_id: LSPSRequestId,
 	},
 
-	/// A notification was sent to a webhook
+	/// A notification was successfully sent to a client's webhook
+	///
+	/// This event occurs after the LSP successfully contacts a client's webhook.
 	WebhookNotificationSent {
-		/// Client node ID
-		client: PublicKey,
-		/// App name
-		app_name: String,
-		/// Webhook URL
-		url: String,
-		/// Notification method
+		/// Client node ID that was notified
+		counterparty_node_id: PublicKey,
+		/// App name that was notified
+		app_name: Lsps5AppName,
+		/// URL that was contacted
+		url: Lsps5WebhookUrl,
+		/// Notification method that was sent to the webhook
 		method: WebhookNotificationMethod,
-		/// Timestamp of the notification
+		/// ISO8601 timestamp of the notification (YYYY-MM-DDThh:mm:ss.uuuZ format)
 		timestamp: String,
-		/// Signature of the notification
+		/// Signature of the notification using the LSP's node ID
 		signature: String,
 	},
 }
 
-/// Events emitted by the LSPS5 webhook client (Lightning node side)
+/// An event which an LSPS5 client should take some action in response to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LSPS5ClientEvent {
 	/// A webhook was successfully registered with the LSP
+	///
+	/// This event is triggered when the LSP confirms successful registration
+	/// of a webhook via `lsps5.set_webhook`.
 	WebhookRegistered {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// App name
-		app_name: String,
-		/// Webhook URL
-		url: String,
-		/// Number of webhooks now registered
+		/// The node id of the LSP that confirmed the registration
+		counterparty_node_id: PublicKey,
+		/// Current number of webhooks registered for this client
 		num_webhooks: u32,
-		/// Maximum number of webhooks allowed
+		/// Maximum number of webhooks allowed by LSP
 		max_webhooks: u32,
-		/// Whether this was a new registration or an update to existing one
+		/// Whether this was an unchanged registration (same app_name and URL)
+		/// If true, the LSP didn't send a webhook notification for this registration
 		no_change: bool,
+		/// The app name that was registered (up to 64 bytes in UTF-8 format)
+		app_name: Lsps5AppName,
+		/// The webhook URL that was registered (HTTPS protocol)
+		url: Lsps5WebhookUrl,
+		/// The identifier of the issued bLIP-50 / LSPS5 webhook registration request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
 	},
 
-	/// Failed to register a webhook with the LSP
+	/// A webhook registration attempt failed
+	///
+	/// This event is triggered when the LSP rejects a webhook registration
+	/// via `lsps5.set_webhook`. This can happen if the app_name or URL is too long,
+	/// the URL uses an unsupported protocol, or the maximum number of webhooks is reached.
 	WebhookRegistrationFailed {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// App name
-		app_name: String,
-		/// Webhook URL
-		url: String,
-		/// Error code
+		/// The node id of the LSP that rejected the registration
+		counterparty_node_id: PublicKey,
+		/// Error code from the LSP (500: too_long, 501: url_parse_error,
+		/// 502: unsupported_protocol, 503: too_many_webhooks)
 		error_code: i32,
-		/// Error message
+		/// Error message from the LSP
 		error_message: String,
+		/// The app name that was attempted
+		app_name: Lsps5AppName,
+		/// The webhook URL that was attempted
+		url: Lsps5WebhookUrl,
+		/// The identifier of the issued bLIP-50 / LSPS5 webhook registration request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
 	},
 
-	/// Received list of registered webhooks from the LSP
+	/// The list of registered webhooks was successfully retrieved
+	///
+	/// This event is triggered when the LSP responds to a `lsps5.list_webhooks` request.
 	WebhooksListed {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// App names with registered webhooks
-		app_names: Vec<String>,
-		/// Maximum number of webhooks allowed
+		/// The node id of the LSP that provided the list
+		counterparty_node_id: PublicKey,
+		/// List of app names with registered webhooks
+		app_names: Vec<Lsps5AppName>,
+		/// Maximum number of webhooks allowed by LSP
 		max_webhooks: u32,
+		/// The identifier of the issued bLIP-50 / LSPS5 list webhooks request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
 	},
 
-	/// Failed to list webhooks
+	/// The attempt to list webhooks failed
+	///
+	/// This event is triggered when the LSP rejects a `lsps5.list_webhooks` request.
 	WebhooksListFailed {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// Error code
+		/// The node id of the LSP that rejected the request
+		counterparty_node_id: PublicKey,
+		/// Error code from the LSP
 		error_code: i32,
-		/// Error message
+		/// Error message from the LSP
 		error_message: String,
+		/// The identifier of the issued bLIP-50 / LSPS5 list webhooks request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
 	},
 
 	/// A webhook was successfully removed
+	///
+	/// This event is triggered when the LSP confirms successful removal
+	/// of a webhook via `lsps5.remove_webhook`.
 	WebhookRemoved {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// App name
-		app_name: String,
+		/// The node id of the LSP that confirmed the removal
+		counterparty_node_id: PublicKey,
+		/// The app name that was removed
+		app_name: Lsps5AppName,
+		/// The identifier of the issued bLIP-50 / LSPS5 remove webhook request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
 	},
 
-	/// Failed to remove a webhook
+	/// A webhook removal attempt failed
+	///
+	/// This event is triggered when the LSP rejects a webhook removal
+	/// via `lsps5.remove_webhook`. The most common error is app_name_not_found (1010).
 	WebhookRemovalFailed {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// App name
-		app_name: String,
-		/// Error code
+		/// The node id of the LSP that rejected the removal
+		counterparty_node_id: PublicKey,
+		/// Error code from the LSP (1010: app_name_not_found)
 		error_code: i32,
-		/// Error message
+		/// Error message from the LSP
 		error_message: String,
+		/// The app name that was attempted to be removed
+		app_name: Lsps5AppName,
+		/// The identifier of the issued bLIP-50 / LSPS5 remove webhook request
+		///
+		/// This can be used to track which request this event corresponds to.
+		request_id: LSPSRequestId,
 	},
 
 	/// A webhook notification was received from the LSP
+	///
+	/// This event is triggered when the client receives a webhook notification
+	/// from the LSP. This can happen for various reasons such as incoming payment,
+	/// expiring HTLCs, liquidity management requests, or incoming onion messages.
 	WebhookNotificationReceived {
-		/// LSP node ID
-		lsp: PublicKey,
-		/// The notification method that was received
+		/// LSP node ID that sent the notification
+		counterparty_node_id: PublicKey,
+		/// The notification method that was received (such as webhook_registered,
+		/// payment_incoming, expiry_soon, liquidity_management_request, onion_message_incoming)
 		method: WebhookNotificationMethod,
-		/// Timestamp of the notification
+		/// Timestamp of the notification in ISO8601 format (YYYY-MM-DDThh:mm:ss.uuuZ)
 		timestamp: String,
-		/// Whether the signature verification succeeded
+		/// Whether the LSP's signature was successfully verified
 		signature_valid: bool,
 		/// The notification parameters (might be empty depending on method)
 		parameters: Option<WebhookNotificationParams>,
@@ -163,8 +230,11 @@ pub enum LSPS5ClientEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebhookNotificationParams {
 	/// Parameters for lsps5.expiry_soon notification
+	///
+	/// This notification is sent when an HTLC or other time-bound contract
+	/// is within 24 blocks of being timed out, which would cause a channel closure.
 	ExpirySoon {
-		/// Block height when timeout occurs
+		/// Block height when timeout occurs and the LSP would be forced to close the channel
 		timeout: u32,
 	},
 	/// For future extensions of other notification types that might have parameters
