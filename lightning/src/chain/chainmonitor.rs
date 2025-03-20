@@ -762,7 +762,7 @@ where
 		});
 
 		// Send peer storage everytime a new block arrives.
-		for node_id in self.get_peer_node_ids() {
+		for node_id in self.all_counterparty_node_ids() {
 			self.send_peer_storage(node_id);
 		}
 
@@ -819,7 +819,7 @@ where
 		});
 
 		// Send peer storage everytime a new block arrives.
-		for node_id in self.get_peer_node_ids() {
+		for node_id in self.all_counterparty_node_ids() {
 			self.send_peer_storage(node_id);
 		}
 
