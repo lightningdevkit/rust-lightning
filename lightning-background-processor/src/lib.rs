@@ -64,6 +64,9 @@ use std::time::Instant;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 
+#[cfg(feature = "std")]
+use std::marker::PhantomData;
+
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
 /// responsibilities are:
@@ -1096,6 +1099,97 @@ impl BackgroundProcessor {
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
 
+	/// Creates a new [`BackgroundProcessor`] from a [`BackgroundProcessorConfig`].
+	/// This provides a more structured approach to configuration. The processor will start processing events immediately upon creation.
+	///
+	/// This method is functionally equivalent to [`BackgroundProcessor::start`], but takes a configuration
+	/// object instead of individual parameters.
+	///
+	pub fn from_config<
+		'a,
+		UL: 'static + Deref,
+		CF: 'static + Deref,
+		T: 'static + Deref,
+		F: 'static + Deref + Send,
+		G: 'static + Deref<Target = NetworkGraph<L>>,
+		L: 'static + Deref + Send,
+		P: 'static + Deref,
+		EH: 'static + EventHandler + Send,
+		PS: 'static + Deref + Send,
+		M: 'static
+			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Send
+			+ Sync,
+		CM: 'static + Deref + Send,
+		OM: 'static + Deref + Send,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+		PM: 'static + Deref + Send,
+		LM: 'static + Deref + Send,
+		S: 'static + Deref<Target = SC> + Send + Sync,
+		SC: for<'b> WriteableScore<'b>,
+		D: 'static + Deref,
+		O: 'static + Deref,
+		K: 'static + Deref,
+		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
+	>(
+		config: BackgroundProcessorConfig<
+			'a,
+			UL,
+			CF,
+			T,
+			F,
+			G,
+			L,
+			P,
+			EH,
+			PS,
+			M,
+			CM,
+			OM,
+			PGS,
+			RGS,
+			PM,
+			LM,
+			S,
+			SC,
+			D,
+			O,
+			K,
+			OS,
+		>,
+	) -> Self
+	where
+		UL::Target: 'static + UtxoLookup,
+		CF::Target: 'static + chain::Filter,
+		T::Target: 'static + BroadcasterInterface,
+		F::Target: 'static + FeeEstimator,
+		L::Target: 'static + Logger,
+		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+		PS::Target: 'static + Persister<'a, CM, L, S>,
+		CM::Target: AChannelManager,
+		OM::Target: AOnionMessenger,
+		PM::Target: APeerManager,
+		LM::Target: ALiquidityManager,
+		D::Target: ChangeDestinationSourceSync,
+		O::Target: 'static + OutputSpender,
+		K::Target: 'static + KVStore,
+	{
+		Self::start(
+			config.persister,
+			config.event_handler,
+			config.chain_monitor,
+			config.channel_manager,
+			config.onion_messenger,
+			config.gossip_sync,
+			config.peer_manager,
+			config.liquidity_manager,
+			config.sweeper,
+			config.logger,
+			config.scorer,
+		)
+	}
+
 	/// Join `BackgroundProcessor`'s thread, returning any error that occurred while persisting
 	/// [`ChannelManager`].
 	///
@@ -1137,6 +1231,297 @@ impl BackgroundProcessor {
 	}
 }
 
+/// Configuration for synchronous [`BackgroundProcessor`]
+/// event processing.
+///
+/// This configuration holds all components needed for background processing,
+/// including required components (like the channel manager and peer manager) and optional
+/// components (like the liquidity_manager, sweeper, onion messenger and scorer).
+///
+/// The configuration can be constructed using [`BackgroundProcessorBuilder`], which provides
+/// a convenient builder pattern for setting up both required and optional components.
+///
+/// This same configuration can be used for Creating a [`BackgroundProcessor`] via [`BackgroundProcessor::from_config`]
+#[cfg(feature = "std")]
+pub struct BackgroundProcessorConfig<
+	'a,
+	UL: 'static + Deref,
+	CF: 'static + Deref,
+	T: 'static + Deref,
+	F: 'static + Deref + Send,
+	G: 'static + Deref<Target = NetworkGraph<L>>,
+	L: 'static + Deref + Send,
+	P: 'static + Deref,
+	EH: 'static + EventHandler + Send,
+	PS: 'static + Deref + Send,
+	M: 'static
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+		+ Send
+		+ Sync,
+	CM: 'static + Deref + Send,
+	OM: 'static + Deref + Send,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+	PM: 'static + Deref + Send,
+	LM: 'static + Deref + Send,
+	S: 'static + Deref<Target = SC> + Send + Sync,
+	SC: for<'b> WriteableScore<'b>,
+	D: 'static + Deref,
+	O: 'static + Deref,
+	K: 'static + Deref,
+	OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
+> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
+	LM::Target: ALiquidityManager,
+	D::Target: ChangeDestinationSourceSync,
+	O::Target: 'static + OutputSpender,
+	K::Target: 'static + KVStore,
+{
+	persister: PS,
+	event_handler: EH,
+	chain_monitor: M,
+	channel_manager: CM,
+	onion_messenger: Option<OM>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>,
+	peer_manager: PM,
+	liquidity_manager: Option<LM>,
+	sweeper: Option<OS>,
+	logger: L,
+	scorer: Option<S>,
+	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
+}
+
+/// A builder for constructing a [`BackgroundProcessor`] with optional components.
+///
+/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessor`]
+/// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
+/// concrete types for components that aren't being used.
+#[cfg(feature = "std")]
+pub struct BackgroundProcessorBuilder<
+	'a,
+	UL: 'static + Deref,
+	CF: 'static + Deref,
+	T: 'static + Deref,
+	F: 'static + Deref + Send,
+	G: 'static + Deref<Target = NetworkGraph<L>>,
+	L: 'static + Deref + Send,
+	P: 'static + Deref,
+	EH: 'static + EventHandler + Send,
+	PS: 'static + Deref + Send,
+	M: 'static
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+		+ Send
+		+ Sync,
+	CM: 'static + Deref + Send,
+	OM: 'static + Deref + Send,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+	PM: 'static + Deref + Send,
+	LM: 'static + Deref + Send,
+	S: 'static + Deref<Target = SC> + Send + Sync,
+	SC: for<'b> WriteableScore<'b>,
+	D: 'static + Deref,
+	O: 'static + Deref,
+	K: 'static + Deref,
+	OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
+> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
+	LM::Target: ALiquidityManager,
+	D::Target: ChangeDestinationSourceSync,
+	O::Target: 'static + OutputSpender,
+	K::Target: 'static + KVStore,
+{
+	persister: PS,
+	event_handler: EH,
+	chain_monitor: M,
+	channel_manager: CM,
+	onion_messenger: Option<OM>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>,
+	peer_manager: PM,
+	liquidity_manager: Option<LM>,
+	sweeper: Option<OS>,
+	logger: L,
+	scorer: Option<S>,
+	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
+}
+
+#[cfg(feature = "std")]
+impl<
+		'a,
+		UL: 'static + Deref,
+		CF: 'static + Deref,
+		T: 'static + Deref,
+		F: 'static + Deref + Send,
+		G: 'static + Deref<Target = NetworkGraph<L>>,
+		L: 'static + Deref + Send,
+		P: 'static + Deref,
+		EH: 'static + EventHandler + Send,
+		PS: 'static + Deref + Send,
+		M: 'static
+			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Send
+			+ Sync,
+		CM: 'static + Deref + Send,
+		OM: 'static + Deref + Send,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+		PM: 'static + Deref + Send,
+		LM: 'static + Deref + Send,
+		S: 'static + Deref<Target = SC> + Send + Sync,
+		SC: for<'b> WriteableScore<'b>,
+		D: 'static + Deref,
+		O: 'static + Deref,
+		K: 'static + Deref,
+		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
+	>
+	BackgroundProcessorBuilder<
+		'a,
+		UL,
+		CF,
+		T,
+		F,
+		G,
+		L,
+		P,
+		EH,
+		PS,
+		M,
+		CM,
+		OM,
+		PGS,
+		RGS,
+		PM,
+		LM,
+		S,
+		SC,
+		D,
+		O,
+		K,
+		OS,
+	> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
+	LM::Target: ALiquidityManager,
+	D::Target: ChangeDestinationSourceSync,
+	O::Target: 'static + OutputSpender,
+	K::Target: 'static + KVStore,
+{
+	/// Creates a new builder instance.
+	pub fn new(
+		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
+		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
+	) -> Self {
+		Self {
+			persister,
+			event_handler,
+			chain_monitor,
+			channel_manager,
+			onion_messenger: None,
+			gossip_sync,
+			peer_manager,
+			liquidity_manager: None,
+			sweeper: None,
+			logger,
+			scorer: None,
+			_phantom: PhantomData,
+		}
+	}
+
+	/// Sets the optional onion messenger component.
+	pub fn with_onion_messenger(&mut self, onion_messenger: OM) -> &mut Self {
+		self.onion_messenger = Some(onion_messenger);
+		self
+	}
+
+	/// Sets the optional scorer component.
+	pub fn with_scorer(&mut self, scorer: S) -> &mut Self {
+		self.scorer = Some(scorer);
+		self
+	}
+
+	/// Sets the optional liquidity manager component.
+	pub fn with_liquidity_manager(&mut self, liquidity_manager: LM) -> &mut Self {
+		self.liquidity_manager = Some(liquidity_manager);
+		self
+	}
+
+	/// Sets the optional sweeper component.
+	pub fn with_sweeper(&mut self, sweeper: OS) -> &mut Self {
+		self.sweeper = Some(sweeper);
+		self
+	}
+
+	/// Builds and returns a [`BackgroundProcessorConfig`] object.
+	pub fn build(
+		self,
+	) -> BackgroundProcessorConfig<
+		'a,
+		UL,
+		CF,
+		T,
+		F,
+		G,
+		L,
+		P,
+		EH,
+		PS,
+		M,
+		CM,
+		OM,
+		PGS,
+		RGS,
+		PM,
+		LM,
+		S,
+		SC,
+		D,
+		O,
+		K,
+		OS,
+	> {
+		BackgroundProcessorConfig {
+			persister: self.persister,
+			event_handler: self.event_handler,
+			chain_monitor: self.chain_monitor,
+			channel_manager: self.channel_manager,
+			onion_messenger: self.onion_messenger,
+			gossip_sync: self.gossip_sync,
+			peer_manager: self.peer_manager,
+			liquidity_manager: self.liquidity_manager,
+			sweeper: self.sweeper,
+			logger: self.logger,
+			scorer: self.scorer,
+			_phantom: PhantomData,
+		}
+	}
+}
+
 #[cfg(feature = "std")]
 impl Drop for BackgroundProcessor {
 	fn drop(&mut self) {
@@ -1146,7 +1531,7 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
+	use super::{BackgroundProcessor, BackgroundProcessorBuilder, GossipSync, FRESHNESS_TIMER};
 	use bitcoin::constants::{genesis_block, ChainHash};
 	use bitcoin::hashes::Hash;
 	use bitcoin::locktime::absolute::LockTime;
@@ -2860,5 +3245,110 @@ mod tests {
 		let (r1, r2) = tokio::join!(t1, t2);
 		r1.unwrap().unwrap();
 		r2.unwrap()
+	}
+
+	#[test]
+	fn test_background_processor_builder() {
+		// Test that when a new channel is created, the ChannelManager needs to be re-persisted with
+		// updates. Also test that when new updates are available, the manager signals that it needs
+		// re-persistence and is successfully re-persisted.
+		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_builder");
+
+		// Go through the channel creation process so that each node has something to persist. Since
+		// open_channel consumes events, it must complete before starting BackgroundProcessor to
+		// avoid a race with processing events.
+		let tx = open_channel!(nodes[0], nodes[1], 100000);
+
+		// Initiate the background processors to watch each node.
+		let data_dir = nodes[0].kv_store.get_data_dir();
+		let persister = Arc::new(Persister::new(data_dir));
+		let event_handler = |_: _| Ok(());
+		let mut builder = BackgroundProcessorBuilder::new(
+			persister,
+			event_handler,
+			nodes[0].chain_monitor.clone(),
+			nodes[0].node.clone(),
+			nodes[0].p2p_gossip_sync(),
+			nodes[0].peer_manager.clone(),
+			nodes[0].logger.clone(),
+		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::from_config(config);
+
+		macro_rules! check_persisted_data {
+			($node: expr, $filepath: expr) => {
+				let mut expected_bytes = Vec::new();
+				loop {
+					expected_bytes.clear();
+					match $node.write(&mut expected_bytes) {
+						Ok(()) => match std::fs::read($filepath) {
+							Ok(bytes) => {
+								if bytes == expected_bytes {
+									break;
+								} else {
+									continue;
+								}
+							},
+							Err(_) => continue,
+						},
+						Err(e) => panic!("Unexpected error: {}", e),
+					}
+				}
+			};
+		}
+
+		// Check that the initial data is persisted as expected
+		let filepath =
+			get_full_filepath(format!("{}_persister_0", &persist_dir), "manager".to_string());
+		check_persisted_data!(nodes[0].node, filepath.clone());
+
+		loop {
+			if !nodes[0].node.get_event_or_persist_condvar_value() {
+				break;
+			}
+		}
+
+		// Force-close the channel.
+		let error_message = "Channel force-closed";
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(
+				&ChannelId::v1_from_funding_outpoint(OutPoint {
+					txid: tx.compute_txid(),
+					index: 0,
+				}),
+				&nodes[1].node.get_our_node_id(),
+				error_message.to_string(),
+			)
+			.unwrap();
+
+		// Check that the force-close updates are persisted
+		check_persisted_data!(nodes[0].node, filepath.clone());
+		loop {
+			if !nodes[0].node.get_event_or_persist_condvar_value() {
+				break;
+			}
+		}
+
+		// Check network graph is persisted
+		let filepath =
+			get_full_filepath(format!("{}_persister_0", &persist_dir), "network_graph".to_string());
+		check_persisted_data!(nodes[0].network_graph, filepath.clone());
+
+		// Check scorer is persisted
+		let filepath =
+			get_full_filepath(format!("{}_persister_0", &persist_dir), "scorer".to_string());
+		check_persisted_data!(nodes[0].scorer, filepath.clone());
+
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 }
