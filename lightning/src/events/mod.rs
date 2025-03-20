@@ -23,6 +23,7 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
@@ -465,6 +466,25 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	},
 );
 
+/// The reason for HTLC failures in [`HTLCDestination`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HTLCDestinationFailure {
+	/// The forwarded HTLC was failed back by the downstream node with an encrypted error reason.
+	Downstream,
+	/// The HTLC was failed locally by our node.
+	Local{
+		/// The reason that our node chose to fail the HTLC.
+		reason: LocalHTLCFailureReason
+	},
+}
+
+impl_writeable_tlv_based_enum!(HTLCDestinationFailure,
+	(0, Downstream) => {},
+	(1, Local) => {
+		(0, reason, required),
+	},
+);
+
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HTLCDestination {
@@ -477,6 +497,9 @@ pub enum HTLCDestination {
 		node_id: Option<PublicKey>,
 		/// The outgoing `channel_id` between us and the next node.
 		channel_id: ChannelId,
+		/// The reason that the HTLC forward was failed. For backwards compatibility, this field is
+		/// marked as optional, versions prior to 0.1.1 will set this value to None.
+		reason: Option<HTLCDestinationFailure>
 	},
 	/// Scenario where we are unsure of the next node to forward the HTLC to.
 	UnknownNextHop {
@@ -510,6 +533,7 @@ pub enum HTLCDestination {
 impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 	(0, NextHopChannel) => {
 		(0, node_id, required),
+		(1, reason, option),
 		(2, channel_id, required),
 	},
 	(1, InvalidForward) => {

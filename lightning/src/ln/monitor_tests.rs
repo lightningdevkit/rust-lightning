@@ -9,6 +9,7 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
@@ -86,7 +87,11 @@ fn chanmon_fail_from_stale_commitment() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel {
+		node_id: Some(nodes[2].node.get_our_node_id()),
+		channel_id: chan_id_2,
+		reason: Some(LocalHTLCFailureReason::ChannelClosed.into()),
+	}]);
 	check_added_monitors!(nodes[1], 1);
 	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
@@ -1417,7 +1422,11 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 		.iter().map(|a| *a).collect();
 	events.retain(|ev| {
 		match ev {
-			Event::HTLCHandlingFailed { failed_next_destination: HTLCDestination::NextHopChannel { node_id, channel_id }, .. } => {
+			Event::HTLCHandlingFailed { failed_next_destination: HTLCDestination::NextHopChannel {
+				node_id,
+				channel_id,
+				..
+			}, .. } => {
 				assert_eq!(*channel_id, chan_id);
 				assert_eq!(*node_id, Some(nodes[1].node.get_our_node_id()));
 				false

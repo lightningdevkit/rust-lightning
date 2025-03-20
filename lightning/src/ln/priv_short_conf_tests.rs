@@ -74,8 +74,11 @@ fn test_priv_forwarding_rejection() {
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
-		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]
+		nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()),
+			channel_id: chan_id_2,
+			reason: Some(LocalHTLCFailureReason::PrivateChannelForward.into()),
+		}]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -444,8 +447,11 @@ fn test_inbound_scid_privacy() {
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, true, true);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
-		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: last_hop[0].channel_id }]
+		nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()),
+			channel_id: last_hop[0].channel_id,
+			reason: Some(LocalHTLCFailureReason::RealSCIDForward.into()),
+		}]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -504,7 +510,11 @@ fn test_scid_alias_returned() {
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan.0.channel_id }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel {
+		node_id: Some(nodes[2].node.get_our_node_id()),
+		channel_id: chan.0.channel_id,
+		reason: Some(LocalHTLCFailureReason::TemporaryChannelFailure.into())
+	}]);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -529,8 +539,11 @@ fn test_scid_alias_returned() {
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
-		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan.0.channel_id }]
+		nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()),
+			channel_id: chan.0.channel_id,
+			reason: Some(LocalHTLCFailureReason::FeeInsufficient.into()),
+		}]
 	);
 	check_added_monitors(&nodes[1], 1);
 

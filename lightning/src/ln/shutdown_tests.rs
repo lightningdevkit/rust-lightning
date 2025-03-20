@@ -468,7 +468,11 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]
+		&[HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()),
+			channel_id: chan_2.2,
+			reason: Some(LocalHTLCFailureReason::DroppedPending.into()),
+		}]
 	);
 	check_added_monitors(&nodes[1], 1);
 
