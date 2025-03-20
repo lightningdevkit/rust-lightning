@@ -5126,26 +5126,21 @@ where
 		pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64,
 		dust_limit: u64,
 	) -> Result<(), u64> {
-		if post_balance == 0 {
-			// 0 balance is fine
-			return Ok(());
-		}
 		let post_channel_reserve = get_v2_channel_reserve_satoshis(post_channel_value, dust_limit);
 		if post_balance >= post_channel_reserve {
 			return Ok(());
 		}
-		// post is not OK, check pre
-		if pre_balance == 0 {
-			// pre OK, post not -> not
-			return Err(post_channel_reserve);
-		}
 		let pre_channel_reserve = get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
 		if pre_balance >= pre_channel_reserve {
-			// pre OK, post not -> not
+			// We're not allowed to dip below the reserve once we've been above.
 			return Err(post_channel_reserve);
 		}
-		// post not OK, but so was pre -> OK
-		Ok(())
+		// Make sure we either remain with the same balance or move towards the reserve.
+		if post_balance >= pre_balance {
+			Ok(())
+		} else {
+			Err(post_channel_reserve)
+		}
 	}
 
 	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
@@ -10420,10 +10415,16 @@ where
 	}
 
 	/// Compute the channel balances (local & remote) by taking into account fees, anchor values, and dust limits.
+	/// Pending HTLCs are not taken into account, this method should be used when there is no such,
+	/// e.g. in quiscence state
 	#[cfg(splicing)]
 	fn compute_balances_less_fees(
 		&self, channel_value_sats: u64, value_to_self_msat: u64, is_local: bool,
 	) -> (u64, u64) {
+		// We should get here only when there are no pending HTLCs, as they are not taken into account
+		debug_assert!(self.context.pending_inbound_htlcs.is_empty());
+		debug_assert!(self.context.pending_outbound_htlcs.is_empty());
+
 		let feerate_per_kw = self.context.feerate_per_kw;
 
 		// compute 'raw' counterparty balance
