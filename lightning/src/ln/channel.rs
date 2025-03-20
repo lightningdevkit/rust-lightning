@@ -5120,66 +5120,6 @@ where
 		}
 	}
 
-	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well
-	#[cfg(splicing)]
-	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(
-		pre_balance: u64, post_balance: u64, pre_channel_value: u64, post_channel_value: u64,
-		dust_limit: u64,
-	) -> Result<(), u64> {
-		let post_channel_reserve = get_v2_channel_reserve_satoshis(post_channel_value, dust_limit);
-		if post_balance >= post_channel_reserve {
-			return Ok(());
-		}
-		let pre_channel_reserve = get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
-		if pre_balance >= pre_channel_reserve {
-			// We're not allowed to dip below the reserve once we've been above.
-			return Err(post_channel_reserve);
-		}
-		// Make sure we either remain with the same balance or move towards the reserve.
-		if post_balance >= pre_balance {
-			Ok(())
-		} else {
-			Err(post_channel_reserve)
-		}
-	}
-
-	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
-	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
-	/// to check with new channel value (before being committed to it).
-	#[cfg(splicing)]
-	pub fn check_splice_balances_meet_v2_reserve_requirements(
-		&self, self_balance_pre: u64, self_balance_post: u64, counterparty_balance_pre: u64,
-		counterparty_balance_post: u64, channel_value_pre: u64, channel_value_post: u64,
-	) -> Result<(), ChannelError> {
-		let is_ok_self = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
-			self_balance_pre,
-			self_balance_post,
-			channel_value_pre,
-			channel_value_post,
-			self.holder_dust_limit_satoshis,
-		);
-		if let Err(channel_reserve_self) = is_ok_self {
-			return Err(ChannelError::Warn(format!(
-				"Balance below reserve, mandated by holder, {} vs {}",
-				self_balance_post, channel_reserve_self,
-			)));
-		}
-		let is_ok_cp = Self::check_splice_balance_meets_v2_reserve_requirement_noerr(
-			counterparty_balance_pre,
-			counterparty_balance_post,
-			channel_value_pre,
-			channel_value_post,
-			self.counterparty_dust_limit_satoshis,
-		);
-		if let Err(channel_reserve_cp) = is_ok_cp {
-			return Err(ChannelError::Warn(format!(
-				"Balance below reserve mandated by counterparty, {} vs {}",
-				counterparty_balance_post, channel_reserve_cp,
-			)));
-		}
-		Ok(())
-	}
-
 	/// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
 	/// number of pending HTLCs that are on track to be in our next commitment tx.
 	///
@@ -10509,7 +10449,7 @@ where
 			self.compute_balances_less_fees(post_channel_value, post_balance_self, true);
 		// Pre-check for reserve requirement
 		// This will also be checked later at tx_complete
-		let _res = self.context.check_splice_balances_meet_v2_reserve_requirements(
+		let _res = self.check_splice_balances_meet_v2_reserve_requirements(
 			pre_balance_self_less_fees,
 			post_balance_self_less_fees,
 			pre_balance_counterparty_less_fees,
@@ -10593,6 +10533,66 @@ where
 
 		pending_splice.received_funding_txid = Some(msg.splice_txid);
 		Ok((None, None))
+	}
+
+	/// Check that post-splicing balance meets reserve requirements, but only if it met it pre-splice as well
+	#[cfg(splicing)]
+	pub fn check_splice_balance_meets_v2_reserve_requirement_noerr(
+		&self, pre_balance: u64, post_balance: u64, pre_channel_value: u64,
+		post_channel_value: u64, dust_limit: u64,
+	) -> Result<(), u64> {
+		let post_channel_reserve = get_v2_channel_reserve_satoshis(post_channel_value, dust_limit);
+		if post_balance >= post_channel_reserve {
+			return Ok(());
+		}
+		let pre_channel_reserve = get_v2_channel_reserve_satoshis(pre_channel_value, dust_limit);
+		if pre_balance >= pre_channel_reserve {
+			// We're not allowed to dip below the reserve once we've been above.
+			return Err(post_channel_reserve);
+		}
+		// Make sure we either remain with the same balance or move towards the reserve.
+		if post_balance >= pre_balance {
+			Ok(())
+		} else {
+			Err(post_channel_reserve)
+		}
+	}
+
+	/// Check that balances meet the channel reserve requirements or violates them (below reserve).
+	/// The channel value is an input as opposed to using from the FundingScope, so that this can be used in case of splicing
+	/// to check with new channel value (before being committed to it).
+	#[cfg(splicing)]
+	pub fn check_splice_balances_meet_v2_reserve_requirements(
+		&self, self_balance_pre: u64, self_balance_post: u64, counterparty_balance_pre: u64,
+		counterparty_balance_post: u64, channel_value_pre: u64, channel_value_post: u64,
+	) -> Result<(), ChannelError> {
+		let is_ok_self = self.check_splice_balance_meets_v2_reserve_requirement_noerr(
+			self_balance_pre,
+			self_balance_post,
+			channel_value_pre,
+			channel_value_post,
+			self.context.holder_dust_limit_satoshis,
+		);
+		if let Err(channel_reserve_self) = is_ok_self {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve, mandated by holder, {} vs {}",
+				self_balance_post, channel_reserve_self,
+			)));
+		}
+		let is_ok_cp = self.check_splice_balance_meets_v2_reserve_requirement_noerr(
+			counterparty_balance_pre,
+			counterparty_balance_post,
+			channel_value_pre,
+			channel_value_post,
+			self.context.counterparty_dust_limit_satoshis,
+		);
+		if let Err(channel_reserve_cp) = is_ok_cp {
+			return Err(ChannelError::Warn(format!(
+				"Balance below reserve mandated by counterparty, {} vs {}",
+				counterparty_balance_post, channel_reserve_cp,
+			)));
+		}
+		Ok(())
 	}
 
 	// Send stuff to our remote peers:
