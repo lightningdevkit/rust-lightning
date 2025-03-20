@@ -2038,9 +2038,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// <https://github.com/lightningnetwork/lnd/issues/7682>.
 	sent_message_awaiting_response: Option<usize>,
 
-	/// This channel's type, as negotiated during channel open
-	channel_type: ChannelTypeFeatures,
-
 	// Our counterparty can offer us SCID aliases which they will map to this channel when routing
 	// outbound payments. These can be used in invoice route hints to avoid explicitly revealing
 	// the channel's funding UTXO.
@@ -2785,7 +2782,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_tx_broadcast_safe_event_emitted: false,
 			channel_ready_event_emitted: false,
 
-			channel_type,
 			channel_keys_id,
 
 			local_initiated_shutdown: None,
@@ -3022,7 +3018,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_tx_broadcast_safe_event_emitted: false,
 			channel_ready_event_emitted: false,
 
-			channel_type,
 			channel_keys_id,
 
 			blocked_monitor_updates: Vec::new(),
@@ -3249,7 +3244,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		if let Some(ty) = &common_fields.channel_type {
-			if *ty != self.channel_type {
+			if ty != funding.get_channel_type() {
 				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
 			}
 		} else if their_features.supports_channel_type() {
@@ -3259,7 +3254,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
 				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
 			}
-			self.channel_type = channel_type.clone();
 			funding.channel_transaction_parameters.channel_type_features = channel_type;
 		}
 
@@ -3627,11 +3621,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.into_iter().enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
-					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.channel_type,
+					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, funding.get_channel_type(),
 					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.channel_type, &keys);
-				let htlc_sighashtype = if self.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &keys);
+				let htlc_sighashtype = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
@@ -4058,9 +4052,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			.checked_sub(dust_exposure_limiting_feerate);
 		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
 			let extra_htlc_dust_exposure = on_counterparty_tx_dust_exposure_msat
-				+ chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, &self.channel_type) * 1000;
+				+ chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type()) * 1000;
 			on_counterparty_tx_dust_exposure_msat
-				+= chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, &self.channel_type) * 1000;
+				+= chan_utils::commit_and_htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type()) * 1000;
 			extra_htlc_dust_exposure
 		});
 
@@ -4419,12 +4413,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, &context.channel_type) * 1000;
+		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type) * 1000;
+				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
 				+ context.holding_cell_htlc_updates.len();
@@ -4516,12 +4510,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, &context.channel_type) * 1000;
+		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
 		#[cfg(any(test, fuzzing))]
 		if let Some(htlc) = &htlc {
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type) * 1000;
+				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
@@ -4701,7 +4695,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		{
 			return Err(());
 		}
-		if self.channel_type == ChannelTypeFeatures::only_static_remote_key() {
+		if funding.get_channel_type() == &ChannelTypeFeatures::only_static_remote_key() {
 			// We've exhausted our options
 			return Err(());
 		}
@@ -4714,16 +4708,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// checks whether the counterparty supports every feature, this would only happen if the
 		// counterparty is advertising the feature, but rejecting channels proposing the feature for
 		// whatever reason.
-		if self.channel_type.supports_anchors_zero_fee_htlc_tx() {
-			self.channel_type.clear_anchors_zero_fee_htlc_tx();
+		let channel_type = &mut funding.channel_transaction_parameters.channel_type_features;
+		if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			channel_type.clear_anchors_zero_fee_htlc_tx();
 			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			assert!(!funding.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
-		} else if self.channel_type.supports_scid_privacy() {
-			self.channel_type.clear_scid_privacy();
+			assert!(!channel_type.supports_anchors_nonzero_fee_htlc_tx());
+		} else if channel_type.supports_scid_privacy() {
+			channel_type.clear_scid_privacy();
 		} else {
-			self.channel_type = ChannelTypeFeatures::only_static_remote_key();
+			*channel_type = ChannelTypeFeatures::only_static_remote_key();
 		}
-		funding.channel_transaction_parameters.channel_type_features = self.channel_type.clone();
 		Ok(())
 	}
 
@@ -6816,7 +6810,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fee update message while quiescent".to_owned()));
 		}
-		FundedChannel::<SP>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
+		FundedChannel::<SP>::check_remote_fee(self.funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
@@ -9019,8 +9013,8 @@ impl<SP: Deref> FundedChannel<SP> where
 
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
-							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, funding.get_holder_selected_contest_delay(), htlc, self.funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, self.funding.get_channel_type(), &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
 					}
@@ -9625,7 +9619,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 					Some(script) => script.clone().into_inner(),
 					None => Builder::new().into_script(),
 				}),
-				channel_type: Some(self.context.channel_type.clone()),
+				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
 			push_msat: self.funding.get_value_satoshis() * 1000 - self.funding.value_to_self_msat,
 			channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis,
@@ -9888,7 +9882,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 					Some(script) => script.clone().into_inner(),
 					None => Builder::new().into_script(),
 				}),
-				channel_type: Some(self.context.channel_type.clone()),
+				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
 			channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis,
 			#[cfg(taproot)]
@@ -10127,7 +10121,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 					Some(script) => script.clone().into_inner(),
 					None => Builder::new().into_script(),
 				}),
-				channel_type: Some(self.context.channel_type.clone()),
+				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
@@ -10297,7 +10291,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 					Some(script) => script.clone().into_inner(),
 					None => Builder::new().into_script(),
 				}),
-				channel_type: Some(self.context.channel_type.clone()),
+				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
 			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
 			second_per_commitment_point,
@@ -10670,8 +10664,8 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 		// older clients fail to deserialize this channel at all. If the type is
 		// only-static-remote-key, we simply consider it "default" and don't write the channel type
 		// out at all.
-		let chan_type = if self.context.channel_type != ChannelTypeFeatures::only_static_remote_key() {
-			Some(&self.context.channel_type) } else { None };
+		let chan_type = if self.funding.get_channel_type() != &ChannelTypeFeatures::only_static_remote_key() {
+			Some(self.funding.get_channel_type()) } else { None };
 
 		// The same logic applies for `holder_selected_channel_reserve_satoshis` values other than
 		// the default, and when `holder_max_htlc_value_in_flight_msat` is configured to be set to
@@ -11102,7 +11096,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			}
 		}
 
-		let chan_features = channel_type.as_ref().unwrap();
+		let chan_features = channel_type.unwrap();
 		if chan_features.supports_any_optional_bits() || chan_features.requires_unknown_bits_from(&our_supported_features) {
 			// If the channel was written by a new version and negotiated with features we don't
 			// understand yet, refuse to read it.
@@ -11111,7 +11105,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		// ChannelTransactionParameters may have had an empty features set upon deserialization.
 		// To account for that, we're proactively setting/overriding the field here.
-		channel_parameters.channel_type_features = chan_features.clone();
+		channel_parameters.channel_type_features = chan_features;
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -11325,7 +11319,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
 				channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
 
-				channel_type: channel_type.unwrap(),
 				channel_keys_id,
 
 				local_initiated_shutdown,
@@ -12873,7 +12866,7 @@ mod tests {
 			&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
 			&config, 0, 42, None, &logger
 		).unwrap();
-		assert!(!channel_a.context.channel_type.supports_anchors_zero_fee_htlc_tx());
+		assert!(!channel_a.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx());
 
 		let mut expected_channel_type = ChannelTypeFeatures::empty();
 		expected_channel_type.set_static_remote_key_required();
@@ -12892,8 +12885,8 @@ mod tests {
 			&open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false
 		).unwrap();
 
-		assert_eq!(channel_a.context.channel_type, expected_channel_type);
-		assert_eq!(channel_b.context.channel_type, expected_channel_type);
+		assert_eq!(channel_a.funding.get_channel_type(), &expected_channel_type);
+		assert_eq!(channel_b.funding.get_channel_type(), &expected_channel_type);
 	}
 
 	#[test]
