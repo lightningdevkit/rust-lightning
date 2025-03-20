@@ -7042,18 +7042,18 @@ impl<SP: Deref> FundedChannel<SP> where
 								update_fee: None,
 							})
 						} else { None };
-						// if it has not received tx_signatures for that funding transaction AND
-						// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
-						//   MUST send its tx_signatures for that funding transaction.
-						// else if it HAS received commitment_signed AND has received tx_signatures for that funding transaction:
-						//   MUST send its tx_signatures for that funding transaction.
-						let tx_signatures = if session.has_received_commitment_signed() && ((
-							!session.counterparty_sent_tx_signatures() &&
-							session.holder_sends_tx_signatures_first()
-						) || session.counterparty_sent_tx_signatures()) {
-							// This should have already been set in `commitment_signed_initial_v2`, but check again
-							// just in case.
+						let tx_signatures = if (
+							// if it has not received tx_signatures for that funding transaction AND
+							// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
+							//   MUST send its tx_signatures for that funding transaction.
+							!session.counterparty_sent_tx_signatures() && session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first()
+							// else if it has already received tx_signatures for that funding transaction:
+							//   MUST send its tx_signatures for that funding transaction.
+						) || session.counterparty_sent_tx_signatures() {
 							if self.context.channel_state.is_monitor_update_in_progress() {
+								// The `monitor_pending_tx_signatures` field should have already been set in `commitment_signed_initial_v2`
+								// if we were up first for signing and had a monitor update in progress, but check again just in case.
+								debug_assert!(self.context.monitor_pending_tx_signatures.is_some(), "monitor_pending_tx_signatures should already be set");
 								log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
 								if self.context.monitor_pending_tx_signatures.is_none() {
 									self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
@@ -7073,7 +7073,8 @@ impl<SP: Deref> FundedChannel<SP> where
 						};
 						(commitment_update, tx_signatures, None)
 					} else {
-						// MUST send tx_abort to let the sending node know that they can forget this funding transaction.
+						// The `next_funding_txid` does not match the latest interactive funding transaction so we
+						// MUST send tx_abort to let the remote  know that they can forget this funding transaction.
 						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
 					}
 				} else {
