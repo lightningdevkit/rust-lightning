@@ -30,7 +30,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
-	calculate_change_output_value, get_output_weight, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
+	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteValue, HandleTxCompleteResult, InteractiveTxConstructor,
 	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
 	OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
@@ -2223,13 +2223,15 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// Prepare and start interactive transaction negotiation.
-	/// `change_destination_opt` - Optional destination for optional change; if None, default destination address is used.
+	/// `change_destination_opt` - Optional destination for optional change; if None,
+	///   default destination address is used.
+	/// If error occurs, it is caused by our side, not the counterparty.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
 		change_destination_opt: Option<ScriptBuf>,
 		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
-	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
+	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
 	{
 		debug_assert!(self.interactive_tx_constructor.is_none());
@@ -2273,19 +2275,14 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			script
 		} else {
 			signer_provider.get_destination_script(self.context.channel_keys_id)
-				.map_err(|err| ChannelError::Warn(format!(
-					"Failed to get change script as new destination script, {:?}", err,
-				)))?
+				.map_err(|_err| AbortReason::InternalErrorGettingDestinationScript)?
 		};
 		let change_value_opt = calculate_change_output_value(
 			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
 			&funding_inputs_prev_outputs, &funding_outputs,
 			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
-		).map_err(|err| ChannelError::Warn(format!(
-			"Insufficient inputs, cannot cover intended contribution of {} and fees; {}",
-			self.dual_funding_context.our_funding_satoshis, err
-		)))?;
+		)?;
 		if let Some(change_value) = change_value_opt {
 			let mut change_output = TxOut {
 				value: Amount::from_sat(change_value),
@@ -2313,8 +2310,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			outputs_to_contribute: funding_outputs,
 			expected_remote_shared_funding_output,
 		};
-		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)
-			.map_err(|_| ChannelError::Warn("Incorrect shared output provided".into()))?;
+		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)?;
 		let msg = tx_constructor.take_initiator_first_message();
 
 		self.interactive_tx_constructor = Some(tx_constructor);
@@ -4999,23 +4995,18 @@ impl DualFundingChannelContext {
 	/// Obtain prev outputs for each supplied input and matching transaction.
 	/// Will error when a prev tx does not have an output for the specified vout.
 	/// Also checks for matching of transaction IDs.
-	fn txouts_from_input_prev_txs(inputs: &Vec<(TxIn, TransactionU16LenLimited)>) -> Result<Vec<&TxOut>, ChannelError> {
+	fn txouts_from_input_prev_txs(inputs: &Vec<(TxIn, TransactionU16LenLimited)>) -> Result<Vec<&TxOut>, AbortReason> {
 		let mut prev_outputs: Vec<&TxOut> = Vec::with_capacity(inputs.len());
 		// Check that vouts exist for each TxIn in provided transactions.
 		for (idx, (txin, tx)) in inputs.iter().enumerate() {
 			let txid = tx.as_transaction().compute_txid();
 			if txin.previous_output.txid != txid {
-				return Err(ChannelError::Warn(
-					format!("Transaction input txid mismatch, {} vs. {}, at index {}", txin.previous_output.txid, txid, idx)
-				));
+				return Err(AbortReason::ProvidedInputsAndPrevtxsTxIdMismatch(idx as u32));
 			}
 			if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
 				prev_outputs.push(output);
 			} else {
-				return Err(ChannelError::Warn(
-					format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn, at index {}",
-						txid, txin.previous_output.vout, idx)
-				));
+				return Err(AbortReason::ProvidedInputsAndPrevtxsVoutNotFound(idx as u32));
 			}
 		}
 		Ok(prev_outputs)

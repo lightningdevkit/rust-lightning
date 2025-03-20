@@ -108,6 +108,12 @@ pub(crate) enum AbortReason {
 	/// if funding output is provided by the peer this is an interop error,
 	/// if provided by the same node than internal input consistency error.
 	InvalidLowFundingOutputValue,
+	/// TxId mismatch in the provided inputs and previous transactions, input index in data
+	ProvidedInputsAndPrevtxsTxIdMismatch(u32),
+	/// A vout provided in an input is not found in the matching previous transaction, input index in data
+	ProvidedInputsAndPrevtxsVoutNotFound(u32),
+	/// Internal error, error while getting destination script
+	InternalErrorGettingDestinationScript,
 }
 
 impl AbortReason {
@@ -118,34 +124,44 @@ impl AbortReason {
 
 impl Display for AbortReason {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		f.write_str(match self {
-			AbortReason::InvalidStateTransition => "State transition was invalid",
-			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
-			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
-			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
+		f.write_str(&match self {
+			AbortReason::InvalidStateTransition => "State transition was invalid".into(),
+			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message".into(),
+			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received".into(),
+			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received".into(),
 			AbortReason::IncorrectInputSequenceValue => {
-				"Input has a sequence value greater than 0xFFFFFFFD"
+				"Input has a sequence value greater than 0xFFFFFFFD".into()
 			},
-			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
-			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
-			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
-			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
+			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect".into(),
+			AbortReason::SerialIdUnknown => "The `serial_id` is unknown".into(),
+			AbortReason::DuplicateSerialId => "The `serial_id` already exists".into(),
+			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output".into(),
 			AbortReason::ExceededMaximumSatsAllowed => {
-				"Output amount exceeded total bitcoin supply"
+				"Output amount exceeded total bitcoin supply".into()
 			},
-			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
-			AbortReason::TransactionTooLarge => "Transaction weight is too large",
-			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
-			AbortReason::InvalidOutputScript => "The output script is non-standard",
-			AbortReason::InsufficientFees => "Insufficient fees paid",
+			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs".into(),
+			AbortReason::TransactionTooLarge => "Transaction weight is too large".into(),
+			AbortReason::BelowDustLimit => "Output amount is below the dust limit".into(),
+			AbortReason::InvalidOutputScript => "The output script is non-standard".into(),
+			AbortReason::InsufficientFees => "Insufficient fees paid".into(),
 			AbortReason::OutputsValueExceedsInputsValue => {
-				"Total value of outputs exceeds total value of inputs"
+				"Total value of outputs exceeds total value of inputs".into()
 			},
-			AbortReason::InvalidTx => "The transaction is invalid",
-			AbortReason::MissingFundingOutput => "No shared funding output found",
-			AbortReason::DuplicateFundingOutput => "More than one funding output found",
+			AbortReason::InvalidTx => "The transaction is invalid".into(),
+			AbortReason::MissingFundingOutput => "No shared funding output found".into(),
+			AbortReason::DuplicateFundingOutput => "More than one funding output found".into(),
 			AbortReason::InvalidLowFundingOutputValue => {
-				"Local part of funding output value is greater than the funding output value"
+				"Local part of funding output value is greater than the funding output value".into()
+			},
+			AbortReason::ProvidedInputsAndPrevtxsTxIdMismatch(idx) => format!(
+				"TxId mismatch in the provided inputs and previous transactions, input index {}",
+				idx
+			),
+			AbortReason::ProvidedInputsAndPrevtxsVoutNotFound(idx) => format!(
+				"Vout provided in an input is not found in the previous transaction, input index {}",
+				idx),
+			AbortReason::InternalErrorGettingDestinationScript => {
+				"Internal error getting destination script".into()
 			},
 		})
 	}
