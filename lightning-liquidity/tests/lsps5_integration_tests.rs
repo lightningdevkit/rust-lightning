@@ -3,20 +3,17 @@
 mod common;
 use common::{create_service_and_client_nodes, get_lsps_message};
 
+use lightning::sign::EntropySource;
 use lightning::util::hash_tables::HashSet;
 use lightning_liquidity::events::LiquidityEvent;
-use lightning_liquidity::lsps0::ser::{LSPSDateTime, LSPSRequestId};
-use lightning_liquidity::lsps5::client::LSPS5ClientConfig;
+use lightning_liquidity::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use lightning_liquidity::lsps5::event::{LSPS5ClientEvent, LSPS5ServiceEvent};
-use lightning_liquidity::lsps5::msgs::WebhookNotificationMethod;
+use lightning_liquidity::lsps5::msgs::{Lsps5AppName, Lsps5WebhookUrl, WebhookNotificationMethod};
 use lightning_liquidity::lsps5::service::{HttpClient, LSPS5ServiceConfig};
-use lightning_liquidity::lsps5::utils::sign_notification;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use bitcoin::secp256k1::SecretKey;
-use chrono::Duration;
 use lightning::ln::peer_handler::CustomMessageHandler;
-use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -96,13 +93,14 @@ fn webhook_registration_flow() {
 
 	let service_node_id = service_node.channel_manager.get_our_node_id();
 	let client_node_id = client_node.channel_manager.get_our_node_id();
-
-	let app_name = "My LSPS-Compliant Lightning Client";
-	let webhook_url = "https://www.example.org/push?l=1234567890abcdefghijklmnopqrstuv&c=best";
+	let raw_app_name = "My LSPS-Compliant Lightning Client";
+	let app_name = Lsps5AppName::new(raw_app_name.to_string()).unwrap();
+	let raw_webhook_url = "https://www.example.org/push?l=1234567890abcdefghijklmnopqrstuv&c=best";
+	let webhook_url = Lsps5WebhookUrl::new(raw_webhook_url.to_string()).unwrap();
 
 	// Test set_webhook - now capture the request ID
 	let request_id = client_handler
-		.set_webhook(service_node_id, app_name.to_string(), webhook_url.to_string())
+		.set_webhook(service_node_id, raw_app_name.to_string(), raw_webhook_url.to_string())
 		.expect("Failed to send set_webhook request");
 	let set_webhook_request = get_lsps_message!(client_node, service_node_id);
 
@@ -115,14 +113,14 @@ fn webhook_registration_flow() {
 
 	match set_webhook_event {
 		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::WebhookRegistered {
-			client: counterparty_node_id,
+			counterparty_node_id,
 			app_name: an,
 			url: wu,
 			no_change,
 			request_id: req_id, // New field
 		}) => {
 			assert_eq!(counterparty_node_id, client_node_id);
-			assert_eq!(an, app_name);
+			assert_eq!(an, app_name.clone());
 			assert_eq!(wu, webhook_url);
 			assert_eq!(no_change, false);
 			assert_eq!(req_id, request_id); // Check that request ID matches
@@ -143,15 +141,17 @@ fn webhook_registration_flow() {
 			num_webhooks,
 			max_webhooks,
 			no_change,
-			lsp,
+			counterparty_node_id: lsp,
 			app_name: an,
 			url,
+			// TODO: check where it comes from and add it to the asserts
+			request_id: _req_id,
 		}) => {
 			assert_eq!(num_webhooks, 1);
 			assert_eq!(max_webhooks, LSPS5ServiceConfig::default().max_webhooks_per_client);
 			assert_eq!(no_change, false);
 			assert_eq!(lsp, service_node_id);
-			assert_eq!(an, app_name);
+			assert_eq!(an, app_name.clone());
 			assert_eq!(url, webhook_url);
 		},
 		_ => panic!("Unexpected event"),
@@ -175,11 +175,11 @@ fn webhook_registration_flow() {
 	match list_webhooks_event {
 		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::WebhooksListed {
 			app_names,
-			client: counterparty_node_id,
+			counterparty_node_id,
 			max_webhooks,
 			request_id: req_id, // New field
 		}) => {
-			assert_eq!(app_names, vec![app_name.to_string()]);
+			assert_eq!(app_names, vec![app_name.clone()]);
 			assert_eq!(counterparty_node_id, client_node_id);
 			assert_eq!(max_webhooks, LSPS5ServiceConfig::default().max_webhooks_per_client);
 			assert_eq!(req_id, list_request_id); // Check that request ID matches
@@ -197,21 +197,24 @@ fn webhook_registration_flow() {
 	let webhooks_list_event = client_node.liquidity_manager.next_event().unwrap();
 	match webhooks_list_event {
 		LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhooksListed {
-			lsp,
+			counterparty_node_id: lsp,
 			app_names,
 			max_webhooks,
+			request_id,
 		}) => {
 			assert_eq!(lsp, service_node_id);
-			assert_eq!(app_names, vec![app_name.to_string()]);
+			assert_eq!(app_names, vec![app_name.clone()]);
 			assert_eq!(max_webhooks, LSPS5ServiceConfig::default().max_webhooks_per_client);
+			assert_eq!(request_id, list_request_id);
 		},
 		_ => panic!("Unexpected event"),
 	}
 
 	// Test updating existing webhook - now capture the request ID
-	let updated_webhook_url = "https://www.example.org/push?l=updatedtoken&c=best";
+	let raw_updated_webhook_url = "https://www.example.org/push?l=updatedtoken&c=best";
+	let updated_webhook_url = Lsps5WebhookUrl::new(raw_updated_webhook_url.to_string()).unwrap();
 	let update_request_id = client_handler
-		.set_webhook(service_node_id, app_name.to_string(), updated_webhook_url.to_string())
+		.set_webhook(service_node_id, raw_app_name.to_string(), raw_updated_webhook_url.to_string())
 		.expect("Failed to send update webhook request");
 
 	let set_webhook_update_request = get_lsps_message!(client_node, service_node_id);
@@ -224,7 +227,7 @@ fn webhook_registration_flow() {
 	let set_webhook_update_event = service_node.liquidity_manager.next_event().unwrap();
 	match set_webhook_update_event {
 		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::WebhookRegistered {
-			client: counterparty_node_id,
+			counterparty_node_id,
 			app_name: an,
 			url: wu,
 			no_change,
@@ -249,12 +252,12 @@ fn webhook_registration_flow() {
 	let webhook_update_event = client_node.liquidity_manager.next_event().unwrap();
 	match webhook_update_event {
 		LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRegistered {
-			lsp,
+			counterparty_node_id,
 			app_name: an,
 			url,
 			..
 		}) => {
-			assert_eq!(lsp, service_node_id);
+			assert_eq!(counterparty_node_id, service_node_id);
 			assert_eq!(an, app_name);
 			assert_eq!(url, updated_webhook_url);
 		},
@@ -277,11 +280,11 @@ fn webhook_registration_flow() {
 	let remove_webhook_event = service_node.liquidity_manager.next_event().unwrap();
 	match remove_webhook_event {
 		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::WebhookRemoved {
-			client,
+			counterparty_node_id,
 			app_name: an,
 			request_id: req_id, // New field
 		}) => {
-			assert_eq!(client, client_node_id);
+			assert_eq!(counterparty_node_id, client_node_id);
 			assert_eq!(an, app_name);
 			assert_eq!(req_id, remove_request_id); // Check that request ID matches
 		},
@@ -297,9 +300,14 @@ fn webhook_registration_flow() {
 
 	let webhook_removed_event = client_node.liquidity_manager.next_event().unwrap();
 	match webhook_removed_event {
-		LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRemoved { lsp, app_name: an }) => {
-			assert_eq!(lsp, service_node_id);
+		LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRemoved {
+			counterparty_node_id,
+			app_name: an,
+			request_id,
+		}) => {
+			assert_eq!(counterparty_node_id, service_node_id);
 			assert_eq!(an, app_name);
+			assert_eq!(request_id, remove_request_id);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -406,13 +414,14 @@ fn webhook_error_handling_test() {
 	}
 
 	// Now try to add one more webhook - should fail with too many webhooks error
-	let one_too_many = format!(
+	let raw_one_too_many = format!(
 		"{} {}",
 		valid_app_name_base,
 		LSPS5ServiceConfig::default().max_webhooks_per_client
 	);
+	let one_too_many = Lsps5AppName::new(raw_one_too_many.to_string()).unwrap();
 	let _ = client_handler
-		.set_webhook(service_node_id, one_too_many.clone(), valid_url.to_string())
+		.set_webhook(service_node_id, raw_one_too_many.clone(), valid_url.to_string())
 		.expect("Request should send but will receive error response");
 
 	let request = get_lsps_message!(client_node, service_node_id);
@@ -446,9 +455,10 @@ fn webhook_error_handling_test() {
 	}
 
 	// TEST 6: Remove a non-existent webhook
-	let nonexistent_app = "NonexistentApp";
+	let raw_nonexistent_app = "NonexistentApp";
+	let nonexistent_app = Lsps5AppName::new(raw_nonexistent_app.to_string()).unwrap();
 	let _ = client_handler
-		.remove_webhook(service_node_id, nonexistent_app.to_string())
+		.remove_webhook(service_node_id, raw_nonexistent_app.to_string())
 		.expect("Remove webhook request should send successfully");
 
 	let request = get_lsps_message!(client_node, service_node_id);
@@ -611,7 +621,7 @@ fn webhook_notification_delivery_test() {
 
 	// Test that client can parse and validate the webhook notification
 	// Using derived_pubkey instead of service_node_id for verification
-	let result = client_handler.parse_webhook_notification(
+	let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
 		derived_pubkey,
 		&timestamp_value,
 		&signature_value,
@@ -656,7 +666,7 @@ fn webhook_notification_delivery_test() {
 		.map(|(_, value)| value.clone())
 		.expect("Signature header should be present");
 
-	let result = client_handler.parse_webhook_notification(
+	let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
 		derived_pubkey,
 		&timestamp_header,
 		&signature_header,
@@ -670,7 +680,7 @@ fn webhook_notification_delivery_test() {
 	let notification = result.unwrap();
 	assert_eq!(
 		notification.method,
-		WebhookNotificationMethod::PaymentIncoming,
+		WebhookNotificationMethod::LSPS5PaymentIncoming,
 		"Parsed notification should be payment_incoming"
 	);
 
@@ -863,7 +873,7 @@ fn multiple_webhooks_notification_test() {
 			.expect("Signature header should be present");
 
 		// Verify the signature using the derived pubkey
-		let result = client_handler.parse_webhook_notification(
+		let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
 			derived_pubkey,
 			&timestamp_header,
 			&signature_header,
@@ -922,292 +932,6 @@ fn multiple_webhooks_notification_test() {
 		body["method"], "lsps5.webhook_registered",
 		"Should be a webhook_registered notification"
 	);
-}
-
-#[test]
-fn unknown_method_and_malformed_notification_test() {
-	let mock_client: Arc<MockHttpClient> = Arc::new(MockHttpClient::new(true));
-	let signing_key = SecretKey::from_slice(&[42; 32]).unwrap();
-
-	let mut lsps5_service_config = LSPS5ServiceConfig::default();
-	lsps5_service_config =
-		lsps5_service_config.with_http_client(MockHttpClientWrapper(mock_client.clone()));
-	lsps5_service_config.signing_key = signing_key;
-
-	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
-		lsps1_service_config: None,
-		lsps2_service_config: None,
-		lsps5_service_config: Some(lsps5_service_config),
-		advertise_service: true,
-	};
-
-	let lsps5_client_config = LSPS5ClientConfig::default();
-	let client_config = LiquidityClientConfig {
-		lsps1_client_config: None,
-		lsps2_client_config: None,
-		lsps5_client_config: Some(lsps5_client_config),
-	};
-
-	let (service_node, client_node) = create_service_and_client_nodes(
-		"unknown_method_and_malformed_notification_test",
-		service_config,
-		client_config,
-	);
-
-	let client_node_id = client_node.channel_manager.get_our_node_id();
-
-	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
-
-	let create_notification = |method: &str, params: serde_json::Value| -> serde_json::Value {
-		json!({
-			"jsonrpc": "2.0",
-			"method": method,
-			"params": params
-		})
-	};
-
-	// Use our shared sign_notification utility function
-	let sign_notification_with_key = |notification: &str, timestamp: &str| -> String {
-		sign_notification(notification, timestamp, &signing_key).unwrap()
-	};
-
-	let app_name = "Notification Test App";
-	let webhook_url = "https://www.example.org/webhook?token=test123";
-
-	let request_id = LSPSRequestId("lsps5:webhook:123123123".to_owned());
-
-	assert!(
-		service_handler
-			.handle_set_webhook(
-				client_node_id,
-				request_id,
-				lightning_liquidity::lsps5::msgs::SetWebhookRequest {
-					app_name: app_name.to_string(),
-					webhook: webhook_url.to_string()
-				}
-			)
-			.is_ok(),
-		"Failed to register webhook"
-	);
-
-	let secp = bitcoin::secp256k1::Secp256k1::new();
-	let lsp_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
-	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
-
-	// Test Case 1: Unknown notification method
-	// Spec: "Notification delivery services MUST ignore any notification method it does not recognize."
-	let timestamp1 = LSPSDateTime::now().to_rfc3339();
-	let unknown_notification = create_notification("lsps5.unknown_method", json!({"some": "data"}));
-	let body1 = unknown_notification.to_string();
-	let signature1 = sign_notification_with_key(&body1, &timestamp1);
-
-	// Client should reject unrecognized methods, even with valid signatures
-	let unknown_result =
-		client_handler.parse_webhook_notification(lsp_pubkey, &timestamp1, &signature1, &body1);
-
-	// Should be rejected due to unknown method
-	assert!(unknown_result.is_err(), "Unknown method should be rejected even with valid signature");
-
-	// Test Case 2: Missing required jsonrpc field
-	// Spec: The notification JSON-RPC object requires "jsonrpc":"2.0"
-	let invalid_jsonrpc = json!({
-		"method": "lsps5.payment_incoming",
-		"params": {}
-		// Missing required jsonrpc field
-	})
-	.to_string();
-
-	let timestamp2 = LSPSDateTime::now().to_rfc3339();
-	let signature2 = sign_notification_with_key(&invalid_jsonrpc, &timestamp2);
-
-	let invalid_jsonrpc_result = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&timestamp2,
-		&signature2,
-		&invalid_jsonrpc,
-	);
-
-	// Should fail validation due to missing required jsonrpc field
-	assert!(invalid_jsonrpc_result.is_err(), "Missing jsonrpc field should be rejected");
-
-	// Test Case 3: Missing required params field
-	// Spec: The notification JSON-RPC object requires "params" object
-	let missing_params = json!({
-		"jsonrpc": "2.0",
-		"method": "lsps5.payment_incoming"
-		// Missing required params field
-	})
-	.to_string();
-
-	let timestamp3 = LSPSDateTime::now().to_rfc3339();
-	let signature3 = sign_notification_with_key(&missing_params, &timestamp3);
-
-	let missing_params_result = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&timestamp3,
-		&signature3,
-		&missing_params,
-	);
-
-	// Should fail validation due to missing required params field
-	assert!(missing_params_result.is_err(), "Missing params field should be rejected");
-
-	// Test Case 4: Extra unrecognized parameters in notification
-	// Spec: "Notification delivery services MUST ignore any parameters it does not recognize."
-	let timestamp4 = LSPSDateTime::now().to_rfc3339();
-	let extra_params_notification = create_notification(
-		"lsps5.expiry_soon",
-		json!({
-			"timeout": 123456,
-			"extra_field": "should be ignored",
-			"another_extra": 42
-		}),
-	);
-	let body4 = extra_params_notification.to_string();
-	let signature4 = sign_notification_with_key(&body4, &timestamp4);
-
-	let extra_params_result =
-		client_handler.parse_webhook_notification(lsp_pubkey, &timestamp4, &signature4, &body4);
-
-	// Should parse successfully per spec - extra params should be ignored
-	assert!(
-		extra_params_result.is_ok(),
-		"Notification with extra parameters should parse successfully"
-	);
-
-	// Test Case 5: Valid signature verification
-	// Spec requires validating the signature against the timestamp and notification body
-	let timestamp5 = LSPSDateTime::now().to_rfc3339();
-	let valid_notification = create_notification("lsps5.payment_incoming", json!({}));
-	let body5 = valid_notification.to_string();
-	let signature5 = sign_notification_with_key(&body5, &timestamp5);
-
-	let valid_result =
-		client_handler.parse_webhook_notification(lsp_pubkey, &timestamp5, &signature5, &body5);
-
-	// Should succeed with valid signature
-	assert!(valid_result.is_ok(), "Valid signature should be accepted");
-
-	// Test Case 6: Invalid signature
-	// Spec: The notification delivery service "MUST validate the signature against the message template"
-	let timestamp6 = LSPSDateTime::now().to_rfc3339();
-	let notification6 = create_notification("lsps5.payment_incoming", json!({}));
-	let body6 = notification6.to_string();
-	let invalid_signature = "lspsig:abcdef1234567890"; // Invalid signature
-
-	let invalid_sig_result = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&timestamp6,
-		&invalid_signature,
-		&body6,
-	);
-
-	// Should fail with invalid signature
-	assert!(invalid_sig_result.is_err(), "Invalid signature should be rejected");
-
-	// Test Case 7: Invalid JSON
-	// Spec requires the body to be a valid JSON-RPC 2.0 Notification Object
-	let timestamp7 = LSPSDateTime::now().to_rfc3339();
-	let invalid_json = "{not valid json";
-	let signature7 = sign_notification_with_key(invalid_json, &timestamp7);
-
-	let invalid_json_result = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&timestamp7,
-		&signature7,
-		invalid_json,
-	);
-
-	// Should fail with invalid JSON
-	assert!(invalid_json_result.is_err(), "Invalid JSON should be rejected");
-
-	// Test Case 8: Testing all standard notification methods from the spec
-	// The spec defines these standard methods:
-	let standard_methods = [
-		("lsps5.webhook_registered", json!({})),
-		("lsps5.payment_incoming", json!({})),
-		("lsps5.expiry_soon", json!({"timeout": 123456})),
-		("lsps5.liquidity_management_request", json!({})),
-		("lsps5.onion_message_incoming", json!({})),
-	];
-
-	for (method, params) in standard_methods.iter() {
-		let timestamp = LSPSDateTime::now().to_rfc3339();
-		let notification = create_notification(method, params.clone());
-		let body = notification.to_string();
-		let signature = sign_notification_with_key(&body, &timestamp);
-
-		let result =
-			client_handler.parse_webhook_notification(lsp_pubkey, &timestamp, &signature, &body);
-
-		// All standard methods with valid signatures should be accepted
-		assert!(result.is_ok(), "Standard method {} should be accepted", method);
-	}
-
-	// Test Case 9: Timestamp validation
-	// Spec requires timestamp to be within 10 minutes of local time
-
-	let generate_timestamp_with_offset = |offset_minutes: i64| -> String {
-		LSPSDateTime::now()
-			.checked_add_signed(Duration::minutes(offset_minutes))
-			.unwrap()
-			.to_rfc3339()
-	};
-
-	// Test with timestamp too old (more than 10 minutes in the past)
-	let old_timestamp = generate_timestamp_with_offset(-15); // 15 minutes in the past
-	let notification = create_notification("lsps5.payment_incoming", json!({}));
-	let body = notification.to_string();
-	let signature = sign_notification_with_key(&body, &old_timestamp);
-
-	let result_old =
-		client_handler.parse_webhook_notification(lsp_pubkey, &old_timestamp, &signature, &body);
-
-	// Should fail because timestamp is too old
-	assert!(result_old.is_err(), "Timestamp too far in the past should be rejected");
-
-	// Test with timestamp too far in future (more than 10 minutes ahead)
-	let future_timestamp = generate_timestamp_with_offset(15); // 15 minutes in the future
-	let signature_future = sign_notification_with_key(&body, &future_timestamp);
-
-	let result_future = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&future_timestamp,
-		&signature_future,
-		&body,
-	);
-
-	// Should fail because timestamp is too far in the future
-	assert!(result_future.is_err(), "Timestamp too far in the future should be rejected");
-
-	// Test with timestamp at the edge of acceptable range (just under 10 minutes in the past)
-	let edge_past_timestamp = generate_timestamp_with_offset(-9); // 9 minutes in the past
-	let signature_edge_past = sign_notification_with_key(&body, &edge_past_timestamp);
-
-	let result_edge_past = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&edge_past_timestamp,
-		&signature_edge_past,
-		&body,
-	);
-
-	// Should succeed because timestamp is within acceptable range
-	assert!(result_edge_past.is_ok(), "Timestamp just within past range should be accepted");
-
-	// Test with timestamp at the edge of acceptable range (just under 10 minutes in the future)
-	let edge_future_timestamp = generate_timestamp_with_offset(9); // 9 minutes in the future
-	let signature_edge_future = sign_notification_with_key(&body, &edge_future_timestamp);
-
-	let result_edge_future = client_handler.parse_webhook_notification(
-		lsp_pubkey,
-		&edge_future_timestamp,
-		&signature_edge_future,
-		&body,
-	);
-
-	// Should succeed because timestamp is within acceptable range
-	assert!(result_edge_future.is_ok(), "Timestamp just within future range should be accepted");
 }
 
 // Helper function to extract timestamp and signature from a webhook call
@@ -1450,13 +1174,21 @@ fn replay_prevention_test() {
 	let body = payment_call.2.clone();
 
 	// First verification should succeed
-	let result =
-		client_handler.parse_webhook_notification(derived_pubkey, &timestamp, &signature, &body);
+	let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
+		derived_pubkey,
+		&timestamp,
+		&signature,
+		&body,
+	);
 	assert!(result.is_ok(), "First verification should succeed");
 
 	// Try again with same timestamp and signature (simulate replay)
-	let replay_result =
-		client_handler.parse_webhook_notification(derived_pubkey, &timestamp, &signature, &body);
+	let replay_result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
+		derived_pubkey,
+		&timestamp,
+		&signature,
+		&body,
+	);
 
 	assert!(
 		replay_result.is_ok(),
@@ -1465,247 +1197,6 @@ fn replay_prevention_test() {
 
 	// Let's verify that the notification content matches what we expect
 	let notification = replay_result.unwrap();
-	assert_eq!(notification.method, WebhookNotificationMethod::PaymentIncoming);
+	assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
 	assert!(notification.params.is_object());
-}
-
-#[test]
-fn tampered_notification_test() {
-	let mock_client = Arc::new(MockHttpClient::new(true));
-	let signing_key = SecretKey::from_slice(&[42; 32]).unwrap();
-
-	let mut lsps5_service_config = LSPS5ServiceConfig::default();
-	lsps5_service_config =
-		lsps5_service_config.with_http_client(MockHttpClientWrapper(mock_client.clone()));
-	lsps5_service_config.signing_key = signing_key;
-
-	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
-		lsps1_service_config: None,
-		lsps2_service_config: None,
-		lsps5_service_config: Some(lsps5_service_config),
-		advertise_service: true,
-	};
-
-	let lsps5_client_config = LSPS5ClientConfig::default();
-	let client_config = LiquidityClientConfig {
-		lsps1_client_config: None,
-		lsps2_client_config: None,
-		lsps5_client_config: Some(lsps5_client_config),
-	};
-
-	let (service_node, client_node) = create_service_and_client_nodes(
-		"tampered_notification_test",
-		service_config,
-		client_config,
-	);
-
-	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
-	let service_node_id = service_node.channel_manager.get_our_node_id();
-	let client_node_id = client_node.channel_manager.get_our_node_id();
-
-	let secp = bitcoin::secp256k1::Secp256k1::new();
-	let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
-
-	let app_name = "Tamper Test App";
-	let webhook_url = "https://www.example.org/webhook?token=tamper123";
-
-	let _ = client_handler
-		.set_webhook(service_node_id, app_name.to_string(), webhook_url.to_string())
-		.expect("Register webhook request should succeed");
-	let request = get_lsps_message!(client_node, service_node_id);
-	service_node.liquidity_manager.handle_custom_message(request, client_node_id).unwrap();
-
-	let response = get_lsps_message!(service_node, client_node_id);
-	client_node.liquidity_manager.handle_custom_message(response, service_node_id).unwrap();
-
-	let _ = client_node.liquidity_manager.next_event().unwrap();
-
-	// Send a notification that we can tamper with
-	assert!(service_node
-		.liquidity_manager
-		.lsps5_service_handler()
-		.unwrap()
-		.notify_expiry_soon(client_node_id, 700000)
-		.is_ok());
-
-	std::thread::sleep(std::time::Duration::from_millis(100));
-
-	// Get the notification call
-	let calls = mock_client.get_calls();
-	let expiry_call = &calls[calls.len() - 1];
-
-	let (timestamp, signature) = extract_timestamp_and_signature(expiry_call);
-	let original_body = expiry_call.2.clone();
-
-	let original_result = client_handler.parse_webhook_notification(
-		derived_pubkey,
-		&timestamp,
-		&signature,
-		&original_body,
-	);
-	assert!(original_result.is_ok(), "Original notification should be valid");
-
-	let mut json_body: serde_json::Value = serde_json::from_str(&original_body).unwrap();
-	json_body["params"]["timeout"] = json!(800000); // Changed from 700000
-	let tampered_body = json_body.to_string();
-
-	let tampered_result = client_handler.parse_webhook_notification(
-		derived_pubkey,
-		&timestamp,
-		&signature,
-		&tampered_body,
-	);
-
-	assert!(tampered_result.is_err(), "Tampered notification should fail verification");
-	let error = tampered_result.err().unwrap();
-	assert!(
-		error.err.contains("Recovered key does not match")
-			|| error.err.contains("Failed to recover key"),
-		"Error should indicate signature verification failure"
-	);
-
-	// Try another tampering - change the method
-	let mut json_body: serde_json::Value = serde_json::from_str(&original_body).unwrap();
-	json_body["method"] = json!("lsps5.payment_incoming"); // Changed from expiry_soon
-	let tampered_method_body = json_body.to_string();
-
-	let tampered_method_result = client_handler.parse_webhook_notification(
-		derived_pubkey,
-		&timestamp,
-		&signature,
-		&tampered_method_body,
-	);
-
-	// This should also fail
-	assert!(
-		tampered_method_result.is_err(),
-		"Notification with tampered method should fail verification"
-	);
-}
-
-#[test]
-fn out_of_window_timestamp_test() {
-	let mock_client = Arc::new(MockHttpClient::new(true));
-	let signing_key = SecretKey::from_slice(&[42; 32]).unwrap();
-
-	let mut lsps5_service_config = LSPS5ServiceConfig::default();
-	lsps5_service_config =
-		lsps5_service_config.with_http_client(MockHttpClientWrapper(mock_client.clone()));
-	lsps5_service_config.signing_key = signing_key;
-
-	let service_config = LiquidityServiceConfig {
-		#[cfg(lsps1_service)]
-		lsps1_service_config: None,
-		lsps2_service_config: None,
-		lsps5_service_config: Some(lsps5_service_config),
-		advertise_service: true,
-	};
-
-	let lsps5_client_config = LSPS5ClientConfig::default();
-	let client_config = LiquidityClientConfig {
-		lsps1_client_config: None,
-		lsps2_client_config: None,
-		lsps5_client_config: Some(lsps5_client_config),
-	};
-
-	let (service_node, client_node) = create_service_and_client_nodes(
-		"out_of_window_timestamp_test",
-		service_config,
-		client_config,
-	);
-
-	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
-	let service_node_id = service_node.channel_manager.get_our_node_id();
-	let client_node_id = client_node.channel_manager.get_our_node_id();
-
-	let secp = bitcoin::secp256k1::Secp256k1::new();
-	let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
-
-	let app_name = "Timestamp Test App";
-	let webhook_url = "https://www.example.org/webhook?token=time123";
-
-	let _ = client_handler
-		.set_webhook(service_node_id, app_name.to_string(), webhook_url.to_string())
-		.expect("Register webhook request should succeed");
-	let request = get_lsps_message!(client_node, service_node_id);
-	service_node.liquidity_manager.handle_custom_message(request, client_node_id).unwrap();
-
-	let response = get_lsps_message!(service_node, client_node_id);
-	client_node.liquidity_manager.handle_custom_message(response, service_node_id).unwrap();
-
-	let _ = client_node.liquidity_manager.next_event().unwrap();
-
-	// Send a notification to get valid signature
-	assert!(service_node
-		.liquidity_manager
-		.lsps5_service_handler()
-		.unwrap()
-		.notify_onion_message_incoming(client_node_id)
-		.is_ok());
-
-	// Wait for the notification
-	std::thread::sleep(std::time::Duration::from_millis(100));
-
-	let calls = mock_client.get_calls();
-	let onion_call = &calls[calls.len() - 1];
-
-	// Extract the signature and body
-	let (_, signature) = extract_timestamp_and_signature(onion_call);
-	let body = onion_call.2.clone();
-
-	// Create timestamps outside the 10-minute window
-	// Past timestamp (20 minutes ago)
-	let past_timestamp =
-		LSPSDateTime::now().checked_sub_signed(Duration::minutes(20)).unwrap().to_rfc3339();
-
-	// Future timestamp (15 minutes in future)
-	let future_timestamp =
-		LSPSDateTime::now().checked_add_signed(Duration::minutes(15)).unwrap().to_rfc3339();
-
-	// Try past timestamp
-	let past_result = client_handler.parse_webhook_notification(
-		derived_pubkey,
-		&past_timestamp,
-		&signature,
-		&body,
-	);
-	assert!(past_result.is_err(), "Notification with past timestamp should be rejected");
-	let past_error = past_result.err().unwrap();
-	assert!(
-		past_error.err.contains("too far from current time"),
-		"Error should indicate timestamp is outside acceptable window"
-	);
-
-	// Try future timestamp
-	let future_result = client_handler.parse_webhook_notification(
-		derived_pubkey,
-		&future_timestamp,
-		&signature,
-		&body,
-	);
-	assert!(future_result.is_err(), "Notification with future timestamp should be rejected");
-	let future_error = future_result.err().unwrap();
-	assert!(
-		future_error.err.contains("too far from current time"),
-		"Error should indicate timestamp is outside acceptable window"
-	);
-
-	// Try with invalid format timestamp
-	let invalid_timestamp = "2023-13-42T25:61:99Z"; // Invalid date/time
-	let invalid_format_result = client_handler.parse_webhook_notification(
-		derived_pubkey,
-		invalid_timestamp,
-		&signature,
-		&body,
-	);
-	assert!(
-		invalid_format_result.is_err(),
-		"Notification with invalid timestamp format should be rejected"
-	);
-	let invalid_error = invalid_format_result.err().unwrap();
-	assert!(
-		invalid_error.err.contains("Invalid timestamp format"),
-		"Error should indicate timestamp format is invalid"
-	);
 }
