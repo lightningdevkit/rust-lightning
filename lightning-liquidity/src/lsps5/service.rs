@@ -9,7 +9,7 @@
 
 //! Service implementation for LSPS5 webhook registration
 
-use super::utils::sign_notification;
+use super::url_utils::Url;
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
@@ -27,7 +27,6 @@ use lightning::util::logger::Level;
 
 use crate::sync::{Arc, Mutex};
 use serde_json::json;
-use url::Url;
 
 use super::event::LSPS5ServiceEvent;
 use super::msgs::{

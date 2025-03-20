@@ -26,11 +26,10 @@ use lightning::ln::msgs::{ErrorAction, LightningError};
 use crate::sync::{Arc, Mutex, RwLock};
 use core::ops::Deref;
 use core::str::FromStr;
-use url::Url;
 
 use crate::prelude::{new_hash_map, HashMap, String};
 
-use super::{MAX_APP_NAME_LENGTH, MAX_WEBHOOK_URL_LENGTH};
+use super::url_utils::Url;
 use chrono::Duration;
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
