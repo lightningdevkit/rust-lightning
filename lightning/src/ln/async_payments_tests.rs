@@ -194,7 +194,7 @@ fn invalid_keysend_payment_secret() {
 		nodes[1].node.get_our_node_id(),
 		&updates_1_0.update_fail_htlcs[0],
 	);
-	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
+	commitment_signed_dance!(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
 	expect_payment_failed_conditions(
 		&nodes[0],
 		payment_hash,
