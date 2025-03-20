@@ -19,10 +19,4 @@ pub mod client;
 pub mod event;
 pub mod msgs;
 pub mod service;
-pub mod utils;
-
-/// Maximum allowed length for an app_name (in bytes)
-pub const MAX_APP_NAME_LENGTH: usize = 64;
-
-/// Maximum allowed length for a webhook URL (in characters)
-pub const MAX_WEBHOOK_URL_LENGTH: usize = 1024;
+pub mod url_utils;
