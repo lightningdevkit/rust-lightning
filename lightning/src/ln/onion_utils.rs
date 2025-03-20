@@ -23,7 +23,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::{self, APIError};
 use crate::util::logger::Logger;
 use crate::util::ser::{
-	LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer,
+	LengthCalculatingWriter, Readable, ReadableArgs, RequiredWrapper, VecWriter, Writeable, Writer
 };
 
 use bitcoin::hashes::cmp::fixed_time_eq;
@@ -1711,6 +1711,49 @@ impl Into<LocalHTLCFailureReason> for u16 {
 	}
 }
 
+impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
+	(1, TemporaryNodeFailure) => {},
+	(3, PermanentNodeFailure) => {},
+	(5, RequiredNodeFeature) => {},
+	(7, InvalidOnionVersion) => {},
+	(9, InvalidOnionHMAC) => {},
+	(11, InvalidOnionKey) => {},
+	(13, TemporaryChannelFailure) => {},
+	(15, PermanentChannelFailure) => {},
+	(17, RequiredChannelFeature) => {},
+	(19, UnknownNextPeer) => {},
+	(21, AmountBelowMinimum) => {},
+	(23, FeeInsufficient) => {},
+	(25, IncorrectCLTVExpiry) => {},
+	(27, CLTVExpiryTooSoon) => {},
+	(29, IncorrectPaymentDetails) => {},
+	(31, FinalIncorrectCLTVExpiry) => {},
+	(33, FinalIncorrectHTLCAmount) => {},
+	(35, ChannelDisabled) => {},
+	(37, CLTVExpiryTooFar) => {},
+	(39, InvalidOnionPayload) => {},
+	(41, MPPTimeout) => {},
+	(43, InvalidOnionBlinding) => {},
+	(45, InvalidTrampolineForward) => {},
+	(47, PaymentClaimBuffer) => {},
+	(49, DustLimitHolder) => {},
+	(51, DustLimitCounterparty) => {},
+	(53, FeeSpikeBuffer) => {},
+	(55, DroppedPending) => {},
+	(57, PrivateChannelForward) => {},
+	(59, RealSCIDForward) => {},
+	(61, ChannelNotReady) => {},
+	(63, InvalidKeysendPreimage) => {},
+	(65, InvalidTrampolinePayload) => {},
+	(67, PaymentSecretRequired) => {},
+	(69, ForwardExpiryBuffer) => {},
+	(71, OutgoingCLTVTooSoon) => {},
+	(73, ChannelClosed) => {},
+	(75, UnknownFailureCode) => {
+		(0, code, required),
+	}
+);
+
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
@@ -1719,7 +1762,7 @@ pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
 #[cfg_attr(test, derive(PartialEq))]
 enum HTLCFailReasonRepr {
 	LightningError { err: msgs::OnionErrorPacket, hold_time: Option<u32> },
-	Reason { failure_code: u16, data: Vec<u8> },
+	Reason { data: Vec<u8>, reason: LocalHTLCFailureReason },
 }
 
 impl HTLCFailReason {
@@ -1736,8 +1779,8 @@ impl HTLCFailReason {
 impl core::fmt::Debug for HTLCFailReason {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		match self.0 {
-			HTLCFailReasonRepr::Reason { ref failure_code, .. } => {
-				write!(f, "HTLC error code {}", failure_code)
+			HTLCFailReasonRepr::Reason { ref reason, .. } => {
+				write!(f, "HTLC error code {}", reason.failure_code())
 			},
 			HTLCFailReasonRepr::LightningError { .. } => {
 				write!(f, "pre-built LightningError")
@@ -1777,8 +1820,19 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 		(_unused, err, (static_value, msgs::OnionErrorPacket { data: data.ok_or(DecodeError::InvalidValue)?, attribution_data })),
 	},
 	(1, Reason) => {
-		(0, failure_code, required),
+		(0, _failure_code, (legacy, u16,
+			|r: &HTLCFailReasonRepr| Some(r.clone()) )),
 		(2, data, required_vec),
+		// failure_code was required, and is replaced by reason so any time we do not have a
+		// reason available failure_code will be Some so we can require reason.
+		(4, reason, (default_value,
+			if let Some(code) = _failure_code {
+				let failure_reason: LocalHTLCFailureReason = code.into();
+				RequiredWrapper::from(failure_reason)
+			} else {
+				reason
+			}
+		)),
 	},
 );
 
@@ -1850,7 +1904,7 @@ impl HTLCFailReason {
 			},
 		}
 
-		Self(HTLCFailReasonRepr::Reason { failure_code: failure_reason.failure_code(), data })
+		Self(HTLCFailReasonRepr::Reason { data, reason: failure_reason })
 	}
 
 	pub(super) fn from_failure_code(failure_reason: LocalHTLCFailureReason) -> Self {
@@ -1876,7 +1930,7 @@ impl HTLCFailReason {
 		&self, incoming_packet_shared_secret: &[u8; 32], secondary_shared_secret: &Option<[u8; 32]>,
 	) -> msgs::OnionErrorPacket {
 		match self.0 {
-			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
+			HTLCFailReasonRepr::Reason { ref reason, ref data } => {
 				// Final hop always reports zero hold time.
 				let hold_time: u32 = 0;
 
@@ -1884,7 +1938,7 @@ impl HTLCFailReason {
 					// Phantom hop always reports zero hold time too.
 					let mut packet = build_failure_packet(
 						secondary_shared_secret,
-						u16::into(*failure_code),
+						*reason,
 						&data[..],
 						hold_time,
 					);
@@ -1896,7 +1950,7 @@ impl HTLCFailReason {
 				} else {
 					build_failure_packet(
 						incoming_packet_shared_secret,
-						u16::into(*failure_code),
+						*reason,
 						&data[..],
 						hold_time,
 					)
@@ -1925,7 +1979,7 @@ impl HTLCFailReason {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.clone())
 			},
 			#[allow(unused)]
-			HTLCFailReasonRepr::Reason { ref failure_code, ref data, .. } => {
+			HTLCFailReasonRepr::Reason { ref data, ref reason } => {
 				// we get a fail_malformed_htlc from the first hop
 				// TODO: We'd like to generate a NetworkUpdate for temporary
 				// failures here, but that would be insufficient as find_route
@@ -1939,7 +1993,7 @@ impl HTLCFailReason {
 						failed_within_blinded_path: false,
 						hold_times: Vec::new(),
 						#[cfg(any(test, feature = "_test_utils"))]
-						onion_error_code: Some(*failure_code),
+						onion_error_code: Some(reason.failure_code()),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
 					}
