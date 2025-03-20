@@ -14,6 +14,7 @@
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, HTLCDestination};
 use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::types::features::ChannelTypeFeatures;
@@ -456,7 +457,7 @@ fn test_inbound_scid_privacy() {
 
 	expect_payment_failed_conditions(&nodes[0], payment_hash_2, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].short_channel_id.unwrap())
-			.blamed_chan_closed(true).expected_htlc_error_data(0x4000|10, &[0; 0]));
+			.blamed_chan_closed(true).expected_htlc_error_data(LocalHTLCFailureReason::UnknownNextPeer, &[0; 0]));
 }
 
 #[test]
@@ -513,7 +514,7 @@ fn test_scid_alias_returned() {
 	let err_data = 0u16.to_be_bytes();
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
-			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &err_data));
+			.blamed_chan_closed(false).expected_htlc_error_data(LocalHTLCFailureReason::TemporaryChannelFailure, &err_data));
 
 	route.paths[0].hops[1].fee_msat = 10_000; // Reset to the correct payment amount
 	route.paths[0].hops[0].fee_msat = 0; // But set fee paid to the middle hop to 0
@@ -542,7 +543,7 @@ fn test_scid_alias_returned() {
 	err_data.extend_from_slice(&0u16.to_be_bytes());
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
-			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
+			.blamed_chan_closed(false).expected_htlc_error_data(LocalHTLCFailureReason::FeeInsufficient, &err_data));
 }
 
 #[test]

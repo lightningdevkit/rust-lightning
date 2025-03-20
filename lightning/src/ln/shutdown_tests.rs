@@ -20,7 +20,7 @@ use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
-use crate::ln::onion_utils::INVALID_ONION_BLINDING;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::script::ShutdownScript;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
@@ -484,7 +484,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 
 	if blinded_recipient {
 		expect_payment_failed_conditions(&nodes[0], our_payment_hash, false,
-			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+			PaymentFailedConditions::new().expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32]));
 	} else {
 		expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 	}

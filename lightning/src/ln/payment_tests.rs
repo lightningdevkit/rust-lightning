@@ -23,7 +23,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::chan_utils;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
-use crate::ln::onion_utils;
+use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, ProbeSendFailure, Retry, RetryableSendFailure};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
@@ -344,7 +344,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		check_added_monitors!(nodes[1], 1);
 		commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates_1_0.commitment_signed, false);
 
-		expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(23, &[][..]));
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(LocalHTLCFailureReason::MPPTimeout, &[][..]));
 	} else {
 		// Pass half of the payment along the second path.
 		let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
@@ -1952,7 +1952,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		let fail_conditions = PaymentFailedConditions::new()
 			.blamed_scid(intercept_scid)
 			.blamed_chan_closed(true)
-			.expected_htlc_error_data(0x4000 | 10, &[]);
+			.expected_htlc_error_data(LocalHTLCFailureReason::UnknownNextPeer, &[]);
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 	} else if test == InterceptTest::Forward {
 		// Check that we'll fail as expected when sending to a channel that isn't in `ChannelReady` yet.
@@ -2025,7 +2025,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
-		expect_payment_failed!(nodes[0], payment_hash, false, 0x2000 | 2, []);
+		expect_payment_failed!(nodes[0], payment_hash, false, LocalHTLCFailureReason::TemporaryNodeFailure, []);
 
 		// Check for unknown intercept id error.
 		let (_, channel_id) = open_zero_conf_channel(&nodes[1], &nodes[2], None);
