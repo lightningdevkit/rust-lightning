@@ -19,16 +19,18 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use super::async_payments::AsyncPaymentsMessage;
 use super::async_payments::AsyncPaymentsMessageHandler;
 use super::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler};
-use super::offers::OffersMessageHandler;
+use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::packet::{
 	ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, BIG_PACKET_HOP_DATA_LEN,
 	SMALL_PACKET_HOP_DATA_LEN,
 };
+#[cfg(async_payments)]
+use crate::blinded_path::message::AsyncPaymentsContext;
 use crate::blinded_path::message::{
-	BlindedMessagePath, ForwardTlvs, MessageContext, MessageForwardNode, NextMessageHop,
-	ReceiveTlvs,
+	BlindedMessagePath, DNSResolverContext, ForwardTlvs, MessageContext, MessageForwardNode,
+	NextMessageHop, OffersContext, ReceiveTlvs,
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
@@ -897,8 +899,15 @@ pub trait CustomOnionMessageHandler {
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
 	Forward(NextMessageHop, OnionMessage),
-	/// Received onion message, with decrypted contents, context, and reply path
-	Receive(ParsedOnionMessageContents<T>, Option<MessageContext>, Option<BlindedMessagePath>),
+	/// Received offers onion message, with decrypted contents, context, and reply path
+	Offers(OffersMessage, Option<OffersContext>, Option<BlindedMessagePath>),
+	/// Received async payments onion message, with decrypted contents, context, and reply path
+	#[cfg(async_payments)]
+	AsyncPayments(AsyncPaymentsMessage, AsyncPaymentsContext, Option<BlindedMessagePath>),
+	/// Received DNS resolver onion message, with decrypted contents, context, and reply path
+	DNSResolver(DNSResolverMessage, Option<DNSResolverContext>, Option<BlindedMessagePath>),
+	/// Received custom onion message, with decrypted contents, context, and reply path
+	Custom(T, Option<Vec<u8>>, Option<BlindedMessagePath>),
 }
 
 /// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
@@ -1073,26 +1082,35 @@ where
 				reply_path,
 			},
 			None,
-		)) => match (&message, &context) {
-			(_, None) => Ok(PeeledOnion::Receive(message, None, reply_path)),
-			(ParsedOnionMessageContents::Offers(_), Some(MessageContext::Offers(_))) => {
-				Ok(PeeledOnion::Receive(message, context, reply_path))
+		)) => match (message, context) {
+			(ParsedOnionMessageContents::Offers(msg), Some(MessageContext::Offers(ctx))) => {
+				Ok(PeeledOnion::Offers(msg, Some(ctx), reply_path))
+			},
+			(ParsedOnionMessageContents::Offers(msg), None) => {
+				Ok(PeeledOnion::Offers(msg, None, reply_path))
 			},
 			#[cfg(async_payments)]
 			(
-				ParsedOnionMessageContents::AsyncPayments(_),
-				Some(MessageContext::AsyncPayments(_)),
-			) => Ok(PeeledOnion::Receive(message, context, reply_path)),
-			(ParsedOnionMessageContents::Custom(_), Some(MessageContext::Custom(_))) => {
-				Ok(PeeledOnion::Receive(message, context, reply_path))
+				ParsedOnionMessageContents::AsyncPayments(msg),
+				Some(MessageContext::AsyncPayments(ctx)),
+			) => Ok(PeeledOnion::AsyncPayments(msg, ctx, reply_path)),
+			(ParsedOnionMessageContents::Custom(msg), Some(MessageContext::Custom(ctx))) => {
+				Ok(PeeledOnion::Custom(msg, Some(ctx), reply_path))
 			},
-			(ParsedOnionMessageContents::DNSResolver(_), Some(MessageContext::DNSResolver(_))) => {
-				Ok(PeeledOnion::Receive(message, context, reply_path))
+			(ParsedOnionMessageContents::Custom(msg), None) => {
+				Ok(PeeledOnion::Custom(msg, None, reply_path))
+			},
+			(
+				ParsedOnionMessageContents::DNSResolver(msg),
+				Some(MessageContext::DNSResolver(ctx)),
+			) => Ok(PeeledOnion::DNSResolver(msg, Some(ctx), reply_path)),
+			(ParsedOnionMessageContents::DNSResolver(msg), None) => {
+				Ok(PeeledOnion::DNSResolver(msg, None, reply_path))
 			},
 			_ => {
 				log_trace!(
 					logger,
-					"Received message was sent on a blinded path with the wrong context."
+					"Received message was sent on a blinded path with wrong or missing context."
 				);
 				Err(())
 			},
@@ -1894,44 +1912,33 @@ where
 {
 	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
-		match self.peel_onion_message(msg) {
-			Ok(PeeledOnion::Receive(message, context, reply_path)) => {
+		macro_rules! log_receive {
+			($message: expr, $with_reply_path: expr) => {
 				log_trace!(
 					logger,
 					"Received an onion message with {} reply_path: {:?}",
-					if reply_path.is_some() { "a" } else { "no" },
-					message
+					if $with_reply_path { "a" } else { "no" },
+					$message
 				);
+			};
+		}
 
+		match self.peel_onion_message(msg) {
+			Ok(PeeledOnion::Offers(message, context, reply_path)) => {
+				log_receive!(message, reply_path.is_some());
+				let responder = reply_path.map(Responder::new);
+				let response_instructions =
+					self.offers_handler.handle_message(message, context, responder);
+				if let Some((msg, instructions)) = response_instructions {
+					let _ = self.handle_onion_message_response(msg, instructions);
+				}
+			},
+			#[cfg(async_payments)]
+			Ok(PeeledOnion::AsyncPayments(message, context, reply_path)) => {
+				log_receive!(message, reply_path.is_some());
 				let responder = reply_path.map(Responder::new);
 				match message {
-					ParsedOnionMessageContents::Offers(msg) => {
-						let context = match context {
-							None => None,
-							Some(MessageContext::Offers(context)) => Some(context),
-							_ => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-						};
-						let response_instructions =
-							self.offers_handler.handle_message(msg, context, responder);
-						if let Some((msg, instructions)) = response_instructions {
-							let _ = self.handle_onion_message_response(msg, instructions);
-						}
-					},
-					#[cfg(async_payments)]
-					ParsedOnionMessageContents::AsyncPayments(
-						AsyncPaymentsMessage::HeldHtlcAvailable(msg),
-					) => {
-						let context = match context {
-							Some(MessageContext::AsyncPayments(context)) => context,
-							Some(_) => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-							None => return,
-						};
+					AsyncPaymentsMessage::HeldHtlcAvailable(msg) => {
 						let response_instructions = self
 							.async_payments_handler
 							.handle_held_htlc_available(msg, context, responder);
@@ -1939,53 +1946,38 @@ where
 							let _ = self.handle_onion_message_response(msg, instructions);
 						}
 					},
-					#[cfg(async_payments)]
-					ParsedOnionMessageContents::AsyncPayments(
-						AsyncPaymentsMessage::ReleaseHeldHtlc(msg),
-					) => {
-						let context = match context {
-							Some(MessageContext::AsyncPayments(context)) => context,
-							Some(_) => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-							None => return,
-						};
+					AsyncPaymentsMessage::ReleaseHeldHtlc(msg) => {
 						self.async_payments_handler.handle_release_held_htlc(msg, context);
 					},
-					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECQuery(
-						msg,
-					)) => {
+				}
+			},
+			Ok(PeeledOnion::DNSResolver(message, context, reply_path)) => {
+				log_receive!(message, reply_path.is_some());
+				let responder = reply_path.map(Responder::new);
+				match message {
+					DNSResolverMessage::DNSSECQuery(msg) => {
 						let response_instructions =
 							self.dns_resolver_handler.handle_dnssec_query(msg, responder);
 						if let Some((msg, instructions)) = response_instructions {
 							let _ = self.handle_onion_message_response(msg, instructions);
 						}
 					},
-					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECProof(
-						msg,
-					)) => {
+					DNSResolverMessage::DNSSECProof(msg) => {
 						let context = match context {
-							Some(MessageContext::DNSResolver(context)) => context,
-							_ => return,
+							Some(ctx) => ctx,
+							None => return,
 						};
 						self.dns_resolver_handler.handle_dnssec_proof(msg, context);
 					},
-					ParsedOnionMessageContents::Custom(msg) => {
-						let context = match context {
-							None => None,
-							Some(MessageContext::Custom(data)) => Some(data),
-							_ => {
-								debug_assert!(false, "Checked in peel_onion_message");
-								return;
-							},
-						};
-						let response_instructions =
-							self.custom_handler.handle_custom_message(msg, context, responder);
-						if let Some((msg, instructions)) = response_instructions {
-							let _ = self.handle_onion_message_response(msg, instructions);
-						}
-					},
+				}
+			},
+			Ok(PeeledOnion::Custom(message, context, reply_path)) => {
+				log_receive!(message, reply_path.is_some());
+				let responder = reply_path.map(Responder::new);
+				let response_instructions =
+					self.custom_handler.handle_custom_message(message, context, responder);
+				if let Some((msg, instructions)) = response_instructions {
+					let _ = self.handle_onion_message_response(msg, instructions);
 				}
 			},
 			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {

@@ -182,7 +182,7 @@ fn mpp_retry_overpay() {
 	let mut limited_config_2 = user_config.clone();
 	limited_config_2.channel_handshake_config.our_htlc_minimum_msat = 34_500_000;
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
-		&[Some(user_config), Some(limited_config_1), Some(limited_config_2), Some(user_config)]);
+		&[Some(user_config.clone()), Some(limited_config_1), Some(limited_config_2), Some(user_config)]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 40_000, 0);
@@ -3706,7 +3706,7 @@ fn test_custom_tlvs_explicit_claim() {
 fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None; 2]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
@@ -4032,7 +4032,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, Some(config), Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes_0_deserialized;
 
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -4193,7 +4193,7 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 	// discovery of this bug.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	const CHAN_AMT: u64 = 1_000_000;
@@ -4328,7 +4328,7 @@ fn test_non_strict_forwarding() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Create a routing node with two outbound channels, each of which can forward 2 payments of

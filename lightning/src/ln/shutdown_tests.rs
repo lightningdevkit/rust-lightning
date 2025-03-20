@@ -987,7 +987,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	config.channel_handshake_config.announce_for_forwarding = true;
 	config.channel_handshake_limits.force_announced_channel_preference = false;
 	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
-	let user_cfgs = [None, Some(config), None];
+	let user_cfgs = [None, Some(config.clone()), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut features = channelmanager::provided_init_features(&config);

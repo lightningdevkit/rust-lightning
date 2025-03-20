@@ -934,7 +934,7 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let mut config = test_default_channel_config();
 		config.channel_handshake_config.minimum_depth = 1;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		// Create a private channel with lots of capacity and a lower value public channel (without
