@@ -9,11 +9,11 @@
 
 //! Service implementation for LSPS5 webhook registration
 
+use core::time::Duration;
+
 use super::url_utils::Url;
 use crate::events::EventQueue;
-use crate::lsps0::ser::{
-	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
-};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
 use crate::lsps5::msgs::{
 	ListWebhooksRequest, ListWebhooksResponse, RemoveWebhookRequest, RemoveWebhookResponse,
 	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
@@ -30,13 +30,18 @@ use crate::sync::{Arc, Mutex};
 use serde_json::json;
 
 use super::event::LSPS5ServiceEvent;
-use super::msgs::{
-	LSPS5Message, LSPS5Request, LSPS5Response, Lsps5AppName, Lsps5WebhookUrl,
-	LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE, LSPS5_TOO_LONG_ERROR_CODE,
-	LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE, LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE,
-	LSPS5_URL_PARSE_ERROR_CODE, MAX_APP_NAME_LENGTH, MAX_WEBHOOK_URL_LENGTH,
-};
-use chrono::Duration;
+use super::msgs::LSPS5Message;
+use super::msgs::LSPS5Request;
+use super::msgs::LSPS5Response;
+use super::msgs::Lsps5AppName;
+use super::msgs::Lsps5WebhookUrl;
+use super::msgs::LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE;
+use super::msgs::LSPS5_TOO_LONG_ERROR_CODE;
+use super::msgs::LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE;
+use super::msgs::LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE;
+use super::msgs::LSPS5_URL_PARSE_ERROR_CODE;
+use super::msgs::MAX_APP_NAME_LENGTH;
+use super::msgs::MAX_WEBHOOK_URL_LENGTH;
 
 /// Minimum number of days to retain webhooks after a client's last channel is closed
 pub const MIN_WEBHOOK_RETENTION_DAYS: u32 = 30;
@@ -51,9 +56,9 @@ struct StoredWebhook {
 	/// Client node ID
 	_counterparty_node_id: PublicKey,
 	/// Last time this webhook was used
-	last_used: LSPSDateTime,
+	last_used: Duration,
 	/// Map of notification methods to last time they were sent
-	last_notification_sent: HashMap<WebhookNotificationMethod, LSPSDateTime>,
+	last_notification_sent: HashMap<WebhookNotificationMethod, Duration>,
 }
 
 /// Configuration for signature storage
@@ -137,6 +142,45 @@ pub trait HttpClient: Send + Sync + 'static {
 	fn post(&self, url: &str, headers: Vec<(String, String)>, body: String) -> Result<(), String>;
 }
 
+/// Trait defining a time provider for LSPS5 service
+/// This trait is used to provide the current time for LSPS5 service operations
+/// and to convert between timestamps and durations
+pub trait TimeProvider: Send + Sync + 'static {
+	/// Get the current time as a duration since the Unix epoch
+	fn now(&self) -> Duration;
+	/// Convert an RFC3339 formatted string to a duration since the Unix epoch
+	fn from_rfc3339(&self, _rfc3339: &str) -> Result<Duration, String>;
+	/// Convert a duration since the Unix epoch to an RFC3339 formatted string
+	fn to_rfc3339(&self, duration: Duration) -> String;
+}
+
+/// Default time provider using the system clock
+#[derive(Clone, Debug)]
+pub struct DefaultTimeProvider;
+
+#[cfg(feature = "std")]
+impl TimeProvider for DefaultTimeProvider {
+	fn now(&self) -> Duration {
+		use std::time::{SystemTime, UNIX_EPOCH};
+		let now =
+			SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch");
+		Duration::from_secs(now.as_secs())
+	}
+
+	fn from_rfc3339(&self, s: &str) -> Result<Duration, String> {
+		use chrono::DateTime;
+		let dt = DateTime::parse_from_rfc3339(s).map_err(|e| e.to_string())?;
+		let now = dt.timestamp();
+		Ok(Duration::from_secs(now as u64))
+	}
+
+	fn to_rfc3339(&self, duration: Duration) -> String {
+		use chrono::DateTime;
+		(DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()).unwrap())
+			.to_rfc3339()
+	}
+}
+
 /// Configuration for LSPS5 service
 #[derive(Clone)]
 pub struct LSPS5ServiceConfig {
@@ -148,6 +192,8 @@ pub struct LSPS5ServiceConfig {
 	pub notification_cooldown_hours: u64,
 	/// Configuration for signature storage
 	pub signature_config: SignatureStorageConfig,
+	/// Time provider for LSPS5 service
+	pub time_provider: Arc<dyn TimeProvider>,
 	/// HTTP client for webhook delivery
 	#[doc(hidden)] // Hide from docs since it uses Arc and can't be directly created
 	pub(crate) http_client: Option<Arc<dyn HttpClient>>,
@@ -161,6 +207,7 @@ impl Default for LSPS5ServiceConfig {
 			notification_cooldown_hours: 24,
 			signature_config: SignatureStorageConfig::default(),
 			http_client: None,
+			time_provider: Arc::new(DefaultTimeProvider),
 		}
 	}
 }
@@ -169,6 +216,12 @@ impl LSPS5ServiceConfig {
 	/// Set a custom HTTP client for webhook delivery
 	pub fn with_http_client(mut self, http_client: impl HttpClient + 'static) -> Self {
 		self.http_client = Some(Arc::new(http_client));
+		self
+	}
+
+	/// Set a custom time provider for the LSPS5 service
+	pub fn with_time_provider(mut self, time_provider: impl TimeProvider + 'static) -> Self {
+		self.time_provider = Arc::new(time_provider);
 		self
 	}
 }
@@ -182,13 +235,15 @@ pub struct LSPS5ServiceHandler {
 	/// Map of client node IDs to their channel counts
 	client_channel_counts: Arc<Mutex<HashMap<PublicKey, u32>>>,
 	/// Map of recently used signatures to prevent replay attacks
-	recent_signatures: Arc<Mutex<VecDeque<(String, LSPSDateTime)>>>,
+	recent_signatures: Arc<Mutex<VecDeque<(String, Duration)>>>,
 	/// Event queue for emitting events
 	event_queue: Arc<EventQueue>,
 	/// Message queue for sending responses
 	pending_messages: Arc<MessageQueue>,
 	/// HTTP client for webhook delivery
 	http_client: Arc<dyn HttpClient>,
+	/// Time provider for LSPS5 service
+	time_provider: Arc<dyn TimeProvider>,
 }
 
 impl LSPS5ServiceHandler {
@@ -214,6 +269,7 @@ impl LSPS5ServiceHandler {
 		let http_client: Arc<dyn HttpClient> =
 			config.http_client.take().expect("HTTP client should be present");
 		let max_signatures = config.signature_config.max_signatures.clone();
+		let time_provider = config.time_provider.clone();
 		Self {
 			config,
 			webhooks: Arc::new(Mutex::new(new_hash_map())),
@@ -222,6 +278,7 @@ impl LSPS5ServiceHandler {
 			event_queue,
 			pending_messages,
 			http_client,
+			time_provider,
 		}
 	}
 
@@ -351,7 +408,7 @@ impl LSPS5ServiceHandler {
 			_app_name: params.app_name.clone(),
 			url: params.webhook.clone(),
 			_counterparty_node_id: counterparty_node_id,
-			last_used: LSPSDateTime::now(),
+			last_used: self.time_provider.now(),
 			last_notification_sent: new_hash_map(),
 		};
 
@@ -555,17 +612,16 @@ impl LSPS5ServiceHandler {
 		}
 
 		// Get current time for cooldown checks
-		let now = LSPSDateTime::now();
+		let now = self.time_provider.now();
 
 		// Send to each webhook
 		for (app_name, webhook) in client_webhooks.iter_mut() {
 			// Check if this notification type was recently sent (cooldown period)
 			if let Some(last_sent) = webhook.last_notification_sent.get(&method) {
-				let duration = now.clone().duration_since(last_sent);
+				let duration = now.clone().abs_diff(*last_sent);
 				// Skip if notification was sent less than cooldown_hours ago
 				// According to spec: "This timeout must be measurable in hours or days."
-				if duration.num_seconds() < (self.config.notification_cooldown_hours as i64) * 3600
-				{
+				if duration.as_secs() < self.config.notification_cooldown_hours * 3600 {
 					// Skip this notification
 					continue;
 				}
@@ -594,7 +650,7 @@ impl LSPS5ServiceHandler {
 		notification: WebhookNotification, method: WebhookNotificationMethod,
 	) -> Result<(), LightningError> {
 		// Create timestamp in ISO8601 format using chrono
-		let timestamp = LSPSDateTime::now().to_rfc3339();
+		let timestamp = self.time_provider.to_rfc3339(self.time_provider.now());
 
 		// Serialize the notification
 		let notification_json =
@@ -670,20 +726,21 @@ impl LSPS5ServiceHandler {
 
 	/// Store a signature with timestamp for replay attack prevention
 	fn store_signature(&self, signature: String) {
+		let now = self.time_provider.now();
 		let mut recent_signatures = self.recent_signatures.lock().unwrap();
 
 		// Add the new signature
-		recent_signatures.push_back((signature, LSPSDateTime::now()));
+		recent_signatures.push_back((signature, now));
 
 		// Clean up old signatures (older than retention_minutes)
 		let retention_duration =
-			Duration::seconds((self.config.signature_config.retention_minutes * 60) as i64);
+			Duration::from_secs(self.config.signature_config.retention_minutes * 60);
 		while let Some((_, time)) = recent_signatures.front() {
-			match LSPSDateTime::now().duration_since(time) {
-				duration if duration > retention_duration => {
-					recent_signatures.pop_front();
-				},
-				_ => break,
+			let duration = now - *time;
+			if duration > retention_duration {
+				recent_signatures.pop_front();
+			} else {
+				break;
 			}
 		}
 
@@ -703,7 +760,7 @@ impl LSPS5ServiceHandler {
 	/// Clean up webhooks for clients with no channels that haven't been used in a while
 	/// According to spec: "MUST remember all webhooks for at least 7 days after the last channel is closed"
 	pub fn prune_stale_webhooks(&self) {
-		let now = LSPSDateTime::now();
+		let now = self.time_provider.now();
 		let mut webhooks = self.webhooks.lock().unwrap();
 		let client_channel_counts = self.client_channel_counts.lock().unwrap();
 
@@ -713,8 +770,8 @@ impl LSPS5ServiceHandler {
 			if client_channel_counts.get(client_id).copied().unwrap_or(0) == 0 {
 				// Filter out webhooks that haven't been used in at least MIN_WEBHOOK_RETENTION_DAYS
 				client_webhooks.retain(|_, webhook| {
-					let duration = now.duration_since(&webhook.last_used);
-					if duration.num_seconds() < (MIN_WEBHOOK_RETENTION_DAYS as i64) * 24 * 60 * 60 {
+					let duration = now.abs_diff(webhook.last_used);
+					if duration.as_secs() < (MIN_WEBHOOK_RETENTION_DAYS * 24 * 60 * 60).into() {
 						// Keep webhook - not stale yet
 						true
 					} else {

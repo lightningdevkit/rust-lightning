@@ -9,6 +9,10 @@
 
 //! URL utilities for LSPS5 webhook notifications
 
+use crate::alloc::string::ToString;
+use crate::prelude::String;
+use crate::prelude::Vec;
+
 /// A trait for URL parsing
 /// Implement this trait for a struct to enable parsing of URL strings
 pub trait URL {

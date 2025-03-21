@@ -9,7 +9,7 @@ use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
 use lightning_liquidity::lsps5::event::{LSPS5ClientEvent, LSPS5ServiceEvent};
 use lightning_liquidity::lsps5::msgs::{Lsps5AppName, Lsps5WebhookUrl, WebhookNotificationMethod};
-use lightning_liquidity::lsps5::service::{HttpClient, LSPS5ServiceConfig};
+use lightning_liquidity::lsps5::service::{DefaultTimeProvider, HttpClient, LSPS5ServiceConfig};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use bitcoin::secp256k1::SecretKey;
@@ -524,6 +524,7 @@ fn webhook_error_handling_test() {
 fn webhook_notification_delivery_test() {
 	let mock_client = Arc::new(MockHttpClient::new(true));
 	let mock_client_for_verification = mock_client.clone();
+	let time_provider = Arc::new(DefaultTimeProvider);
 
 	let signing_key = SecretKey::from_slice(&[42; 32]).unwrap();
 
@@ -626,6 +627,7 @@ fn webhook_notification_delivery_test() {
 		&timestamp_value,
 		&signature_value,
 		&first_call.2,
+		time_provider.clone(),
 	);
 	assert!(
 		result.is_ok(),
@@ -665,12 +667,13 @@ fn webhook_notification_delivery_test() {
 		.find(|(name, _)| name == "x-lsps5-signature")
 		.map(|(_, value)| value.clone())
 		.expect("Signature header should be present");
-
+	let time_provider_cloned = time_provider.clone();
 	let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
 		derived_pubkey,
 		&timestamp_header,
 		&signature_header,
 		&payment_call.2,
+		time_provider_cloned,
 	);
 	assert!(
 		result.is_ok(),
@@ -871,13 +874,14 @@ fn multiple_webhooks_notification_test() {
 			.find(|(name, _)| name == "x-lsps5-signature")
 			.map(|(_, value)| value.clone())
 			.expect("Signature header should be present");
-
+		let time_provider = Arc::new(DefaultTimeProvider);
 		// Verify the signature using the derived pubkey
 		let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
 			derived_pubkey,
 			&timestamp_header,
 			&signature_header,
 			&call.2,
+			time_provider,
 		);
 		assert!(result.is_ok(), "Signature verification should succeed for all notifications");
 	}
@@ -1172,13 +1176,14 @@ fn replay_prevention_test() {
 	// Extract the timestamp and signature
 	let (timestamp, signature) = extract_timestamp_and_signature(payment_call);
 	let body = payment_call.2.clone();
-
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// First verification should succeed
 	let result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::parse_webhook_notification(
 		derived_pubkey,
 		&timestamp,
 		&signature,
 		&body,
+		time_provider.clone(),
 	);
 	assert!(result.is_ok(), "First verification should succeed");
 
@@ -1188,6 +1193,7 @@ fn replay_prevention_test() {
 		&timestamp,
 		&signature,
 		&body,
+		time_provider,
 	);
 
 	assert!(

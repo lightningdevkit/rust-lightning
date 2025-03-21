@@ -9,7 +9,7 @@
 //! Client implementation for LSPS5 webhook registration
 
 use crate::events::EventQueue;
-use crate::lsps0::ser::{LSPSDateTime, LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId};
+use crate::lsps0::ser::{LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId};
 use crate::lsps5::event::LSPS5ClientEvent;
 use crate::lsps5::msgs::{
 	LSPS5Message, LSPS5Request, LSPS5Response, ListWebhooksRequest, RemoveWebhookRequest,
@@ -24,13 +24,13 @@ use lightning::util::message_signing;
 
 use crate::sync::{Arc, Mutex, RwLock};
 use core::ops::Deref;
-use core::str::FromStr;
 
 use crate::prelude::{new_hash_map, HashMap, String};
 
 use super::msgs::{Lsps5AppName, Lsps5WebhookUrl};
+use super::service::{DefaultTimeProvider, TimeProvider};
 use super::url_utils::Url;
-use chrono::Duration;
+use core::time::Duration;
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
 
@@ -38,25 +38,37 @@ use lightning::util::logger::Level;
 pub const DEFAULT_RESPONSE_MAX_AGE_SECS: u64 = 3600;
 
 /// Configuration options for LSPS5 client operations
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LSPS5ClientConfig {
 	/// Maximum age in seconds for cached responses (default: 3600 - 1 hour)
 	pub response_max_age_secs: u64,
+	/// Time provider for LSPS5 service
+	pub time_provider: Arc<dyn TimeProvider>,
 }
 
 impl Default for LSPS5ClientConfig {
 	fn default() -> Self {
-		Self { response_max_age_secs: DEFAULT_RESPONSE_MAX_AGE_SECS }
+		Self {
+			response_max_age_secs: DEFAULT_RESPONSE_MAX_AGE_SECS,
+			time_provider: Arc::new(DefaultTimeProvider),
+		}
+	}
+}
+
+impl LSPS5ClientConfig {
+	/// Set a custom time provider for the LSPS5 service
+	pub fn with_time_provider(mut self, time_provider: impl TimeProvider + 'static) -> Self {
+		self.time_provider = Arc::new(time_provider);
+		self
 	}
 }
 
 struct PeerState {
-	pending_set_webhook_requests:
-		HashMap<LSPSRequestId, (Lsps5AppName, Lsps5WebhookUrl, LSPSDateTime)>, // RequestId -> (app_name, webhook_url, timestamp)
-	pending_list_webhooks_requests: HashMap<LSPSRequestId, LSPSDateTime>, // RequestId -> timestamp
-	pending_remove_webhook_requests: HashMap<LSPSRequestId, (Lsps5AppName, LSPSDateTime)>, // RequestId -> (app_name, timestamp)
+	pending_set_webhook_requests: HashMap<LSPSRequestId, (Lsps5AppName, Lsps5WebhookUrl, Duration)>, // RequestId -> (app_name, webhook_url, timestamp)
+	pending_list_webhooks_requests: HashMap<LSPSRequestId, Duration>, // RequestId -> timestamp
+	pending_remove_webhook_requests: HashMap<LSPSRequestId, (Lsps5AppName, Duration)>, // RequestId -> (app_name, timestamp)
 	// Last cleanup time for garbage collection
-	last_cleanup: LSPSDateTime, // Seconds since epoch
+	last_cleanup: Duration, // Seconds since epoch
 }
 
 impl PeerState {
@@ -65,37 +77,34 @@ impl PeerState {
 			pending_set_webhook_requests: new_hash_map(),
 			pending_list_webhooks_requests: new_hash_map(),
 			pending_remove_webhook_requests: new_hash_map(),
-			last_cleanup: LSPSDateTime::now(),
+			last_cleanup: Duration::from_secs(0),
 		}
 	}
 
 	/// Clean up expired responses based on max_age
-	fn cleanup_expired_responses(&mut self, max_age_secs: u64) {
-		let now = LSPSDateTime::now();
+	fn cleanup_expired_responses(
+		&mut self, max_age_secs: u64, time_provider: Arc<dyn TimeProvider>,
+	) {
+		let now = time_provider.now();
 
 		// Only run cleanup once per minute to avoid excessive processing
-		if now.duration_since(&self.last_cleanup) < Duration::seconds(60) {
+		if now.abs_diff(self.last_cleanup) < Duration::from_secs(60) {
 			return;
 		}
 
 		self.last_cleanup = now.clone();
 
 		// Calculate the cutoff time for expired requests
-		let cutoff = now
-			.checked_sub_signed(Duration::seconds(max_age_secs.try_into().unwrap()))
-			.expect("Cutoff time must be computed");
+		let cutoff = now.abs_diff(Duration::from_secs(max_age_secs.try_into().unwrap()));
 
 		// Remove expired set_webhook requests
-		self.pending_set_webhook_requests
-			.retain(|_, (_, _, timestamp)| timestamp.timestamp() > cutoff.timestamp());
+		self.pending_set_webhook_requests.retain(|_, (_, _, timestamp)| *timestamp > cutoff);
 
 		// Remove expired list_webhooks requests
-		self.pending_list_webhooks_requests
-			.retain(|_, timestamp| timestamp.timestamp() > cutoff.timestamp());
+		self.pending_list_webhooks_requests.retain(|_, timestamp| *timestamp > cutoff);
 
 		// Remove expired remove_webhook requests
-		self.pending_remove_webhook_requests
-			.retain(|_, (_, timestamp)| timestamp.timestamp() > cutoff.timestamp());
+		self.pending_remove_webhook_requests.retain(|_, (_, timestamp)| *timestamp > cutoff);
 	}
 }
 
@@ -114,6 +123,8 @@ where
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 	/// Client configuration
 	config: LSPS5ClientConfig,
+	/// Time provider for LSPS5 service
+	time_provider: Arc<dyn TimeProvider>,
 }
 
 impl<ES: Deref> LSPS5ClientHandler<ES>
@@ -126,12 +137,14 @@ where
 		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
 		config: LSPS5ClientConfig,
 	) -> Self {
+		let time_provider = config.time_provider.clone();
 		Self {
 			pending_messages,
 			pending_events,
 			entropy_source,
 			per_peer_state: RwLock::new(new_hash_map()),
 			config,
+			time_provider,
 		}
 	}
 
@@ -146,7 +159,10 @@ where
 		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
 		// Clean up expired responses using configured max age
-		peer_state_lock.cleanup_expired_responses(self.config.response_max_age_secs);
+		peer_state_lock.cleanup_expired_responses(
+			self.config.response_max_age_secs,
+			self.time_provider.clone(),
+		);
 
 		// Execute the provided function with the locked peer state
 		f(&mut *peer_state_lock)
@@ -208,7 +224,7 @@ where
 		self.with_peer_state(counterparty_node_id, |peer_state| {
 			peer_state.pending_set_webhook_requests.insert(
 				request_id.clone(),
-				(app_name.clone(), webhook.clone(), LSPSDateTime::now()),
+				(app_name.clone(), webhook.clone(), self.time_provider.now()),
 			);
 		});
 
@@ -242,7 +258,7 @@ where
 		self.with_peer_state(counterparty_node_id, |peer_state| {
 			peer_state
 				.pending_list_webhooks_requests
-				.insert(request_id.clone(), LSPSDateTime::now());
+				.insert(request_id.clone(), self.time_provider.now());
 		});
 
 		// Create the request
@@ -284,7 +300,7 @@ where
 		self.with_peer_state(counterparty_node_id, |peer_state| {
 			peer_state
 				.pending_remove_webhook_requests
-				.insert(request_id.clone(), (app_name.clone(), LSPSDateTime::now()));
+				.insert(request_id.clone(), (app_name.clone(), self.time_provider.now()));
 		});
 
 		let request = LSPS5Request::RemoveWebhook(RemoveWebhookRequest { app_name });
@@ -501,20 +517,20 @@ where
 	/// * On error: LightningError with error description
 	pub fn verify_notification_signature(
 		counterparty_node_id: PublicKey, timestamp: &str, signature: &str,
-		notification: &WebhookNotification,
+		notification: &WebhookNotification, time_provider: Arc<dyn TimeProvider>,
 	) -> Result<bool, LightningError> {
 		// Check timestamp format
-		match LSPSDateTime::from_str(timestamp) {
+		match time_provider.from_rfc3339(timestamp) {
 			Ok(timestamp_dt) => {
 				// Check timestamp is within 10 minutes of current time
-				let now = LSPSDateTime::now();
-				let diff = (timestamp_dt.timestamp() - now.timestamp()).abs();
-				if diff > 600 {
+				let now = time_provider.now();
+				let diff = now.abs_diff(timestamp_dt);
+				if diff > Duration::from_secs(600) {
 					// 10 minutes
 					return Err(LightningError {
 						err: format!(
-							"Timestamp too far from current time: {} (diff: {} seconds)",
-							timestamp, diff
+							"Timestamp too far from current time: {:?} (diff: {:?} seconds)",
+							now, diff
 						),
 						action: ErrorAction::IgnoreAndLog(Level::Error),
 					});
@@ -571,6 +587,7 @@ where
 	/// * On error: LightningError with error description
 	pub fn parse_webhook_notification(
 		counterparty_node_id: PublicKey, timestamp: &str, signature: &str, notification_json: &str,
+		time_provider: Arc<dyn TimeProvider>,
 	) -> Result<WebhookNotification, LightningError> {
 		// Parse the notification JSON
 		let notification: WebhookNotification = match serde_json::from_str(notification_json) {
@@ -588,6 +605,7 @@ where
 			timestamp,
 			signature,
 			&notification,
+			time_provider,
 		) {
 			Ok(_) => Ok(notification),
 			Err(e) => Err(e),
@@ -750,6 +768,9 @@ mod tests {
 
 	#[test]
 	fn test_cleanup_expired_responses() {
+		// use DefaultTimeProvider
+		let (client, _, _, _, _) = setup_test_client();
+		let time_provider = client.time_provider;
 		const OLD_APP_NAME: &str = "test-app-old";
 		const NEW_APP_NAME: &str = "test-app-new";
 		const WEBHOOK_URL: &str = "https://example.com/hook";
@@ -757,10 +778,10 @@ mod tests {
 		let lsps5_new_app_name = Lsps5AppName::new(NEW_APP_NAME.to_string()).unwrap();
 		let lsps5_webhook_url = Lsps5WebhookUrl::new(WEBHOOK_URL.to_string()).unwrap();
 		// The current time for setting request timestamps
-		let now = LSPSDateTime::now();
+		let now = time_provider.now();
 		// Create a mock PeerState with a very old cleanup time
 		let mut peer_state = PeerState::new();
-		peer_state.last_cleanup = now.checked_sub_signed(Duration::seconds(120)).unwrap();
+		peer_state.last_cleanup = now.abs_diff(Duration::from_secs(120));
 
 		// Add some test requests with different timestamps
 		let old_request_id = LSPSRequestId("test:request:old".to_string());
@@ -772,30 +793,26 @@ mod tests {
 			(
 				lsps5_old_app_name,
 				lsps5_webhook_url.clone(),
-				now.checked_sub_signed(Duration::seconds(7200)).unwrap(),
+				now.abs_diff(Duration::from_secs(7200)),
 			), // 2 hours old
 		);
 
 		// Add a recent request (should be kept)
 		peer_state.pending_set_webhook_requests.insert(
 			new_request_id.clone(),
-			(
-				lsps5_new_app_name,
-				lsps5_webhook_url,
-				now.checked_sub_signed(Duration::seconds(600)).unwrap(),
-			), // 10 minutes old
+			(lsps5_new_app_name, lsps5_webhook_url, now.abs_diff(Duration::from_secs(600))), // 10 minutes old
 		);
 
 		// Run cleanup with 30 minutes (1800 seconds) max age
-		peer_state.cleanup_expired_responses(1800);
+		peer_state.cleanup_expired_responses(1800, time_provider.clone());
 
 		// Verify old request is removed and new request is kept
 		assert!(!peer_state.pending_set_webhook_requests.contains_key(&old_request_id));
 		assert!(peer_state.pending_set_webhook_requests.contains_key(&new_request_id));
 
 		// Verify last_cleanup was updated within the last 10 seconds
-		let cleanup_age = LSPSDateTime::now().duration_since(&peer_state.last_cleanup);
-		assert!(cleanup_age < Duration::seconds(10));
+		let cleanup_age = time_provider.clone().now().abs_diff(peer_state.last_cleanup);
+		assert!(cleanup_age < Duration::from_secs(10));
 	}
 
 	#[test]

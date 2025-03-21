@@ -14,11 +14,11 @@
 mod common;
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
+use core::time::Duration;
 use lightning::sign::EntropySource;
-use lightning_liquidity::lsps0::ser::LSPSDateTime;
 use lightning_liquidity::lsps5::client::LSPS5ClientHandler;
 use lightning_liquidity::lsps5::msgs::{WebhookNotification, WebhookNotificationMethod};
-use lightning_liquidity::lsps5::service::LSPS5ServiceHandler;
+use lightning_liquidity::lsps5::service::{DefaultTimeProvider, LSPS5ServiceHandler, TimeProvider};
 use std::sync::Arc;
 
 fn get_pub_and_priv_key() -> (PublicKey, SecretKey) {
@@ -31,12 +31,13 @@ fn get_pub_and_priv_key() -> (PublicKey, SecretKey) {
 #[test]
 fn test_basic_sign_and_verify() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// Create a webhook notification
 	let notification = WebhookNotification::webhook_registered();
 	let notification_json = serde_json::to_string(&notification).unwrap();
 
 	// Get current time for the timestamp
-	let timestamp = LSPSDateTime::now().to_rfc3339();
+	let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 	// Sign the notification using the service
 	let signature =
@@ -49,6 +50,7 @@ fn test_basic_sign_and_verify() {
 		&timestamp,
 		&signature,
 		&notification,
+		time_provider,
 	);
 
 	assert!(result.is_ok());
@@ -58,12 +60,13 @@ fn test_basic_sign_and_verify() {
 #[test]
 fn test_parse_webhook_notification() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// Create a webhook notification
 	let notification = WebhookNotification::payment_incoming();
 	let notification_json = serde_json::to_string(&notification).unwrap();
 
 	// Get current time for the timestamp
-	let timestamp = LSPSDateTime::now().to_rfc3339();
+	let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 	// Sign the notification using the service
 	let signature =
@@ -77,6 +80,7 @@ fn test_parse_webhook_notification() {
 			&timestamp,
 			&signature,
 			&notification_json,
+			time_provider,
 		)
 		.unwrap();
 
@@ -87,11 +91,12 @@ fn test_parse_webhook_notification() {
 #[test]
 fn test_invalid_signature() {
 	let (lsp_pubkey, _) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// Create a webhook notification
 	let notification = WebhookNotification::webhook_registered();
 
 	// Get current time for the timestamp
-	let timestamp = LSPSDateTime::now().to_rfc3339();
+	let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 	// Use an invalid signature
 	let invalid_signature = "xdtk1zf63sfn81r6qteymy73mb1b7dspj5kwx46uxwd6c3pu7y3bto";
@@ -102,6 +107,7 @@ fn test_invalid_signature() {
 		&timestamp,
 		invalid_signature,
 		&notification,
+		time_provider,
 	);
 
 	assert!(result.is_err());
@@ -110,6 +116,7 @@ fn test_invalid_signature() {
 #[test]
 fn test_invalid_timestamp() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// Create a webhook notification
 	let notification = WebhookNotification::webhook_registered();
 	let notification_json = serde_json::to_string(&notification).unwrap();
@@ -128,6 +135,7 @@ fn test_invalid_timestamp() {
 		invalid_timestamp,
 		&signature,
 		&notification,
+		time_provider,
 	);
 
 	assert!(result.is_err());
@@ -136,6 +144,7 @@ fn test_invalid_timestamp() {
 #[test]
 fn test_all_notification_types() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// Test all notification types
 	let notifications = vec![
 		WebhookNotification::webhook_registered(),
@@ -147,7 +156,7 @@ fn test_all_notification_types() {
 
 	for notification in notifications {
 		let notification_json = serde_json::to_string(&notification).unwrap();
-		let timestamp = LSPSDateTime::now().to_rfc3339();
+		let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 		// Sign the notification
 		let signature =
@@ -160,6 +169,7 @@ fn test_all_notification_types() {
 			&timestamp,
 			&signature,
 			&notification,
+			time_provider.clone(),
 		);
 
 		assert!(result.is_ok());
@@ -171,6 +181,7 @@ fn test_all_notification_types() {
 			&timestamp,
 			&signature,
 			&notification_json,
+			time_provider.clone(),
 		);
 
 		assert!(parsed.is_ok());
@@ -180,6 +191,7 @@ fn test_all_notification_types() {
 #[test]
 fn test_timestamp_out_of_range() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// Create a webhook notification
 	let notification = WebhookNotification::webhook_registered();
 	let notification_json = serde_json::to_string(&notification).unwrap();
@@ -201,6 +213,7 @@ fn test_timestamp_out_of_range() {
 		&too_old_timestamp,
 		&signature,
 		&notification,
+		time_provider,
 	);
 
 	assert!(result.is_err());
@@ -248,6 +261,7 @@ fn test_exact_bytes_from_spec_example() {
 #[test]
 fn test_expiry_soon_notification_with_timeout() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// This tests the lsps5.expiry_soon notification with its required timeout parameter
 	// as per spec example
 
@@ -260,7 +274,7 @@ fn test_expiry_soon_notification_with_timeout() {
 	assert!(notification_json.contains(&format!("\"timeout\":{}", timeout_value)));
 
 	// Now test signing and verification
-	let timestamp = LSPSDateTime::now().to_rfc3339();
+	let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 	// Sign the notification using the service
 	let signature =
@@ -273,6 +287,7 @@ fn test_expiry_soon_notification_with_timeout() {
 		&timestamp,
 		&signature,
 		&notification,
+		time_provider.clone(),
 	);
 
 	assert!(result.is_ok());
@@ -284,6 +299,7 @@ fn test_expiry_soon_notification_with_timeout() {
 		&timestamp,
 		&signature,
 		&notification_json,
+		time_provider.clone(),
 	)
 	.unwrap();
 
@@ -376,6 +392,7 @@ fn test_all_notification_methods_from_spec() {
 #[test]
 fn test_spec_original_goodbye_example() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 	// TODO: The LSPS5 spec currently contains an outdated "lsps5.goodbye" method example
 	// that doesn't actually exist in the final specification. Once the spec is updated,
 	// we should replace this test with one that uses the correct example.
@@ -407,6 +424,7 @@ fn test_spec_original_goodbye_example() {
 		timestamp,
 		&signature,
 		&valid_notification,
+		time_provider,
 	);
 
 	// The verification should fail because we're using a different notification
@@ -430,13 +448,14 @@ fn test_spec_original_goodbye_example() {
 #[test]
 fn test_tampered_notification_details() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 
 	// Create a webhook notification for expiry_soon
 	let notification = WebhookNotification::expiry_soon(700000);
 	let notification_json = serde_json::to_string(&notification).unwrap();
 
 	// Get current time for the timestamp
-	let timestamp = LSPSDateTime::now().to_rfc3339();
+	let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 	// Sign the notification using the service
 	let signature =
@@ -450,6 +469,7 @@ fn test_tampered_notification_details() {
 			&timestamp,
 			&signature,
 			&notification,
+			time_provider.clone(),
 		);
 	assert!(original_result.is_ok(), "Original notification should be valid");
 	assert!(original_result.unwrap());
@@ -469,6 +489,7 @@ fn test_tampered_notification_details() {
 			&timestamp,
 			&signature,
 			&tampered_notification,
+			time_provider.clone(),
 		);
 	assert!(tampered_result.is_err(), "Tampered notification should fail verification");
 
@@ -487,6 +508,7 @@ fn test_tampered_notification_details() {
 			&timestamp,
 			&signature,
 			&tampered_method_notification,
+			time_provider,
 		);
 	assert!(
 		tampered_method_result.is_err(),
@@ -497,14 +519,15 @@ fn test_tampered_notification_details() {
 #[test]
 fn test_timestamp_window_validation() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
+	let time_provider = Arc::new(DefaultTimeProvider);
 
 	// Create a webhook notification
 	let notification = WebhookNotification::onion_message_incoming();
 	let notification_json = serde_json::to_string(&notification).unwrap();
 
 	// Get current time
-	let current_time = LSPSDateTime::now();
-	let valid_timestamp = current_time.to_rfc3339();
+	let current_time = time_provider.now();
+	let valid_timestamp = time_provider.to_rfc3339(current_time);
 
 	// Sign the notification with current timestamp
 	let signature =
@@ -517,6 +540,7 @@ fn test_timestamp_window_validation() {
 		&valid_timestamp,
 		&signature,
 		&notification,
+		time_provider.clone(),
 	);
 	assert!(valid_result.is_ok());
 	assert!(valid_result.unwrap());
@@ -524,7 +548,7 @@ fn test_timestamp_window_validation() {
 	// Create past timestamp (20 minutes ago)
 
 	let past_timestamp =
-		current_time.checked_sub_signed(chrono::Duration::minutes(20)).unwrap().to_rfc3339();
+		time_provider.to_rfc3339(current_time.abs_diff(Duration::from_secs(20 * 60)));
 
 	// Try with past timestamp (should fail)
 	let past_result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::verify_notification_signature(
@@ -532,12 +556,13 @@ fn test_timestamp_window_validation() {
 		&past_timestamp,
 		&signature,
 		&notification,
+		time_provider.clone(),
 	);
 	assert!(past_result.is_err(), "Notification with past timestamp should be rejected");
 
 	// Create future timestamp (15 minutes in future)
 	let future_timestamp =
-		current_time.checked_add_signed(chrono::Duration::minutes(15)).unwrap().to_rfc3339();
+		time_provider.to_rfc3339(current_time.checked_add(Duration::from_secs(15 * 60)).unwrap());
 
 	// Try with future timestamp (should fail)
 	let future_result = LSPS5ClientHandler::<Arc<dyn EntropySource>>::verify_notification_signature(
@@ -545,6 +570,7 @@ fn test_timestamp_window_validation() {
 		&future_timestamp,
 		&signature,
 		&notification,
+		time_provider.clone(),
 	);
 	assert!(future_result.is_err(), "Notification with future timestamp should be rejected");
 
@@ -556,6 +582,7 @@ fn test_timestamp_window_validation() {
 			invalid_timestamp,
 			&signature,
 			&notification,
+			time_provider,
 		);
 	assert!(
 		invalid_format_result.is_err(),
@@ -566,7 +593,8 @@ fn test_timestamp_window_validation() {
 #[test]
 fn test_unknown_method_and_malformed_notifications() {
 	let (lsp_pubkey, signing_key) = get_pub_and_priv_key();
-	let timestamp = LSPSDateTime::now().to_rfc3339();
+	let time_provider = Arc::new(DefaultTimeProvider);
+	let timestamp = time_provider.to_rfc3339(time_provider.now());
 
 	// Helper to create notifications with custom structure
 	let create_notification = |method: &str, params: serde_json::Value| -> serde_json::Value {
@@ -590,6 +618,7 @@ fn test_unknown_method_and_malformed_notifications() {
 		&timestamp,
 		&unknown_signature,
 		&unknown_json,
+		time_provider.clone(),
 	);
 	assert!(unknown_result.is_err(), "Unknown method should be rejected even with valid signature");
 
@@ -609,6 +638,7 @@ fn test_unknown_method_and_malformed_notifications() {
 			&timestamp,
 			&invalid_jsonrpc_signature,
 			&invalid_jsonrpc,
+			time_provider.clone(),
 		);
 	assert!(invalid_jsonrpc_result.is_err(), "Missing jsonrpc field should be rejected");
 
@@ -628,6 +658,7 @@ fn test_unknown_method_and_malformed_notifications() {
 			&timestamp,
 			&missing_params_signature,
 			&missing_params,
+			time_provider.clone(),
 		);
 	assert!(missing_params_result.is_err(), "Missing params field should be rejected");
 
@@ -652,6 +683,7 @@ fn test_unknown_method_and_malformed_notifications() {
 			&timestamp,
 			&extra_params_signature,
 			&extra_params_json,
+			time_provider.clone(),
 		);
 	assert!(
 		extra_params_result.is_ok(),
@@ -672,6 +704,7 @@ fn test_unknown_method_and_malformed_notifications() {
 				&timestamp,
 				&invalid_signature,
 				invalid_json,
+				time_provider.clone(),
 			);
 		assert!(invalid_json_result.is_err(), "Invalid JSON should be rejected");
 	} else {
@@ -688,9 +721,9 @@ fn test_unknown_method_and_malformed_notifications() {
 
 	// Generate timestamps at edge of acceptable range
 	let edge_past_timestamp =
-		LSPSDateTime::now().checked_sub_signed(chrono::Duration::minutes(9)).unwrap().to_rfc3339();
-	let edge_future_timestamp =
-		LSPSDateTime::now().checked_add_signed(chrono::Duration::minutes(9)).unwrap().to_rfc3339();
+		time_provider.to_rfc3339(time_provider.now().abs_diff(Duration::from_secs(9 * 60)));
+	let edge_future_timestamp = time_provider
+		.to_rfc3339(time_provider.now().checked_add(Duration::from_secs(9 * 60)).unwrap());
 
 	// Sign with edge timestamps
 	let past_edge_signature = LSPS5ServiceHandler::sign_notification(
@@ -713,6 +746,7 @@ fn test_unknown_method_and_malformed_notifications() {
 			&edge_past_timestamp,
 			&past_edge_signature,
 			&notification,
+			time_provider.clone(),
 		);
 	let future_edge_result =
 		LSPS5ClientHandler::<Arc<dyn EntropySource>>::verify_notification_signature(
@@ -720,6 +754,7 @@ fn test_unknown_method_and_malformed_notifications() {
 			&edge_future_timestamp,
 			&future_edge_signature,
 			&notification,
+			time_provider,
 		);
 
 	assert!(past_edge_result.is_ok(), "Timestamp just within past range should be accepted");
