@@ -133,11 +133,9 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let peer_state =
 			per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		let channel_context =
-			peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().context();
 		let channel_funding =
 			peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().funding();
-		(channel_funding.get_funding_txo(), channel_context.get_channel_type().clone())
+		(channel_funding.get_funding_txo(), channel_funding.get_channel_type().clone())
 	};
 
 	channel.funding.channel_transaction_parameters = ChannelTransactionParameters {

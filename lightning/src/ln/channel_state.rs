@@ -476,14 +476,15 @@ impl ChannelDetails {
 	}
 
 	pub(super) fn from_channel_context<SP: Deref, F: Deref>(
-		context: &ChannelContext<SP>, funding: &FundingScope, best_block_height: u32,
-		latest_features: InitFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		context: &ChannelContext<SP>, funding: &FundingScope, pending_funding: &[FundingScope],
+		best_block_height: u32, latest_features: InitFeatures,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
 		F::Target: FeeEstimator,
 	{
-		let balance = context.get_available_balances(funding, fee_estimator);
+		let balance = context.get_available_balances(funding, pending_funding, fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			funding.get_holder_counterparty_selected_channel_reserve_satoshis();
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
@@ -510,7 +511,7 @@ impl ChannelDetails {
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
 			channel_type: if context.have_received_message() {
-				Some(context.get_channel_type().clone())
+				Some(funding.get_channel_type().clone())
 			} else {
 				None
 			},
@@ -540,8 +541,8 @@ impl ChannelDetails {
 			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(funding),
 			config: Some(context.config()),
 			channel_shutdown_state: Some(context.shutdown_state()),
-			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(),
-			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(),
+			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(funding),
+			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(funding),
 		}
 	}
 }
