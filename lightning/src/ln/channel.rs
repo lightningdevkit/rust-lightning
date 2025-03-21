@@ -1672,10 +1672,8 @@ impl Writeable for FundingScope {
 			(0, self.value_to_self_msat, required),
 			(1, self.counterparty_selected_channel_reserve_satoshis, option),
 			(2, self.holder_selected_channel_reserve_satoshis, required),
-			(3, self.holder_max_commitment_tx_output, required),
-			(4, self.counterparty_max_commitment_tx_output, required),
-			(5, self.channel_transaction_parameters, (required: ReadableArgs, None)),
-			(6, self.funding_transaction, option),
+			(3, self.channel_transaction_parameters, (required: ReadableArgs, None)),
+			(4, self.funding_transaction, option),
 		});
 		Ok(())
 	}
@@ -1686,8 +1684,6 @@ impl Readable for FundingScope {
 		let mut value_to_self_msat = RequiredWrapper(None);
 		let mut counterparty_selected_channel_reserve_satoshis = None;
 		let mut holder_selected_channel_reserve_satoshis = RequiredWrapper(None);
-		let mut holder_max_commitment_tx_output = RequiredWrapper(None);
-		let mut counterparty_max_commitment_tx_output = RequiredWrapper(None);
 		let mut channel_transaction_parameters = RequiredWrapper(None);
 		let mut funding_transaction = None;
 
@@ -1700,18 +1696,18 @@ impl Readable for FundingScope {
 			(0, value_to_self_msat, required),
 			(1, counterparty_selected_channel_reserve_satoshis, option),
 			(2, holder_selected_channel_reserve_satoshis, required),
-			(3, holder_max_commitment_tx_output, required),
-			(4, counterparty_max_commitment_tx_output, required),
-			(5, channel_transaction_parameters, (required: ReadableArgs, None)),
-			(6, funding_transaction, option),
+			(3, channel_transaction_parameters, (required: ReadableArgs, None)),
+			(4, funding_transaction, option),
 		});
 
 		Ok(Self {
 			value_to_self_msat: value_to_self_msat.0.unwrap(),
 			counterparty_selected_channel_reserve_satoshis,
 			holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.0.unwrap(),
-			holder_max_commitment_tx_output: holder_max_commitment_tx_output.0.unwrap(),
-			counterparty_max_commitment_tx_output: counterparty_max_commitment_tx_output.0.unwrap(),
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((0, 0)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 			channel_transaction_parameters: channel_transaction_parameters.0.unwrap(),
 			funding_transaction,
 			#[cfg(any(test, fuzzing))]
