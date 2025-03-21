@@ -20,7 +20,7 @@ use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, OnionMessageHandler,
 };
 use crate::ln::offers_tests;
-use crate::ln::onion_utils::INVALID_ONION_BLINDING;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::outbound_payment::PendingOutboundPayment;
 use crate::ln::outbound_payment::Retry;
 use crate::offers::invoice_request::InvoiceRequest;
@@ -179,11 +179,20 @@ fn invalid_keysend_payment_secret() {
 	assert_eq!(updates_2_1.update_fail_malformed_htlcs.len(), 1);
 	let update_malformed = &updates_2_1.update_fail_malformed_htlcs[0];
 	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
-	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+	assert_eq!(
+		update_malformed.failure_code,
+		LocalHTLCFailureReason::InvalidOnionBlinding.failure_code()
+	);
 	nodes[1]
 		.node
 		.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
+	do_commitment_signed_dance(
+		&nodes[1],
+		&nodes[2],
+		&updates_2_1.commitment_signed,
+		Some(FailureType::Blinded),
+		false,
+	);
 
 	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
@@ -191,12 +200,13 @@ fn invalid_keysend_payment_secret() {
 		nodes[1].node.get_our_node_id(),
 		&updates_1_0.update_fail_htlcs[0],
 	);
-	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, None, false);
 	expect_payment_failed_conditions(
 		&nodes[0],
 		payment_hash,
 		false,
-		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]),
+		PaymentFailedConditions::new()
+			.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32]),
 	);
 }
 

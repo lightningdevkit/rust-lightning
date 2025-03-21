@@ -2314,7 +2314,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 	do_pass_along_path(args);
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, None, false);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
 }
 

@@ -13,7 +13,7 @@
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, PathFailure, PaymentPurpose, PaymentFailureReason};
+use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, PathFailure, PaymentPurpose, PaymentFailureReason, HTLCDestinationFailure};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -24,6 +24,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEven
 use crate::ln::outbound_payment::Retry;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::onion_message::messenger::OnionMessenger;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
@@ -2034,9 +2035,12 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 #[macro_export]
 /// Performs the "commitment signed dance" - the series of message exchanges which occur after a
 /// commitment update.
+///
+/// If `fail_backwards` is true, asserts that `node_b` failed a HTLC back to `node_a` in the
+/// exchange. Use [`commitment_signed_dance`] if a different failure type is required.
 macro_rules! commitment_signed_dance {
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
-		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, true);
+		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, if $fail_backwards { Some(FailureType::Downstream) } else { None }, true);
 	};
 	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */, true /* return last RAA */) => {
 		$crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards)
@@ -2056,7 +2060,7 @@ macro_rules! commitment_signed_dance {
 		assert!($crate::ln::functional_test_utils::commitment_signed_dance_through_cp_raa(&$node_a, &$node_b, $fail_backwards, $incl_claim).is_none());
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
-		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, false);
+		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, if $fail_backwards { Some(FailureType::Downstream) } else { None }, false);
 	}
 }
 
@@ -2109,12 +2113,27 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	(extra_msg_option, bs_revoke_and_ack)
 }
 
+/// Describes the type of HTLC that's being failed backwards.
+#[derive(Copy, Clone)]
+pub enum FailureType {
+	/// Payment was failed within a blinded route.
+	Blinded,
+	/// Payment was failed by the downstream peer.
+	Downstream,
+	/// Payment was failed with a custom failure coded, used when tests deliberately interfere
+	/// with message failure codes.
+	Custom(LocalHTLCFailureReason)
+}
+
 /// Runs a full commitment_signed dance, delivering a commitment_signed, the responding
 /// `revoke_and_ack` and `commitment_signed`, and then the final `revoke_and_ack` response.
 ///
 /// If `skip_last_step` is unset, also checks for the payment failure update for the previous hop
 /// on failure or that no new messages are left over on success.
-pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: bool, skip_last_step: bool) {
+///
+/// `fail_backwards` should be Some if a HTLC is expected to be failed backwards by the commitment
+/// update.
+pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: Option<FailureType>, skip_last_step: bool) {
 	check_added_monitors!(node_a, 0);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	node_a.node.handle_commitment_signed(node_b.node.get_our_node_id(), commitment_signed);
@@ -2122,14 +2141,24 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 
 	// If this commitment signed dance was due to a claim, don't check for an RAA monitor update.
 	let got_claim = node_a.node.test_raa_monitor_updates_held(node_b.node.get_our_node_id(), commitment_signed.channel_id);
-	if fail_backwards { assert!(!got_claim); }
-	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false, got_claim);
+	if fail_backwards.is_some() { assert!(!got_claim); }
+	commitment_signed_dance!(node_a, node_b, (), fail_backwards.is_some(), true, false, got_claim);
 
 	if skip_last_step { return; }
 
-	if fail_backwards {
+	if let Some(fail_type) = fail_backwards {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node_a,
-			vec![crate::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id: commitment_signed.channel_id }]);
+			vec![crate::events::HTLCDestination::NextHopChannel{
+				node_id: Some(node_b.node.get_our_node_id()),
+				channel_id: commitment_signed.channel_id,
+				// Blinded paths pass back malformed errors all the way to the introduction,
+				// unblinded failures will just receive the encrypted error from downstream.
+				reason: Some(match fail_type {
+					FailureType::Blinded => LocalHTLCFailureReason::InvalidOnionBlinding.into(),
+					FailureType::Downstream => HTLCDestinationFailure::Downstream{},
+					FailureType::Custom(reason) => reason.into(),
+				}),
+			}]);
 		check_added_monitors!(node_a, 1);
 
 		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
@@ -2488,7 +2517,7 @@ pub fn expect_probe_successful_events(node: &Node, mut probe_results: Vec<(Payme
 }
 
 pub struct PaymentFailedConditions<'a> {
-	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,
+	pub(crate) expected_htlc_error_data: Option<(LocalHTLCFailureReason, &'a [u8])>,
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
@@ -2517,8 +2546,8 @@ impl<'a> PaymentFailedConditions<'a> {
 		self.expected_blamed_chan_closed = Some(closed);
 		self
 	}
-	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
-		self.expected_htlc_error_data = Some((code, data));
+	pub fn expected_htlc_error_data(mut self, reason: LocalHTLCFailureReason, data: &'a [u8]) -> Self {
+		self.expected_htlc_error_data = Some((reason, data));
 		self
 	}
 	pub fn retry_expected(mut self) -> Self {
@@ -2539,11 +2568,11 @@ macro_rules! expect_payment_failed_with_update {
 
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! expect_payment_failed {
-	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
+	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_reason: expr, $expected_error_data: expr)*) => {
 		#[allow(unused_mut)]
 		let mut conditions = $crate::ln::functional_test_utils::PaymentFailedConditions::new();
 		$(
-			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
+			conditions = conditions.expected_htlc_error_data($expected_error_reason, &$expected_error_data);
 		)*
 		$crate::ln::functional_test_utils::expect_payment_failed_conditions(&$node, $expected_payment_hash, $payment_failed_permanently, conditions);
 	};
@@ -2564,8 +2593,9 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
+				let reason: LocalHTLCFailureReason = error_code.unwrap().into();
 				if let Some((code, data)) = conditions.expected_htlc_error_data {
-					assert_eq!(error_code.unwrap(), code, "unexpected error code");
+					assert_eq!(reason, code, "unexpected error code");
 					assert_eq!(&error_data.as_ref().unwrap()[..], data, "unexpected error data");
 				}
 			}
@@ -3192,7 +3222,11 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 				node.node.handle_update_fail_htlc(prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 				commitment_signed_dance!(node, prev_node, next_msgs.as_ref().unwrap().1, update_next_node);
 				if !update_next_node {
-					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node, vec![HTLCDestination::NextHopChannel { node_id: Some(prev_node.node.get_our_node_id()), channel_id: next_msgs.as_ref().unwrap().0.channel_id }]);
+					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node, vec![HTLCDestination::NextHopChannel {
+						node_id: Some(prev_node.node.get_our_node_id()),
+						channel_id: next_msgs.as_ref().unwrap().0.channel_id,
+						reason: Some(HTLCDestinationFailure::Downstream{}),
+					}]);
 				}
 			}
 			let events = node.node.get_and_clear_pending_msg_events();
