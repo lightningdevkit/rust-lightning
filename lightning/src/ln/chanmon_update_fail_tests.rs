@@ -3860,3 +3860,145 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
 	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
 }
+
+#[test]
+#[cfg(feature = "std")]
+fn test_single_channel_multiple_mpp() {
+	// Test what happens when we attempt to claim an MPP with many parts that came to us through
+	// the same channel with a synchronous persistence interface which has very high latency.
+	//
+	// Previously, if a `revoke_and_ack` came in while we were still running in
+	// `ChannelManager::claim_payment` we'd end up hanging waiting to apply a
+	// `ChannelMonitorUpdate` until after it completed. See the commit which introduced this test
+	// for more info.
+	let chanmon_cfgs = create_chanmon_cfgs(7);
+	let node_cfgs = create_node_cfgs(7, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(7, &node_cfgs, &[None; 7]);
+	let mut nodes = create_network(7, &node_cfgs, &node_chanmgrs);
+
+	let node_5_id = nodes[5].node.get_our_node_id();
+	let node_6_id = nodes[6].node.get_our_node_id();
+
+	// Send an MPP payment in four parts along the path shown from top to bottom
+	//      0
+	//   1 2 3 4
+	//      5
+	//      6
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 3, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 4, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 3, 5, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 4, 5, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 5, 6, 1_000_000, 0);
+
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[6], 30_000_000);
+
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[5], &nodes[6]], &[&nodes[2], &nodes[5], &nodes[6]], &[&nodes[3], &nodes[5], &nodes[6]], &[&nodes[4], &nodes[5], &nodes[6]]], 30_000_000, payment_hash, payment_secret);
+
+	let (do_a_write, blocker) = std::sync::mpsc::sync_channel(0);
+	*nodes[6].chain_monitor.write_blocker.lock().unwrap() = Some(blocker);
+
+	// Until we have std::thread::scoped we have to unsafe { turn off the borrow checker }.
+	let claim_node: &'static TestChannelManager<'static, 'static> =
+		unsafe { std::mem::transmute(nodes[6].node as &TestChannelManager) };
+	let thrd = std::thread::spawn(move || {
+		// Initiate the claim in a background thread as it will immediately block waiting on the
+		// `write_blocker` we set above.
+		claim_node.claim_funds(payment_preimage);
+	});
+
+	// First unlock one monitor so that we have a pending
+	// `update_fulfill_htlc`/`commitment_signed` pair to pass to our counterparty.
+	do_a_write.send(()).unwrap();
+
+	// Then fetch the `update_fulfill_htlc`/`commitment_signed`. Note that the
+	// `get_and_clear_pending_msg_events` will immediately hang trying to take a peer lock which
+	// `claim_funds` is holding. Thus, we release a second write after a small sleep in the
+	// background to give `claim_funds` a chance to step forward, unblocking
+	// `get_and_clear_pending_msg_events`.
+	const MAX_THREAD_INIT_TIME: std::time::Duration = std::time::Duration::from_millis(10);
+	let do_a_write_background = do_a_write.clone();
+	let thrd2 = std::thread::spawn(move || {
+		std::thread::sleep(MAX_THREAD_INIT_TIME);
+		do_a_write_background.send(()).unwrap();
+	});
+	let first_updates = get_htlc_update_msgs(&nodes[6], &nodes[5].node.get_our_node_id());
+	thrd2.join().unwrap();
+
+	nodes[5].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[5].node.peer_disconnected(nodes[2].node.get_our_node_id());
+	nodes[5].node.peer_disconnected(nodes[3].node.get_our_node_id());
+	nodes[5].node.peer_disconnected(nodes[4].node.get_our_node_id());
+
+	nodes[5].node.handle_update_fulfill_htlc(node_6_id, &first_updates.update_fulfill_htlcs[0]);
+	check_added_monitors(&nodes[5], 1);
+	expect_payment_forwarded!(nodes[5], nodes[1], nodes[6], Some(1000), false, false);
+	nodes[5].node.handle_commitment_signed(node_6_id, &first_updates.commitment_signed);
+	check_added_monitors(&nodes[5], 1);
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[5], &node_6_id);
+
+	// Now, handle the `revoke_and_ack` from node 5. Note that `claim_funds` is still blocked on
+	// our peer lock, so we have to release a write to let it process.
+	let do_a_write_background = do_a_write.clone();
+	let thrd3 = std::thread::spawn(move || {
+		std::thread::sleep(MAX_THREAD_INIT_TIME);
+		do_a_write_background.send(()).unwrap();
+	});
+	nodes[6].node.handle_revoke_and_ack(node_5_id, &raa);
+	thrd3.join().unwrap();
+
+	let thrd4 = std::thread::spawn(move || {
+		std::thread::sleep(MAX_THREAD_INIT_TIME);
+		do_a_write.send(()).unwrap();
+		do_a_write.send(()).unwrap();
+	});
+
+	thrd4.join().unwrap();
+	thrd.join().unwrap();
+
+	expect_payment_claimed!(nodes[6], payment_hash, 30_000_000);
+
+	// At the end, we should have 5 ChannelMonitorUpdates - 4 for HTLC claims, and one for the
+	// above `revoke_and_ack`.
+	check_added_monitors(&nodes[6], 5);
+
+	// Now drive everything to the end, at least as far as node 6 is concerned...
+	*nodes[6].chain_monitor.write_blocker.lock().unwrap() = None;
+	nodes[6].node.handle_commitment_signed(node_5_id, &cs);
+	check_added_monitors(&nodes[6], 1);
+
+	let (updates, raa) = get_updates_and_revoke(&nodes[6], &nodes[5].node.get_our_node_id());
+	nodes[5].node.handle_update_fulfill_htlc(node_6_id, &updates.update_fulfill_htlcs[0]);
+	expect_payment_forwarded!(nodes[5], nodes[2], nodes[6], Some(1000), false, false);
+	nodes[5].node.handle_update_fulfill_htlc(node_6_id, &updates.update_fulfill_htlcs[1]);
+	expect_payment_forwarded!(nodes[5], nodes[3], nodes[6], Some(1000), false, false);
+	nodes[5].node.handle_commitment_signed(node_6_id, &updates.commitment_signed);
+	nodes[5].node.handle_revoke_and_ack(node_6_id, &raa);
+	check_added_monitors(&nodes[5], 4);
+
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[5], &node_6_id);
+
+	nodes[6].node.handle_revoke_and_ack(node_5_id, &raa);
+	nodes[6].node.handle_commitment_signed(node_5_id, &cs);
+	check_added_monitors(&nodes[6], 2);
+
+	let (updates, raa) = get_updates_and_revoke(&nodes[6], &nodes[5].node.get_our_node_id());
+	nodes[5].node.handle_update_fulfill_htlc(node_6_id, &updates.update_fulfill_htlcs[0]);
+	expect_payment_forwarded!(nodes[5], nodes[4], nodes[6], Some(1000), false, false);
+	nodes[5].node.handle_commitment_signed(node_6_id, &updates.commitment_signed);
+	nodes[5].node.handle_revoke_and_ack(node_6_id, &raa);
+	check_added_monitors(&nodes[5], 3);
+
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[5], &node_6_id);
+	nodes[6].node.handle_revoke_and_ack(node_5_id, &raa);
+	nodes[6].node.handle_commitment_signed(node_5_id, &cs);
+	check_added_monitors(&nodes[6], 2);
+
+	let raa = get_event_msg!(nodes[6], MessageSendEvent::SendRevokeAndACK, node_5_id);
+	nodes[5].node.handle_revoke_and_ack(node_6_id, &raa);
+	check_added_monitors(&nodes[5], 1);
+}
