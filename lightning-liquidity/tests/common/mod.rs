@@ -2,6 +2,7 @@
 
 use bitcoin::Network;
 use lightning::ln::channelmanager::ChainParameters;
+use lightning_liquidity::lsps5::service::TimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig};
 
 use lightning::chain::{BestBlock, Filter};
@@ -19,28 +20,32 @@ pub(crate) struct LSPSNodes<'a, 'b, 'c> {
 
 pub(crate) fn create_service_and_client_nodes<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
-	client_config: LiquidityClientConfig,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> LSPSNodes<'a, 'b, 'c> {
 	let chain_params = ChainParameters {
 		network: Network::Testnet,
 		best_block: BestBlock::from_network(Network::Testnet),
 	};
-	let service_lm = LiquidityManager::new(
+	let service_lm = LiquidityManager::new_with_custom_time_provider(
+		nodes[0].keys_manager,
 		nodes[0].keys_manager,
 		nodes[0].node,
 		None::<Arc<dyn Filter + Send + Sync>>,
 		Some(chain_params.clone()),
 		Some(service_config),
 		None,
+		Arc::clone(&time_provider),
 	);
 
-	let client_lm = LiquidityManager::new(
+	let client_lm = LiquidityManager::new_with_custom_time_provider(
+		nodes[1].keys_manager,
 		nodes[1].keys_manager,
 		nodes[1].node,
 		None::<Arc<dyn Filter + Send + Sync>>,
 		Some(chain_params),
 		None,
 		Some(client_config),
+		time_provider,
 	);
 
 	let mut iter = nodes.into_iter();
@@ -54,8 +59,10 @@ pub(crate) struct LiquidityNode<'a, 'b, 'c> {
 	pub inner: Node<'a, 'b, 'c>,
 	pub liquidity_manager: LiquidityManager<
 		&'c TestKeysInterface,
+		&'c TestKeysInterface,
 		&'a TestChannelManager<'b, 'c>,
 		Arc<dyn Filter + Send + Sync>,
+		Arc<dyn TimeProvider + Send + Sync>,
 	>,
 }
 
@@ -64,8 +71,10 @@ impl<'a, 'b, 'c> LiquidityNode<'a, 'b, 'c> {
 		node: Node<'a, 'b, 'c>,
 		liquidity_manager: LiquidityManager<
 			&'c TestKeysInterface,
+			&'c TestKeysInterface,
 			&'a TestChannelManager<'b, 'c>,
 			Arc<dyn Filter + Send + Sync>,
+			Arc<dyn TimeProvider + Send + Sync>,
 		>,
 	) -> Self {
 		Self { inner: node, liquidity_manager }

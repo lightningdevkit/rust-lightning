@@ -79,6 +79,7 @@ pub fn do_test(data: &[u8]) {
 
 	let liquidity_manager = Arc::new(LiquidityManager::new(
 		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
 		Arc::clone(&manager),
 		None::<Arc<dyn Filter + Send + Sync>>,
 		None,

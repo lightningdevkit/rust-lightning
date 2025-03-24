@@ -12,6 +12,7 @@ use lightning_liquidity::lsps2::event::LSPS2ServiceEvent;
 use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
+use lightning_liquidity::lsps5::service::DefaultTimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning::ln::channelmanager::{InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
@@ -35,6 +36,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
@@ -49,6 +51,7 @@ fn setup_test_lsps2_nodes<'a, 'b, 'c>(
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
+		lsps5_service_config: None,
 		advertise_service: true,
 	};
 
@@ -56,8 +59,14 @@ fn setup_test_lsps2_nodes<'a, 'b, 'c>(
 	let client_config = LiquidityClientConfig {
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
+		lsps5_client_config: None,
 	};
-	let lsps_nodes = create_service_and_client_nodes(nodes, service_config, client_config);
+	let lsps_nodes = create_service_and_client_nodes(
+		nodes,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
 
 	(lsps_nodes, promise_secret)
 }

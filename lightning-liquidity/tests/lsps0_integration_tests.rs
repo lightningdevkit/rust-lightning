@@ -12,12 +12,15 @@ use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
+use lightning_liquidity::lsps5::service::DefaultTimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_network, create_node_cfgs, create_node_chanmgrs,
 };
 use lightning::ln::peer_handler::CustomMessageHandler;
+
+use std::sync::Arc;
 
 #[test]
 fn list_protocols_integration_test() {
@@ -34,6 +37,7 @@ fn list_protocols_integration_test() {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: Some(lsps1_service_config),
 		lsps2_service_config: Some(lsps2_service_config),
+		lsps5_service_config: None,
 		advertise_service: true,
 	};
 
@@ -46,13 +50,18 @@ fn list_protocols_integration_test() {
 		#[cfg(not(lsps1_service))]
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
+		lsps5_client_config: None,
 	};
 
 	let service_node_id = nodes[0].node.get_our_node_id();
 	let client_node_id = nodes[1].node.get_our_node_id();
 
-	let LSPSNodes { service_node, client_node } =
-		create_service_and_client_nodes(nodes, service_config, client_config);
+	let LSPSNodes { service_node, client_node } = create_service_and_client_nodes(
+		nodes,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
 
 	let client_handler = client_node.liquidity_manager.lsps0_client_handler();
 
