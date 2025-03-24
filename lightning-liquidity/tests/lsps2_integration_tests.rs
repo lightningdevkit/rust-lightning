@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "std"))]
+#![cfg(all(test, feature = "std", feature = "time"))]
 
 mod common;
 

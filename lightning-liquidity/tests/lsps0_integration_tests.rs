@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "std"))]
+#![cfg(all(test, feature = "time"))]
 
 mod common;
 
@@ -12,7 +12,8 @@ use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
-use lightning_liquidity::lsps5::service::DefaultTimeProvider;
+use lightning_liquidity::lsps5::client::LSPS5ClientConfig;
+use lightning_liquidity::lsps5::service::{DefaultTimeProvider, LSPS5ServiceConfig};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning::ln::functional_test_utils::{
@@ -21,6 +22,7 @@ use lightning::ln::functional_test_utils::{
 use lightning::ln::peer_handler::CustomMessageHandler;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 #[test]
 fn list_protocols_integration_test() {
@@ -33,24 +35,29 @@ fn list_protocols_integration_test() {
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	#[cfg(lsps1_service)]
 	let lsps1_service_config = LSPS1ServiceConfig { supported_options: None, token: None };
+	let lsps5_service_config = LSPS5ServiceConfig {
+		max_webhooks_per_client: 10,
+		notification_cooldown_hours: Duration::from_secs(3600),
+	};
 	let service_config = LiquidityServiceConfig {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: Some(lsps1_service_config),
 		lsps2_service_config: Some(lsps2_service_config),
-		lsps5_service_config: None,
+		lsps5_service_config: Some(lsps5_service_config),
 		advertise_service: true,
 	};
 
 	let lsps2_client_config = LSPS2ClientConfig::default();
 	#[cfg(lsps1_service)]
 	let lsps1_client_config: LSPS1ClientConfig = LSPS1ClientConfig { max_channel_fees_msat: None };
+	let lsps5_client_config = LSPS5ClientConfig::default();
 	let client_config = LiquidityClientConfig {
 		#[cfg(lsps1_service)]
 		lsps1_client_config: Some(lsps1_client_config),
 		#[cfg(not(lsps1_service))]
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
-		lsps5_client_config: None,
+		lsps5_client_config: Some(lsps5_client_config),
 	};
 
 	let service_node_id = nodes[0].node.get_our_node_id();
@@ -91,11 +98,12 @@ fn list_protocols_integration_test() {
 			{
 				assert!(protocols.contains(&1));
 				assert!(protocols.contains(&2));
-				assert_eq!(protocols.len(), 2);
+				assert!(protocols.contains(&5));
+				assert_eq!(protocols.len(), 3);
 			}
 
 			#[cfg(not(lsps1_service))]
-			assert_eq!(protocols, vec![2]);
+			assert_eq!(protocols, vec![2, 5]);
 		},
 		_ => panic!("Unexpected event"),
 	}
