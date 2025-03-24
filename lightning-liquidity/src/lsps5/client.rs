@@ -570,3 +570,210 @@ where
 		self.handle_message(message, lsp_node_id)
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	#![cfg(all(test, feature = "time"))]
+	use core::time::Duration;
+
+	use super::*;
+	use crate::{
+		lsps0::ser::LSPSRequestId,
+		lsps5::{msgs::SetWebhookResponse, service::DefaultTimeProvider},
+		tests::utils::TestEntropy,
+	};
+	use bitcoin::{key::Secp256k1, secp256k1::SecretKey};
+
+	fn setup_test_client(
+		time_provider: Arc<dyn TimeProvider>,
+	) -> (
+		LSPS5ClientHandler<Arc<TestEntropy>, Arc<dyn TimeProvider>>,
+		Arc<MessageQueue>,
+		Arc<EventQueue>,
+		PublicKey,
+		PublicKey,
+	) {
+		let test_entropy_source = Arc::new(TestEntropy {});
+		let message_queue = Arc::new(MessageQueue::new());
+		let event_queue = Arc::new(EventQueue::new());
+		let client = LSPS5ClientHandler::new(
+			test_entropy_source,
+			message_queue.clone(),
+			event_queue.clone(),
+			LSPS5ClientConfig::default(),
+			time_provider,
+		);
+
+		let secp = Secp256k1::new();
+		let secret_key_1 = SecretKey::from_slice(&[42u8; 32]).unwrap();
+		let secret_key_2 = SecretKey::from_slice(&[43u8; 32]).unwrap();
+		let peer_1 = PublicKey::from_secret_key(&secp, &secret_key_1);
+		let peer_2 = PublicKey::from_secret_key(&secp, &secret_key_2);
+
+		(client, message_queue, event_queue, peer_1, peer_2)
+	}
+
+	#[test]
+	fn test_per_peer_state_isolation() {
+		let (client, _, _, peer_1, peer_2) = setup_test_client(Arc::new(DefaultTimeProvider));
+
+		let req_id_1 = client
+			.set_webhook(peer_1, "test-app-1".to_string(), "https://example.com/hook1".to_string())
+			.unwrap();
+		let req_id_2 = client
+			.set_webhook(peer_2, "test-app-2".to_string(), "https://example.com/hook2".to_string())
+			.unwrap();
+
+		{
+			let outer_state_lock = client.per_peer_state.read().unwrap();
+
+			let peer_1_state = outer_state_lock.get(&peer_1).unwrap().lock().unwrap();
+			assert!(peer_1_state.pending_set_webhook_requests.contains_key(&req_id_1));
+
+			let peer_2_state = outer_state_lock.get(&peer_2).unwrap().lock().unwrap();
+			assert!(peer_2_state.pending_set_webhook_requests.contains_key(&req_id_2));
+		}
+	}
+
+	#[test]
+	fn test_pending_request_tracking() {
+		let (client, _, _, peer, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+		const APP_NAME: &str = "test-app";
+		const WEBHOOK_URL: &str = "https://example.com/hook";
+		let lsps5_app_name = LSPS5AppName::from_string(APP_NAME.to_string()).unwrap();
+		let lsps5_webhook_url = LSPS5WebhookUrl::from_string(WEBHOOK_URL.to_string()).unwrap();
+		let set_req_id =
+			client.set_webhook(peer, APP_NAME.to_string(), WEBHOOK_URL.to_string()).unwrap();
+		let list_req_id = client.list_webhooks(peer);
+		let remove_req_id = client.remove_webhook(peer, "test-app".to_string()).unwrap();
+
+		{
+			let outer_state_lock = client.per_peer_state.read().unwrap();
+			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
+			assert_eq!(
+				peer_state.pending_set_webhook_requests.get(&set_req_id).unwrap(),
+				&(
+					lsps5_app_name.clone(),
+					lsps5_webhook_url,
+					peer_state.pending_set_webhook_requests.get(&set_req_id).unwrap().2.clone()
+				)
+			);
+
+			assert!(peer_state.pending_list_webhooks_requests.contains_key(&list_req_id));
+
+			assert_eq!(
+				peer_state.pending_remove_webhook_requests.get(&remove_req_id).unwrap().0,
+				lsps5_app_name
+			);
+		}
+	}
+
+	#[test]
+	fn test_handle_response_clears_pending_state() {
+		let (client, _, _, peer, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+
+		let req_id = client
+			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
+			.unwrap();
+
+		let response = LSPS5Response::SetWebhook(SetWebhookResponse {
+			num_webhooks: 1,
+			max_webhooks: 5,
+			no_change: false,
+		});
+		let response_msg = LSPS5Message::Response(req_id.clone(), response);
+
+		{
+			let outer_state_lock = client.per_peer_state.read().unwrap();
+			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
+			assert!(peer_state.pending_set_webhook_requests.contains_key(&req_id));
+		}
+
+		client.handle_message(response_msg, &peer).unwrap();
+
+		{
+			let outer_state_lock = client.per_peer_state.read().unwrap();
+			let peer_state = outer_state_lock.get(&peer).unwrap().lock().unwrap();
+			assert!(!peer_state.pending_set_webhook_requests.contains_key(&req_id));
+		}
+	}
+
+	#[test]
+	fn test_cleanup_expired_responses() {
+		let (client, _, _, _, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+		let time_provider = &client.time_provider;
+		const OLD_APP_NAME: &str = "test-app-old";
+		const NEW_APP_NAME: &str = "test-app-new";
+		const WEBHOOK_URL: &str = "https://example.com/hook";
+		let lsps5_old_app_name = LSPS5AppName::from_string(OLD_APP_NAME.to_string()).unwrap();
+		let lsps5_new_app_name = LSPS5AppName::from_string(NEW_APP_NAME.to_string()).unwrap();
+		let lsps5_webhook_url = LSPS5WebhookUrl::from_string(WEBHOOK_URL.to_string()).unwrap();
+		let now = time_provider.duration_since_epoch();
+		let mut peer_state = PeerState::new(Duration::from_secs(1800), time_provider.clone());
+		peer_state.last_cleanup = Some(LSPSDateTime::new_from_duration_since_epoch(
+			now.checked_sub(Duration::from_secs(120)).unwrap(),
+		));
+
+		let old_request_id = LSPSRequestId("test:request:old".to_string());
+		let new_request_id = LSPSRequestId("test:request:new".to_string());
+
+		// Add an old request (should be removed during cleanup)
+		peer_state.pending_set_webhook_requests.insert(
+			old_request_id.clone(),
+			(
+				lsps5_old_app_name,
+				lsps5_webhook_url.clone(),
+				LSPSDateTime::new_from_duration_since_epoch(
+					now.checked_sub(Duration::from_secs(7200)).unwrap(),
+				),
+			), // 2 hours old
+		);
+
+		// Add a recent request (should be kept)
+		peer_state.pending_set_webhook_requests.insert(
+			new_request_id.clone(),
+			(
+				lsps5_new_app_name,
+				lsps5_webhook_url,
+				LSPSDateTime::new_from_duration_since_epoch(
+					now.checked_sub(Duration::from_secs(600)).unwrap(),
+				),
+			), // 10 minutes old
+		);
+
+		peer_state.cleanup_expired_responses();
+
+		assert!(!peer_state.pending_set_webhook_requests.contains_key(&old_request_id));
+		assert!(peer_state.pending_set_webhook_requests.contains_key(&new_request_id));
+
+		let cleanup_age = if let Some(last_cleanup) = peer_state.last_cleanup {
+			LSPSDateTime::new_from_duration_since_epoch(time_provider.duration_since_epoch())
+				.abs_diff(last_cleanup)
+		} else {
+			0
+		};
+		assert!(cleanup_age < 10);
+	}
+
+	#[test]
+	fn test_unknown_request_id_handling() {
+		let (client, _message_queue, _, peer, _) = setup_test_client(Arc::new(DefaultTimeProvider));
+
+		let _valid_req = client
+			.set_webhook(peer, "test-app".to_string(), "https://example.com/hook".to_string())
+			.unwrap();
+
+		let unknown_req_id = LSPSRequestId("unknown:request:id".to_string());
+		let response = LSPS5Response::SetWebhook(SetWebhookResponse {
+			num_webhooks: 1,
+			max_webhooks: 5,
+			no_change: false,
+		});
+		let response_msg = LSPS5Message::Response(unknown_req_id, response);
+
+		let result = client.handle_message(response_msg, &peer);
+		assert!(result.is_err());
+		let error = result.unwrap_err();
+		assert!(error.err.to_lowercase().contains("unknown request id"));
+	}
+}
