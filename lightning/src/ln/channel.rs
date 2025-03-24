@@ -3796,13 +3796,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		if msg.htlc_signatures.len() != commitment_data.tx.htlcs().len() {
-			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_data.tx.htlcs().len())));
+		if msg.htlc_signatures.len() != commitment_data.tx.nondust_htlcs().len() {
+			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_data.tx.nondust_htlcs().len())));
 		}
 
 		let holder_keys = commitment_data.tx.trust().keys();
-		let mut nondust_htlc_sources = Vec::with_capacity(commitment_data.tx.htlcs().len());
-		let mut dust_htlcs = Vec::with_capacity(htlcs_cloned.len() - commitment_data.tx.htlcs().len());
+		let mut nondust_htlc_sources = Vec::with_capacity(commitment_data.tx.nondust_htlcs().len());
+		let mut dust_htlcs = Vec::with_capacity(htlcs_cloned.len() - commitment_data.tx.nondust_htlcs().len());
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.into_iter().enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.tx.feerate_per_kw(),
@@ -6650,7 +6650,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			&self.funding, self.holder_commitment_point.transaction_number(),
 			&self.holder_commitment_point.current_point(), true, true, logger,
 		);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.funding.get_channel_type()) * 1000;
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.funding.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
@@ -9094,7 +9094,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, counterparty_commitment_tx.htlcs().len(), self.funding.get_channel_type()) * 1000;
+							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, counterparty_commitment_tx.nondust_htlcs().len(), self.funding.get_channel_type()) * 1000;
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -9156,8 +9156,8 @@ impl<SP: Deref> FundedChannel<SP> where
 						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
 
 					let counterparty_keys = trusted_tx.keys();
-					debug_assert_eq!(htlc_signatures.len(), trusted_tx.htlcs().len());
-					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.htlcs()) {
+					debug_assert_eq!(htlc_signatures.len(), trusted_tx.nondust_htlcs().len());
+					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.nondust_htlcs()) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
 							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, funding.get_channel_type(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &counterparty_keys)),
@@ -12370,10 +12370,10 @@ mod tests {
 				counterparty_htlc_sigs.clear(); // Don't warn about excess mut for no-HTLC calls
 				$({
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
-					per_htlc.push((commitment_tx.htlcs()[$htlc_idx].clone(), Some(remote_signature)));
+					per_htlc.push((commitment_tx.nondust_htlcs()[$htlc_idx].clone(), Some(remote_signature)));
 					counterparty_htlc_sigs.push(remote_signature);
 				})*
-				assert_eq!(commitment_tx.htlcs().len(), per_htlc.len());
+				assert_eq!(commitment_tx.nondust_htlcs().len(), per_htlc.len());
 
 				let holder_commitment_tx = HolderCommitmentTransaction::new(
 					commitment_tx.clone(),
@@ -12396,7 +12396,7 @@ mod tests {
 					log_trace!(logger, "verifying htlc {}", $htlc_idx);
 					let remote_signature = Signature::from_der(&<Vec<u8>>::from_hex($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
-					let ref htlc = commitment_tx.htlcs()[$htlc_idx];
+					let ref htlc = commitment_tx.nondust_htlcs()[$htlc_idx];
 					let keys = commitment_tx.trust().keys();
 					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
 						chan.funding.get_counterparty_selected_contest_delay().unwrap(),

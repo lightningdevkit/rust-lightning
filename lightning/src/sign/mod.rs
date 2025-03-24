@@ -1364,8 +1364,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		);
 		let commitment_txid = built_tx.txid;
 
-		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
-		for htlc in commitment_tx.htlcs() {
+		let mut htlc_sigs = Vec::with_capacity(commitment_tx.nondust_htlcs().len());
+		for htlc in commitment_tx.nondust_htlcs() {
 			let holder_selected_contest_delay = channel_parameters.holder_selected_contest_delay;
 			let chan_type = &channel_parameters.channel_type_features;
 			let htlc_tx = chan_utils::build_htlc_transaction(
