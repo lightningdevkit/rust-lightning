@@ -4,6 +4,7 @@
 #![allow(unused_imports)]
 #![allow(unused_macros)]
 
+use bitcoin::secp256k1::SecretKey;
 use lightning::chain::Filter;
 use lightning::sign::EntropySource;
 
@@ -34,6 +35,8 @@ use lightning::util::persist::{
 	SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::test_utils;
+use lightning_liquidity::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
+use lightning_liquidity::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig};
 use lightning_persister::fs_store::FilesystemStore;
 
@@ -683,4 +686,47 @@ fn advance_chain(node: &mut Node, num_blocks: u32) {
 			node.chain_monitor.best_block_updated(&header, height);
 		}
 	}
+}
+
+pub(crate) fn get_client_and_service() -> (
+	&'static LSPS5ClientHandler<Arc<KeysManager>>,
+	&'static LSPS5ServiceHandler,
+	bitcoin::secp256k1::PublicKey,
+	bitcoin::secp256k1::PublicKey,
+	&'static Node,
+	&'static Node,
+) {
+	let signing_key = SecretKey::from_slice(&[42; 32]).unwrap();
+	let mut lsps5_service_config = LSPS5ServiceConfig::default();
+	lsps5_service_config.signing_key = signing_key;
+	let service_config = LiquidityServiceConfig {
+		#[cfg(lsps1_service)]
+		lsps1_service_config: None,
+		lsps2_service_config: None,
+		lsps5_service_config: Some(lsps5_service_config),
+		advertise_service: true,
+	};
+
+	let lsps5_client_config = LSPS5ClientConfig::default();
+	let client_config = LiquidityClientConfig {
+		lsps1_client_config: None,
+		lsps2_client_config: None,
+		lsps5_client_config: Some(lsps5_client_config),
+	};
+
+	let (service_node, client_node) =
+		create_service_and_client_nodes("webhook_registration_flow", service_config, client_config);
+
+	// Leak the nodes to extend their lifetime to 'static since this is test code
+	let service_node = Box::leak(Box::new(service_node));
+	let client_node = Box::leak(Box::new(client_node));
+
+	let client_handler = client_node.liquidity_manager.lsps5_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps5_service_handler().unwrap();
+
+	let secp = bitcoin::secp256k1::Secp256k1::new();
+	let service_node_id = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
+	let client_node_id = client_node.channel_manager.get_our_node_id();
+
+	(client_handler, service_handler, service_node_id, client_node_id, service_node, client_node)
 }
