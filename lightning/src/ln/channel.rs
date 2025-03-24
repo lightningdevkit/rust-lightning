@@ -7025,6 +7025,7 @@ impl<SP: Deref> FundedChannel<SP> where
 								update_fee: None,
 							})
 						} else { None };
+						// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
 						let tx_signatures = if (
 							// if it has not received tx_signatures for that funding transaction AND
 							// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
@@ -7049,11 +7050,11 @@ impl<SP: Deref> FundedChannel<SP> where
 								session.holder_tx_signatures().clone()
 							}
 						} else {
-							if !session.has_received_commitment_signed() {
-								self.context.expecting_peer_commitment_signed = true;
-							}
 							None
 						};
+						if !session.has_received_commitment_signed() {
+							self.context.expecting_peer_commitment_signed = true;
+						}
 						(commitment_update, tx_signatures, None)
 					} else {
 						// The `next_funding_txid` does not match the latest interactive funding transaction so we
@@ -7061,7 +7062,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
 					}
 				} else {
-					return Err(ChannelError::close("Counterparty set `next_funding_txid` at incorrect state".into()));
+					return Err(ChannelError::Warn("No active signing session. The associated funding transaction may have already been broadcast.".into()));
 				}
 			} else {
 				// Don't send anything related to interactive signing if `next_funding_txid` is not set.
