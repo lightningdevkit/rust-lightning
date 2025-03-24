@@ -586,8 +586,11 @@ enum ChannelState {
 	NegotiatingFunding(NegotiatingFundingFlags),
 	/// We have sent `funding_created` and are awaiting a `funding_signed` to advance to
 	/// `AwaitingChannelReady`. Note that this is nonsense for an inbound channel as we immediately generate
-	/// `funding_signed` upon receipt of `funding_created`, so simply skip this state. For dual-funded (V2)
-	/// channels, this state is also skipped.
+	/// `funding_signed` upon receipt of `funding_created`, so simply skip this state.
+	///
+	/// For inbound and outbound interactively funded channels (dual-funding/splicing), this flag indicates
+	/// that interactive transaction construction has been completed and we are now interactively signing
+	/// the funding/splice transaction.
 	FundingNegotiated(FundingNegotiatedFlags),
 	/// We've received/sent `funding_created` and `funding_signed` and are thus now waiting on the
 	/// funding transaction to confirm.
