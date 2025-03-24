@@ -586,6 +586,47 @@ pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatur
 	}
 }
 
+/// Information about an HTLC
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HTLCOutputData {
+	/// Whether the HTLC was "offered" (ie outbound in relation to this commitment transaction).
+	/// Note that this is not the same as whether it is ountbound *from us*. To determine that you
+	/// need to compare this value to whether the commitment transaction in question is that of
+	/// the counterparty or our own.
+	pub offered: bool,
+	/// The value, in msat, of the HTLC. The value as it appears in the commitment transaction is
+	/// this divided by 1000.
+	pub amount_msat: u64,
+	/// The CLTV lock-time at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The hash of the preimage which unlocks this HTLC.
+	pub payment_hash: PaymentHash,
+	/// An id for this data which must be unique for each HTLC for a single commitment number.
+	/// This will soon be set by channel, and channel monitor will use this identifier to figure
+	/// out which htlcs it can claim for a given commitment transaction.
+	pub per_commitment_id: u16,
+}
+
+impl_writeable_tlv_based!(HTLCOutputData, {
+	(0, offered, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(8, per_commitment_id, required),
+});
+
+impl HTLCOutputData {
+	pub(crate) fn from_output(htlc: HTLCOutputInCommitment, id: u16) -> Self {
+		HTLCOutputData {
+			offered: htlc.offered,
+			amount_msat: htlc.amount_msat,
+			cltv_expiry: htlc.cltv_expiry,
+			payment_hash: htlc.payment_hash,
+			per_commitment_id: id,
+		}
+	}
+}
+
 /// Information about an HTLC as it appears in a commitment transaction
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCOutputInCommitment {
@@ -613,6 +654,16 @@ impl HTLCOutputInCommitment {
 	/// e. g. in commitment transactions.
 	pub const fn to_bitcoin_amount(&self) -> Amount {
 		Amount::from_sat(self.amount_msat / 1000)
+	}
+	
+	pub(crate) fn from_data(htlc: HTLCOutputData, idx: Option<u32>) -> Self {
+		HTLCOutputInCommitment {
+			offered: htlc.offered,
+			amount_msat: htlc.amount_msat,
+			payment_hash: htlc.payment_hash,
+			cltv_expiry: htlc.cltv_expiry,
+			transaction_output_index: idx,
+		}
 	}
 }
 
