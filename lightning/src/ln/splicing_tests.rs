@@ -9,6 +9,7 @@
 
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::util::errors::APIError;
 
 /// Splicing test, simple splice-in flow. Starts with opening a V1 channel first.
 /// Builds on test_channel_open_simple()
@@ -25,9 +26,7 @@ fn test_v1_splice_in() {
 	let initiator_node = &nodes[initiator_node_index];
 	let acceptor_node = &nodes[acceptor_node_index];
 
-	// Instantiate channel parameters where we push the maximum msats given our funding satoshis
-	let channel_value_sat = 100_000; // same as funding satoshis
-	let push_msat = 0;
+	let channel_value_sat = 100_000;
 	let channel_reserve_amnt_sat = 1_000;
 
 	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
@@ -35,7 +34,7 @@ fn test_v1_splice_in() {
 		initiator_node_index,
 		acceptor_node_index,
 		channel_value_sat,
-		push_msat,
+		0, // push_msat,
 	);
 
 	let expected_funded_channel_id =
@@ -50,11 +49,10 @@ fn test_v1_splice_in() {
 	// ==== Channel is now ready for normal operation
 
 	// === Start of Splicing
-	println!("Start of Splicing ..., channel_id {}", channel_id);
 
 	// Amount being added to the channel through the splice-in
-	let splice_in_sats: u64 = 20000;
-	let funding_feerate_per_kw = 1024; // TODO
+	let splice_in_sats = 20_000;
+	let funding_feerate_per_kw = 1024;
 
 	// Create additional inputs
 	let extra_splice_funding_input_sats = 35_000;
@@ -62,7 +60,7 @@ fn test_v1_splice_in() {
 		&initiator_node,
 		&[extra_splice_funding_input_sats],
 	);
-	// Initiate splice-in (on initiator_node)
+	// Initiate splice-in
 	let _res = initiator_node
 		.node
 		.splice_channel(
@@ -74,7 +72,7 @@ fn test_v1_splice_in() {
 			None, // locktime
 		)
 		.unwrap();
-	// Extract the splice message from node0 to node1
+	// Extract the splice_init message
 	let splice_init_msg = get_event_msg!(
 		initiator_node,
 		MessageSendEvent::SendSpliceInit,
@@ -88,7 +86,7 @@ fn test_v1_splice_in() {
 	let _res = acceptor_node
 		.node
 		.handle_splice_init(initiator_node.node.get_our_node_id(), &splice_init_msg);
-	// Extract the splice_ack message from node1 to node0
+	// Extract the splice_ack message
 	let splice_ack_msg = get_event_msg!(
 		acceptor_node,
 		MessageSendEvent::SendSpliceAck,
@@ -156,4 +154,39 @@ fn test_v1_splice_in() {
 		MessageSendEvent::SendClosingSigned,
 		acceptor_node.node.get_our_node_id()
 	);
+}
+
+#[test]
+fn test_v1_splice_in_negative_insufficient_inputs() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	// Amount being added to the channel through the splice-in
+	let splice_in_sats = 20_000;
+
+	// Create additional inputs, but insufficient
+	let extra_splice_funding_input_sats = splice_in_sats - 1;
+	let funding_inputs =
+		create_dual_funding_utxos_with_prev_txs(&nodes[0], &[extra_splice_funding_input_sats]);
+
+	// Initiate splice-in, with insufficient input contribution
+	let res = nodes[0].node.splice_channel(
+		&channel_id,
+		&nodes[1].node.get_our_node_id(),
+		splice_in_sats as i64,
+		funding_inputs,
+		1024, // funding_feerate_per_kw,
+		None, // locktime
+	);
+	match res {
+		Err(APIError::APIMisuseError { err }) => {
+			assert!(err.contains("Insufficient inputs for splicing"))
+		},
+		_ => panic!("Wrong error {:?}", res.err().unwrap()),
+	}
 }
