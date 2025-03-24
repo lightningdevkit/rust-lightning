@@ -1196,6 +1196,7 @@ mod tests {
 	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
+	use lightning_liquidity::lsps5::service::TimeProvider;
 	use lightning_liquidity::LiquidityManager;
 	use lightning_persister::fs_store::FilesystemStore;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -1634,6 +1635,16 @@ mod tests {
 		path.to_str().unwrap().to_string()
 	}
 
+	pub struct DefaultTimeProvider;
+
+	#[cfg(feature = "std")]
+	impl TimeProvider for DefaultTimeProvider {
+		fn duration_since_epoch(&self) -> Duration {
+			use std::time::{SystemTime, UNIX_EPOCH};
+			SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
+		}
+	}
+
 	fn create_nodes(num_nodes: usize, persist_dir: &str) -> (String, Vec<Node>) {
 		let persist_temp_path = env::temp_dir().join(persist_dir);
 		let persist_dir = persist_temp_path.to_string_lossy().to_string();
@@ -1735,13 +1746,15 @@ mod tests {
 				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
 			));
-			let liquidity_manager = Arc::new(LiquidityManager::new(
+			let time_provider = Arc::new(DefaultTimeProvider);
+			let liquidity_manager = Arc::new(LiquidityManager::new_with_custom_time_provider(
 				Arc::clone(&keys_manager),
 				Arc::clone(&manager),
 				None,
 				None,
 				None,
 				None,
+				time_provider,
 			));
 			let node = Node {
 				node: manager,
