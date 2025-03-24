@@ -1,16 +1,16 @@
-#![cfg(test)]
+#![cfg(all(test, feature = "time"))]
 // TODO: remove these flags and unused code once we know what we'll need.
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_macros)]
 
-use lightning::chain::Filter;
-use lightning::sign::{EntropySource, NodeSigner};
-
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::secp256k1::SecretKey;
 use bitcoin::Network;
+
 use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
+use lightning::chain::Filter;
 use lightning::chain::{chainmonitor, BestBlock, Confirm};
 use lightning::ln::channelmanager;
 use lightning::ln::channelmanager::ChainParameters;
@@ -19,6 +19,7 @@ use lightning::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init};
 use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
+use lightning::sign::{EntropySource, NodeSigner};
 
 use lightning::onion_message::messenger::DefaultMessageRouter;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
@@ -34,10 +35,13 @@ use lightning::util::persist::{
 	SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::test_utils;
+
+use lightning_liquidity::lsps5::service::TimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig};
 use lightning_persister::fs_store::FilesystemStore;
 
 use std::collections::{HashMap, VecDeque};
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
@@ -128,14 +132,21 @@ pub(crate) struct Node {
 					Arc<KeysManager>,
 					Arc<ChannelManager>,
 					Arc<dyn Filter + Send + Sync>,
+					Arc<dyn TimeProvider + Send + Sync>,
 				>,
 			>,
 			Arc<KeysManager>,
 			Arc<ChainMonitor>,
 		>,
 	>,
-	pub(crate) liquidity_manager:
-		Arc<LiquidityManager<Arc<KeysManager>, Arc<ChannelManager>, Arc<dyn Filter + Send + Sync>>>,
+	pub(crate) liquidity_manager: Arc<
+		LiquidityManager<
+			Arc<KeysManager>,
+			Arc<ChannelManager>,
+			Arc<dyn Filter + Send + Sync>,
+			Arc<dyn TimeProvider + Send + Sync>,
+		>,
+	>,
 	pub(crate) chain_monitor: Arc<ChainMonitor>,
 	pub(crate) kv_store: Arc<FilesystemStore>,
 	pub(crate) tx_broadcaster: Arc<test_utils::TestBroadcaster>,
@@ -403,6 +414,7 @@ fn get_full_filepath(filepath: String, filename: String) -> String {
 pub(crate) fn create_liquidity_node(
 	i: usize, persist_dir: &str, network: Network, service_config: Option<LiquidityServiceConfig>,
 	client_config: Option<LiquidityClientConfig>,
+	time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> Node {
 	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(network));
 	let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
@@ -455,16 +467,16 @@ pub(crate) fn create_liquidity_node(
 		Some(Arc::clone(&chain_source)),
 		Arc::clone(&logger),
 	));
-
-	let liquidity_manager = Arc::new(LiquidityManager::new(
+	let liquidity_manager = Arc::new(LiquidityManager::new_with_custom_time_provider(
 		Arc::clone(&keys_manager),
 		Arc::clone(&channel_manager),
 		None::<Arc<dyn Filter + Send + Sync>>,
-		Some(chain_params),
+		Some(chain_params.clone()),
 		service_config,
 		client_config,
-		None,
+		time_provider,
 	));
+
 	let msg_handler = MessageHandler {
 		chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new(
 			ChainHash::using_genesis_block(Network::Testnet),
@@ -494,14 +506,29 @@ pub(crate) fn create_liquidity_node(
 }
 
 pub(crate) fn create_service_and_client_nodes(
-	persist_dir: &str, service_config: LiquidityServiceConfig, client_config: LiquidityClientConfig,
+	persist_dir: &str, service_config: LiquidityServiceConfig,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> (Node, Node) {
 	let persist_temp_path = env::temp_dir().join(persist_dir);
 	let persist_dir = persist_temp_path.to_string_lossy().to_string();
 	let network = Network::Bitcoin;
 
-	let service_node = create_liquidity_node(1, &persist_dir, network, Some(service_config), None);
-	let client_node = create_liquidity_node(2, &persist_dir, network, None, Some(client_config));
+	let service_node = create_liquidity_node(
+		1,
+		&persist_dir,
+		network,
+		Some(service_config),
+		None,
+		Arc::clone(&time_provider),
+	);
+	let client_node = create_liquidity_node(
+		2,
+		&persist_dir,
+		network,
+		None,
+		Some(client_config),
+		Arc::clone(&time_provider),
+	);
 
 	service_node
 		.channel_manager
