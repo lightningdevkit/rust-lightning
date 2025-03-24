@@ -460,6 +460,7 @@ pub(crate) fn create_liquidity_node(
 		Some(chain_params),
 		service_config,
 		client_config,
+		None,
 	));
 	let msg_handler = MessageHandler {
 		chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new(
