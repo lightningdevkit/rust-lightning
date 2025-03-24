@@ -202,8 +202,15 @@ impl BlindedMessagePath {
 		&mut self.0.introduction_node
 	}
 
-	#[cfg(test)]
-	pub fn from_raw(
+	/// Creates a new [`BlindedMessagePath`] from its constituent parts.
+	///
+	/// Useful when you need to reconstruct a blinded path from previously serialized components.
+	///
+	/// Parameters:
+	/// * `introduction_node_id`: The public key of the introduction node in the path
+	/// * `blinding_point`: The public key used for blinding the path
+	/// * `blinded_hops`: The encrypted routing information for each hop in the path
+	pub fn from_blinded_path(
 		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>,
 	) -> Self {
 		Self(BlindedPath {

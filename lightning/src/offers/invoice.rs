@@ -2181,7 +2181,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let blinded_path = BlindedMessagePath::from_raw(
+		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
 			pubkey(41),
 			vec![
@@ -2276,7 +2276,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedMessagePath::from_raw(
+		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
 			pubkey(41),
 			vec![
@@ -2982,7 +2982,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let paths = vec![
-			BlindedMessagePath::from_raw(
+			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
 				vec![
@@ -2990,7 +2990,7 @@ mod tests {
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
 			),
-			BlindedMessagePath::from_raw(
+			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
 				vec![
@@ -3532,7 +3532,7 @@ mod tests {
 			.sign(recipient_sign)
 			.unwrap();
 
-		let blinded_path = BlindedMessagePath::from_raw(
+		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
 			pubkey(41),
 			vec![

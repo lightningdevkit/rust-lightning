@@ -779,7 +779,7 @@ mod tests {
 	}
 
 	fn blinded_path() -> BlindedMessagePath {
-		BlindedMessagePath::from_raw(
+		BlindedMessagePath::from_blinded_path(
 			pubkey(40),
 			pubkey(41),
 			vec![
