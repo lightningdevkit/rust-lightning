@@ -28,6 +28,7 @@ pub mod onion_hop_data;
 pub mod onion_message;
 pub mod peer_crypt;
 pub mod process_network_graph;
+pub mod process_onion_failure;
 pub mod refund_deser;
 pub mod router;
 pub mod zbase32;
