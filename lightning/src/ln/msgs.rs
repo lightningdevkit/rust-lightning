@@ -2202,6 +2202,15 @@ mod fuzzy_internal_msgs {
 			/// The node id to which the trampoline node must find a route.
 			outgoing_node_id: PublicKey,
 		},
+		#[cfg(test)]
+		/// LDK does not support making Trampoline payments to unblinded recipients. However, for
+		/// the purpose of testing our ability to receive them, we make this variant available in a
+		/// testing environment.
+		Receive {
+			payment_data: Option<FinalOnionHopData>,
+			sender_intended_htlc_amt_msat: u64,
+			cltv_expiry_height: u32,
+		},
 		#[allow(unused)]
 		/// This is the last Trampoline hop, whereupon the Trampoline forward mechanism is exited,
 		/// and payment data is relayed using non-Trampoline blinded hops
@@ -3176,6 +3185,16 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(14, outgoing_node_id, required)
+				});
+			},
+			#[cfg(test)]
+			Self::Receive {
+				ref payment_data, sender_intended_htlc_amt_msat, cltv_expiry_height,
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
+					(8, payment_data, option)
 				});
 			},
 			Self::LegacyBlindedPathEntry { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
