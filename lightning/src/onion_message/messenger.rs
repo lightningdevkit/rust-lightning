@@ -1956,6 +1956,14 @@ where
 				let responder = reply_path.map(Responder::new);
 				match message {
 					DNSResolverMessage::DNSSECQuery(msg) => {
+						if context.is_some() {
+							log_trace!(
+								logger,
+								"Ignoring DNSSECQuery onion message with unexpected context: {:?}",
+								context.unwrap()
+							);
+							return;
+						}
 						let response_instructions =
 							self.dns_resolver_handler.handle_dnssec_query(msg, responder);
 						if let Some((msg, instructions)) = response_instructions {
@@ -1965,7 +1973,13 @@ where
 					DNSResolverMessage::DNSSECProof(msg) => {
 						let context = match context {
 							Some(ctx) => ctx,
-							None => return,
+							None => {
+								log_trace!(
+									logger,
+									"Ignoring DNSSECProof onion message due to missing context"
+								);
+								return;
+							},
 						};
 						self.dns_resolver_handler.handle_dnssec_proof(msg, context);
 					},
