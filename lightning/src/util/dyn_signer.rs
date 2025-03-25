@@ -244,8 +244,6 @@ delegate!(DynKeysInterface, OutputSpender, inner,
 pub trait DynKeysInterfaceTrait:
 	NodeSigner + OutputSpender + SignerProvider<EcdsaSigner = DynSigner> + EntropySource + Send + Sync
 {
-	#[cfg(test)]
-	fn set_counter(&self, _count: u64) {}
 }
 
 #[cfg(taproot)]
@@ -258,8 +256,6 @@ pub trait DynKeysInterfaceTrait:
 	+ Send
 	+ Sync
 {
-	#[cfg(test)]
-	fn set_counter(&self, _count: u64) {}
 }
 
 /// A dyn wrapper for PhantomKeysManager
@@ -320,9 +316,4 @@ delegate!(DynPhantomKeysInterface, OutputSpender, inner,
 	) -> Result<Transaction, ()>
 );
 
-impl DynKeysInterfaceTrait for DynPhantomKeysInterface {
-	#[cfg(test)]
-	fn set_counter(&self, count: u64) {
-		self.inner.inner.entropy_source.set_counter(count);
-	}
-}
+impl DynKeysInterfaceTrait for DynPhantomKeysInterface {}

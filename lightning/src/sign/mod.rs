@@ -2365,13 +2365,6 @@ impl RandomBytes {
 	pub fn new(seed: [u8; 32]) -> Self {
 		Self { seed, index: AtomicCounter::new() }
 	}
-
-	#[cfg(test)]
-	/// Force the counter to a value to produce the same output again. Mostly useful in tests where
-	/// we need to maintain behavior with a previous version which didn't use as much RNG output.
-	pub(crate) fn set_counter(&self, count: u64) {
-		self.index.set_counter(count);
-	}
 }
 
 impl EntropySource for RandomBytes {
