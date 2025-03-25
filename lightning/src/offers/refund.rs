@@ -1219,7 +1219,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let blinded_path = BlindedMessagePath::from_raw(
+		let blinded_path = BlindedMessagePath::from_blinded_path(
 			pubkey(40),
 			pubkey(41),
 			vec![
@@ -1332,7 +1332,7 @@ mod tests {
 	#[test]
 	fn builds_refund_with_paths() {
 		let paths = vec![
-			BlindedMessagePath::from_raw(
+			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
 				vec![
@@ -1340,7 +1340,7 @@ mod tests {
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
 			),
-			BlindedMessagePath::from_raw(
+			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
 				vec![
@@ -1585,7 +1585,7 @@ mod tests {
 	fn parses_refund_with_optional_fields() {
 		let past_expiry = Duration::from_secs(0);
 		let paths = vec![
-			BlindedMessagePath::from_raw(
+			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
 				vec![
@@ -1593,7 +1593,7 @@ mod tests {
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
 			),
-			BlindedMessagePath::from_raw(
+			BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
 				vec![
