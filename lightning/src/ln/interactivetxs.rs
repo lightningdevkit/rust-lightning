@@ -8,13 +8,12 @@
 // licenses.
 
 use crate::io_extras::sink;
-use crate::{io, prelude::*};
+use crate::prelude::*;
 
 use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::hashes::Hash;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
@@ -27,12 +26,10 @@ use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
-use crate::util::ser::{Readable, TransactionU16LenLimited, Writeable, Writer};
+use crate::util::ser::TransactionU16LenLimited;
 
 use core::fmt::Display;
 use core::ops::Deref;
-
-use super::msgs::DecodeError;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
 /// negotiation MUST be failed.
@@ -171,60 +168,17 @@ pub(crate) struct ConstructedTransaction {
 	holder_sends_tx_signatures_first: bool,
 }
 
-impl Writeable for ConstructedTransaction {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let lock_time = self.lock_time.to_consensus_u32();
-		write_tlv_fields!(writer, {
-			(1, self.holder_is_initiator, required),
-			(3, self.inputs, required),
-			(5, self.outputs, required),
-			(7, self.local_inputs_value_satoshis, required),
-			(9, self.local_outputs_value_satoshis, required),
-			(11, self.remote_inputs_value_satoshis, required),
-			(13, self.remote_outputs_value_satoshis, required),
-			(15, lock_time, required),
-			(17, self.holder_sends_tx_signatures_first, required),
-		});
-		Ok(())
-	}
-}
-
-impl Readable for ConstructedTransaction {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut holder_is_initiator = false;
-		let mut inputs: Vec<InteractiveTxInput> = vec![];
-		let mut outputs: Vec<InteractiveTxOutput> = vec![];
-		let mut local_inputs_value_satoshis: u64 = 0;
-		let mut local_outputs_value_satoshis: u64 = 0;
-		let mut remote_inputs_value_satoshis: u64 = 0;
-		let mut remote_outputs_value_satoshis: u64 = 0;
-		let mut lock_time: u32 = 0;
-		let mut holder_sends_tx_signatures_first = false;
-		read_tlv_fields!(reader, {
-			(1, holder_is_initiator, required),
-			(3, inputs, required),
-			(5, outputs, required),
-			(7, local_inputs_value_satoshis, required),
-			(9, local_outputs_value_satoshis, required),
-			(11, remote_inputs_value_satoshis, required),
-			(13, remote_outputs_value_satoshis, required),
-			(15, lock_time, required),
-			(17, holder_sends_tx_signatures_first, required),
-		});
-		let lock_time = AbsoluteLockTime::from_consensus(lock_time);
-		Ok(ConstructedTransaction {
-			holder_is_initiator,
-			inputs,
-			outputs,
-			local_inputs_value_satoshis,
-			local_outputs_value_satoshis,
-			remote_inputs_value_satoshis,
-			remote_outputs_value_satoshis,
-			lock_time,
-			holder_sends_tx_signatures_first,
-		})
-	}
-}
+impl_writeable_tlv_based!(ConstructedTransaction, {
+	(1, holder_is_initiator, required),
+	(3, inputs, required),
+	(5, outputs, required),
+	(7, local_inputs_value_satoshis, required),
+	(9, local_outputs_value_satoshis, required),
+	(11, remote_inputs_value_satoshis, required),
+	(13, remote_outputs_value_satoshis, required),
+	(15, lock_time, required),
+	(17, holder_sends_tx_signatures_first, required),
+});
 
 impl ConstructedTransaction {
 	fn new(context: NegotiationContext) -> Self {
@@ -1219,44 +1173,11 @@ pub struct LocalOrRemoteInput {
 	prev_output: TxOut,
 }
 
-impl Writeable for LocalOrRemoteInput {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(writer, {
-			(1, self.serial_id, required),
-			(3, self.input.sequence.0, required),
-			(5, self.input.previous_output, required),
-			(7, self.input.script_sig, required),
-			(9, self.input.witness, required),
-			(11, self.prev_output, required),
-		});
-		Ok(())
-	}
-}
-
-impl Readable for LocalOrRemoteInput {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut serial_id: u64 = 0;
-		let mut sequence: u32 = 0;
-		let mut previous_output = OutPoint::new(Txid::from_byte_array([0; 32]), 0);
-		let mut script_sig = ScriptBuf::default();
-		let mut witness = Witness::new();
-		let mut prev_output =
-			TxOut { value: Amount::default(), script_pubkey: ScriptBuf::default() };
-		read_tlv_fields!(reader, {
-			(1, serial_id, required),
-			(3, sequence, required),
-			(5, previous_output, required),
-			(7, script_sig, required),
-			(9, witness, required),
-			(11, prev_output, required),
-		});
-		Ok(LocalOrRemoteInput {
-			serial_id,
-			input: TxIn { previous_output, script_sig, sequence: Sequence(sequence), witness },
-			prev_output,
-		})
-	}
-}
+impl_writeable_tlv_based!(LocalOrRemoteInput, {
+	(1, serial_id, required),
+	(3, input, required),
+	(5, prev_output, required),
+});
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum InteractiveTxInput {

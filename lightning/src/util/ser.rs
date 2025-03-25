@@ -24,6 +24,7 @@ use core::ops::Deref;
 
 use alloc::collections::BTreeMap;
 
+use bitcoin::absolute::LockTime as AbsoluteLockTime;
 use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::ChainHash;
@@ -39,7 +40,7 @@ use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
-use bitcoin::{consensus, Witness};
+use bitcoin::{consensus, TxIn, Witness};
 
 use dnssec_prover::rr::Name;
 
@@ -1349,6 +1350,19 @@ impl<T: LengthReadable> Readable for Option<T> {
 	}
 }
 
+impl Writeable for AbsoluteLockTime {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_consensus_u32().write(w)
+	}
+}
+
+impl Readable for AbsoluteLockTime {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let lock_time: u32 = Readable::read(r)?;
+		Ok(AbsoluteLockTime::from_consensus(lock_time))
+	}
+}
+
 impl Writeable for Amount {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.to_sat().write(w)
@@ -1450,6 +1464,7 @@ macro_rules! impl_consensus_ser {
 	};
 }
 impl_consensus_ser!(Transaction);
+impl_consensus_ser!(TxIn);
 impl_consensus_ser!(TxOut);
 impl_consensus_ser!(Witness);
 
