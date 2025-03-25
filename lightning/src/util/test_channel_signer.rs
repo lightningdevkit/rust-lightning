@@ -549,12 +549,7 @@ impl TestChannelSigner {
 		commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>,
 	) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx
-			.verify(
-				&channel_parameters.as_counterparty_broadcastable(),
-				channel_parameters.counterparty_pubkeys().unwrap(),
-				&channel_parameters.holder_pubkeys,
-				secp_ctx,
-			)
+			.verify(&channel_parameters.as_counterparty_broadcastable(), secp_ctx)
 			.expect("derived different per-tx keys or built transaction")
 	}
 
@@ -563,12 +558,7 @@ impl TestChannelSigner {
 		commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>,
 	) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx
-			.verify(
-				&channel_parameters.as_holder_broadcastable(),
-				&channel_parameters.holder_pubkeys,
-				channel_parameters.counterparty_pubkeys().unwrap(),
-				secp_ctx,
-			)
+			.verify(&channel_parameters.as_holder_broadcastable(), secp_ctx)
 			.expect("derived different per-tx keys or built transaction")
 	}
 }
