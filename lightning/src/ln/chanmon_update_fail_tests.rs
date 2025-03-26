@@ -3903,6 +3903,10 @@ fn test_single_channel_multiple_mpp() {
 	*nodes[6].chain_monitor.write_blocker.lock().unwrap() = Some(blocker);
 
 	// Until we have std::thread::scoped we have to unsafe { turn off the borrow checker }.
+	// We do this by casting a pointer to a `TestChannelManager` to a pointer to a
+	// `TestChannelManager` with different (in this case 'static) lifetime.
+	// This is even suggested in the second example at
+	// https://doc.rust-lang.org/std/mem/fn.transmute.html#examples
 	let claim_node: &'static TestChannelManager<'static, 'static> =
 		unsafe { std::mem::transmute(nodes[6].node as &TestChannelManager) };
 	let thrd = std::thread::spawn(move || {
