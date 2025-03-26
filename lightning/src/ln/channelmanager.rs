@@ -7208,12 +7208,10 @@ where
 			}).collect();
 			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
 				let mut channels_without_preimage = Vec::with_capacity(mpp_parts.len());
-				for source in sources.iter() {
-					if let Some(cp_id) = source.prev_hop.counterparty_node_id {
-						let chan = (cp_id, source.prev_hop.outpoint, source.prev_hop.channel_id);
-						if !channels_without_preimage.contains(&chan) {
-							channels_without_preimage.push(chan);
-						}
+				for part in mpp_parts.iter() {
+					let chan = (part.counterparty_node_id, part.funding_txo, part.channel_id);
+					if !channels_without_preimage.contains(&chan) {
+						channels_without_preimage.push(chan);
 					}
 				}
 				Some(Arc::new(Mutex::new(PendingMPPClaim {
@@ -14791,6 +14789,9 @@ where
 						let mut channels_without_preimage = payment_claim.mpp_parts.iter()
 							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.funding_txo, htlc_info.channel_id))
 							.collect::<Vec<_>>();
+						// If we have multiple MPP parts which were received over the same channel,
+						// we only track it once as once we get a preimage durably in the
+						// `ChannelMonitor` it will be used for all HTLCs with a matching hash.
 						channels_without_preimage.sort_unstable();
 						channels_without_preimage.dedup();
 						let pending_claims = PendingMPPClaim {
