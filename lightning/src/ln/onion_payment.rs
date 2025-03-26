@@ -464,27 +464,23 @@ where
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
-	macro_rules! return_malformed_err {
-		($msg: expr, $err_code: expr) => {
-			{
-				log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-				let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() {
-					([0; 32], INVALID_ONION_BLINDING)
-				} else {
-					(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), $err_code)
-				};
-				return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
-					channel_id: msg.channel_id,
-					htlc_id: msg.htlc_id,
-					sha256_of_onion,
-					failure_code,
-				}));
-			}
-		}
-	}
+	let encode_malformed_error = |message: &str, err_code: u16| {
+		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
+		let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() {
+			([0; 32], INVALID_ONION_BLINDING)
+		} else {
+			(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), err_code)
+		};
+		return Err(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+			channel_id: msg.channel_id,
+			htlc_id: msg.htlc_id,
+			sha256_of_onion,
+			failure_code,
+		}));
+	};
 
 	if let Err(_) = msg.onion_routing_packet.public_key {
-		return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
+		return encode_malformed_error("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 	}
 
 	if msg.onion_routing_packet.version != 0 {
@@ -494,12 +490,12 @@ where
 		//receiving node would have to brute force to figure out which version was put in the
 		//packet by the node that send us the message, in the case of hashing the hop_data, the
 		//node knows the HMAC matched, so they already know what is there...
-		return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
+		return encode_malformed_error("Unknown onion packet version", 0x8000 | 0x4000 | 4);
 	}
 
 	let encode_relay_error = |message: &str, err_code: u16, shared_secret: [u8; 32], trampoline_shared_secret: Option<[u8; 32]>, data: &[u8]| {
 		if msg.blinding_point.is_some() {
-			return_malformed_err!(message, INVALID_ONION_BLINDING)
+			return encode_malformed_error(message, INVALID_ONION_BLINDING)
 		}
 
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
@@ -518,7 +514,7 @@ where
 	) {
 		Ok(res) => res,
 		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-			return_malformed_err!(err_msg, err_code);
+			return encode_malformed_error(err_msg, err_code);
 		},
 		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, trampoline_shared_secret }) => {
 			return encode_relay_error(err_msg, err_code, shared_secret.secret_bytes(), trampoline_shared_secret.map(|tss| tss.secret_bytes()), &[0; 0]);
