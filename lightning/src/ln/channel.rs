@@ -1666,11 +1666,6 @@ pub(super) struct FundingScope {
 
 impl Writeable for FundingScope {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		#[cfg(any(test, fuzzing))]
-		self.next_local_commitment_tx_fee_info_cached.write(writer)?;
-		#[cfg(any(test, fuzzing))]
-		self.next_remote_commitment_tx_fee_info_cached.write(writer)?;
-
 		write_tlv_fields!(writer, {
 			(1, self.value_to_self_msat, required),
 			(3, self.counterparty_selected_channel_reserve_satoshis, option),
@@ -1689,11 +1684,6 @@ impl Readable for FundingScope {
 		let mut holder_selected_channel_reserve_satoshis = RequiredWrapper(None);
 		let mut channel_transaction_parameters = RequiredWrapper(None);
 		let mut funding_transaction = None;
-
-		#[cfg(any(test, fuzzing))]
-		let next_local_commitment_tx_fee_info_cached = Readable::read(reader)?;
-		#[cfg(any(test, fuzzing))]
-		let next_remote_commitment_tx_fee_info_cached = Readable::read(reader)?;
 
 		read_tlv_fields!(reader, {
 			(1, value_to_self_msat, required),
@@ -1714,9 +1704,9 @@ impl Readable for FundingScope {
 			channel_transaction_parameters: channel_transaction_parameters.0.unwrap(),
 			funding_transaction,
 			#[cfg(any(test, fuzzing))]
-			next_local_commitment_tx_fee_info_cached,
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
-			next_remote_commitment_tx_fee_info_cached,
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 		})
 	}
 }
@@ -3585,7 +3575,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				if let Some(info) = projected_commit_tx_info {
 					let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len()
 						+ self.holding_cell_htlc_updates.len();
-					if info.total_pending_htlcs == total_pending_htlcs as u64
+					if info.total_pending_htlcs == total_pending_htlcs
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
 						&& info.feerate == self.feerate_per_kw {
@@ -4377,7 +4367,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				+ context.holding_cell_htlc_updates.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
 				fee,
-				total_pending_htlcs: total_pending_htlcs as u64,
+				total_pending_htlcs: total_pending_htlcs,
 				next_holder_htlc_id: match htlc.origin {
 					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
 					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
@@ -4473,7 +4463,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
 				fee,
-				total_pending_htlcs: total_pending_htlcs as u64,
+				total_pending_htlcs: total_pending_htlcs,
 				next_holder_htlc_id: match htlc.origin {
 					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
 					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
@@ -4941,20 +4931,11 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 #[cfg(any(test, fuzzing))]
 struct CommitmentTxInfoCached {
 	fee: u64,
-	total_pending_htlcs: u64,
+	total_pending_htlcs: usize,
 	next_holder_htlc_id: u64,
 	next_counterparty_htlc_id: u64,
 	feerate: u32,
 }
-
-#[cfg(any(test, fuzzing))]
-impl_writeable_tlv_based!(CommitmentTxInfoCached, {
-	(0, fee, required),
-	(1, total_pending_htlcs, required),
-	(2, next_holder_htlc_id, required),
-	(3, next_counterparty_htlc_id, required),
-	(4, feerate, required),
-});
 
 /// Partial data from ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo used to simplify the
 /// return type of `ChannelContext::validate_commitment_signed`.
@@ -8820,7 +8801,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				*self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 				if let Some(info) = projected_commit_tx_info {
 					let total_pending_htlcs = self.context.pending_inbound_htlcs.len() + self.context.pending_outbound_htlcs.len();
-					if info.total_pending_htlcs == total_pending_htlcs as u64
+					if info.total_pending_htlcs == total_pending_htlcs
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
