@@ -6,8 +6,6 @@
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
-
-#[cfg(trampoline)]
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::blinded_path;
@@ -69,7 +67,6 @@ enum RoutingInfo {
 		new_packet_bytes: [u8; ONION_DATA_LEN],
 		next_hop_hmac: [u8; 32]
 	},
-	#[cfg(trampoline)]
 	Trampoline {
 		next_trampoline: PublicKey,
 		// Trampoline onions are currently variable length
@@ -118,14 +115,12 @@ pub(super) fn create_fwd_pending_htlc_info(
 				err_code: 0x4000 | 22,
 				err_data: Vec::new(),
 			}),
-		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
 				msg: "Final Node OnionHopData provided for us as an intermediary node",
 				err_code: 0x4000 | 22,
 				err_data: Vec::new(),
 			}),
-		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
 			(
 				RoutingInfo::Trampoline {
@@ -141,7 +136,6 @@ pub(super) fn create_fwd_pending_htlc_info(
 				None
 			)
 		},
-		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineBlindedForward { outer_hop_data, next_trampoline_hop_data, next_trampoline_hop_hmac, new_trampoline_packet_bytes, trampoline_shared_secret, .. } => {
 			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
 				msg.amount_msat, msg.cltv_expiry, &next_trampoline_hop_data.payment_relay, &next_trampoline_hop_data.payment_constraints, &next_trampoline_hop_data.features
@@ -192,7 +186,6 @@ pub(super) fn create_fwd_pending_htlc_info(
 					}),
 			}
 		}
-		#[cfg(trampoline)]
 		RoutingInfo::Trampoline { next_trampoline, new_packet_bytes, next_hop_hmac, shared_secret, current_path_key } => {
 			let next_trampoline_packet_pubkey = match next_packet_pubkey_opt {
 				Some(Ok(pubkey)) => pubkey,
@@ -272,7 +265,6 @@ pub(super) fn create_recv_pending_htlc_info(
 			 sender_intended_htlc_amt_msat, cltv_expiry_height, None, Some(payment_context),
 			 intro_node_blinding_point.is_none(), true, invoice_request)
 		}
-		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => todo!(),
 		onion_utils::Hop::Forward { .. } => {
 			return Err(InboundHTLCErr {
@@ -288,7 +280,6 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Got blinded non final data with an HMAC of 0",
 			})
 		},
-		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 			return Err(InboundHTLCErr {
 				err_code: 0x4000|22,
@@ -560,7 +551,6 @@ where
 				outgoing_cltv_value
 			})
 		}
-		#[cfg(trampoline)]
 		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());

@@ -298,7 +298,6 @@ pub struct ForwardTlvs {
 }
 
 /// Data to construct a [`BlindedHop`] for forwarding a Trampoline payment.
-#[cfg(trampoline)]
 #[derive(Clone, Debug)]
 pub struct TrampolineForwardTlvs {
 	/// The node id to which the trampoline node must find a route.
@@ -371,7 +370,6 @@ pub(crate) enum BlindedPaymentTlvs {
 /// Data to construct a [`BlindedHop`] for sending a Trampoline payment over.
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[cfg(trampoline)]
 pub(crate) enum BlindedTrampolineTlvs {
 	/// This blinded payment data is for a forwarding node.
 	Forward(TrampolineForwardTlvs),
@@ -591,7 +589,6 @@ impl Readable for BlindedPaymentTlvs {
 	}
 }
 
-#[cfg(trampoline)]
 impl Readable for BlindedTrampolineTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_stream!(r, {

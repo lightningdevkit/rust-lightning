@@ -32,7 +32,6 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
-#[cfg(trampoline)]
 use crate::blinded_path::payment::{BlindedTrampolineTlvs, TrampolineForwardTlvs};
 use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
@@ -2075,8 +2074,7 @@ mod fuzzy_internal_msgs {
 		pub outgoing_cltv_value: u32,
 	}
 
-	#[cfg(trampoline)]
-	#[cfg_attr(trampoline, allow(unused))]
+	#[allow(unused)]
 	pub struct InboundTrampolineEntrypointPayload {
 		pub amt_to_forward: u64,
 		pub outgoing_cltv_value: u32,
@@ -2118,15 +2116,12 @@ mod fuzzy_internal_msgs {
 
 	pub enum InboundOnionPayload {
 		Forward(InboundOnionForwardPayload),
-		#[cfg(trampoline)]
-		#[cfg_attr(trampoline, allow(unused))]
 		TrampolineEntrypoint(InboundTrampolineEntrypointPayload),
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
 	}
 
-	#[cfg(trampoline)]
 	pub struct InboundTrampolineForwardPayload {
 		pub next_trampoline: PublicKey,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
@@ -2134,7 +2129,6 @@ mod fuzzy_internal_msgs {
 		pub outgoing_cltv_value: u32,
 	}
 
-	#[cfg(trampoline)]
 	pub struct InboundTrampolineBlindedForwardPayload {
 		pub next_trampoline: PublicKey,
 		pub payment_relay: PaymentRelay,
@@ -2144,7 +2138,6 @@ mod fuzzy_internal_msgs {
 		pub next_blinding_override: Option<PublicKey>,
 	}
 
-	#[cfg(trampoline)]
 	pub enum InboundTrampolinePayload {
 		Forward(InboundTrampolineForwardPayload),
 		BlindedForward(InboundTrampolineBlindedForwardPayload),
@@ -3239,7 +3232,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
-		#[cfg(trampoline)]
 		let mut trampoline_onion_packet: Option<TrampolineOnionPacket> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
@@ -3247,7 +3239,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let tlv_len = BigSize::read(r)?;
 		let mut rd = FixedLengthReader::new(r, tlv_len.0);
 
-		#[cfg(trampoline)]
 		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
@@ -3268,33 +3259,12 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			custom_tlvs.push((msg_type, value));
 			Ok(true)
 		});
-		#[cfg(not(trampoline))]
-		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
-			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
-			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
-			(6, short_id, option),
-			(8, payment_data, option),
-			(10, encrypted_tlvs_opt, option),
-			(12, intro_node_blinding_point, option),
-			(16, payment_metadata, option),
-			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
-			(77_777, invoice_request, option),
-			// See https://github.com/lightning/blips/blob/master/blip-0003.md
-			(5482373484, keysend_preimage, option)
-		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
-			if msg_type < 1 << 16 { return Ok(false) }
-			let mut value = Vec::new();
-			msg_reader.read_to_limit(&mut value, u64::MAX)?;
-			custom_tlvs.push((msg_type, value));
-			Ok(true)
-		});
 
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
 			return Err(DecodeError::InvalidValue)
 		}
 
-		#[cfg(trampoline)]
 		if let Some(trampoline_onion_packet) = trampoline_onion_packet {
 			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
 				total_msat.is_some()
@@ -3391,7 +3361,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 	}
 }
 
-#[cfg(trampoline)]
 impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload where NS::Target: NodeSigner {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;

@@ -1816,7 +1816,6 @@ fn test_combined_trampoline_onion_creation_vectors() {
 }
 
 #[test]
-#[cfg(trampoline)]
 fn test_trampoline_inbound_payment_decoding() {
 	let secp_ctx = Secp256k1::new();
 	let session_priv = secret_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
