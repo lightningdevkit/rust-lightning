@@ -328,7 +328,7 @@ impl<T> Mutex<T> {
 		Mutex {
 			inner: StdMutex::new(inner),
 			poisoned: AtomicBool::new(false),
-			deps: LockMetadata::new()
+			deps: LockMetadata::new(),
 		}
 	}
 
