@@ -779,7 +779,7 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &
 	})
 }
 
-/// Gets a `revoke_and_ack` and `UpdateHTLCs` (i.e. after we get a responding `commitment_signed`
+/// Gets a `UpdateHTLCs` and `revoke_and_ack` (i.e. after we get a responding `commitment_signed`
 /// while we have updates in the holding cell).
 pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, recipient: &PublicKey) -> (msgs::CommitmentUpdate, msgs::RevokeAndACK) {
 	let events = node.node().get_and_clear_pending_msg_events();
