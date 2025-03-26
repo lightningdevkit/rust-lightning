@@ -4147,7 +4147,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		core::iter::once(funding)
 			.chain(pending_funding.iter())
 			.map(|funding| self.get_available_balances_for_scope(funding, fee_estimator))
-			.min_by_key(|balances| balances.next_outbound_htlc_limit_msat)
+			.reduce(|acc, e| {
+				AvailableBalances {
+					inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
+					outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
+					next_outbound_htlc_limit_msat: acc.next_outbound_htlc_limit_msat.min(e.next_outbound_htlc_limit_msat),
+					next_outbound_htlc_minimum_msat: acc.next_outbound_htlc_minimum_msat.max(e.next_outbound_htlc_minimum_msat),
+				}
+			})
 			.expect("At least one FundingScope is always provided")
 	}
 
