@@ -1821,16 +1821,60 @@ where
 							trampoline_shared_secret,
 						),
 					}),
-					Ok((_, None)) => Err(OnionDecodeErr::Malformed {
-						err_msg: "Non-final Trampoline onion data provided to us as last hop",
-						// todo: find more suitable error code
-						err_code: 0x4000 | 22,
-					}),
-					Ok((_, Some(_))) => Err(OnionDecodeErr::Malformed {
-						err_msg: "Final Trampoline onion data provided to us as intermediate hop",
-						// todo: find more suitable error code
-						err_code: 0x4000 | 22,
-					}),
+					Ok((msgs::InboundTrampolinePayload::BlindedForward(hop_data), None)) => {
+						if hop_data.intro_node_blinding_point.is_some() {
+							return Err(OnionDecodeErr::Relay {
+								err_msg: "Non-final intro node Trampoline onion data provided to us as last hop",
+								err_code: INVALID_ONION_BLINDING,
+								shared_secret,
+								trampoline_shared_secret: Some(SharedSecret::from_bytes(
+									trampoline_shared_secret,
+								)),
+							});
+						}
+						Err(OnionDecodeErr::Malformed {
+							err_msg: "Non-final Trampoline onion data provided to us as last hop",
+							err_code: INVALID_ONION_BLINDING,
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::BlindedReceive(hop_data), Some(_))) => {
+						if hop_data.intro_node_blinding_point.is_some() {
+							return Err(OnionDecodeErr::Relay {
+								err_msg: "Final Trampoline intro node onion data provided to us as intermediate hop",
+								err_code: 0x4000 | 22,
+								shared_secret,
+								trampoline_shared_secret: Some(SharedSecret::from_bytes(
+									trampoline_shared_secret,
+								)),
+							});
+						}
+						Err(OnionDecodeErr::Malformed {
+							err_msg:
+								"Final Trampoline onion data provided to us as intermediate hop",
+							err_code: INVALID_ONION_BLINDING,
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::Forward(_), None)) => {
+						Err(OnionDecodeErr::Relay {
+							err_msg: "Non-final Trampoline onion data provided to us as last hop",
+							err_code: 0x4000 | 22,
+							shared_secret,
+							trampoline_shared_secret: Some(SharedSecret::from_bytes(
+								trampoline_shared_secret,
+							)),
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::Receive(_), Some(_))) => {
+						Err(OnionDecodeErr::Relay {
+							err_msg:
+								"Final Trampoline onion data provided to us as intermediate hop",
+							err_code: 0x4000 | 22,
+							shared_secret,
+							trampoline_shared_secret: Some(SharedSecret::from_bytes(
+								trampoline_shared_secret,
+							)),
+						})
+					},
 					Err(e) => Err(e),
 				}
 			},

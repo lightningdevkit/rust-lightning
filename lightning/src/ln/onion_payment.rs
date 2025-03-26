@@ -466,7 +466,7 @@ where
 {
 	let encode_malformed_error = |message: &str, err_code: u16| {
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
-		let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() {
+		let (sha256_of_onion, failure_code) = if msg.blinding_point.is_some() || err_code == INVALID_ONION_BLINDING {
 			([0; 32], INVALID_ONION_BLINDING)
 		} else {
 			(Sha256::hash(&msg.onion_routing_packet.hop_data).to_byte_array(), err_code)
