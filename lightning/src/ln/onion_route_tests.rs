@@ -692,6 +692,13 @@ fn test_onion_failure() {
 		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), false, None,
 		Some(NetworkUpdate::NodeFailure { node_id: route.paths[0].hops[1].pubkey, is_permanent: true }),
 		Some(channels[1].0.contents.short_channel_id), None);
+
+	run_onion_failure_test_with_fail_intercept("bogus err packet that is too short for an hmac", 200, &nodes,
+		&route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
+			msg.reason = vec![1, 2, 3];
+		}, || nodes[2].node.fail_htlc_backwards(&payment_hash), false, None,
+		None, None, None);
+
 	run_onion_failure_test_with_fail_intercept("0-length channel update in intermediate node UPDATE onion failure",
 		100, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 			msg.amount_msat -= 1;
