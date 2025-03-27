@@ -480,7 +480,7 @@ mod state_flags {
 	pub const REMOTE_STFU_SENT: u32 = 1 << 16;
 	pub const QUIESCENT: u32 = 1 << 17;
 	pub const INTERACTIVE_SIGNING: u32 = 1 << 18;
-	pub const OUR_TX_SIGNATURES_SENT: u32 = 1 << 19;
+	pub const OUR_TX_SIGNATURES_READY: u32 = 1 << 19;
 	pub const THEIR_TX_SIGNATURES_SENT: u32 = 1 << 20;
 }
 
@@ -523,9 +523,9 @@ define_state_flags!(
 		("Indicates they sent us a `tx_signatures` message.",
 			THEIR_TX_SIGNATURES_SENT, state_flags::THEIR_TX_SIGNATURES_SENT,
 			is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent),
-		("Indicates we sent them a `tx_signatures` message.",
-			OUR_TX_SIGNATURES_SENT, state_flags::OUR_TX_SIGNATURES_SENT,
-			is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent)
+		("Indicates we are ready to send them a `tx_signatures` message and it has been queued to send.",
+			OUR_TX_SIGNATURES_READY, state_flags::OUR_TX_SIGNATURES_READY,
+			is_our_tx_signatures_ready, set_our_tx_signatures_ready, clear_our_tx_signatures_ready)
 	]
 );
 
@@ -675,7 +675,11 @@ impl ChannelState {
 	}
 
 	fn is_pre_funded_state(&self) -> bool {
-		matches!(self, ChannelState::NegotiatingFunding(_)|ChannelState::FundingNegotiated(_))
+		match self {
+			ChannelState::NegotiatingFunding(_) => true,
+			ChannelState::FundingNegotiated(flags) if !flags.is_their_tx_signatures_sent() && !flags.is_our_tx_signatures_ready() => true,
+			_ => false,
+		}
 	}
 
 	fn is_both_sides_shutdown(&self) -> bool {
@@ -710,7 +714,7 @@ impl ChannelState {
 	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent, FUNDED_STATES);
 	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent, FUNDED_STATES);
 	impl_state_flag!(is_interactive_signing, set_interactive_signing, clear_interactive_signing, FundingNegotiated);
-	impl_state_flag!(is_our_tx_signatures_sent, set_our_tx_signatures_sent, clear_our_tx_signatures_sent, FundingNegotiated);
+	impl_state_flag!(is_our_tx_signatures_ready, set_our_tx_signatures_ready, clear_our_tx_signatures_ready, FundingNegotiated);
 	impl_state_flag!(is_their_tx_signatures_sent, set_their_tx_signatures_sent, clear_their_tx_signatures_sent, FundingNegotiated);
 	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready, AwaitingChannelReady);
 	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready, AwaitingChannelReady);
@@ -2337,10 +2341,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		self.context.assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => {
-				self.funding.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
-				commitment_signed
-			},
+			Ok(commitment_signed) => commitment_signed,
 			Err(err) => {
 				self.funding.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
@@ -5449,6 +5450,8 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		self.context.counterparty_prev_commitment_point = self.context.counterparty_cur_commitment_point;
 		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
+		// Clear any interactive signing session.
+		self.interactive_tx_signing_session = None;
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
@@ -6300,10 +6303,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.channel_state.set_their_tx_signatures_sent();
 
 			if funding_tx_opt.is_some() {
-				// We have a finalized funding transaction, so we can set the funding transaction and reset the
-				// signing session fields.
+				// We have a finalized funding transaction, so we can set the funding transaction.
 				self.funding.funding_transaction = funding_tx_opt.clone();
-				self.interactive_tx_signing_session = None;
 			}
 
 			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
@@ -6313,7 +6314,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 
 			if holder_tx_signatures_opt.is_some() {
-				self.context.channel_state.set_our_tx_signatures_sent();
+				self.context.channel_state.set_our_tx_signatures_ready();
 			}
 
 			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
@@ -6579,7 +6580,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// transaction and waits for us to do it).
 		let tx_signatures = self.context.monitor_pending_tx_signatures.take();
 		if tx_signatures.is_some() {
-			self.context.channel_state.set_our_tx_signatures_sent();
+			self.context.channel_state.set_our_tx_signatures_ready();
 		}
 
 		if self.context.channel_state.is_peer_disconnected() {
@@ -7102,7 +7103,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
 					}
 				} else {
-					return Err(ChannelError::Warn("No active signing session. The associated funding transaction may have already been broadcast.".into()));
+					return Err(ChannelError::close("Counterparty set `next_funding_txid` at incorrect state".into()));
 				}
 			} else {
 				// Don't send anything related to interactive signing if `next_funding_txid` is not set.
