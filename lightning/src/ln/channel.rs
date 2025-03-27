@@ -1215,7 +1215,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedV2(chan) => &chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => &chan.pre_funded.context,
+			ChannelPhase::RefundingV2(chan) => chan.context(),
 		}
 	}
 
@@ -1227,7 +1227,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => &mut chan.pre_funded.context,
+			ChannelPhase::RefundingV2(chan) => chan.context_mut(),
 		}
 	}
 
@@ -1239,7 +1239,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.funding,
 			ChannelPhase::UnfundedV2(chan) => &chan.funding,
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => &chan.pre_funded.funding,
+			ChannelPhase::RefundingV2(chan) => chan.funding(),
 		}
 	}
 
@@ -1252,7 +1252,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.funding,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.funding,
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => &mut chan.pre_funded.funding,
+			ChannelPhase::RefundingV2(chan) => chan.funding_mut(),
 		}
 	}
 
@@ -1264,7 +1264,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => (&chan.funding, &mut chan.context),
 			ChannelPhase::UnfundedV2(chan) => (&chan.funding, &mut chan.context),
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => (&chan.pre_funded.funding, &mut chan.pre_funded.context),
+			ChannelPhase::RefundingV2(chan) => chan.funding_and_context_mut(),
 		}
 	}
 
@@ -1348,7 +1348,13 @@ impl<SP: Deref> Channel<SP> where
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(channel) => Some(channel),
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(channel) => Some(&mut channel.post_pending),
+			ChannelPhase::RefundingV2(channel) => {
+				if let Some(ref mut post_pending) = &mut channel.post_pending {
+					Some(post_pending)
+				} else {
+					None
+				}
+			}
 			_ => None,
 		}
 	}
@@ -1531,8 +1537,8 @@ impl<SP: Deref> Channel<SP> where
 			}
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2(chan) => {
-				let logger = WithChannelContext::from(logger, &chan.post_pending.context, None);
-				chan.post_pending.funding_tx_constructed(counterparty_node_id, signing_session, &&logger)
+				let logger = WithChannelContext::from(logger, chan.context(), None);
+				chan.funding_tx_constructed(counterparty_node_id, signing_session, &&logger)
 			}
 			_ => {
 				Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
@@ -1593,42 +1599,26 @@ impl<SP: Deref> Channel<SP> where
 			},
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2(chan) => {
-				let holder_commitment_point = match chan.post_pending.unfunded_context.holder_commitment_point {
-					Some(point) => point,
-					None => {
-						let channel_id = chan.post_pending.context.channel_id();
-						// TODO(dual_funding): Add async signing support.
-						return Err( ChannelError::close(
-							format!("Expected to have holder commitment points available upon finishing interactive splice tx construction for channel {}",
-								channel_id)));
-					}
-				};
-				let mut funded_channel = FundedChannel {
-					funding: chan.post_pending.funding,
-					context: chan.post_pending.context,
-					interactive_tx_signing_session: chan.post_pending.interactive_tx_signing_session,
-					holder_commitment_point,
-					is_v2_established: true,
-					#[cfg(splicing)]
-					pending_splice_pre: None,
-					#[cfg(splicing)]
-					pending_splice_post: chan.post_pending.pending_splice_post,
-				};
-				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
-					.map(|monitor| (Some(monitor), None))
-					// TODO: Change to `inspect_err` when MSRV is high enough.
-					.map_err(|err| {
-						// We always expect a `ChannelError` close.
-						debug_assert!(matches!(err, ChannelError::Close(_)));
-						err
-					});
-				self.phase = ChannelPhase::Funded(funded_channel);
-				res
+				if let Some(mut post_funded) = chan.post_funded {
+					let res = post_funded.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
+						.map(|monitor| (Some(monitor), None))
+						// TODO: Change to `inspect_err` when MSRV is high enough.
+						.map_err(|err| {
+							// We always expect a `ChannelError` close.
+							debug_assert!(matches!(err, ChannelError::Close(_)));
+							err
+						});
+					self.phase = ChannelPhase::Funded(post_funded);
+					res
+				} else {
+					self.phase = ChannelPhase::RefundingV2(chan);
+					Err(ChannelError::close("Got a commitment_signed message for an unfunded channel!".into()))
+				}
 			}
 			_ => {
 				self.phase = phase;
 				debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
-				Err(ChannelError::close("Got a commitment_signed message for an unfunded V1 channel!".into()))
+				Err(ChannelError::close("Got a commitment_signed message for an unfunded channel!".into()))
 			}
 		};
 		debug_assert!(!matches!(self.phase, ChannelPhase::Undefined));
@@ -1682,8 +1672,12 @@ impl<SP: Deref> Channel<SP> where
 			let _res = self.phase_to_splice(post_chan)?;
 
 			if let ChannelPhase::RefundingV2(chan) = &mut self.phase {
-				let splice_ack_msg = chan.post_pending.splice_init(msg, signer_provider, entropy_source, our_node_id, logger)?;
-				Ok(splice_ack_msg)
+				if let Some(ref mut post_pending) = &mut chan.post_pending {
+					let splice_ack_msg = post_pending.splice_init(msg, signer_provider, entropy_source, our_node_id, logger)?;
+					Ok(splice_ack_msg)
+				} else {
+					Err(ChannelError::Warn("Internal error: splicing channel is not negotiating after splice_init".to_owned()))
+				}
 			} else {
 				unreachable!("Must have been transitioned to RefundingV2 in above call if successful");
 			}
@@ -1721,8 +1715,12 @@ impl<SP: Deref> Channel<SP> where
 			let _res = self.phase_to_splice(post_chan)?;
 
 			if let ChannelPhase::RefundingV2(chan) = &mut self.phase {
-				let tx_msg_opt = chan.post_pending.splice_ack(msg, pending_splice.our_funding_contribution, signer_provider, entropy_source, our_node_id, logger)?;
-				Ok(tx_msg_opt)
+				if let Some(post_pending) = &mut chan.post_pending {
+					let tx_msg_opt = post_pending.splice_ack(msg, pending_splice.our_funding_contribution, signer_provider, entropy_source, our_node_id, logger)?;
+					Ok(tx_msg_opt)
+				} else {
+					Err(ChannelError::Warn("Internal error: splicing channel is not negotiating after splice_ack".to_owned()))
+				}
 			} else {
 				unreachable!("Must have been transitioned to RefundingV2 in above call if successful");
 			}
@@ -1784,8 +1782,8 @@ where
 #[cfg(splicing)]
 pub(super) struct SplicingChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub pre_funded: FundedChannel<SP>,
-	pub post_pending: PendingV2Channel<SP>,
-	// pub post_funded: Option<FundedChannel<SP>>,
+	pub post_pending: Option<PendingV2Channel<SP>>,
+	pub post_funded: Option<FundedChannel<SP>>,
 }
 
 #[cfg(splicing)]
@@ -1793,8 +1791,95 @@ impl<SP: Deref> SplicingChannel<SP> where SP::Target: SignerProvider {
 	pub(super) fn new(pre_funded: FundedChannel<SP>, post_pending: PendingV2Channel<SP>) -> Self {
 		Self {
 			pre_funded,
-			post_pending,
-			// post_funded: None,
+			post_pending: Some(post_pending),
+			post_funded: None,
+		}
+	}
+
+	pub(super) fn context(&self) -> &ChannelContext<SP> {
+		// If post is funded, use that, otherwise use pre
+		if let Some(ref post_funded) = &self.post_funded {
+			&post_funded.context
+		} else {
+			&self.pre_funded.context
+		}
+	}
+
+	pub(super) fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		// If post is funded, use that, otherwise use pre
+		if let Some(ref mut post_funded) = &mut self.post_funded {
+			&mut post_funded.context
+		} else {
+			&mut self.pre_funded.context
+		}
+	}
+
+	pub(super) fn funding(&self) -> &FundingScope {
+		// If post is funded, use that, otherwise use pre
+		if let Some(ref post_funded) = &self.post_funded {
+			&post_funded.funding
+		} else {
+			&self.pre_funded.funding
+		}
+	}
+
+	#[cfg(any(test, feature = "_externalize_tests"))]
+	pub(super) fn funding_mut(&mut self) -> &mut FundingScope {
+		// If post is funded, use that, otherwise use pre
+		if let Some(ref mut post_funded) = &mut self.post_funded {
+			&mut post_funded.funding
+		} else {
+			&mut self.pre_funded.funding
+		}
+	}
+
+	pub(super) fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
+		// If post is funded, use that, otherwise use pre
+		if let Some(ref mut post_funded) = &mut self.post_funded {
+			(&mut post_funded.funding, &mut post_funded.context)
+		} else {
+			(&mut self.pre_funded.funding, &mut self.pre_funded.context)
+		}
+	}
+
+	pub(super) fn funding_tx_constructed<L: Deref>(
+		&mut self, counterparty_node_id: &PublicKey, signing_session: InteractiveTxSigningSession, logger: &L,
+	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError> where L::Target: Logger {
+		if let Some(mut post_pending) = self.post_pending.take() {
+			let logger = WithChannelContext::from(logger, &post_pending.context, None);
+			let res = post_pending.funding_tx_constructed(counterparty_node_id, signing_session, &&logger)?;
+
+			// Promote pending channel to Funded
+			let holder_commitment_point = match post_pending.unfunded_context.holder_commitment_point {
+				Some(point) => point,
+				None => {
+					let channel_id = self.context().channel_id();
+					// TODO(dual_funding): Add async signing support.
+					return Err( ChannelError::close(format!(
+						"Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+						channel_id,
+					)));
+				}
+			};
+			let funded_channel = FundedChannel {
+				funding: post_pending.funding,
+				context: post_pending.context,
+				interactive_tx_signing_session: post_pending.interactive_tx_signing_session,
+				holder_commitment_point,
+				is_v2_established: true,
+				#[cfg(splicing)]
+				pending_splice_pre: None,
+				#[cfg(splicing)]
+				pending_splice_post: post_pending.pending_splice_post,
+			};
+			self.post_funded = Some(funded_channel);
+			self.post_pending = None;
+
+			Ok(res)
+		} else {
+			Err(ChannelError::Warn(
+				"Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()
+			))
 		}
 	}
 }
@@ -2692,6 +2777,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let transaction_number = self.unfunded_context.transaction_number();
 		let is_splice_pending = self.is_splice_pending();
 
+		// Find the funding output
 		let mut output_index = None;
 		let expected_spk = self.funding.get_funding_redeemscript().to_p2wsh();
 		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
