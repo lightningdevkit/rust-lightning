@@ -149,7 +149,7 @@ impl LockMetadata {
 			LOCKS_INIT.call_once(|| unsafe {
 				LOCKS = Some(StdMutex::new(new_hash_map()));
 			});
-			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock().unwrap();
+			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock();
 			match locks.entry(lock_constr_location) {
 				hash_map::Entry::Occupied(e) => {
 					assert_eq!(lock_constr_colno,
