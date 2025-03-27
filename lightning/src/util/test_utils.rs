@@ -378,6 +378,24 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	}
 }
 
+#[cfg(feature = "std")]
+pub trait SyncBroadcaster : chaininterface::BroadcasterInterface + Sync {}
+#[cfg(feature = "std")]
+pub trait SyncPersist : Persist<TestChannelSigner> + Sync {}
+#[cfg(feature = "std")]
+impl<T: chaininterface::BroadcasterInterface + Sync> SyncBroadcaster for T {}
+#[cfg(feature = "std")]
+impl<T: Persist<TestChannelSigner> + Sync> SyncPersist for T {}
+
+#[cfg(not(feature = "std"))]
+pub trait SyncBroadcaster : chaininterface::BroadcasterInterface {}
+#[cfg(not(feature = "std"))]
+pub trait SyncPersist : Persist<TestChannelSigner> {}
+#[cfg(not(feature = "std"))]
+impl<T: chaininterface::BroadcasterInterface> SyncBroadcaster for T {}
+#[cfg(not(feature = "std"))]
+impl<T: Persist<TestChannelSigner>> SyncPersist for T {}
+
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
@@ -385,10 +403,10 @@ pub struct TestChainMonitor<'a> {
 	pub chain_monitor: ChainMonitor<
 		TestChannelSigner,
 		&'a TestChainSource,
-		&'a (dyn chaininterface::BroadcasterInterface + Sync),
+		&'a dyn SyncBroadcaster,
 		&'a TestFeeEstimator,
 		&'a TestLogger,
-		&'a (dyn Persist<TestChannelSigner> + Sync),
+		&'a dyn SyncPersist,
 	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -402,8 +420,8 @@ pub struct TestChainMonitor<'a> {
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
 		chain_source: Option<&'a TestChainSource>,
-		broadcaster: &'a (dyn chaininterface::BroadcasterInterface + Sync), logger: &'a TestLogger,
-		fee_estimator: &'a TestFeeEstimator, persister: &'a (dyn Persist<TestChannelSigner> + Sync),
+		broadcaster: &'a dyn SyncBroadcaster, logger: &'a TestLogger,
+		fee_estimator: &'a TestFeeEstimator, persister: &'a dyn SyncPersist,
 		keys_manager: &'a TestKeysInterface,
 	) -> Self {
 		Self {
