@@ -15,6 +15,7 @@
 //! call into the provided message handlers (probably a ChannelManager and P2PGossipSync) with
 //! messages they should handle, and encoding/sending response messages.
 
+use bitcoin::Txid;
 use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
@@ -40,6 +41,8 @@ use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
+
+use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
 use crate::sync::{Mutex, MutexGuard, FairRwLock};
@@ -608,6 +611,8 @@ struct Peer {
 	received_channel_announce_since_backlogged: bool,
 
 	inbound_connection: bool,
+
+	commitment_signed_batch: Option<(ChannelId, BTreeMap<Txid, msgs::CommitmentSigned>)>,
 }
 
 impl Peer {
@@ -1140,6 +1145,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: false,
+
+					commitment_signed_batch: None,
 				}));
 				Ok(res)
 			}
@@ -1196,6 +1203,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: true,
+
+					commitment_signed_batch: None,
 				}));
 				Ok(())
 			}
@@ -1739,6 +1748,50 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			return Ok(None);
 		} else if peer_lock.their_features.is_none() {
 			log_debug!(logger, "Peer {} sent non-Init first message", log_pubkey!(their_node_id));
+			return Err(PeerHandleError { }.into());
+		}
+
+		// During splicing, commitment_signed messages need to be collected into a single batch
+		// before they are handled.
+		if let wire::Message::CommitmentSigned(mut msg) = message {
+			if let Some(batch) = msg.batch.take() {
+				let (channel_id, cache) = peer_lock
+					.commitment_signed_batch
+					.get_or_insert_with(|| (msg.channel_id, BTreeMap::new()));
+
+				if msg.channel_id != *channel_id {
+					log_debug!(logger, "Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), channel_id, &msg.channel_id);
+					return Err(PeerHandleError { }.into());
+				}
+
+				const COMMITMENT_SIGNED_BATCH_LIMIT: usize = 100;
+				if cache.len() == COMMITMENT_SIGNED_BATCH_LIMIT {
+					log_debug!(logger, "Peer {} sent batched commitment_signed for channel {} exceeding the limit", log_pubkey!(their_node_id), channel_id);
+					return Err(PeerHandleError { }.into());
+				}
+
+				match cache.entry(batch.funding_txid) {
+					btree_map::Entry::Vacant(entry) => { entry.insert(msg); },
+					btree_map::Entry::Occupied(_) => {
+						log_debug!(logger, "Peer {} sent batched commitment_signed with duplicate funding_txid {} for channel {}", log_pubkey!(their_node_id), channel_id, &batch.funding_txid);
+						return Err(PeerHandleError { }.into());
+					}
+				}
+
+				if cache.len() >= batch.batch_size as usize {
+					self.message_handler.chan_handler.handle_commitment_signed_batch(their_node_id, *channel_id, cache);
+					peer_lock.commitment_signed_batch.take();
+				}
+
+				return Ok(None);
+			} else if peer_lock.commitment_signed_batch.is_some() {
+				log_debug!(logger, "Peer {} sent non-batched commitment_signed for channel {} when expecting batched commitment_signed", log_pubkey!(their_node_id), &msg.channel_id);
+				return Err(PeerHandleError { }.into());
+			} else {
+				return Ok(Some(wire::Message::CommitmentSigned(msg)));
+			}
+		} else if peer_lock.commitment_signed_batch.is_some() {
+			log_debug!(logger, "Peer {} sent non-commitment_signed message when expecting batched commitment_signed", log_pubkey!(their_node_id));
 			return Err(PeerHandleError { }.into());
 		}
 
