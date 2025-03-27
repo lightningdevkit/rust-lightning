@@ -926,18 +926,26 @@ pub(super) fn build_failure_packet(
 	onion_error_packet
 }
 
-pub(crate) struct DecodedOnionFailure {
-	pub(crate) network_update: Option<NetworkUpdate>,
-	pub(crate) short_channel_id: Option<u64>,
-	pub(crate) payment_failed_permanently: bool,
-	pub(crate) failed_within_blinded_path: bool,
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) onion_error_code: Option<u16>,
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) onion_error_data: Option<Vec<u8>>,
-}
+mod fuzzy_onion_utils {
+	use super::*;
 
-pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
+	pub struct DecodedOnionFailure {
+		pub(crate) network_update: Option<NetworkUpdate>,
+		pub(crate) short_channel_id: Option<u64>,
+		pub(crate) payment_failed_permanently: bool,
+		pub(crate) failed_within_blinded_path: bool,
+		#[cfg(any(test, feature = "_test_utils"))]
+		pub(crate) onion_error_code: Option<u16>,
+		#[cfg(any(test, feature = "_test_utils"))]
+		pub(crate) onion_error_data: Option<Vec<u8>>,
+	}
+}
+#[cfg(fuzzing)]
+pub use self::fuzzy_onion_utils::*;
+#[cfg(not(fuzzing))]
+pub(crate) use self::fuzzy_onion_utils::*;
+
+pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 	encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
