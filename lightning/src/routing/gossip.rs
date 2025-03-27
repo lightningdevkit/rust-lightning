@@ -1786,7 +1786,7 @@ where
 	}
 
 	fn test_node_counter_consistency(&self) {
-		#[cfg(debug_assertions)]
+		#[cfg(test)]
 		{
 			let channels = self.channels.read().unwrap();
 			let nodes = self.nodes.read().unwrap();
