@@ -735,6 +735,120 @@ where
 	}
 }
 
+/// This message router is similar to [`DefaultMessageRouter`], but it always creates
+/// full-length blinded paths, using the peer's [`NodeId`].
+///
+/// This message router can only route to a directly connected [`Destination`].
+///
+/// # Privacy
+///
+/// Creating [`BlindedMessagePath`]s may affect privacy since, if a suitable path cannot be found,
+/// it will create a one-hop path using the recipient as the introduction node if it is an announced
+/// node. Otherwise, there is no way to find a path to the introduction node in order to send a
+/// message, and thus an `Err` is returned.
+pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	network_graph: G,
+	entropy_source: ES,
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> NodeIdMessageRouter<G, L, ES>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	/// Creates a [`NodeIdMessageRouter`] using the given [`NetworkGraph`].
+	pub fn new(network_graph: G, entropy_source: ES) -> Self {
+		Self { network_graph, entropy_source }
+	}
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter
+	for NodeIdMessageRouter<G, L, ES>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
+	) -> Result<OnionMessagePath, ()> {
+		DefaultMessageRouter::<G, L, ES>::find_path(&self.network_graph, sender, peers, destination)
+	}
+
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		DefaultMessageRouter::create_blinded_paths_from_iter(
+			&self.network_graph,
+			recipient,
+			local_node_receive_key,
+			context,
+			peers.into_iter(),
+			&self.entropy_source,
+			secp_ctx,
+			false,
+		)
+	}
+
+	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		DefaultMessageRouter::create_blinded_paths_from_iter(
+			&self.network_graph,
+			recipient,
+			local_node_receive_key,
+			context,
+			peers.into_iter(),
+			&self.entropy_source,
+			secp_ctx,
+			false,
+		)
+	}
+}
+
+/// A special [`MessageRouter`] that performs no routing and does not create blinded paths.
+/// Its purpose is to enable the creation of [`Offer`]s and [`Refund`]s without blinded paths,
+/// where the user's `node_id` is used directly as the [`Destination`].
+///
+/// # Note
+/// [`NullMessageRouter`] **must not** be used as the type parameter for [`ChannelManager`],
+/// since [`ChannelManager`] requires a functioning [`MessageRouter`] to create blinded paths,
+/// which are necessary for constructing reply paths in onion message communication.
+/// However, [`NullMessageRouter`] *can* still be passed as an argument to [`ChannelManager`]
+/// methods that accept a router when blinded paths are not needed.
+///
+/// [`Offer`]: crate::offers::offer::Offer
+/// [`Refund`]: crate::offers::refund::Refund
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+pub struct NullMessageRouter {}
+
+impl MessageRouter for NullMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination,
+	) -> Result<OnionMessagePath, ()> {
+		Err(())
+	}
+
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		Ok(vec![])
+	}
+
+	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
+		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		Ok(vec![])
+	}
+}
+
 /// A path for sending an [`OnionMessage`].
 #[derive(Clone)]
 pub struct OnionMessagePath {
