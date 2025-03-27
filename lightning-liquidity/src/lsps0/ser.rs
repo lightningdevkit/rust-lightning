@@ -23,12 +23,14 @@ use crate::lsps2::msgs::{
 };
 use crate::prelude::HashMap;
 
+use chrono::DateTime;
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::wire;
 use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
 
+use core::time::Duration;
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -213,6 +215,16 @@ impl LSPSDateTime {
 		let datetime_seconds_since_epoch =
 			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
 		now_seconds_since_epoch > datetime_seconds_since_epoch
+	}
+
+	/// Returns the time in seconds since the unix epoch.
+	pub fn abs_diff(&self, other: &Self) -> u64 {
+		self.0.timestamp().abs_diff(other.0.timestamp())
+	}
+
+	/// Returns the time in seconds since the unix epoch.
+	pub fn new_from_duration_since_epoch(duration: Duration) -> Self {
+		Self(DateTime::UNIX_EPOCH + duration)
 	}
 }
 
