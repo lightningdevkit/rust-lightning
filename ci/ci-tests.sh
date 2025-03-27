@@ -35,7 +35,7 @@ cargo check --verbose --color always
 # When the workspace members change, make sure to update the list here as well
 # as in `Cargo.toml`.
 WORKSPACE_MEMBERS=(
-	lightning
+	lightning@0.2.0+git
 	lightning-types
 	lightning-block-sync
 	lightning-invoice
@@ -47,6 +47,7 @@ WORKSPACE_MEMBERS=(
 	lightning-macros
 	lightning-dns-resolver
 	lightning-liquidity
+	lightning-tests
 	possiblyrandom
 )
 
@@ -77,14 +78,14 @@ cargo test -p lightning-custom-message --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 
 echo -e "\n\nTest backtrace-debug builds"
-cargo test -p lightning --verbose --color always --features backtrace
+cargo test -p lightning@0.2.0+git --verbose --color always --features backtrace
 
 echo -e "\n\nTesting no_std builds"
 for DIR in lightning-invoice lightning-rapid-gossip-sync lightning-liquidity; do
 	cargo test -p $DIR --verbose --color always --no-default-features
 done
 
-cargo test -p lightning --verbose --color always --no-default-features
+cargo test -p lightning@0.2.0+git --verbose --color always --no-default-features
 
 echo -e "\n\nTesting c_bindings builds"
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
@@ -99,11 +100,11 @@ done
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
 # disable doctests in `c_bindings` so we skip doctests entirely here.
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features --lib --bins --tests
-RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --lib --bins --tests
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning@0.2.0+git --verbose --color always --no-default-features --lib --bins --tests
 
 echo -e "\n\nTesting other crate-specific builds"
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
-RUSTFLAGS="$RUSTFLAGS --cfg=ldk_test_vectors" cargo test -p lightning --verbose --color always --no-default-features --features=std
+RUSTFLAGS="$RUSTFLAGS --cfg=ldk_test_vectors" cargo test -p lightning@0.2.0+git --verbose --color always --no-default-features --features=std
 # This one only works for lightning-invoice
 # check that compile with no_std and serde works in lightning-invoice
 cargo test -p lightning-invoice --verbose --color always --no-default-features --features serde
@@ -130,12 +131,12 @@ if [ -f "$(which arm-none-eabi-gcc)" ]; then
 fi
 
 echo -e "\n\nTest cfg-flag builds"
-RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning@0.2.0+git
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-RUSTFLAGS="--cfg=splicing" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=splicing" cargo test --verbose --color always -p lightning@0.2.0+git
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-RUSTFLAGS="--cfg=trampoline" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=trampoline" cargo test --verbose --color always -p lightning@0.2.0+git
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-RUSTFLAGS="--cfg=async_payments" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=async_payments" cargo test --verbose --color always -p lightning@0.2.0+git
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=lsps1_service" cargo test --verbose --color always -p lightning-liquidity
