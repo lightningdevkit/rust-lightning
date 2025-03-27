@@ -6,7 +6,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::blinded_path::message::{
-	AsyncPaymentsContext, BlindedMessagePath, MessageContext, OffersContext,
+	AsyncPaymentsContext, BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext,
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::inbound_payment::ExpandedKey;
@@ -107,7 +107,7 @@ impl MessageRouter for TestMessageRouter {
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, _recipient: PublicKey, _local_node_receive_key: ReceiveAuthKey,
-		_context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
+		_context: MessageContext, _peers: Vec<MessageForwardNode>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		unreachable!()
 	}

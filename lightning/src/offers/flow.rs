@@ -334,7 +334,6 @@ where
 		let receive_key = self.get_receive_auth_key();
 		let secp_ctx = &self.secp_ctx;
 
-		let peers = peers.into_iter().map(|node| node.node_id).collect();
 		self.message_router
 			.create_blinded_paths(recipient, receive_key, context, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))

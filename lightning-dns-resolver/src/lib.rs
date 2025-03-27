@@ -159,7 +159,9 @@ mod test {
 	use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 	use bitcoin::Block;
 
-	use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
+	use lightning::blinded_path::message::{
+		BlindedMessagePath, MessageContext, MessageForwardNode,
+	};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::events::{Event, PaymentPurpose};
 	use lightning::ln::channelmanager::{PaymentId, Retry};
@@ -228,7 +230,7 @@ mod test {
 
 		fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 			&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-			context: MessageContext, _peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+			context: MessageContext, _peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 		) -> Result<Vec<BlindedMessagePath>, ()> {
 			let keys = KeysManager::new(&[0; 32], 42, 43);
 			Ok(vec![BlindedMessagePath::one_hop(

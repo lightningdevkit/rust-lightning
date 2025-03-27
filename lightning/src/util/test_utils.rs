@@ -347,13 +347,17 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
-		context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let mut peers = peers;
 		{
 			let peers_override = self.peers_override.lock().unwrap();
 			if !peers_override.is_empty() {
-				peers = peers_override.clone();
+				let peer_override_nodes: Vec<_> = peers_override
+					.iter()
+					.map(|pk| MessageForwardNode { node_id: *pk, short_channel_id: None })
+					.collect();
+				peers = peer_override_nodes;
 			}
 		}
 		self.inner.create_blinded_paths(recipient, local_node_receive_key, context, peers, secp_ctx)
