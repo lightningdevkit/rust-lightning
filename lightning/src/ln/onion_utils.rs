@@ -957,7 +957,7 @@ where
 		process_onion_failure_inner(
 			secp_ctx,
 			logger,
-			htlc_source,
+			path,
 			&outer_session_priv,
 			Some(primary_session_priv),
 			encrypted_packet,
@@ -966,7 +966,7 @@ where
 		process_onion_failure_inner(
 			secp_ctx,
 			logger,
-			htlc_source,
+			path,
 			primary_session_priv,
 			None,
 			encrypted_packet,
@@ -978,19 +978,12 @@ where
 /// OutboundRoute).
 #[inline]
 pub(super) fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, outer_session_priv: &SecretKey,
+	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
 	inner_session_priv: Option<&SecretKey>, mut encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
 where
 	L::Target: Logger,
 {
-	let (path, first_hop_htlc_msat) = match htlc_source {
-		HTLCSource::OutboundRoute { ref path, ref first_hop_htlc_msat, .. } => {
-			(path, first_hop_htlc_msat)
-		},
-		_ => unreachable!(),
-	};
-
 	// Check that there is at least enough data for an hmac, otherwise none of the checking that we may do makes sense.
 	// Also prevent slice out of bounds further down.
 	if encrypted_packet.data.len() < 32 {
@@ -1022,7 +1015,6 @@ where
 		failed_within_blinded_path: bool,
 	}
 	let mut res: Option<FailureLearnings> = None;
-	let mut htlc_msat = *first_hop_htlc_msat;
 	let mut _error_code_ret = None;
 	let mut _error_packet_ret = None;
 	let mut is_from_final_non_blinded_node = false;
@@ -1038,13 +1030,6 @@ where
 	}
 
 	impl<'a> ErrorHop<'a> {
-		fn fee_msat(&self) -> u64 {
-			match self {
-				ErrorHop::RouteHop(rh) => rh.fee_msat,
-				ErrorHop::TrampolineHop(th) => th.fee_msat,
-			}
-		}
-
 		fn pubkey(&self) -> &PublicKey {
 			match self {
 				ErrorHop::RouteHop(rh) => rh.node_pubkey(),
@@ -1160,9 +1145,6 @@ where
 				},
 			}
 		};
-
-		let amt_to_forward = htlc_msat - route_hop.fee_msat();
-		htlc_msat = amt_to_forward;
 
 		crypt_failure_packet(shared_secret.as_ref(), &mut encrypted_packet);
 
@@ -2539,20 +2521,13 @@ mod tests {
 			let trampoline_session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 			let outer_session_priv = SecretKey::from_slice(&[4; 32]).unwrap();
 
-			let htlc_source = HTLCSource::OutboundRoute {
-				path: build_trampoline_test_path(),
-				session_priv: trampoline_session_priv,
-				first_hop_htlc_msat: dummy_amt_msat,
-				payment_id: PaymentId([1; 32]),
-			};
-
 			let error_packet_hex = "f8941a320b8fde4ad7b9b920c69cbf334114737497d93059d77e591eaa78d6334d3e2aeefcb0cc83402eaaf91d07d695cd895d9cad1018abdaf7d2a49d7657b1612729db7f393f0bb62b25afaaaa326d72a9214666025385033f2ec4605dcf1507467b5726d806da180ea224a7d8631cd31b0bdd08eead8bfe14fc8c7475e17768b1321b54dd4294aecc96da391efe0ca5bd267a45ee085c85a60cf9a9ac152fa4795fff8700a3ea4f848817f5e6943e855ab2e86f6929c9e885d8b20c49b14d2512c59ed21f10bd38691110b0d82c00d9fa48a20f10c7550358724c6e8e2b966e56a0aadf458695b273768062fa7c6e60eb72d4cdc67bf525c194e4a17fdcaa0e9d80480b586bf113f14eea530b6728a1c53fe5cee092e24a90f21f4b764015e7ed5e23";
 			let error_packet =
 				OnionErrorPacket { data: <Vec<u8>>::from_hex(error_packet_hex).unwrap() };
 			let decrypted_failure = process_onion_failure_inner(
 				&secp_ctx,
 				&logger,
-				&htlc_source,
+				&build_trampoline_test_path(),
 				&outer_session_priv,
 				Some(&trampoline_session_priv),
 				error_packet,
