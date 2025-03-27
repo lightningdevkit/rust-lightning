@@ -9,17 +9,17 @@
 
 //! Service implementation for LSPS5 webhook registration
 
-use core::time::Duration;
-
-use super::url_utils::Url;
 use crate::events::EventQueue;
-use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
+use crate::lsps0::ser::{
+	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+};
 use crate::lsps5::msgs::{
 	ListWebhooksRequest, ListWebhooksResponse, RemoveWebhookRequest, RemoveWebhookResponse,
 	SetWebhookRequest, SetWebhookResponse, WebhookNotification, WebhookNotificationMethod,
 };
 use crate::message_queue::MessageQueue;
 use crate::prelude::*;
+use core::time::Duration;
 
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -30,18 +30,10 @@ use crate::sync::{Arc, Mutex};
 use serde_json::json;
 
 use super::event::LSPS5ServiceEvent;
-use super::msgs::LSPS5Message;
-use super::msgs::LSPS5Request;
-use super::msgs::LSPS5Response;
-use super::msgs::Lsps5AppName;
-use super::msgs::Lsps5WebhookUrl;
-use super::msgs::LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE;
-use super::msgs::LSPS5_TOO_LONG_ERROR_CODE;
-use super::msgs::LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE;
-use super::msgs::LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE;
-use super::msgs::LSPS5_URL_PARSE_ERROR_CODE;
-use super::msgs::MAX_APP_NAME_LENGTH;
-use super::msgs::MAX_WEBHOOK_URL_LENGTH;
+use super::msgs::{
+	LSPS5AppName, LSPS5Message, LSPS5Request, LSPS5Response, LSPS5WebhookUrl,
+	LSPS5_APP_NAME_NOT_FOUND_ERROR_CODE, LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE,
+};
 
 /// Minimum number of days to retain webhooks after a client's last channel is closed
 pub const MIN_WEBHOOK_RETENTION_DAYS: u32 = 30;
@@ -50,9 +42,9 @@ pub const MIN_WEBHOOK_RETENTION_DAYS: u32 = 30;
 #[derive(Debug, Clone)]
 struct StoredWebhook {
 	/// App name identifier for this webhook
-	_app_name: Lsps5AppName,
+	_app_name: LSPS5AppName,
 	/// The webhook URL
-	url: Lsps5WebhookUrl,
+	url: LSPS5WebhookUrl,
 	/// Client node ID
 	_counterparty_node_id: PublicKey,
 	/// Last time this webhook was used
@@ -61,123 +53,25 @@ struct StoredWebhook {
 	last_notification_sent: HashMap<WebhookNotificationMethod, Duration>,
 }
 
-/// Configuration for signature storage
-#[derive(Clone, Copy, Debug)]
-pub struct SignatureStorageConfig {
-	/// Maximum number of signatures to store (default: 10000)
-	pub max_signatures: usize,
-	/// Retention time for signatures in minutes (default: 20)
-	pub retention_minutes: u64,
-}
-
-impl Default for SignatureStorageConfig {
-	fn default() -> Self {
-		Self { max_signatures: 10000, retention_minutes: 20 }
-	}
-}
-
-/// Trait defining HTTP client interface for LSPS5 webhook delivery
-///
-/// # Example Implementation
-///
-/// ```
-/// use lightning_liquidity::lsps5::service::HttpClient;
-///
-/// // A simple HTTP client implementation
-/// pub struct MyHttpClient {
-///     // Your HTTP client internals go here
-///     // While you can use any HTTP client library, here are some common patterns:
-///
-///     // - With **reqwest**: Implement using `reqwest::blocking::Client` with appropriate error handling
-///     // - With **ureq**: Create requests with `ureq::post(url).set("header", "value").send_string(&body)`
-///     // - With **hyper**: Use an executor for async requests or wrap in a blocking interface
-///     // - With **curl**: Use the curl crate to make HTTP requests directly
-/// }
-///
-/// impl MyHttpClient {
-///     pub fn new() -> Self {
-///         Self {
-///             // Initialize your HTTP client here
-///         }
-///     }
-/// }
-///
-/// impl HttpClient for MyHttpClient {
-///     fn post(&self, url: &str, headers: Vec<(String, String)>, body: String) -> Result<(), String> {
-///         // Example implementation steps:
-///         // 1. Create a new POST request to the URL
-///         // 2. Set the headers from the headers Vec
-///         // 3. Set the body content
-///         // 4. Send the request
-///         // 5. Return Ok(()) for success or Err with message for failure
-///         
-///         println!("Sending webhook to: {}", url);
-///         println!("With headers: {:?}", headers);
-///         println!("And body: {}", body);
-///         
-///         // Replace this with actual implementation using your HTTP library of choice
-///         Ok(())
-///     }
-/// }
-///
-/// // Usage in an LSP implementation:
-/// fn example() {
-///     let my_http_client = MyHttpClient::new();
-///     let config = lightning_liquidity::lsps5::service::LSPS5ServiceConfig::default()
-///         .with_http_client(my_http_client);
-///     // Pass config when creating LSPS5ServiceHandler
-/// }
-/// ```
-pub trait HttpClient: Send + Sync + 'static {
-	/// Send a POST request to the webhook URL
-	///
-	/// # Arguments
-	/// * `url` - The destination URL for the webhook notification
-	/// * `headers` - A list of HTTP headers to include in the request
-	/// * `body` - The JSON body to send in the request
-	///
-	/// # Returns
-	/// * `Ok(())` if the notification was sent successfully
-	/// * `Err(String)` with an error message if the notification failed
-	fn post(&self, url: &str, headers: Vec<(String, String)>, body: String) -> Result<(), String>;
-}
-
 /// Trait defining a time provider for LSPS5 service
 /// This trait is used to provide the current time for LSPS5 service operations
 /// and to convert between timestamps and durations
-pub trait TimeProvider: Send + Sync + 'static {
+pub trait TimeProvider {
 	/// Get the current time as a duration since the Unix epoch
-	fn now(&self) -> Duration;
+	fn duration_since_epoch(&self) -> Duration;
 }
 
 /// Default time provider using the system clock
 #[derive(Clone, Debug)]
-#[cfg(feature = "std")]
+#[cfg(feature = "time")]
 pub struct DefaultTimeProvider;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "time")]
 impl TimeProvider for DefaultTimeProvider {
-	fn now(&self) -> Duration {
+	fn duration_since_epoch(&self) -> Duration {
 		use std::time::{SystemTime, UNIX_EPOCH};
-		let now =
-			SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch");
-		Duration::from_secs(now.as_secs())
+		SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
 	}
-}
-
-/// Convert an RFC3339 timestamp string to a Duration
-pub fn from_rfc3339(s: &str) -> Result<Duration, String> {
-	use chrono::DateTime;
-	let dt = DateTime::parse_from_rfc3339(s).map_err(|e| e.to_string())?;
-	let now = dt.timestamp();
-	Ok(Duration::from_secs(now as u64))
-}
-
-/// Convert a Duration to an RFC3339 timestamp string
-pub fn to_rfc3339(duration: Duration) -> String {
-	use chrono::DateTime;
-	(DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()).unwrap())
-		.to_rfc3339()
 }
 
 /// Configuration for LSPS5 service
@@ -189,13 +83,6 @@ pub struct LSPS5ServiceConfig {
 	pub signing_key: SecretKey,
 	/// Minimum time between sending the same notification type in hours (default: 24)
 	pub notification_cooldown_hours: u64,
-	/// Configuration for signature storage
-	pub signature_config: SignatureStorageConfig,
-	/// Time provider for LSPS5 service
-	pub time_provider: Option<Arc<dyn TimeProvider>>,
-	/// HTTP client for webhook delivery
-	#[doc(hidden)] // Hide from docs since it uses Arc and can't be directly created
-	pub(crate) http_client: Option<Arc<dyn HttpClient>>,
 }
 
 impl Default for LSPS5ServiceConfig {
@@ -204,27 +91,7 @@ impl Default for LSPS5ServiceConfig {
 			max_webhooks_per_client: 10,
 			signing_key: SecretKey::from_slice(&[1; 32]).expect("Static key should be valid"),
 			notification_cooldown_hours: 24,
-			signature_config: SignatureStorageConfig::default(),
-			http_client: None,
-			#[cfg(feature = "std")]
-			time_provider: Some(Arc::new(DefaultTimeProvider)),
-			#[cfg(not(feature = "std"))]
-			time_provider: None,
 		}
-	}
-}
-
-impl LSPS5ServiceConfig {
-	/// Set a custom HTTP client for webhook delivery
-	pub fn with_http_client(mut self, http_client: impl HttpClient + 'static) -> Self {
-		self.http_client = Some(Arc::new(http_client));
-		self
-	}
-
-	/// Set a custom time provider for the LSPS5 service
-	pub fn with_time_provider(mut self, time_provider: impl TimeProvider + 'static) -> Self {
-		self.time_provider = Some(Arc::new(time_provider));
-		self
 	}
 }
 
@@ -233,19 +100,17 @@ pub struct LSPS5ServiceHandler {
 	/// Configuration parameters
 	config: LSPS5ServiceConfig,
 	/// Map of client node IDs to their registered webhooks
-	webhooks: Arc<Mutex<HashMap<PublicKey, HashMap<Lsps5AppName, StoredWebhook>>>>,
-	/// Map of client node IDs to their channel counts
-	client_channel_counts: Arc<Mutex<HashMap<PublicKey, u32>>>,
-	/// Map of recently used signatures to prevent replay attacks
-	recent_signatures: Arc<Mutex<VecDeque<(String, Duration)>>>,
+	webhooks: Arc<Mutex<HashMap<PublicKey, HashMap<LSPS5AppName, StoredWebhook>>>>,
 	/// Event queue for emitting events
 	event_queue: Arc<EventQueue>,
 	/// Message queue for sending responses
 	pending_messages: Arc<MessageQueue>,
-	/// HTTP client for webhook delivery
-	http_client: Arc<dyn HttpClient>,
 	/// Time provider for LSPS5 service
 	time_provider: Arc<dyn TimeProvider>,
+	/// Function for checking if a client has an open channel
+	client_has_open_channel: Box<dyn Fn(&PublicKey) -> bool + Send + Sync>,
+	/// Last time the stale webhooks were pruned
+	last_pruning: Arc<Mutex<Option<Duration>>>,
 }
 
 impl LSPS5ServiceHandler {
@@ -254,71 +119,77 @@ impl LSPS5ServiceHandler {
 	/// # Arguments
 	/// * `event_queue` - Event queue for emitting events
 	/// * `pending_messages` - Message queue for sending responses
+	/// * `client_has_open_channel` - Function that checks if a client has an open channel
 	/// * `config` - Configuration for the LSPS5 service
 	///
 	/// # Panics
 	/// Will panic if no HTTP client is provided and a default one cannot be created
+	#[cfg(feature = "time")]
 	pub(crate) fn new(
 		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>,
-		mut config: LSPS5ServiceConfig,
-	) -> Self {
-		// Verify we have an HTTP client
-		if config.http_client.is_none() {
-			panic!("No HTTP client provided in LSPS5ServiceConfig. Use config.with_http_client() to set one.");
-		}
-
-		// Extract the HTTP client
-		let http_client: Arc<dyn HttpClient> =
-			config.http_client.take().expect("HTTP client should be present");
-		let max_signatures = config.signature_config.max_signatures.clone();
-		let time_provider = config.time_provider.take().expect("Time provider should be present");
-		Self {
+		client_has_open_channel: Box<dyn Fn(&PublicKey) -> bool + Send + Sync>,
+		config: LSPS5ServiceConfig,
+	) -> Option<Self> {
+		let time_provider = Arc::new(DefaultTimeProvider);
+		Some(Self {
 			config,
 			webhooks: Arc::new(Mutex::new(new_hash_map())),
-			client_channel_counts: Arc::new(Mutex::new(new_hash_map())),
-			recent_signatures: Arc::new(Mutex::new(VecDeque::with_capacity(max_signatures))),
 			event_queue,
 			pending_messages,
-			http_client,
 			time_provider,
-		}
+			client_has_open_channel,
+			last_pruning: Arc::new(Mutex::new(None)),
+		})
 	}
 
-	/// Validates a webhook URL
-	///
-	/// Returns Ok if valid, or a LightningError if invalid
-	fn validate_webhook_url(&self, webhook_url: &Lsps5WebhookUrl) -> Result<(), LSPSResponseError> {
-		// Validate URL length
-		if webhook_url.len() > MAX_WEBHOOK_URL_LENGTH {
-			return Err(LSPSResponseError {
-				code: LSPS5_TOO_LONG_ERROR_CODE,
-				message: format!(
-					"Webhook URL exceeds maximum length of {} bytes",
-					MAX_WEBHOOK_URL_LENGTH
-				),
-				data: None,
-			});
-		}
+	pub(crate) fn _new_with_custom_time_provider(
+		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>,
+		client_has_open_channel: Box<dyn Fn(&PublicKey) -> bool + Send + Sync>,
+		config: LSPS5ServiceConfig, time_provider: Option<Arc<dyn TimeProvider>>,
+	) -> Option<Self> {
+		let time_provider = match time_provider {
+			Some(provider) => provider,
+			None => return None,
+		};
+		Some(Self {
+			config,
+			webhooks: Arc::new(Mutex::new(new_hash_map())),
+			event_queue,
+			pending_messages,
+			time_provider,
+			client_has_open_channel,
+			last_pruning: Arc::new(Mutex::new(None)),
+		})
+	}
 
-		// Parse and validate URL format
-		let url = match Url::parse(webhook_url.as_str()) {
-			Ok(url) => url,
-			Err(e) => {
-				return Err(LSPSResponseError {
-					code: LSPS5_URL_PARSE_ERROR_CODE,
-					message: format!("Failed to parse URL: {}", e),
-					data: None,
-				});
-			},
+	fn check_prune_stale_webhooks(&self) -> Result<(), LightningError> {
+		let now = self.time_provider.duration_since_epoch();
+		let should_prune = {
+			let mut last_pruning = self.last_pruning.lock().map_err(|_| LightningError {
+				err: "Failed to lock last_pruning mutex".to_string(),
+				action: ErrorAction::IgnoreAndLog(Level::Error),
+			})?;
+
+			let should_run = if let Some(last_time) = *last_pruning {
+				match now.checked_sub(last_time) {
+					// Prune if more than 24 hours have passed since last pruning
+					Some(elapsed) if elapsed > Duration::from_secs(24 * 60 * 60) => true,
+					None => false,
+					_ => false,
+				}
+			} else {
+				true
+			};
+
+			if should_run {
+				*last_pruning = Some(now);
+			}
+
+			should_run
 		};
 
-		// Validate protocol is HTTPS
-		if url.scheme() != "https" {
-			return Err(LSPSResponseError {
-				code: LSPS5_UNSUPPORTED_PROTOCOL_ERROR_CODE,
-				message: format!("Unsupported protocol: {}. HTTPS is required.", url.scheme()),
-				data: None,
-			});
+		if should_prune {
+			self.prune_stale_webhooks();
 		}
 
 		Ok(())
@@ -329,28 +200,23 @@ impl LSPS5ServiceHandler {
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 		params: SetWebhookRequest,
 	) -> Result<(), LightningError> {
-		// Validate app_name length
-		if params.app_name.len() > MAX_APP_NAME_LENGTH {
-			let error_message =
-				format!("App name exceeds maximum length of {} bytes", MAX_APP_NAME_LENGTH);
-			let msg = LSPS5Message::Response(
-				request_id,
-				LSPS5Response::SetWebhookError(LSPSResponseError {
-					code: LSPS5_TOO_LONG_ERROR_CODE,
-					message: error_message.clone(),
-					data: None,
-				}),
-			)
-			.into();
-			self.pending_messages.enqueue(&counterparty_node_id, msg);
-			return Err(LightningError {
-				err: error_message.clone(),
-				action: ErrorAction::IgnoreAndLog(Level::Info),
-			});
+		self.check_prune_stale_webhooks()?;
+
+		match params.app_name.validate() {
+			Ok(_) => (),
+			Err(e) => {
+				let error_message = e.message.clone();
+				let msg =
+					LSPS5Message::Response(request_id, LSPS5Response::SetWebhookError(e)).into();
+				self.pending_messages.enqueue(&counterparty_node_id, msg);
+				return Err(LightningError {
+					err: error_message.clone(),
+					action: ErrorAction::IgnoreAndLog(Level::Info),
+				});
+			},
 		}
 
-		// Validate URL
-		match self.validate_webhook_url(&params.webhook) {
+		match params.webhook.validate() {
 			Ok(_) => (),
 			Err(e) => {
 				let error_message = e.message.clone();
@@ -362,25 +228,24 @@ impl LSPS5ServiceHandler {
 					action: ErrorAction::IgnoreAndLog(Level::Info),
 				});
 			},
-		};
+		}
 
-		// Add or replace webhook
-		let mut webhooks = self.webhooks.lock().unwrap();
+		let mut webhooks = self.webhooks.lock().map_err(|_| LightningError {
+			err: "Failed to lock webhooks mutex".to_string(),
+			action: ErrorAction::IgnoreAndLog(Level::Error),
+		})?;
 
-		// Get client's webhooks or create new entry
 		let client_webhooks =
 			webhooks.entry(counterparty_node_id).or_insert_with(|| new_hash_map());
 
-		// Check if we're replacing or adding a new webhook
 		let no_change = client_webhooks
 			.get(&params.app_name)
 			.map_or(false, |webhook| webhook.url == params.webhook);
 
-		// Check if adding would exceed the limit
 		if !client_webhooks.contains_key(&params.app_name)
 			&& client_webhooks.len() >= self.config.max_webhooks_per_client as usize
 		{
-			let error_message = format!(
+			let message: String = format!(
 				"Maximum of {} webhooks allowed per client",
 				self.config.max_webhooks_per_client
 			);
@@ -388,10 +253,7 @@ impl LSPS5ServiceHandler {
 				request_id,
 				LSPS5Response::SetWebhookError(LSPSResponseError {
 					code: LSPS5_TOO_MANY_WEBHOOKS_ERROR_CODE,
-					message: format!(
-						"Maximum of {} webhooks allowed per client",
-						self.config.max_webhooks_per_client
-					),
+					message: message.clone(),
 					data: Some(
 						json!({ "max_webhooks": self.config.max_webhooks_per_client }).to_string(),
 					),
@@ -400,7 +262,7 @@ impl LSPS5ServiceHandler {
 			.into();
 			self.pending_messages.enqueue(&counterparty_node_id, msg);
 			return Err(LightningError {
-				err: error_message,
+				err: message,
 				action: ErrorAction::IgnoreAndLog(Level::Info),
 			});
 		}
@@ -410,19 +272,17 @@ impl LSPS5ServiceHandler {
 			_app_name: params.app_name.clone(),
 			url: params.webhook.clone(),
 			_counterparty_node_id: counterparty_node_id,
-			last_used: self.time_provider.now(),
+			last_used: self.time_provider.duration_since_epoch(),
 			last_notification_sent: new_hash_map(),
 		};
 
 		client_webhooks.insert(params.app_name.clone(), stored_webhook);
 
-		// Create response
 		let response = SetWebhookResponse {
 			num_webhooks: client_webhooks.len() as u32,
 			max_webhooks: self.config.max_webhooks_per_client,
 			no_change,
 		};
-		// Emit webhook registration event
 		self.event_queue.enqueue(LSPS5ServiceEvent::WebhookRegistered {
 			counterparty_node_id,
 			app_name: params.app_name.clone(),
@@ -435,11 +295,11 @@ impl LSPS5ServiceHandler {
 		// According to spec:
 		// "The LSP MUST send this notification to this webhook before sending any other notifications to this webhook."
 		if !no_change {
-			let _ = self.send_webhook_registered_notification(
+			self.send_webhook_registered_notification(
 				counterparty_node_id,
 				params.app_name,
 				params.webhook,
-			);
+			)?;
 		}
 
 		let msg = LSPS5Message::Response(request_id, LSPS5Response::SetWebhook(response)).into();
@@ -452,15 +312,18 @@ impl LSPS5ServiceHandler {
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 		_params: ListWebhooksRequest,
 	) -> Result<(), LightningError> {
-		let webhooks = self.webhooks.lock().unwrap();
+		self.check_prune_stale_webhooks()?;
 
-		// Get app names for this client
+		let webhooks = self.webhooks.lock().map_err(|_| LightningError {
+			err: "Failed to lock webhooks mutex".to_string(),
+			action: ErrorAction::IgnoreAndLog(Level::Error),
+		})?;
+
 		let app_names = webhooks
 			.get(&counterparty_node_id)
 			.map(|client_webhooks| client_webhooks.keys().cloned().collect())
 			.unwrap_or_else(Vec::new);
 
-		// Emit webhook list event
 		self.event_queue.enqueue(LSPS5ServiceEvent::WebhooksListed {
 			counterparty_node_id,
 			app_names: app_names.clone(),
@@ -480,11 +343,15 @@ impl LSPS5ServiceHandler {
 		&self, counterparty_node_id: PublicKey, request_id: LSPSRequestId,
 		params: RemoveWebhookRequest,
 	) -> Result<(), LightningError> {
-		let mut webhooks = self.webhooks.lock().unwrap();
+		// Check if we need to prune stale webhooks
+		self.check_prune_stale_webhooks()?;
 
-		// Check if this client has webhooks
+		let mut webhooks = self.webhooks.lock().map_err(|_| LightningError {
+			err: "Failed to lock webhooks mutex".to_string(),
+			action: ErrorAction::IgnoreAndLog(Level::Error),
+		})?;
+
 		if let Some(client_webhooks) = webhooks.get_mut(&counterparty_node_id) {
-			// Remove the webhook with the given app_name
 			if client_webhooks.remove(&params.app_name).is_some() {
 				let response = RemoveWebhookResponse {};
 				let msg = LSPS5Message::Response(
@@ -526,29 +393,16 @@ impl LSPS5ServiceHandler {
 	/// "Only the newly-registered webhook is notified.
 	/// Only the newly-registered webhook is contacted for this notification"
 	fn send_webhook_registered_notification(
-		&self, client_node_id: PublicKey, app_name: Lsps5AppName, url: Lsps5WebhookUrl,
+		&self, client_node_id: PublicKey, app_name: LSPS5AppName, url: LSPS5WebhookUrl,
 	) -> Result<(), LightningError> {
-		// Create the notification
 		let notification = WebhookNotification::webhook_registered();
-
-		// Send the notification
-		self.send_notification(
-			client_node_id,
-			app_name.clone(),
-			url.clone(),
-			notification,
-			WebhookNotificationMethod::LSPS5WebhookRegistered,
-		)
+		self.send_notification(client_node_id, app_name.clone(), url.clone(), notification)
 	}
 
 	/// Send an incoming_payment notification to all of a client's webhooks
 	pub fn notify_payment_incoming(&self, client_id: PublicKey) -> Result<(), LightningError> {
 		let notification = WebhookNotification::payment_incoming();
-		self.broadcast_notification(
-			client_id,
-			notification,
-			WebhookNotificationMethod::LSPS5PaymentIncoming,
-		)
+		self.broadcast_notification(client_id, notification)
 	}
 
 	/// Send an expiry_soon notification to all of a client's webhooks
@@ -556,11 +410,7 @@ impl LSPS5ServiceHandler {
 		&self, client_id: PublicKey, timeout: u32,
 	) -> Result<(), LightningError> {
 		let notification = WebhookNotification::expiry_soon(timeout);
-		self.broadcast_notification(
-			client_id,
-			notification,
-			WebhookNotificationMethod::LSPS5ExpirySoon,
-		)
+		self.broadcast_notification(client_id, notification)
 	}
 
 	/// Send a liquidity_management_request notification to all of a client's webhooks
@@ -568,11 +418,7 @@ impl LSPS5ServiceHandler {
 		&self, client_id: PublicKey,
 	) -> Result<(), LightningError> {
 		let notification = WebhookNotification::liquidity_management_request();
-		self.broadcast_notification(
-			client_id,
-			notification,
-			WebhookNotificationMethod::LSPS5LiquidityManagementRequest,
-		)
+		self.broadcast_notification(client_id, notification)
 	}
 
 	/// Send an onion_message_incoming notification to all of a client's webhooks
@@ -580,11 +426,7 @@ impl LSPS5ServiceHandler {
 		&self, client_id: PublicKey,
 	) -> Result<(), LightningError> {
 		let notification = WebhookNotification::onion_message_incoming();
-		self.broadcast_notification(
-			client_id,
-			notification,
-			WebhookNotificationMethod::LSPS5OnionMessageIncoming,
-		)
+		self.broadcast_notification(client_id, notification)
 	}
 
 	/// Broadcast a notification to all registered webhooks for a client
@@ -596,51 +438,50 @@ impl LSPS5ServiceHandler {
 	/// * *and* one of the specified events has occurred."
 	fn broadcast_notification(
 		&self, client_id: PublicKey, notification: WebhookNotification,
-		method: WebhookNotificationMethod,
 	) -> Result<(), LightningError> {
-		// Get all webhooks for this client
-		let mut webhooks = self.webhooks.lock().unwrap();
+		let mut webhooks = self.webhooks.lock().map_err(|_| LightningError {
+			err: "Failed to lock webhooks mutex".to_string(),
+			action: ErrorAction::IgnoreAndLog(Level::Error),
+		})?;
+
 		let client_webhooks = match webhooks.get_mut(&client_id) {
 			Some(webhooks) => webhooks,
 			None => {
-				// No webhooks registered
 				return Ok(());
 			},
 		};
 
 		if client_webhooks.is_empty() {
-			// Empty webhook list
 			return Ok(());
 		}
 
-		// Get current time for cooldown checks
-		let now = self.time_provider.now();
+		let now = self.time_provider.duration_since_epoch();
 
-		// Send to each webhook
 		for (app_name, webhook) in client_webhooks.iter_mut() {
-			// Check if this notification type was recently sent (cooldown period)
-			if let Some(last_sent) = webhook.last_notification_sent.get(&method) {
-				let duration = now.checked_sub(*last_sent).unwrap();
-				// Skip if notification was sent less than cooldown_hours ago
-				// According to spec: "This timeout must be measurable in hours or days."
-				if duration.as_secs() < self.config.notification_cooldown_hours * 3600 {
-					// Skip this notification
-					continue;
+			if let Some(last_sent) = webhook.last_notification_sent.get(&notification.method) {
+				match now.checked_sub(*last_sent) {
+					Some(duration) => {
+						// Skip if notification was sent less than cooldown_hours ago
+						// According to spec: "This timeout must be measurable in hours or days."
+						if duration.as_secs() < self.config.notification_cooldown_hours * 3600 {
+							continue;
+						}
+					},
+					None => {
+						continue;
+					},
 				}
 			}
 
-			// Update the last sent time
-			webhook.last_notification_sent.insert(method.clone(), now.clone());
+			webhook.last_notification_sent.insert(notification.method.clone(), now.clone());
 			webhook.last_used = now.clone();
 
-			// Send the notification - ignore errors here
-			let _ = self.send_notification(
+			self.send_notification(
 				client_id,
 				app_name.clone(),
 				webhook.url.clone(),
 				notification.clone(),
-				method.clone(),
-			);
+			)?;
 		}
 
 		Ok(())
@@ -648,49 +489,35 @@ impl LSPS5ServiceHandler {
 
 	/// Send a notification to a webhook URL
 	fn send_notification(
-		&self, counterparty_node_id: PublicKey, app_name: Lsps5AppName, url: Lsps5WebhookUrl,
-		notification: WebhookNotification, method: WebhookNotificationMethod,
+		&self, counterparty_node_id: PublicKey, app_name: LSPS5AppName, url: LSPS5WebhookUrl,
+		notification: WebhookNotification,
 	) -> Result<(), LightningError> {
-		// Create timestamp in ISO8601 format using chrono
-		let timestamp = to_rfc3339(self.time_provider.now());
+		let timestamp =
+			LSPSDateTime::new_from_duration(self.time_provider.duration_since_epoch()).to_rfc3339();
 
-		// Serialize the notification
 		let notification_json =
 			serde_json::to_string(&notification).map_err(|e| LightningError {
 				err: format!("Failed to serialize notification: {}", e),
 				action: ErrorAction::IgnoreAndLog(Level::Error),
 			})?;
 
-		// Sign the notification using our utility function
-		let signature_hex =
-			Self::sign_notification(&notification_json, &timestamp, &self.config.signing_key)?;
+		let signature_hex = self.sign_notification(&notification_json, &timestamp)?;
 
-		// Store the signature to prevent replay attacks
-		// According to spec: "MUST remember the signature for at least 20 minutes"
-		self.store_signature(signature_hex.clone());
-
-		// Create the headers
 		let headers = vec![
 			("Content-Type".to_string(), "application/json".to_string()),
 			("x-lsps5-timestamp".to_string(), timestamp.clone()),
 			("x-lsps5-signature".to_string(), signature_hex.clone()),
 		];
 
-		// Use the HTTP client to send the request synchronously
-		let result = self.http_client.post(&url.as_str(), headers, notification_json);
-
-		// Record successful notifications through event queue
-		if result.is_ok() {
-			self.event_queue.enqueue(LSPS5ServiceEvent::WebhookNotificationSent {
-				counterparty_node_id,
-				app_name,
-				url,
-				method,
-				timestamp,
-				signature: signature_hex,
-			});
-		}
-		// Ignore errors per spec (just don't emit the event)
+		self.event_queue.enqueue(LSPS5ServiceEvent::SendWebhookNotifications {
+			counterparty_node_id,
+			app_name,
+			url,
+			notification,
+			timestamp,
+			signature: signature_hex,
+			headers,
+		});
 
 		Ok(())
 	}
@@ -709,9 +536,7 @@ impl LSPS5ServiceHandler {
 	/// # Returns
 	///
 	/// * The zbase32 encoded signature as specified in LSPS0, or an error if signing fails
-	pub fn sign_notification(
-		body: &str, timestamp: &str, signing_key: &SecretKey,
-	) -> Result<String, LightningError> {
+	pub fn sign_notification(&self, body: &str, timestamp: &str) -> Result<String, LightningError> {
 		// Create the message to sign
 		// According to spec:
 		// The message to be signed is: "LSPS5: DO NOT SIGN THIS MESSAGE MANUALLY: LSP: At {} I notify {}",
@@ -720,72 +545,33 @@ impl LSPS5ServiceHandler {
 			timestamp, body
 		);
 
-		// Use the canonical message signing implementation from lightning::util::message_signing
-		let signature = message_signing::sign(message.as_bytes(), signing_key);
+		let signature = message_signing::sign(message.as_bytes(), &self.config.signing_key);
 
 		Ok(signature)
 	}
 
-	/// Store a signature with timestamp for replay attack prevention
-	fn store_signature(&self, signature: String) {
-		let now = self.time_provider.now();
-		let mut recent_signatures = self.recent_signatures.lock().unwrap();
-
-		// Add the new signature
-		recent_signatures.push_back((signature, now));
-
-		// Clean up old signatures (older than retention_minutes)
-		let retention_duration =
-			Duration::from_secs(self.config.signature_config.retention_minutes * 60);
-		while let Some((_, time)) = recent_signatures.front() {
-			let duration = now - *time;
-			if duration > retention_duration {
-				recent_signatures.pop_front();
-			} else {
-				break;
-			}
-		}
-
-		// Limit the size of the signature store
-		while recent_signatures.len() > self.config.signature_config.max_signatures {
-			recent_signatures.pop_front();
-		}
-	}
-
-	/// Update the number of channels for a client
-	/// Should be called when channels are opened or closed with a client
-	pub fn update_client_channel_count(&self, client_id: PublicKey, channel_count: u32) {
-		let mut client_channel_counts = self.client_channel_counts.lock().unwrap();
-		client_channel_counts.insert(client_id, channel_count);
-	}
-
 	/// Clean up webhooks for clients with no channels that haven't been used in a while
 	/// According to spec: "MUST remember all webhooks for at least 7 days after the last channel is closed"
-	pub fn prune_stale_webhooks(&self) {
-		let now = self.time_provider.now();
-		let mut webhooks = self.webhooks.lock().unwrap();
-		let client_channel_counts = self.client_channel_counts.lock().unwrap();
+	fn prune_stale_webhooks(&self) {
+		let now = self.time_provider.duration_since_epoch();
+		let webhooks_lock = match self.webhooks.lock() {
+			Ok(guard) => guard,
+			Err(_) => {
+				return;
+			},
+		};
+		let mut webhooks = webhooks_lock;
 
-		// Filter out clients with no remaining webhooks
 		webhooks.retain(|client_id, client_webhooks| {
-			// Check if client has no channels
-			if client_channel_counts.get(client_id).copied().unwrap_or(0) == 0 {
-				// Filter out webhooks that haven't been used in at least MIN_WEBHOOK_RETENTION_DAYS
-				client_webhooks.retain(|_, webhook| {
-					let duration = now.checked_sub(webhook.last_used).unwrap();
-					if duration.as_secs() < (MIN_WEBHOOK_RETENTION_DAYS * 24 * 60 * 60).into() {
-						// Keep webhook - not stale yet
-						true
-					} else {
-						// Remove stale webhook
-						false
-					}
+			if !(self.client_has_open_channel)(client_id) {
+				client_webhooks.retain(|_, webhook| match now.checked_sub(webhook.last_used) {
+					Some(duration) => {
+						duration.as_secs() < (MIN_WEBHOOK_RETENTION_DAYS as u64 * 24 * 60 * 60)
+					},
+					None => true,
 				});
-
-				// Keep client entry if it still has webhooks
 				!client_webhooks.is_empty()
 			} else {
-				// Keep client entry - client has channels
 				true
 			}
 		});
@@ -826,6 +612,132 @@ impl LSPSProtocolMessageHandler for LSPS5ServiceHandler {
                     action: ErrorAction::IgnoreAndLog(Level::Info)
                 })
 			},
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use core::cell::RefCell;
+
+	// Mock time provider for testing
+	struct MockTimeProvider {
+		current_time: RefCell<Duration>,
+	}
+
+	impl MockTimeProvider {
+		fn new(seconds_since_epoch: u64) -> Self {
+			Self { current_time: RefCell::new(Duration::from_secs(seconds_since_epoch)) }
+		}
+
+		fn advance_time(&self, seconds: u64) {
+			let mut time = self.current_time.borrow_mut();
+			*time += Duration::from_secs(seconds);
+		}
+	}
+
+	impl TimeProvider for MockTimeProvider {
+		fn duration_since_epoch(&self) -> Duration {
+			*self.current_time.borrow()
+		}
+	}
+
+	// Test for prune_stale_webhooks
+	#[test]
+	fn test_prune_stale_webhooks() {
+		let event_queue = Arc::new(EventQueue::new());
+		let pending_messages = Arc::new(MessageQueue::new());
+		let config = LSPS5ServiceConfig::default();
+		let time_provider = Arc::new(MockTimeProvider::new(1000)); // Starting time
+
+		let mut client_keys = Vec::new();
+		for i in 0..3 {
+			let key = SecretKey::from_slice(&[i + 1; 32]).expect("Valid key slice");
+			let pubkey = PublicKey::from_secret_key(&bitcoin::secp256k1::Secp256k1::new(), &key);
+			client_keys.push(pubkey);
+		}
+
+		let nodes_with_channels = Arc::new(Mutex::new(new_hash_set()));
+
+		let channels_for_closure = nodes_with_channels.clone();
+
+		let client_has_open_channel = Box::new(move |pubkey: &PublicKey| -> bool {
+			channels_for_closure.lock().unwrap().contains(pubkey)
+		});
+
+		let handler = LSPS5ServiceHandler::_new_with_custom_time_provider(
+			event_queue,
+			pending_messages,
+			client_has_open_channel,
+			config,
+			Some(time_provider.clone()),
+		)
+		.unwrap();
+
+		{
+			let mut webhooks = handler.webhooks.lock().unwrap();
+			for (i, pubkey) in client_keys.iter().enumerate() {
+				let client_webhooks = webhooks.entry(*pubkey).or_insert_with(new_hash_map);
+				for j in 0..2 {
+					let app_name = LSPS5AppName::new(format!("app_{}_{}", i, j)).unwrap();
+					let url =
+						LSPS5WebhookUrl::new(format!("https://example.com/webhook_{}_{}", i, j))
+							.unwrap();
+					client_webhooks.insert(
+						app_name.clone(),
+						StoredWebhook {
+							_app_name: app_name,
+							url,
+							_counterparty_node_id: *pubkey,
+							last_used: time_provider.duration_since_epoch(),
+							last_notification_sent: new_hash_map(),
+						},
+					);
+				}
+			}
+		}
+
+		for i in 0..2 {
+			nodes_with_channels.lock().unwrap().insert(client_keys[i]);
+		}
+
+		time_provider.advance_time(15 * 24 * 60 * 60);
+
+		handler.prune_stale_webhooks();
+
+		{
+			let webhooks = handler.webhooks.lock().unwrap();
+			assert_eq!(webhooks.len(), 3);
+		}
+
+		time_provider.advance_time(20 * 24 * 60 * 60);
+
+		handler.prune_stale_webhooks();
+
+		{
+			let webhooks = handler.webhooks.lock().unwrap();
+			assert_eq!(webhooks.len(), 2);
+			assert!(webhooks.contains_key(&client_keys[0]));
+			assert!(webhooks.contains_key(&client_keys[1]));
+			assert!(!webhooks.contains_key(&client_keys[2]));
+		}
+
+		{
+			let mut channels = nodes_with_channels.lock().unwrap();
+			channels.remove(&client_keys[1]);
+		}
+
+		time_provider.advance_time(40 * 24 * 60 * 60);
+
+		handler.prune_stale_webhooks();
+
+		{
+			let webhooks = handler.webhooks.lock().unwrap();
+			assert_eq!(webhooks.len(), 1);
+			assert!(webhooks.contains_key(&client_keys[0]));
+			assert!(!webhooks.contains_key(&client_keys[1]));
+			assert!(!webhooks.contains_key(&client_keys[2]));
 		}
 	}
 }
