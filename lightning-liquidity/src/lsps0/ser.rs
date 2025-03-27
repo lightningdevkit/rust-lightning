@@ -29,7 +29,8 @@ use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
 
-#[cfg(feature = "std")]
+use core::time::Duration;
+#[cfg(feature = "time")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::{self, MapAccess, Visitor};
@@ -204,7 +205,7 @@ impl LSPSDateTime {
 	}
 
 	/// Returns if the given time is in the past.
-	#[cfg(feature = "std")]
+	#[cfg(feature = "time")]
 	pub fn is_past(&self) -> bool {
 		let now_seconds_since_epoch = SystemTime::now()
 			.duration_since(UNIX_EPOCH)
@@ -213,6 +214,16 @@ impl LSPSDateTime {
 		let datetime_seconds_since_epoch =
 			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
 		now_seconds_since_epoch > datetime_seconds_since_epoch
+	}
+
+	/// Returns the time in seconds since the unix epoch.
+	pub fn abs_diff(&self, other: &Self) -> u64 {
+		self.0.timestamp().abs_diff(other.0.timestamp())
+	}
+
+	/// Returns the time in seconds since the unix epoch.
+	pub fn new_from_duration_since_epoch(duration: Duration) -> Self {
+		Self(chrono::DateTime::UNIX_EPOCH + duration)
 	}
 }
 
