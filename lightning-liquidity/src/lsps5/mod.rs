@@ -9,7 +9,7 @@
 
 //! LSPS5 Webhook Registration Protocol Implementation
 //!
-//! Implements BLIP-55: LSP Protocol for Notification Webhook Registration
+//! Implements bLIP-55: LSP Protocol for Notification Webhook Registration
 //!
 //! This module provides functionality for Lightning Service Providers to send
 //! webhook notifications to their clients, and for clients to register webhooks
