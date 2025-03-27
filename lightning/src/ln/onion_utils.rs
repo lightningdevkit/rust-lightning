@@ -1160,7 +1160,7 @@ where
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
 		hmac.input(&encrypted_packet.data[32..]);
 
-		if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &encrypted_packet.data[..32]) {
+		if &Hmac::from_engine(hmac).to_byte_array() != &encrypted_packet.data[..32] {
 			continue;
 		}
 
