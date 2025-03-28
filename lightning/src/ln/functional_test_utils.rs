@@ -779,6 +779,26 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &
 	})
 }
 
+/// Gets a `UpdateHTLCs` and `revoke_and_ack` (i.e. after we get a responding `commitment_signed`
+/// while we have updates in the holding cell).
+pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, recipient: &PublicKey) -> (msgs::CommitmentUpdate, msgs::RevokeAndACK) {
+	let events = node.node().get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	(match events[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(node_id, recipient);
+			(*updates).clone()
+		},
+		_ => panic!("Unexpected event"),
+	}, match events[1] {
+		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
+		},
+		_ => panic!("Unexpected event"),
+	})
+}
+
 #[macro_export]
 /// Gets an RAA and CS which were sent in response to a commitment update
 ///

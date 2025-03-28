@@ -366,6 +366,8 @@ pub struct TestChainMonitor<'a> {
 	/// If this is set to Some(), the next round trip serialization check will not hold after an
 	/// update_channel call (not watch_channel) for the given channel_id.
 	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
+	#[cfg(feature = "std")]
+	pub write_blocker: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface) -> Self {
@@ -377,6 +379,8 @@ impl<'a> TestChainMonitor<'a> {
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),
+			#[cfg(feature = "std")]
+			write_blocker: Mutex::new(None),
 		}
 	}
 
@@ -387,6 +391,11 @@ impl<'a> TestChainMonitor<'a> {
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
+		#[cfg(feature = "std")]
+		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
+			blocker.recv().unwrap();
+		}
+
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
@@ -401,6 +410,11 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 
 	fn update_channel(&self, funding_txo: OutPoint, update: &channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
+		#[cfg(feature = "std")]
+		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
+			blocker.recv().unwrap();
+		}
+
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
