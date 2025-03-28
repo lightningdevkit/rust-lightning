@@ -3938,15 +3938,39 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let channel_parameters =
 			if local { funding.channel_transaction_parameters.as_holder_broadcastable() }
 			else { funding.channel_transaction_parameters.as_counterparty_broadcastable() };
-		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-		                                                             per_commitment_point,
-		                                                             to_broadcaster_value_sat,
-		                                                             to_countersignatory_value_sat,
-		                                                             feerate_per_kw,
-		                                                             &mut included_non_dust_htlcs,
-		                                                             &channel_parameters,
-		                                                             &self.secp_ctx,
+		let nondust_htlcs = included_non_dust_htlcs.iter().map(|(htlc, _)| htlc).cloned().collect();
+		let tx = CommitmentTransaction::new(
+			commitment_number,
+			per_commitment_point,
+			to_broadcaster_value_sat,
+			to_countersignatory_value_sat,
+			feerate_per_kw,
+			&nondust_htlcs,
+			&channel_parameters,
+			&self.secp_ctx,
 		);
+
+		// This populates the htlc-source table with the indices from the htlcs in the commitment
+		// transaction.
+		//
+		// This brute-force search is O(n^2) over ~1k HTLCs in the worst case. This case is very
+		// rare (non-existent?) at the moment.
+		assert_eq!(tx.nondust_htlcs().len(), included_non_dust_htlcs.len());
+		for nondust_htlc in tx.nondust_htlcs() {
+			let htlc = included_non_dust_htlcs
+				.iter_mut()
+				.filter(|(htlc, _source)| htlc.transaction_output_index.is_none())
+				.filter_map(|(htlc, _source)| {
+					if htlc.is_data_equal(nondust_htlc) {
+						Some(htlc)
+					} else {
+						None
+					}
+				})
+				.nth(0)
+				.unwrap();
+			htlc.transaction_output_index = Some(nondust_htlc.transaction_output_index.unwrap());
+		}
 		let mut htlcs_included = included_non_dust_htlcs;
 		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
 		htlcs_included.sort_unstable_by_key(|h| h.0.transaction_output_index.unwrap());
