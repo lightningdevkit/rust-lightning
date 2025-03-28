@@ -700,14 +700,14 @@ fn test_0conf_channel_with_async_monitor() {
 
 	let as_send = SendEvent::from_node(&nodes[0]);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &as_send.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_send.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_send.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
 	let (bs_raa, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);

@@ -60,11 +60,13 @@ use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Reci
 use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
-use crate::util::ser::{Readable, ReadableArgs, TransactionU16LenLimited, Writeable, Writer};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, TransactionU16LenLimited, Writeable, Writer};
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
+
+use alloc::collections::BTreeMap;
 
 use crate::io;
 use crate::prelude::*;
@@ -1246,6 +1248,16 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	pub fn pending_funding(&self) -> &[FundingScope] {
+		match &self.phase {
+			ChannelPhase::Undefined => unreachable!(),
+			ChannelPhase::Funded(chan) => &chan.pending_funding,
+			ChannelPhase::UnfundedOutboundV1(_) => &[],
+			ChannelPhase::UnfundedInboundV1(_) => &[],
+			ChannelPhase::UnfundedV2(_) => &[],
+		}
+	}
+
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
@@ -1517,6 +1529,7 @@ impl<SP: Deref> Channel<SP> where
 				};
 				let mut funded_channel = FundedChannel {
 					funding: chan.funding,
+					pending_funding: vec![],
 					context: chan.context,
 					interactive_tx_signing_session: chan.interactive_tx_signing_session,
 					holder_commitment_point,
@@ -1661,6 +1674,53 @@ pub(super) struct FundingScope {
 	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
 	/// [`ChannelContext::is_manual_broadcast`] is true) this will be a dummy empty transaction.
 	funding_transaction: Option<Transaction>,
+}
+
+impl Writeable for FundingScope {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(1, self.value_to_self_msat, required),
+			(3, self.counterparty_selected_channel_reserve_satoshis, option),
+			(5, self.holder_selected_channel_reserve_satoshis, required),
+			(7, self.channel_transaction_parameters, (required: ReadableArgs, None)),
+			(9, self.funding_transaction, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for FundingScope {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut value_to_self_msat = RequiredWrapper(None);
+		let mut counterparty_selected_channel_reserve_satoshis = None;
+		let mut holder_selected_channel_reserve_satoshis = RequiredWrapper(None);
+		let mut channel_transaction_parameters = RequiredWrapper(None);
+		let mut funding_transaction = None;
+
+		read_tlv_fields!(reader, {
+			(1, value_to_self_msat, required),
+			(3, counterparty_selected_channel_reserve_satoshis, option),
+			(5, holder_selected_channel_reserve_satoshis, required),
+			(7, channel_transaction_parameters, (required: ReadableArgs, None)),
+			(9, funding_transaction, option),
+		});
+
+		Ok(Self {
+			value_to_self_msat: value_to_self_msat.0.unwrap(),
+			counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis: holder_selected_channel_reserve_satoshis.0.unwrap(),
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((0, 0)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
+			channel_transaction_parameters: channel_transaction_parameters.0.unwrap(),
+			funding_transaction,
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+		})
+	}
 }
 
 impl FundingScope {
@@ -3505,7 +3565,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 			bitcoin_tx.txid
 		};
-		let mut htlcs_cloned: Vec<_> = commitment_data.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
+		let htlcs_cloned: Vec<_> = commitment_data.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
 
 		// If our counterparty updated the channel fee in this commitment transaction, check that
 		// they can actually afford the new fee now.
@@ -3559,7 +3619,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
 		let holder_keys = commitment_data.stats.tx.trust().keys();
-		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
+		for (idx, (htlc, mut source_opt)) in htlcs_cloned.into_iter().enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.stats.tx.feerate_per_kw(),
 					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, &self.channel_type,
@@ -4078,6 +4138,27 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
 	pub fn get_available_balances<F: Deref>(
+		&self, funding: &FundingScope, pending_funding: &[FundingScope],
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances
+	where
+		F::Target: FeeEstimator,
+	{
+		core::iter::once(funding)
+			.chain(pending_funding.iter())
+			.map(|funding| self.get_available_balances_for_scope(funding, fee_estimator))
+			.reduce(|acc, e| {
+				AvailableBalances {
+					inbound_capacity_msat: acc.inbound_capacity_msat.min(e.inbound_capacity_msat),
+					outbound_capacity_msat: acc.outbound_capacity_msat.min(e.outbound_capacity_msat),
+					next_outbound_htlc_limit_msat: acc.next_outbound_htlc_limit_msat.min(e.next_outbound_htlc_limit_msat),
+					next_outbound_htlc_minimum_msat: acc.next_outbound_htlc_minimum_msat.max(e.next_outbound_htlc_minimum_msat),
+				}
+			})
+			.expect("At least one FundingScope is always provided")
+	}
+
+	fn get_available_balances_for_scope<F: Deref>(
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> AvailableBalances
 	where
@@ -4319,7 +4400,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				+ context.holding_cell_htlc_updates.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
 				fee,
-				total_pending_htlcs,
+				total_pending_htlcs: total_pending_htlcs,
 				next_holder_htlc_id: match htlc.origin {
 					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
 					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
@@ -4415,7 +4496,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
 				fee,
-				total_pending_htlcs,
+				total_pending_htlcs: total_pending_htlcs,
 				next_holder_htlc_id: match htlc.origin {
 					HTLCInitiator::LocalOffered => context.next_holder_htlc_id + 1,
 					HTLCInitiator::RemoteOffered => context.next_holder_htlc_id,
@@ -4868,6 +4949,7 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
+	pub(super) pending_funding: Vec<FundingScope>,
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
@@ -5651,6 +5733,11 @@ impl<SP: Deref> FundedChannel<SP> where
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
 		}
+
+		if msg.batch.is_some() {
+			return Err(ChannelError::close("Peer sent initial commitment_signed with a batch".to_owned()));
+		}
+
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
 		self.context.assert_no_commitment_advancement(holder_commitment_point.transaction_number(), "initial commitment_signed");
 
@@ -5678,6 +5765,53 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 		where L::Target: Logger
 	{
+		self.commitment_signed_check_state()?;
+
+		if !self.pending_funding.is_empty() {
+			return Err(ChannelError::close("Peer sent commitment_signed without a batch when there's a pending splice".to_owned()));
+		}
+
+		let updates = self
+			.context
+			.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
+			.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+				vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+					commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+				}]
+			)?;
+
+		self.commitment_signed_update_monitor(updates, logger)
+	}
+
+	pub fn commitment_signed_batch<L: Deref>(&mut self, batch: &BTreeMap<Txid, msgs::CommitmentSigned>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+		where L::Target: Logger
+	{
+		self.commitment_signed_check_state()?;
+
+		// Any commitment_signed not associated with a FundingScope is ignored below if a
+		// pending splice transaction has confirmed since receiving the batch.
+		let updates = core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding| {
+				let funding_txid = funding.get_funding_txo().unwrap().txid;
+				let msg = batch
+					.get(&funding_txid)
+					.ok_or_else(|| ChannelError::close(format!("Peer did not send a commitment_signed for pending splice transaction: {}", funding_txid)))?;
+				self.context
+					.validate_commitment_signed(funding, &self.holder_commitment_point, msg, logger)
+					.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+						ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+							commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+						}
+					)
+				}
+			)
+			.collect::<Result<Vec<_>, ChannelError>>()?;
+
+		self.commitment_signed_update_monitor(updates, logger)
+	}
+
+	fn commitment_signed_check_state(&self) -> Result<(), ChannelError> {
 		if self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got commitment_signed message while quiescent".to_owned()));
 		}
@@ -5691,8 +5825,12 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
-		let commitment_tx_info = self.context.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)?;
+		Ok(())
+	}
 
+	fn commitment_signed_update_monitor<L: Deref>(&mut self, mut updates: Vec<ChannelMonitorUpdateStep>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+		where L::Target: Logger
+	{
 		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
 			// We only fail to advance our commitment point/number if we're currently
 			// waiting for our signer to unblock and provide a commitment point.
@@ -5746,18 +5884,21 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		let LatestHolderCommitmentTXInfo {
-			commitment_tx, htlc_outputs, nondust_htlc_sources,
-		} = commitment_tx_info;
+		for mut update in updates.iter_mut() {
+			if let ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+				claimed_htlcs: ref mut update_claimed_htlcs, ..
+			} = &mut update {
+				debug_assert!(update_claimed_htlcs.is_empty());
+				*update_claimed_htlcs = claimed_htlcs.clone();
+			} else {
+				debug_assert!(false);
+			}
+		}
+
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx,
-				htlc_outputs,
-				claimed_htlcs,
-				nondust_htlc_sources,
-			}],
+			updates,
 			channel_id: Some(self.context.channel_id()),
 		};
 
@@ -8601,7 +8742,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
 		}
 
-		let available_balances = self.context.get_available_balances(&self.funding, fee_estimator);
+		let available_balances = self.get_available_balances(fee_estimator);
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
 				available_balances.next_outbound_htlc_minimum_msat)));
@@ -8673,6 +8814,15 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(Some(res))
 	}
 
+	pub fn get_available_balances<F: Deref>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> AvailableBalances
+	where
+		F::Target: FeeEstimator,
+	{
+		self.context.get_available_balances(&self.funding, &self.pending_funding, fee_estimator)
+	}
+
 	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate where L::Target: Logger {
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
@@ -8706,11 +8856,32 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 		self.context.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let (mut htlcs_ref, counterparty_commitment_tx) =
-			self.build_commitment_no_state_update(logger);
-		let counterparty_commitment_txid = counterparty_commitment_tx.trust().txid();
-		let htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
-			htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
+		let mut updates = Vec::with_capacity(self.pending_funding.len() + 1);
+		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+			let (mut htlcs_ref, counterparty_commitment_tx) =
+				self.build_commitment_no_state_update(funding, logger);
+			let htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
+				htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
+
+			if self.pending_funding.is_empty() {
+				// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
+				// and provide the full commit tx instead of the information needed to rebuild it.
+				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+					commitment_txid: counterparty_commitment_tx.trust().txid(),
+					htlc_outputs,
+					commitment_number: self.context.cur_counterparty_commitment_transaction_number,
+					their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
+					feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+					to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
+					to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
+				});
+			} else {
+				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX {
+					htlc_outputs,
+					commitment_tx: counterparty_commitment_tx,
+				});
+			}
+		}
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent {
 			self.context.announcement_sigs_state = AnnouncementSigsState::Committed;
@@ -8719,37 +8890,30 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.context.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
-			// and provide the full commit tx instead of the information needed to rebuild it.
-			updates: vec![ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
-				commitment_txid: counterparty_commitment_txid,
-				htlc_outputs: htlcs.clone(),
-				commitment_number: self.context.cur_counterparty_commitment_transaction_number,
-				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
-				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
-				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
-				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
-			}],
+			updates,
 			channel_id: Some(self.context.channel_id()),
 		};
 		self.context.channel_state.set_awaiting_remote_revoke();
 		monitor_update
 	}
 
-	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L)
-	-> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction)
-	where L::Target: Logger
+	fn build_commitment_no_state_update<L: Deref>(
+		&self, funding: &FundingScope, logger: &L,
+	) -> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction)
+	where
+		L::Target: Logger,
 	{
-		let commitment_data = self.context.build_commitment_transaction(&self.funding,
-			self.context.cur_counterparty_commitment_transaction_number,
-			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger);
+		let commitment_data = self.context.build_commitment_transaction(
+			funding, self.context.cur_counterparty_commitment_transaction_number,
+			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger,
+		);
 		let counterparty_commitment_tx = commitment_data.stats.tx;
 
 		#[cfg(any(test, fuzzing))]
 		{
-			if !self.funding.is_outbound() {
-				let projected_commit_tx_info = self.funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap().take();
-				*self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			if !funding.is_outbound() {
+				let projected_commit_tx_info = funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap().take();
+				*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 				if let Some(info) = projected_commit_tx_info {
 					let total_pending_htlcs = self.context.pending_inbound_htlcs.len() + self.context.pending_outbound_htlcs.len();
 					if info.total_pending_htlcs == total_pending_htlcs
@@ -8768,14 +8932,32 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
 	/// generation when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<msgs::CommitmentSigned, ChannelError> where L::Target: Logger {
+	fn send_commitment_no_state_update<L: Deref>(
+		&self, logger: &L,
+	) -> Result<Vec<msgs::CommitmentSigned>, ChannelError>
+	where
+		L::Target: Logger,
+	{
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding| self.send_commitment_no_state_update_for_funding(funding, logger))
+			.collect::<Result<Vec<_>, ChannelError>>()
+	}
+
+	fn send_commitment_no_state_update_for_funding<L: Deref>(
+		&self, funding: &FundingScope, logger: &L,
+	) -> Result<msgs::CommitmentSigned, ChannelError>
+	where
+		L::Target: Logger,
+	{
 		// Get the fee tests from `build_commitment_no_state_update`
 		#[cfg(any(test, fuzzing))]
-		self.build_commitment_no_state_update(logger);
+		self.build_commitment_no_state_update(funding, logger);
 
-		let commitment_data = self.context.build_commitment_transaction(&self.funding,
-			self.context.cur_counterparty_commitment_transaction_number,
-			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger);
+		let commitment_data = self.context.build_commitment_transaction(
+			funding, self.context.cur_counterparty_commitment_transaction_number,
+			&self.context.counterparty_cur_commitment_point.unwrap(), false, true, logger,
+		);
 		let counterparty_commitment_tx = commitment_data.stats.tx;
 
 		match &self.context.holder_signer {
@@ -8784,7 +8966,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 				{
 					let res = ecdsa.sign_counterparty_commitment(
-							&self.funding.channel_transaction_parameters,
+							&funding.channel_transaction_parameters,
 							&counterparty_commitment_tx,
 							commitment_data.inbound_htlc_preimages,
 							commitment_data.outbound_htlc_preimages,
@@ -8796,25 +8978,31 @@ impl<SP: Deref> FundedChannel<SP> where
 					let trusted_tx = counterparty_commitment_tx.trust();
 					log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {} in channel {}",
 						encode::serialize_hex(&trusted_tx.built_transaction().transaction),
-						&trusted_tx.txid(), encode::serialize_hex(&self.funding.get_funding_redeemscript()),
+						&trusted_tx.txid(), encode::serialize_hex(&funding.get_funding_redeemscript()),
 						log_bytes!(signature.serialize_compact()[..]), &self.context.channel_id());
 
 					let counterparty_keys = trusted_tx.keys();
 					debug_assert_eq!(htlc_signatures.len(), trusted_tx.htlcs().len());
 					for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(trusted_tx.htlcs()) {
 						log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.feerate_per_kw(), self.funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+							encode::serialize_hex(&chan_utils::build_htlc_transaction(&trusted_tx.txid(), trusted_tx.feerate_per_kw(), funding.get_holder_selected_contest_delay(), htlc, &self.context.channel_type, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 							encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &counterparty_keys)),
 							log_bytes!(counterparty_keys.broadcaster_htlc_key.to_public_key().serialize()),
 							log_bytes!(htlc_sig.serialize_compact()[..]), &self.context.channel_id());
 					}
 				}
 
+				let batch = if self.pending_funding.is_empty() { None } else {
+					Some(msgs::CommitmentSignedBatch {
+						batch_size: self.pending_funding.len() as u16 + 1,
+						funding_txid: funding.get_funding_txo().unwrap().txid,
+					})
+				};
 				Ok(msgs::CommitmentSigned {
 					channel_id: self.context.channel_id,
 					signature,
 					htlc_signatures,
-					batch: None,
+					batch,
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
 				})
@@ -9455,6 +9643,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -9731,6 +9920,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = FundedChannel {
 			funding: self.funding,
+			pending_funding: vec![],
 			context: self.context,
 			interactive_tx_signing_session: None,
 			is_v2_established: false,
@@ -10525,6 +10715,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(54, self.pending_funding, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -10749,7 +10940,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let mut channel_parameters: ChannelTransactionParameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
+		let mut channel_parameters: ChannelTransactionParameters = ReadableArgs::<Option<u64>>::read(reader, Some(channel_value_satoshis))?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -10816,6 +11007,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
+		let mut pending_funding = Some(Vec::new());
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -10851,6 +11044,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(54, pending_funding, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -10992,6 +11186,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
 			},
+			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
 				user_id,
 

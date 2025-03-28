@@ -461,7 +461,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
@@ -1357,7 +1357,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	} else {
 		nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), &updates.update_fee.unwrap());
 	}
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
@@ -1370,7 +1370,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_cs);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_cs);
 	check_added_monitors(&nodes[0], 1);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 

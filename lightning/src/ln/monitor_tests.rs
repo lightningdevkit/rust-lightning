@@ -579,13 +579,13 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 		// To build a previous commitment transaction, deliver one round of commitment messages.
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &b_htlc_msgs.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
 		let _htlc_updates = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
 		check_added_monitors!(nodes[1], 1);
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_cs);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_cs);
 		let _bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		check_added_monitors!(nodes[1], 1);
 	}
