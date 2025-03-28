@@ -1933,11 +1933,13 @@ pub trait ChannelMessageHandler : BaseMessageHandler {
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: PublicKey, msg: &UpdateFailMalformedHTLC);
 	/// Handle an incoming `commitment_signed` message from the given peer.
 	fn handle_commitment_signed(&self, their_node_id: PublicKey, msg: &CommitmentSigned);
+	/// Handle a batch of incoming `commitment_signed` message from the given peer.
+	fn handle_commitment_signed_batch(
+		&self, their_node_id: PublicKey, channel_id: ChannelId,
+		batch: &BTreeMap<Txid, CommitmentSigned>,
+	) {}
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK);
-
-	/// Handle a batch of incoming `commitment_signed` message from the given peer.
-	fn handle_commitment_signed_batch(&self, their_node_id: PublicKey, batch: &BTreeMap<Txid, CommitmentSigned>) {}
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	fn handle_commitment_signed_batch_test(&self, their_node_id: PublicKey, batch: &Vec<CommitmentSigned>) {
@@ -1946,11 +1948,12 @@ pub trait ChannelMessageHandler : BaseMessageHandler {
 			assert!(batch[0].batch.is_none());
 			self.handle_commitment_signed(their_node_id, &batch[0]);
 		} else {
+			let channel_id = batch[0].channel_id;
 			let batch: BTreeMap<Txid, CommitmentSigned> = batch.iter().cloned().map(|mut cs| {
 				let funding_txid = cs.batch.take().unwrap().funding_txid;
 				(funding_txid, cs)
 			}).collect();
-			self.handle_commitment_signed_batch(their_node_id, &batch);
+			self.handle_commitment_signed_batch(their_node_id, channel_id, &batch);
 		}
 	}
 
