@@ -2980,8 +2980,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
 			// `holder_commitment_tx`. In the future, we'll no longer provide the redundant data
 			// and just pass in source data via `nondust_htlc_sources`.
-			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.trust().htlcs().len());
-			for (a, b) in htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).map(|(h, _, _)| h).zip(holder_commitment_tx.trust().htlcs().iter()) {
+			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.trust().nondust_htlcs().len());
+			for (a, b) in htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).map(|(h, _, _)| h).zip(holder_commitment_tx.trust().nondust_htlcs().iter()) {
 				debug_assert_eq!(a, b);
 			}
 			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.counterparty_htlc_sigs.len());
@@ -2995,18 +2995,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// `nondust_htlc_sources` and the `holder_commitment_tx`
 			#[cfg(debug_assertions)] {
 				let mut prev = -1;
-				for htlc in holder_commitment_tx.trust().htlcs().iter() {
+				for htlc in holder_commitment_tx.trust().nondust_htlcs().iter() {
 					assert!(htlc.transaction_output_index.unwrap() as i32 > prev);
 					prev = htlc.transaction_output_index.unwrap() as i32;
 				}
 			}
 			debug_assert!(htlc_outputs.iter().all(|(htlc, _, _)| htlc.transaction_output_index.is_none()));
 			debug_assert!(htlc_outputs.iter().all(|(_, sig_opt, _)| sig_opt.is_none()));
-			debug_assert_eq!(holder_commitment_tx.trust().htlcs().len(), holder_commitment_tx.counterparty_htlc_sigs.len());
+			debug_assert_eq!(holder_commitment_tx.trust().nondust_htlcs().len(), holder_commitment_tx.counterparty_htlc_sigs.len());
 
 			let mut sources_iter = nondust_htlc_sources.into_iter();
 
-			for (htlc, counterparty_sig) in holder_commitment_tx.trust().htlcs().iter()
+			for (htlc, counterparty_sig) in holder_commitment_tx.trust().nondust_htlcs().iter()
 				.zip(holder_commitment_tx.counterparty_htlc_sigs.iter())
 			{
 				if htlc.offered {

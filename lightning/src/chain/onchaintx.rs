@@ -1205,7 +1205,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			if trusted_tx.txid() != outp.txid {
 				return None;
 			}
-			let (htlc_idx, htlc) = trusted_tx.htlcs().iter().enumerate()
+			let (htlc_idx, htlc) = trusted_tx.nondust_htlcs().iter().enumerate()
 				.find(|(_, htlc)| htlc.transaction_output_index.unwrap() == outp.vout)
 				.unwrap();
 			let counterparty_htlc_sig = holder_commitment.counterparty_htlc_sigs[htlc_idx];
@@ -1248,7 +1248,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			if outp.txid != trusted_tx.txid() {
 				return None;
 			}
-			trusted_tx.htlcs().iter().enumerate()
+			trusted_tx.nondust_htlcs().iter().enumerate()
 				.find(|(_, htlc)| if let Some(output_index) = htlc.transaction_output_index {
 					output_index == outp.vout
 				} else {
