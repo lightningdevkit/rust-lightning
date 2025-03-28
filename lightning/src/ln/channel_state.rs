@@ -510,7 +510,7 @@ impl ChannelDetails {
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
 			channel_type: if context.have_received_message() {
-				Some(context.get_channel_type().clone())
+				Some(funding.get_channel_type().clone())
 			} else {
 				None
 			},
@@ -540,8 +540,8 @@ impl ChannelDetails {
 			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(funding),
 			config: Some(context.config()),
 			channel_shutdown_state: Some(context.shutdown_state()),
-			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(),
-			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(),
+			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(funding),
+			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(funding),
 		}
 	}
 }
