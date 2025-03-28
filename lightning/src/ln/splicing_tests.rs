@@ -50,6 +50,8 @@ fn test_v1_splice_in() {
 	let expect_inputs_in_reverse = true;
 	let expected_pre_funding_txid =
 		"4f128bedf1a15baf465ab1bfd6e97c8f82628f4156bf86eb1cbc132cda6733ae";
+	let expected_splice_funding_txid =
+		"0a6d624a6a6ec0f72e50317856cb8169c1a2272559ba84f20fbb37838c13bf82";
 
 	// ==== Channel is now ready for normal operation
 
@@ -257,7 +259,7 @@ fn test_v1_splice_in() {
 	};
 	let (input_idx_prev_fund, input_idx_second_input) =
 		if expect_inputs_in_reverse { (0, 1) } else { (1, 0) };
-	if let Event::FundingTransactionReadyForSigning {
+	let _channel_id1 = if let Event::FundingTransactionReadyForSigning {
 		channel_id,
 		counterparty_node_id,
 		mut unsigned_transaction,
@@ -286,8 +288,44 @@ fn test_v1_splice_in() {
 			.node
 			.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction)
 			.unwrap();
+		channel_id
 	} else {
-		panic!();
+		panic!("Expected event FundingTransactionReadyForSigning");
+	};
+
+	// check new funding tx
+	assert_eq!(initiator_node.node.list_channels().len(), 1);
+	{
+		let channel = &initiator_node.node.list_channels()[0];
+		assert!(!channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert_eq!(channel.funding_txo.unwrap().txid.to_string(), expected_splice_funding_txid);
+		assert_eq!(channel.confirmations.unwrap(), 0);
+	}
+
+	let _res = acceptor_node
+		.node
+		.handle_tx_complete(initiator_node.node.get_our_node_id(), &tx_complete_msg);
+	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
+	// First messsage is commitment_signed, second is tx_signatures (see below for more)
+	assert_eq!(msg_events.len(), 1);
+	let _msg_commitment_signed_from_1 = match msg_events[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
+			let res = updates.commitment_signed.clone();
+			res
+		},
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
+	};
+
+	// check new funding tx (acceptor side)
+	assert_eq!(acceptor_node.node.list_channels().len(), 1);
+	{
+		let channel = &acceptor_node.node.list_channels()[0];
+		assert!(!channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert_eq!(channel.funding_txo.unwrap().txid.to_string(), expected_splice_funding_txid);
+		assert_eq!(channel.confirmations.unwrap(), 0);
 	}
 
 	// TODO(splicing): Continue with commitment flow, new tx confirmation

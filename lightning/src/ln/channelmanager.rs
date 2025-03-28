@@ -5532,9 +5532,36 @@ where
 	/// Do NOT broadcast the funding transaction yourself. When we have safely received our
 	/// counterparty's signature(s) the funding transaction will automatically be broadcast via the
 	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
-	pub fn funding_transaction_signed(&self, _channel_id: &ChannelId, _counterparty_node_id: &PublicKey,
-		_transaction: Transaction) -> Result<(), APIError> {
-		// TODO(splicing) TODO(dual_funding)
+	pub fn funding_transaction_signed(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, transaction: Transaction)
+	-> Result<(), APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable {
+				err: format!("Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id) })?;
+
+		let witnesses: Vec<_> = transaction.input.into_iter().filter_map(|input| {
+			if input.witness.is_empty() { None } else { Some(input.witness) }
+		}).collect();
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		if let Some(channel) = peer_state.channel_by_id.get_mut(channel_id) {
+			let tx_signatures_opt = channel.funding_transaction_signed(witnesses)?;
+			if let Some(tx_signatures) = tx_signatures_opt {
+				peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+					node_id: *counterparty_node_id,
+					msg: tx_signatures,
+				});
+			}
+		} else {
+			return Err(APIError::ChannelUnavailable { err: format!(
+				"Channel with ID {} and counterparty_node_id {} not found", channel_id, counterparty_node_id
+			)});
+		}
+
 		Ok(())
 	}
 
@@ -8565,6 +8592,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							update_fee: None,
 						},
 					});
+					// channel.set_next_funding_txid(&funding_txid);  // TODO ?
 				}
 				Ok(())
 			},

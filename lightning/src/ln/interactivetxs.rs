@@ -302,19 +302,8 @@ pub(crate) struct InteractiveTxSigningSession {
 impl InteractiveTxSigningSession {
 	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
 		self.received_commitment_signed = true;
-		if self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
-	}
 
-	pub fn get_tx_signatures(&self) -> Option<TxSignatures> {
-		if self.received_commitment_signed {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
+		self.get_tx_signatures()
 	}
 
 	/// Handles a `tx_signatures` message received from the counterparty.
@@ -337,22 +326,7 @@ impl InteractiveTxSigningSession {
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
 		self.counterparty_sent_tx_signatures = true;
 
-		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		};
-
-		// Check if the holder has provided its signatures and if so,
-		// return the finalized funding transaction.
-		let funding_tx_opt = if self.holder_tx_signatures.is_some() {
-			Some(self.finalize_funding_tx())
-		} else {
-			// This means we're still waiting for the holder to provide their signatures.
-			None
-		};
-
-		Ok((holder_tx_signatures, funding_tx_opt))
+		Ok((self.get_tx_signatures(), self.get_finalized_funding_tx()))
 	}
 
 	/// Provides the holder witnesses for the unsigned transaction.
@@ -362,7 +336,7 @@ impl InteractiveTxSigningSession {
 	pub fn provide_holder_witnesses(
 		&mut self, channel_id: ChannelId, witnesses: Vec<Witness>,
 		shared_input_signature: Option<Signature>,
-	) -> Result<(), ()> {
+	) -> Result<(Option<TxSignatures>, Option<Transaction>), ()> {
 		if self.local_inputs_count() != witnesses.len() {
 			return Err(());
 		}
@@ -375,7 +349,35 @@ impl InteractiveTxSigningSession {
 			shared_input_signature,
 		});
 
-		Ok(())
+		Ok((self.get_tx_signatures(), self.get_finalized_funding_tx()))
+	}
+
+	/// Decide if we need to send `TxSignatures` at this stage or not
+	fn get_tx_signatures(&mut self) -> Option<TxSignatures> {
+		if self.holder_tx_signatures.is_none() {
+			return None; // no local signature yet
+		}
+		if !self.received_commitment_signed {
+			return None; // no counterparty commitment received yet
+		}
+		if (!self.holder_sends_tx_signatures_first && self.counterparty_sent_tx_signatures)
+			|| (self.holder_sends_tx_signatures_first && !self.counterparty_sent_tx_signatures)
+		{
+			self.holder_tx_signatures.clone()
+		} else {
+			None
+		}
+	}
+
+	/// Decide if we have the funding transaction signed from both parties
+	fn get_finalized_funding_tx(&mut self) -> Option<Transaction> {
+		if self.holder_tx_signatures.is_none() {
+			return None; // no local signature yet
+		}
+		if !self.counterparty_sent_tx_signatures {
+			return None; // no counterparty signature received yet
+		}
+		Some(self.finalize_funding_tx())
 	}
 
 	pub fn remote_inputs_count(&self) -> usize {

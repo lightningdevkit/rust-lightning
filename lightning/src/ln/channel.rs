@@ -24,9 +24,9 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
-use bitcoin::{secp256k1, sighash};
+use bitcoin::{secp256k1, sighash, Witness};
 #[cfg(splicing)]
-use bitcoin::{Sequence, Witness};
+use bitcoin::Sequence;
 
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash};
@@ -1542,6 +1542,29 @@ impl<SP: Deref> Channel<SP> where
 			}
 			_ => {
 				Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
+			}
+		}
+	}
+
+	pub fn funding_transaction_signed(&mut self, witnesses: Vec<Witness>) -> Result<Option<msgs::TxSignatures>, APIError> {
+		match &mut self.phase {
+			ChannelPhase::Funded(chan) => {
+				chan.funding_transaction_signed(witnesses)
+			}
+			#[cfg(splicing)]
+			ChannelPhase::RefundingV2(chan) => {
+				if let Some(ref mut post_funded) = &mut chan.post_funded {
+					post_funded.funding_transaction_signed(witnesses)
+				} else {
+					Err(APIError::APIMisuseError {
+						err: "No negotiation in progress, called in wrong state".to_owned()
+					})
+				}
+			}
+			_ => {
+				return Err(APIError::APIMisuseError {
+					err: "Got a funding_transaction_signed call with no funding negotiation in-progress".to_owned()
+				});
 			}
 		}
 	}
@@ -6596,6 +6619,59 @@ impl<SP: Deref> FundedChannel<SP> where
 			&self.context.channel_id(), if need_commitment_signed { " our own commitment_signed and" } else { "" });
 		self.monitor_updating_paused(true, need_commitment_signed, false, Vec::new(), Vec::new(), Vec::new());
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
+	}
+
+	/// Check is a splice is currently in progress
+	/// Can be called regardless of `splicing` configuration. TODO: remove this note once `cfg(splicing)` is being removed
+	fn is_splice_pending(&self) -> bool {
+		#[cfg(splicing)]
+		return self.pending_splice_post.is_some();
+		#[cfg(not(splicing))]
+		false
+	}
+
+	pub(super) fn funding_transaction_signed(&mut self, witnesses: Vec<Witness>) -> Result<Option<msgs::TxSignatures>, APIError> {
+		self.verify_interactive_tx_signatures(&witnesses);
+		let is_splice = self.is_splice_pending();
+		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+			// Shared signature (used in splicing): holder signature on the prev funding tx input should have been saved.
+			// include it in tlvs field
+			let tlvs = if is_splice {
+				if let Some(s) = signing_session.shared_signature {
+					Some(s)
+				} else {
+					panic!("TODO error!");
+				}
+			} else {
+				None
+			};
+			let (tx_signatures_opt, funding_tx_opt) =
+				signing_session.provide_holder_witnesses(self.context.channel_id(), witnesses, tlvs)
+				.map_err(|_| APIError::APIMisuseError {
+					err: "Internal error in funding_transaction_signed, provide_holder_witnesses".to_owned(),
+				})?;
+			if funding_tx_opt.is_some() {
+				self.funding.funding_transaction = funding_tx_opt.clone();
+				/* TODO
+				#[cfg(splicing)]
+				{
+					self.context.funding_transaction_saved = funding_tx_opt.clone();
+				}
+				*/
+			}
+			Ok(tx_signatures_opt)
+		} else {
+			Err(APIError::APIMisuseError {
+				err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", self.context.channel_id())
+			})
+		}
+	}
+
+	fn verify_interactive_tx_signatures(&mut self, _witnesses: &Vec<Witness>) {
+		if let Some(ref mut _signing_session) = self.interactive_tx_signing_session {
+			// Check that sighash_all was used:
+			// TODO(dual_funding): Check sig for sighash
+		}
 	}
 
 	/// Public version of the below, checking relevant preconditions first.
