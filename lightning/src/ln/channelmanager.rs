@@ -15122,17 +15122,17 @@ mod tests {
 		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch(nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
 		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[1].node.handle_commitment_signed_batch(nodes[0].node.get_our_node_id(), &as_first_cs);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
-		nodes[0].node.handle_commitment_signed_batch(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
@@ -15140,7 +15140,7 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
 		check_added_monitors!(nodes[1], 1);
-		nodes[1].node.handle_commitment_signed_batch(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
 		check_added_monitors!(nodes[1], 1);
 		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
@@ -16502,10 +16502,10 @@ pub mod bench {
 					Retry::Attempts(0)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc($node_a.get_our_node_id(), &payment_event.msgs[0]);
-				$node_b.handle_commitment_signed_batch($node_a.get_our_node_id(), &payment_event.commitment_msg);
+				$node_b.handle_commitment_signed_batch_test($node_a.get_our_node_id(), &payment_event.commitment_msg);
 				let (raa, cs) = get_revoke_commit_msgs(&ANodeHolder { node: &$node_b }, &$node_a.get_our_node_id());
 				$node_a.handle_revoke_and_ack($node_b.get_our_node_id(), &raa);
-				$node_a.handle_commitment_signed_batch($node_b.get_our_node_id(), &cs);
+				$node_a.handle_commitment_signed_batch_test($node_b.get_our_node_id(), &cs);
 				$node_b.handle_revoke_and_ack($node_a.get_our_node_id(), &get_event_msg!(ANodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
 
 				expect_pending_htlcs_forwardable!(ANodeHolder { node: &$node_b });
@@ -16517,14 +16517,14 @@ pub mod bench {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
 						assert_eq!(node_id, $node_a.get_our_node_id());
 						$node_a.handle_update_fulfill_htlc($node_b.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-						$node_a.handle_commitment_signed_batch($node_b.get_our_node_id(), &updates.commitment_signed);
+						$node_a.handle_commitment_signed_batch_test($node_b.get_our_node_id(), &updates.commitment_signed);
 					},
 					_ => panic!("Failed to generate claim event"),
 				}
 
 				let (raa, cs) = get_revoke_commit_msgs(&ANodeHolder { node: &$node_a }, &$node_b.get_our_node_id());
 				$node_b.handle_revoke_and_ack($node_a.get_our_node_id(), &raa);
-				$node_b.handle_commitment_signed_batch($node_a.get_our_node_id(), &cs);
+				$node_b.handle_commitment_signed_batch_test($node_a.get_our_node_id(), &cs);
 				$node_a.handle_revoke_and_ack($node_b.get_our_node_id(), &get_event_msg!(ANodeHolder { node: &$node_b }, MessageSendEvent::SendRevokeAndACK, $node_a.get_our_node_id()));
 
 				expect_payment_sent!(ANodeHolder { node: &$node_a }, payment_preimage);

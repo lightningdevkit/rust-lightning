@@ -46,6 +46,8 @@ use crate::sign::{NodeSigner, Recipient};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+use alloc::collections::BTreeMap;
+
 use core::fmt;
 use core::fmt::Debug;
 use core::ops::Deref;
@@ -1934,11 +1936,21 @@ pub trait ChannelMessageHandler : BaseMessageHandler {
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK);
 
-	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	/// Handle a batch of incoming `commitment_signed` message from the given peer.
-	fn handle_commitment_signed_batch(&self, their_node_id: PublicKey, batch: &Vec<CommitmentSigned>) {
-		for msg in batch {
-			self.handle_commitment_signed(their_node_id, msg);
+	fn handle_commitment_signed_batch(&self, their_node_id: PublicKey, batch: &BTreeMap<Txid, CommitmentSigned>) {}
+
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
+	fn handle_commitment_signed_batch_test(&self, their_node_id: PublicKey, batch: &Vec<CommitmentSigned>) {
+		assert!(!batch.is_empty());
+		if batch.len() == 1 {
+			assert!(batch[0].batch.is_none());
+			self.handle_commitment_signed(their_node_id, &batch[0]);
+		} else {
+			let batch: BTreeMap<Txid, CommitmentSigned> = batch.iter().cloned().map(|mut cs| {
+				let funding_txid = cs.batch.take().unwrap().funding_txid;
+				(funding_txid, cs)
+			}).collect();
+			self.handle_commitment_signed_batch(their_node_id, &batch);
 		}
 	}
 

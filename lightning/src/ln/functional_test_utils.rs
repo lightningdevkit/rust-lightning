@@ -2045,7 +2045,7 @@ macro_rules! commitment_signed_dance {
 		{
 			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
 			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-			$node_a.node.handle_commitment_signed_batch($node_b.node.get_our_node_id(), &$commitment_signed);
+			$node_a.node.handle_commitment_signed_batch_test($node_b.node.get_our_node_id(), &$commitment_signed);
 			check_added_monitors(&$node_a, 1);
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			assert!(extra_msg_option.is_none());
@@ -2088,7 +2088,7 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	node_b.node.handle_revoke_and_ack(node_a.node.get_our_node_id(), &as_revoke_and_ack);
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(node_b, 1);
-	node_b.node.handle_commitment_signed_batch(node_a.node.get_our_node_id(), &as_commitment_signed);
+	node_b.node.handle_commitment_signed_batch_test(node_a.node.get_our_node_id(), &as_commitment_signed);
 	let (bs_revoke_and_ack, extra_msg_option) = {
 		let mut events = node_b.node.get_and_clear_pending_msg_events();
 		assert!(events.len() <= 2);
@@ -2117,7 +2117,7 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &Vec<msgs::CommitmentSigned>, fail_backwards: bool, skip_last_step: bool) {
 	check_added_monitors!(node_a, 0);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
-	node_a.node.handle_commitment_signed_batch(node_b.node.get_our_node_id(), commitment_signed);
+	node_a.node.handle_commitment_signed_batch_test(node_b.node.get_our_node_id(), commitment_signed);
 	check_added_monitors!(node_a, 1);
 
 	// If this commitment signed dance was due to a claim, don't check for an RAA monitor update.
@@ -3892,7 +3892,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			if !pending_responding_commitment_signed.0 {
 				commitment_signed_dance!(node_a, node_b, commitment_update.commitment_signed, false);
 			} else {
-				node_a.node.handle_commitment_signed_batch(node_b.node.get_our_node_id(), &commitment_update.commitment_signed);
+				node_a.node.handle_commitment_signed_batch_test(node_b.node.get_our_node_id(), &commitment_update.commitment_signed);
 				check_added_monitors!(node_a, 1);
 				let as_revoke_and_ack = get_event_msg!(node_a, MessageSendEvent::SendRevokeAndACK, node_b.node.get_our_node_id());
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
@@ -3950,7 +3950,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 			if !pending_responding_commitment_signed.1 {
 				commitment_signed_dance!(node_b, node_a, commitment_update.commitment_signed, false);
 			} else {
-				node_b.node.handle_commitment_signed_batch(node_a.node.get_our_node_id(), &commitment_update.commitment_signed);
+				node_b.node.handle_commitment_signed_batch_test(node_a.node.get_our_node_id(), &commitment_update.commitment_signed);
 				check_added_monitors!(node_b, 1);
 				let bs_revoke_and_ack = get_event_msg!(node_b, MessageSendEvent::SendRevokeAndACK, node_a.node.get_our_node_id());
 				// No commitment_signed so get_event_msg's assert(len == 1) passes

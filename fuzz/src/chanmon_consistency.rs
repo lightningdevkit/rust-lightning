@@ -1138,7 +1138,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										break;
 									}
 									out.locked_write(format!("Delivering commitment_signed from node {} to node {}.\n", $node, idx).as_bytes());
-									dest.handle_commitment_signed_batch(nodes[$node].get_our_node_id(), &commitment_signed);
+									dest.handle_commitment_signed_batch_test(nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
 							}
