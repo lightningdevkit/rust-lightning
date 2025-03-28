@@ -170,7 +170,6 @@ pub enum PendingHTLCRouting {
 		incoming_cltv_expiry: Option<u32>,
 	},
 	/// An HTLC which should be forwarded on to another Trampoline node.
-	#[cfg(trampoline)]
 	TrampolineForward {
 		/// The onion shared secret we build with the sender (or the preceding Trampoline node) used
 		/// to decrypt the onion.
@@ -288,7 +287,6 @@ impl PendingHTLCRouting {
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
 		match self {
 			Self::Forward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
-			#[cfg(trampoline)]
 			Self::TrampolineForward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
 			Self::Receive { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
 			Self::ReceiveKeysend { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
@@ -299,7 +297,6 @@ impl PendingHTLCRouting {
 	fn incoming_cltv_expiry(&self) -> Option<u32> {
 		match self {
 			Self::Forward { incoming_cltv_expiry, .. } => *incoming_cltv_expiry,
-			#[cfg(trampoline)]
 			Self::TrampolineForward { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::Receive { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
 			Self::ReceiveKeysend { incoming_cltv_expiry, .. } => Some(*incoming_cltv_expiry),
@@ -4518,24 +4515,7 @@ where
 			}
 		}
 		match decoded_hop {
-			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } => {
-				// OUR PAYMENT!
-				let current_height: u32 = self.best_block.read().unwrap().height;
-				match create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
-					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
-					current_height)
-				{
-					Ok(info) => {
-						// Note that we could obviously respond immediately with an update_fulfill_htlc
-						// message, however that would leak that we are the recipient of this payment, so
-						// instead we stay symmetric with the forwarding case, only responding (after a
-						// delay) once they've sent us a commitment_signed!
-						PendingHTLCStatus::Forward(info)
-					},
-					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
-				}
-			},
-			#[cfg(trampoline)]
+			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } |
 			onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => {
 				// OUR PAYMENT!
 				let current_height: u32 = self.best_block.read().unwrap().height;
@@ -4559,7 +4539,6 @@ where
 					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
 				}
 			},
-			#[cfg(trampoline)]
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
@@ -9075,7 +9054,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					let scid = match forward_info.routing {
 						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
-						#[cfg(trampoline)]
 						PendingHTLCRouting::TrampolineForward { .. } => 0,
 						PendingHTLCRouting::Receive { .. } => 0,
 						PendingHTLCRouting::ReceiveKeysend { .. } => 0,
@@ -12896,36 +12874,6 @@ impl_writeable_tlv_based!(BlindedForward, {
 	(3, next_blinding_override, option),
 });
 
-#[cfg(not(trampoline))]
-impl_writeable_tlv_based_enum!(PendingHTLCRouting,
-	(0, Forward) => {
-		(0, onion_packet, required),
-		(1, blinded, option),
-		(2, short_channel_id, required),
-		(3, incoming_cltv_expiry, option),
-	},
-	(1, Receive) => {
-		(0, payment_data, required),
-		(1, phantom_shared_secret, option),
-		(2, incoming_cltv_expiry, required),
-		(3, payment_metadata, option),
-		(5, custom_tlvs, optional_vec),
-		(7, requires_blinded_error, (default_value, false)),
-		(9, payment_context, option),
-	},
-	(2, ReceiveKeysend) => {
-		(0, payment_preimage, required),
-		(1, requires_blinded_error, (default_value, false)),
-		(2, incoming_cltv_expiry, required),
-		(3, payment_metadata, option),
-		(4, payment_data, option), // Added in 0.0.116
-		(5, custom_tlvs, optional_vec),
-		(7, has_recipient_created_payment_secret, (default_value, false)),
-		(9, payment_context, option),
-		(11, invoice_request, option),
-	},
-);
-#[cfg(trampoline)]
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(0, Forward) => {
 		(0, onion_packet, required),

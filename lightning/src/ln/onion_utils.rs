@@ -1577,7 +1577,6 @@ pub(crate) enum Hop {
 	},
 	/// This onion was received via Trampoline, and needs to be forwarded to a subsequent Trampoline
 	/// node.
-	#[cfg(trampoline)]
 	TrampolineForward {
 		#[allow(unused)]
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
@@ -1590,11 +1589,10 @@ pub(crate) enum Hop {
 	},
 	/// This onion was received via Trampoline, and needs to be forwarded to a subsequent Trampoline
 	/// node.
-	#[allow(unused)]
-	#[cfg(trampoline)]
 	TrampolineBlindedForward {
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
+		#[allow(unused)]
 		incoming_trampoline_public_key: PublicKey,
 		trampoline_shared_secret: SharedSecret,
 		next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload,
@@ -1630,22 +1628,22 @@ pub(crate) enum Hop {
 	},
 	/// This onion payload was for us, not for forwarding to a next-hop, and it was sent to us via
 	/// Trampoline. Contains information for verifying the incoming payment.
-	#[allow(unused)]
-	#[cfg(trampoline)]
 	TrampolineReceive {
+		#[allow(unused)]
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
 		trampoline_hop_data: msgs::InboundOnionReceivePayload,
+		#[allow(unused)]
 		trampoline_shared_secret: SharedSecret,
 	},
 	/// This onion payload was for us, not for forwarding to a next-hop, and it was sent to us via
 	/// Trampoline. Contains information for verifying the incoming payment.
-	#[allow(unused)]
-	#[cfg(trampoline)]
 	TrampolineBlindedReceive {
+		#[allow(unused)]
 		outer_hop_data: msgs::InboundTrampolineEntrypointPayload,
 		outer_shared_secret: SharedSecret,
 		trampoline_hop_data: msgs::InboundOnionBlindedReceivePayload,
+		#[allow(unused)]
 		trampoline_shared_secret: SharedSecret,
 	},
 }
@@ -1668,15 +1666,11 @@ impl Hop {
 		match self {
 			Hop::Forward { shared_secret, .. } => shared_secret,
 			Hop::BlindedForward { shared_secret, .. } => shared_secret,
-			#[cfg(trampoline)]
 			Hop::TrampolineForward { outer_shared_secret, .. } => outer_shared_secret,
-			#[cfg(trampoline)]
 			Hop::TrampolineBlindedForward { outer_shared_secret, .. } => outer_shared_secret,
 			Hop::Receive { shared_secret, .. } => shared_secret,
 			Hop::BlindedReceive { shared_secret, .. } => shared_secret,
-			#[cfg(trampoline)]
 			Hop::TrampolineReceive { outer_shared_secret, .. } => outer_shared_secret,
-			#[cfg(trampoline)]
 			Hop::TrampolineBlindedReceive { outer_shared_secret, .. } => outer_shared_secret,
 		}
 	}
@@ -1763,7 +1757,6 @@ where
 			msgs::InboundOnionPayload::BlindedReceive(hop_data) => {
 				Ok(Hop::BlindedReceive { shared_secret, hop_data })
 			},
-			#[cfg(trampoline)]
 			msgs::InboundOnionPayload::TrampolineEntrypoint(hop_data) => {
 				let incoming_trampoline_public_key = hop_data.trampoline_packet.public_key;
 				let trampoline_blinded_node_id_tweak = hop_data.current_path_key.map(|bp| {
@@ -1841,16 +1834,60 @@ where
 							trampoline_shared_secret,
 						),
 					}),
-					Ok((_, None)) => Err(OnionDecodeErr::Malformed {
-						err_msg: "Non-final Trampoline onion data provided to us as last hop",
-						// todo: find more suitable error code
-						err_code: 0x4000 | 22,
-					}),
-					Ok((_, Some(_))) => Err(OnionDecodeErr::Malformed {
-						err_msg: "Final Trampoline onion data provided to us as intermediate hop",
-						// todo: find more suitable error code
-						err_code: 0x4000 | 22,
-					}),
+					Ok((msgs::InboundTrampolinePayload::BlindedForward(hop_data), None)) => {
+						if hop_data.intro_node_blinding_point.is_some() {
+							return Err(OnionDecodeErr::Relay {
+								err_msg: "Non-final intro node Trampoline onion data provided to us as last hop",
+								err_code: INVALID_ONION_BLINDING,
+								shared_secret,
+								trampoline_shared_secret: Some(SharedSecret::from_bytes(
+									trampoline_shared_secret,
+								)),
+							});
+						}
+						Err(OnionDecodeErr::Malformed {
+							err_msg: "Non-final Trampoline onion data provided to us as last hop",
+							err_code: INVALID_ONION_BLINDING,
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::BlindedReceive(hop_data), Some(_))) => {
+						if hop_data.intro_node_blinding_point.is_some() {
+							return Err(OnionDecodeErr::Relay {
+								err_msg: "Final Trampoline intro node onion data provided to us as intermediate hop",
+								err_code: 0x4000 | 22,
+								shared_secret,
+								trampoline_shared_secret: Some(SharedSecret::from_bytes(
+									trampoline_shared_secret,
+								)),
+							});
+						}
+						Err(OnionDecodeErr::Malformed {
+							err_msg:
+								"Final Trampoline onion data provided to us as intermediate hop",
+							err_code: INVALID_ONION_BLINDING,
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::Forward(_), None)) => {
+						Err(OnionDecodeErr::Relay {
+							err_msg: "Non-final Trampoline onion data provided to us as last hop",
+							err_code: 0x4000 | 22,
+							shared_secret,
+							trampoline_shared_secret: Some(SharedSecret::from_bytes(
+								trampoline_shared_secret,
+							)),
+						})
+					},
+					Ok((msgs::InboundTrampolinePayload::Receive(_), Some(_))) => {
+						Err(OnionDecodeErr::Relay {
+							err_msg:
+								"Final Trampoline onion data provided to us as intermediate hop",
+							err_code: 0x4000 | 22,
+							shared_secret,
+							trampoline_shared_secret: Some(SharedSecret::from_bytes(
+								trampoline_shared_secret,
+							)),
+						})
+					},
 					Err(e) => Err(e),
 				}
 			},

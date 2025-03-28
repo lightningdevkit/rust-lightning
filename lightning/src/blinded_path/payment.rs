@@ -298,7 +298,6 @@ pub struct ForwardTlvs {
 }
 
 /// Data to construct a [`BlindedHop`] for forwarding a Trampoline payment.
-#[cfg(trampoline)]
 #[derive(Clone, Debug)]
 pub struct TrampolineForwardTlvs {
 	/// The node id to which the trampoline node must find a route.
@@ -371,7 +370,6 @@ pub(crate) enum BlindedPaymentTlvs {
 /// Data to construct a [`BlindedHop`] for sending a Trampoline payment over.
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[cfg(trampoline)]
 pub(crate) enum BlindedTrampolineTlvs {
 	/// This blinded payment data is for a forwarding node.
 	Forward(TrampolineForwardTlvs),
@@ -514,6 +512,23 @@ impl Writeable for ForwardTlvs {
 	}
 }
 
+impl Writeable for TrampolineForwardTlvs {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let features_opt = if self.features == BlindedHopFeatures::empty() {
+			None
+		} else {
+			Some(WithoutLength(&self.features))
+		};
+		encode_tlv_stream!(w, {
+			(4, self.next_trampoline, required),
+			(10, self.payment_relay, required),
+			(12, self.payment_constraints, required),
+			(14, features_opt, option)
+		});
+		Ok(())
+	}
+}
+
 impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		encode_tlv_stream!(w, {
@@ -591,14 +606,13 @@ impl Readable for BlindedPaymentTlvs {
 	}
 }
 
-#[cfg(trampoline)]
 impl Readable for BlindedTrampolineTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_tlv_stream!(r, {
+			(4, next_trampoline, option),
 			(8, next_blinding_override, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
-			(14, next_trampoline, option),
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),

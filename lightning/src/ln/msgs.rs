@@ -32,7 +32,6 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs, UnauthenticatedReceiveTlvs};
-#[cfg(trampoline)]
 use crate::blinded_path::payment::{BlindedTrampolineTlvs, TrampolineForwardTlvs};
 use crate::ln::channelmanager::Verification;
 use crate::ln::types::ChannelId;
@@ -2075,12 +2074,11 @@ mod fuzzy_internal_msgs {
 		pub outgoing_cltv_value: u32,
 	}
 
-	#[cfg(trampoline)]
-	#[cfg_attr(trampoline, allow(unused))]
+	#[allow(unused)]
 	pub struct InboundTrampolineEntrypointPayload {
 		pub amt_to_forward: u64,
 		pub outgoing_cltv_value: u32,
-		pub multipath_trampoline_data: FinalOnionHopData,
+		pub multipath_trampoline_data: Option<FinalOnionHopData>,
 		pub trampoline_packet: TrampolineOnionPacket,
 		/// The blinding point this hop needs to decrypt its Trampoline onion.
 		/// This is used for Trampoline hops that are not the blinded path intro hop.
@@ -2118,15 +2116,12 @@ mod fuzzy_internal_msgs {
 
 	pub enum InboundOnionPayload {
 		Forward(InboundOnionForwardPayload),
-		#[cfg(trampoline)]
-		#[cfg_attr(trampoline, allow(unused))]
 		TrampolineEntrypoint(InboundTrampolineEntrypointPayload),
 		Receive(InboundOnionReceivePayload),
 		BlindedForward(InboundOnionBlindedForwardPayload),
 		BlindedReceive(InboundOnionBlindedReceivePayload),
 	}
 
-	#[cfg(trampoline)]
 	pub struct InboundTrampolineForwardPayload {
 		pub next_trampoline: PublicKey,
 		/// The value, in msat, of the payment after this hop's fee is deducted.
@@ -2134,7 +2129,6 @@ mod fuzzy_internal_msgs {
 		pub outgoing_cltv_value: u32,
 	}
 
-	#[cfg(trampoline)]
 	pub struct InboundTrampolineBlindedForwardPayload {
 		pub next_trampoline: PublicKey,
 		pub payment_relay: PaymentRelay,
@@ -2144,7 +2138,6 @@ mod fuzzy_internal_msgs {
 		pub next_blinding_override: Option<PublicKey>,
 	}
 
-	#[cfg(trampoline)]
 	pub enum InboundTrampolinePayload {
 		Forward(InboundTrampolineForwardPayload),
 		BlindedForward(InboundTrampolineBlindedForwardPayload),
@@ -2208,6 +2201,15 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			/// The node id to which the trampoline node must find a route.
 			outgoing_node_id: PublicKey,
+		},
+		#[cfg(test)]
+		/// LDK does not support making Trampoline payments to unblinded recipients. However, for
+		/// the purpose of testing our ability to receive them, we make this variant available in a
+		/// testing environment.
+		Receive {
+			payment_data: Option<FinalOnionHopData>,
+			sender_intended_htlc_amt_msat: u64,
+			cltv_expiry_height: u32,
 		},
 		#[allow(unused)]
 		/// This is the last Trampoline hop, whereupon the Trampoline forward mechanism is exited,
@@ -3185,6 +3187,16 @@ impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 					(14, outgoing_node_id, required)
 				});
 			},
+			#[cfg(test)]
+			Self::Receive {
+				ref payment_data, sender_intended_htlc_amt_msat, cltv_expiry_height,
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
+					(8, payment_data, option)
+				});
+			},
 			Self::LegacyBlindedPathEntry { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
 				let mut blinded_path_serialization = [0u8; 2048]; // Fixed-length buffer on the stack
 				let serialization_length = {
@@ -3239,7 +3251,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
-		#[cfg(trampoline)]
 		let mut trampoline_onion_packet: Option<TrampolineOnionPacket> = None;
 		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
@@ -3247,7 +3258,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 		let tlv_len = BigSize::read(r)?;
 		let mut rd = FixedLengthReader::new(r, tlv_len.0);
 
-		#[cfg(trampoline)]
 		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
@@ -3268,33 +3278,12 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			custom_tlvs.push((msg_type, value));
 			Ok(true)
 		});
-		#[cfg(not(trampoline))]
-		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
-			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
-			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
-			(6, short_id, option),
-			(8, payment_data, option),
-			(10, encrypted_tlvs_opt, option),
-			(12, intro_node_blinding_point, option),
-			(16, payment_metadata, option),
-			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
-			(77_777, invoice_request, option),
-			// See https://github.com/lightning/blips/blob/master/blip-0003.md
-			(5482373484, keysend_preimage, option)
-		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
-			if msg_type < 1 << 16 { return Ok(false) }
-			let mut value = Vec::new();
-			msg_reader.read_to_limit(&mut value, u64::MAX)?;
-			custom_tlvs.push((msg_type, value));
-			Ok(true)
-		});
 
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
 			return Err(DecodeError::InvalidValue)
 		}
 
-		#[cfg(trampoline)]
 		if let Some(trampoline_onion_packet) = trampoline_onion_packet {
 			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
 				total_msat.is_some()
@@ -3302,7 +3291,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 			return Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
-				multipath_trampoline_data: payment_data.ok_or(DecodeError::InvalidValue)?,
+				multipath_trampoline_data: payment_data,
 				trampoline_packet: trampoline_onion_packet,
 				current_path_key: intro_node_blinding_point,
 			}))
@@ -3391,7 +3380,6 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload wh
 	}
 }
 
-#[cfg(trampoline)]
 impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload where NS::Target: NodeSigner {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
