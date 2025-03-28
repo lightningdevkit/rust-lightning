@@ -379,18 +379,18 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 #[cfg(feature = "std")]
-pub trait SyncBroadcaster : chaininterface::BroadcasterInterface + Sync {}
+pub trait SyncBroadcaster: chaininterface::BroadcasterInterface + Sync {}
 #[cfg(feature = "std")]
-pub trait SyncPersist : Persist<TestChannelSigner> + Sync {}
+pub trait SyncPersist: Persist<TestChannelSigner> + Sync {}
 #[cfg(feature = "std")]
 impl<T: chaininterface::BroadcasterInterface + Sync> SyncBroadcaster for T {}
 #[cfg(feature = "std")]
 impl<T: Persist<TestChannelSigner> + Sync> SyncPersist for T {}
 
 #[cfg(not(feature = "std"))]
-pub trait SyncBroadcaster : chaininterface::BroadcasterInterface {}
+pub trait SyncBroadcaster: chaininterface::BroadcasterInterface {}
 #[cfg(not(feature = "std"))]
-pub trait SyncPersist : Persist<TestChannelSigner> {}
+pub trait SyncPersist: Persist<TestChannelSigner> {}
 #[cfg(not(feature = "std"))]
 impl<T: chaininterface::BroadcasterInterface> SyncBroadcaster for T {}
 #[cfg(not(feature = "std"))]
@@ -419,10 +419,9 @@ pub struct TestChainMonitor<'a> {
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
-		chain_source: Option<&'a TestChainSource>,
-		broadcaster: &'a dyn SyncBroadcaster, logger: &'a TestLogger,
-		fee_estimator: &'a TestFeeEstimator, persister: &'a dyn SyncPersist,
-		keys_manager: &'a TestKeysInterface,
+		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
+		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
 	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
