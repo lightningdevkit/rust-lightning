@@ -2241,6 +2241,13 @@ mod fuzzy_internal_msgs {
 		pub(crate) failuremsg: Vec<u8>,
 		pub(crate) pad: Vec<u8>,
 	}
+
+	#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+	pub struct OnionErrorPacket {
+		// This really should be a constant size slice, but the spec lets these things be up to 128KB?
+		// (TODO) We limit it in decode to much lower...
+		pub data: Vec<u8>,
+	}
 }
 #[cfg(fuzzing)]
 pub use self::fuzzy_internal_msgs::*;
@@ -2347,13 +2354,6 @@ impl Debug for TrampolineOnionPacket {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_fmt(format_args!("TrampolineOnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
 	}
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) struct OnionErrorPacket {
-	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
-	// (TODO) We limit it in decode to much lower...
-	pub(crate) data: Vec<u8>,
 }
 
 impl From<UpdateFailHTLC> for OnionErrorPacket {

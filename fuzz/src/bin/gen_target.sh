@@ -17,6 +17,7 @@ GEN_TEST bolt11_deser
 GEN_TEST onion_message
 GEN_TEST peer_crypt
 GEN_TEST process_network_graph
+GEN_TEST process_onion_failure
 GEN_TEST refund_deser
 GEN_TEST router
 GEN_TEST zbase32

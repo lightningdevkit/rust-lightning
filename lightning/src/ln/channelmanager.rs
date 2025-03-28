@@ -409,27 +409,6 @@ pub enum BlindedFailure {
 	FromBlindedNode,
 }
 
-/// Tracks the inbound corresponding to an outbound HTLC
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) struct HTLCPreviousHopData {
-	// Note that this may be an outbound SCID alias for the associated channel.
-	short_channel_id: u64,
-	user_channel_id: Option<u128>,
-	htlc_id: u64,
-	incoming_packet_shared_secret: [u8; 32],
-	phantom_shared_secret: Option<[u8; 32]>,
-	blinded_failure: Option<BlindedFailure>,
-	channel_id: ChannelId,
-
-	// These fields are consumed by `claim_funds_from_hop()` when updating a force-closed backwards
-	// channel with a preimage provided by the forward channel.
-	outpoint: OutPoint,
-	counterparty_node_id: Option<PublicKey>,
-	/// Used to preserve our backwards channel by failing back in case an HTLC claim in the forward
-	/// channel remains unconfirmed for too long.
-	cltv_expiry: Option<u32>,
-}
-
 #[derive(PartialEq, Eq)]
 enum OnionPayload {
 	/// Indicates this incoming onion payload is for the purpose of paying an invoice.
@@ -674,21 +653,50 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	},
 );
 
+mod fuzzy_channelmanager {
+	use super::*;
 
-/// Tracks the inbound corresponding to an outbound HTLC
-#[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum HTLCSource {
-	PreviousHopData(HTLCPreviousHopData),
-	OutboundRoute {
-		path: Path,
-		session_priv: SecretKey,
-		/// Technically we can recalculate this from the route, but we cache it here to avoid
-		/// doing a double-pass on route when we get a failure back
-		first_hop_htlc_msat: u64,
-		payment_id: PaymentId,
-	},
+	/// Tracks the inbound corresponding to an outbound HTLC
+	#[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
+	#[derive(Clone, Debug, PartialEq, Eq)]
+	pub enum HTLCSource {
+		PreviousHopData(HTLCPreviousHopData),
+		OutboundRoute {
+			path: Path,
+			session_priv: SecretKey,
+			/// Technically we can recalculate this from the route, but we cache it here to avoid
+			/// doing a double-pass on route when we get a failure back
+			first_hop_htlc_msat: u64,
+			payment_id: PaymentId,
+		},
+	}
+
+	/// Tracks the inbound corresponding to an outbound HTLC
+	#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+	pub struct HTLCPreviousHopData {
+		// Note that this may be an outbound SCID alias for the associated channel.
+		pub short_channel_id: u64,
+		pub user_channel_id: Option<u128>,
+		pub htlc_id: u64,
+		pub incoming_packet_shared_secret: [u8; 32],
+		pub phantom_shared_secret: Option<[u8; 32]>,
+		pub blinded_failure: Option<BlindedFailure>,
+		pub channel_id: ChannelId,
+
+		// These fields are consumed by `claim_funds_from_hop()` when updating a force-closed backwards
+		// channel with a preimage provided by the forward channel.
+		pub outpoint: OutPoint,
+		pub counterparty_node_id: Option<PublicKey>,
+		/// Used to preserve our backwards channel by failing back in case an HTLC claim in the forward
+		/// channel remains unconfirmed for too long.
+		pub cltv_expiry: Option<u32>,
+	}
 }
+#[cfg(fuzzing)]
+pub use self::fuzzy_channelmanager::*;
+#[cfg(not(fuzzing))]
+pub(crate) use self::fuzzy_channelmanager::*;
+
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 impl core::hash::Hash for HTLCSource {
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
