@@ -9,6 +9,7 @@ use lightning::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageContext, OffersContext,
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
+use lightning::chain::chainmonitor::PeerStorageKey;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
@@ -247,6 +248,10 @@ impl NodeSigner for KeyProvider {
 	fn sign_gossip_message(
 		&self, _msg: lightning::ln::msgs::UnsignedGossipMessage,
 	) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
+		unreachable!()
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
 		unreachable!()
 	}
 }
