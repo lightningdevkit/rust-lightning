@@ -192,6 +192,7 @@ pub(crate) enum ClaimEvent {
 	/// encumbered funds and proceed to HTLC resolution, if any HTLCs exist.
 	BumpCommitment {
 		package_target_feerate_sat_per_1000_weight: u32,
+		holder_commitment_tx: HolderCommitmentTransaction,
 		commitment_tx: Transaction,
 		anchor_output_idx: u32,
 	},
@@ -652,7 +653,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				// Commitment inputs with anchors support are the only untractable inputs supported
 				// thus far that require external funding.
 				PackageSolvingData::HolderFundingOutput(output) => {
-					debug_assert_eq!(tx.0.compute_txid(), self.holder_commitment.trust().txid(),
+					let holder_commitment = output.commitment_tx.as_ref()
+						.unwrap_or(self.current_holder_commitment_tx());
+					debug_assert_eq!(tx.0.compute_txid(), holder_commitment.trust().txid(),
 						"Holder commitment transaction mismatch");
 
 					let package_target_feerate_sat_per_1000_weight = cached_request
@@ -674,6 +677,8 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					match chan_utils::get_keyed_anchor_output(&tx.0, funding_pubkey) {
 						// An anchor output was found, so we should yield a funding event externally.
 						Some((idx, _)) => {
+							let holder_commitment_tx = output.commitment_tx.as_ref()
+								.unwrap_or(self.current_holder_commitment_tx());
 							// TODO: Use a lower confirmation target when both our and the
 							// counterparty's latest commitment don't have any HTLCs present.
 							Some((
@@ -681,6 +686,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 								package_target_feerate_sat_per_1000_weight as u64,
 								OnchainClaim::Event(ClaimEvent::BumpCommitment {
 									package_target_feerate_sat_per_1000_weight,
+									holder_commitment_tx: holder_commitment_tx.clone(),
 									commitment_tx: tx.0.clone(),
 									anchor_output_idx: idx,
 								}),
@@ -1193,17 +1199,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
 	}
 
-	pub(crate) fn get_unsigned_holder_commitment_tx(&self) -> &Transaction {
-		&self.holder_commitment.trust().built_transaction().transaction
-	}
-
-	pub(crate) fn get_maybe_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> MaybeSignedTransaction {
-		let tx = self.signer.sign_holder_commitment(&self.channel_transaction_parameters, &self.holder_commitment, &self.secp_ctx)
-			.map(|sig| self.holder_commitment.add_holder_sig(funding_redeemscript, sig))
-			.unwrap_or_else(|_| self.get_unsigned_holder_commitment_tx().clone());
-		MaybeSignedTransaction(tx)
-	}
-
 	#[cfg(any(test, feature="_test_utils", feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
 		let sig = self.signer.unsafe_sign_holder_commitment(&self.channel_transaction_parameters, &self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
@@ -1410,7 +1405,7 @@ mod tests {
 		let logger = TestLogger::new();
 
 		// Request claiming of each HTLC on the holder's commitment, with current block height 1.
-		let holder_commit_txid = tx_handler.get_unsigned_holder_commitment_tx().compute_txid();
+		let holder_commit_txid = tx_handler.current_holder_commitment_tx().trust().txid();
 		let mut requests = Vec::new();
 		for (htlc, _) in htlcs {
 			requests.push(PackageTemplate::build_package(
