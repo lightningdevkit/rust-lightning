@@ -182,6 +182,7 @@ pub(crate) struct ExternalHTLCClaim {
 	pub(crate) preimage: Option<PaymentPreimage>,
 	pub(crate) counterparty_sig: Signature,
 	pub(crate) per_commitment_point: PublicKey,
+	pub(crate) channel_parameters: ChannelTransactionParameters,
 }
 
 // Represents the different types of claims for which events are yielded externally to satisfy said
@@ -1338,9 +1339,8 @@ mod tests {
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(
-					htlc.amount_msat,
-					htlc.cltv_expiry,
-					ChannelTypeFeatures::only_static_remote_key(),
+					tx_handler.channel_transaction_parameters.clone(),
+					htlc.amount_msat, htlc.cltv_expiry,
 					tx_handler.holder_commitment.clone(), tx_handler.prev_holder_commitment.clone(),
 				)),
 				0,

@@ -3576,8 +3576,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						htlc_descriptors.push(HTLCDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
-								value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
-								transaction_parameters: self.funding.channel_parameters.clone(),
+								value_satoshis: htlc.channel_parameters.channel_value_satoshis,
+								transaction_parameters: htlc.channel_parameters,
 							},
 							commitment_txid: htlc.commitment_txid,
 							per_commitment_number: htlc.per_commitment_number,
@@ -4004,7 +4004,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let (htlc_output, counterparty_spendable_height) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.channel_type_features().clone(),
+						self.funding.channel_parameters.clone(),
+						htlc.amount_msat, htlc.cltv_expiry,
 						self.funding.current_holder_commitment.tx.clone(),
 						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 					);
@@ -4017,7 +4018,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					};
 					let htlc_output = HolderHTLCOutput::build_accepted(
-						payment_preimage, htlc.amount_msat, self.channel_type_features().clone(),
+						self.funding.channel_parameters.clone(),
+						payment_preimage, htlc.amount_msat,
 						self.funding.current_holder_commitment.tx.clone(),
 						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 					);
@@ -4184,7 +4186,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(vout) = htlc.transaction_output_index {
 				let (htlc_output, preimage) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.channel_type_features().clone(),
+						self.funding.channel_parameters.clone(), htlc.amount_msat, htlc.cltv_expiry,
 						self.funding.current_holder_commitment.tx.clone(),
 						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 					);
@@ -4192,7 +4194,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} else {
 					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
 						let htlc_output = HolderHTLCOutput::build_accepted(
-							*preimage, htlc.amount_msat, self.channel_type_features().clone(),
+							self.funding.channel_parameters.clone(), *preimage, htlc.amount_msat,
 							self.funding.current_holder_commitment.tx.clone(),
 							self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 						);
