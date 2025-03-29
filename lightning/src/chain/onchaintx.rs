@@ -25,7 +25,7 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use crate::chain::chaininterface::{ConfirmationTarget, compute_feerate_sat_per_1000_weight};
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
+use crate::sign::{EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::ln::msgs::DecodeError;
 use crate::types::payment::PaymentPreimage;
 use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
@@ -233,7 +233,7 @@ pub(crate) enum FeerateStrategy {
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_value_satoshis: u64,
-	channel_keys_id: [u8; 32],
+	pub(crate) channel_keys_id: [u8; 32],
 	destination_script: ScriptBuf, // Deprecated as of 0.2.
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
@@ -1203,84 +1203,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
 	}
 
-	#[cfg(any(test, feature="_test_utils", feature="unsafe_revoked_tx_signing"))]
-	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let sig = self.signer.unsafe_sign_holder_commitment(&self.channel_transaction_parameters, &self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
-		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
-	}
-
-	pub(crate) fn get_maybe_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<MaybeSignedTransaction> {
-		let get_signed_htlc_tx = |holder_commitment: &HolderCommitmentTransaction| {
-			let trusted_tx = holder_commitment.trust();
-			if trusted_tx.txid() != outp.txid {
-				return None;
-			}
-			let (htlc_idx, htlc) = trusted_tx.htlcs().iter().enumerate()
-				.find(|(_, htlc)| htlc.transaction_output_index.unwrap() == outp.vout)
-				.unwrap();
-			let counterparty_htlc_sig = holder_commitment.counterparty_htlc_sigs[htlc_idx];
-			let mut htlc_tx = trusted_tx.build_unsigned_htlc_tx(
-				&self.channel_transaction_parameters.as_holder_broadcastable(), htlc_idx, preimage,
-			);
-
-			let htlc_descriptor = HTLCDescriptor {
-				channel_derivation_parameters: ChannelDerivationParameters {
-					value_satoshis: self.channel_value_satoshis,
-					keys_id: self.channel_keys_id,
-					transaction_parameters: self.channel_transaction_parameters.clone(),
-				},
-				commitment_txid: trusted_tx.txid(),
-				per_commitment_number: trusted_tx.commitment_number(),
-				per_commitment_point: trusted_tx.per_commitment_point(),
-				feerate_per_kw: trusted_tx.feerate_per_kw(),
-				htlc: htlc.clone(),
-				preimage: preimage.clone(),
-				counterparty_sig: counterparty_htlc_sig.clone(),
-			};
-			if let Ok(htlc_sig) = self.signer.sign_holder_htlc_transaction(&htlc_tx, 0, &htlc_descriptor, &self.secp_ctx) {
-				htlc_tx.input[0].witness = trusted_tx.build_htlc_input_witness(
-					htlc_idx, &counterparty_htlc_sig, &htlc_sig, preimage,
-				);
-			}
-			Some(MaybeSignedTransaction(htlc_tx))
-		};
-
-		// Check if the HTLC spends from the current holder commitment first, or the previous.
-		get_signed_htlc_tx(&self.holder_commitment)
-			.or_else(|| self.prev_holder_commitment.as_ref().and_then(|prev_holder_commitment| get_signed_htlc_tx(prev_holder_commitment)))
-	}
-
-	pub(crate) fn generate_external_htlc_claim(
-		&self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>
-	) -> Option<ExternalHTLCClaim> {
-		let find_htlc = |holder_commitment: &HolderCommitmentTransaction| -> Option<ExternalHTLCClaim> {
-			let trusted_tx = holder_commitment.trust();
-			if outp.txid != trusted_tx.txid() {
-				return None;
-			}
-			trusted_tx.htlcs().iter().enumerate()
-				.find(|(_, htlc)| if let Some(output_index) = htlc.transaction_output_index {
-					output_index == outp.vout
-				} else {
-					false
-				})
-				.map(|(htlc_idx, htlc)| {
-					let counterparty_htlc_sig = holder_commitment.counterparty_htlc_sigs[htlc_idx];
-					ExternalHTLCClaim {
-						commitment_txid: trusted_tx.txid(),
-						per_commitment_number: trusted_tx.commitment_number(),
-						htlc: htlc.clone(),
-						preimage: *preimage,
-						counterparty_sig: counterparty_htlc_sig,
-						per_commitment_point: trusted_tx.per_commitment_point(),
-					}
-				})
-		};
-		// Check if the HTLC spends from the current holder commitment or the previous one otherwise.
-		find_htlc(&self.holder_commitment)
-			.or_else(|| self.prev_holder_commitment.as_ref().map(|c| find_htlc(c)).flatten())
-	}
-
 	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
 	}
@@ -1419,6 +1341,7 @@ mod tests {
 					htlc.amount_msat,
 					htlc.cltv_expiry,
 					ChannelTypeFeatures::only_static_remote_key(),
+					tx_handler.holder_commitment.clone(), tx_handler.prev_holder_commitment.clone(),
 				)),
 				0,
 			));

@@ -4004,7 +4004,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let (htlc_output, counterparty_spendable_height) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.channel_type_features().clone()
+						htlc.amount_msat, htlc.cltv_expiry, self.channel_type_features().clone(),
+						self.funding.current_holder_commitment.tx.clone(),
+						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 					);
 					(htlc_output, conf_height)
 				} else {
@@ -4015,7 +4017,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						continue;
 					};
 					let htlc_output = HolderHTLCOutput::build_accepted(
-						payment_preimage, htlc.amount_msat, self.channel_type_features().clone()
+						payment_preimage, htlc.amount_msat, self.channel_type_features().clone(),
+						self.funding.current_holder_commitment.tx.clone(),
+						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
 					);
 					(htlc_output, htlc.cltv_expiry)
 				};
@@ -4162,7 +4166,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, logger: &WithChannelMonitor<L>
 	) -> Vec<Transaction> where L::Target: Logger {
 		log_debug!(logger, "Getting signed copy of latest holder commitment transaction!");
-		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding.redeem_script);
+		let commitment_tx = {
+			let sig = self.onchain_tx_handler.signer.unsafe_sign_holder_commitment(
+				&self.funding.channel_parameters, &self.funding.current_holder_commitment.tx,
+				&self.onchain_tx_handler.secp_ctx,
+			).expect("sign holder commitment");
+			self.funding.current_holder_commitment.tx.add_holder_sig(&self.funding.redeem_script, sig)
+		};
 		let txid = commitment_tx.compute_txid();
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment
@@ -4172,14 +4182,28 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 		for htlc in self.funding.current_holder_commitment.tx.htlcs() {
 			if let Some(vout) = htlc.transaction_output_index {
-				let preimage = if !htlc.offered {
-					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) { Some(preimage.clone()) } else {
+				let (htlc_output, preimage) = if htlc.offered {
+					let htlc_output = HolderHTLCOutput::build_offered(
+						htlc.amount_msat, htlc.cltv_expiry, self.channel_type_features().clone(),
+						self.funding.current_holder_commitment.tx.clone(),
+						self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
+					);
+					(htlc_output, None)
+				} else {
+					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
+						let htlc_output = HolderHTLCOutput::build_accepted(
+							*preimage, htlc.amount_msat, self.channel_type_features().clone(),
+							self.funding.current_holder_commitment.tx.clone(),
+							self.funding.prev_holder_commitment.as_ref().map(|c| &c.tx).cloned(),
+						);
+						(htlc_output, Some(*preimage))
+					} else {
 						// We can't build an HTLC-Success transaction without the preimage
 						continue;
 					}
-				} else { None };
-				if let Some(htlc_tx) = self.onchain_tx_handler.get_maybe_signed_htlc_tx(
-					&::bitcoin::OutPoint { txid, vout }, &preimage
+				};
+				if let Some(htlc_tx) = htlc_output.get_maybe_signed_htlc_tx(
+					&mut self.onchain_tx_handler, &::bitcoin::OutPoint { txid, vout }, &preimage
 				) {
 					if htlc_tx.is_fully_signed() {
 						holder_transactions.push(htlc_tx.0);
