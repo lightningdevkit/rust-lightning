@@ -378,6 +378,24 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	}
 }
 
+#[cfg(feature = "std")]
+pub trait SyncBroadcaster: chaininterface::BroadcasterInterface + Sync {}
+#[cfg(feature = "std")]
+pub trait SyncPersist: Persist<TestChannelSigner> + Sync {}
+#[cfg(feature = "std")]
+impl<T: chaininterface::BroadcasterInterface + Sync> SyncBroadcaster for T {}
+#[cfg(feature = "std")]
+impl<T: Persist<TestChannelSigner> + Sync> SyncPersist for T {}
+
+#[cfg(not(feature = "std"))]
+pub trait SyncBroadcaster: chaininterface::BroadcasterInterface {}
+#[cfg(not(feature = "std"))]
+pub trait SyncPersist: Persist<TestChannelSigner> {}
+#[cfg(not(feature = "std"))]
+impl<T: chaininterface::BroadcasterInterface> SyncBroadcaster for T {}
+#[cfg(not(feature = "std"))]
+impl<T: Persist<TestChannelSigner>> SyncPersist for T {}
+
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
@@ -385,10 +403,10 @@ pub struct TestChainMonitor<'a> {
 	pub chain_monitor: ChainMonitor<
 		TestChannelSigner,
 		&'a TestChainSource,
-		&'a dyn chaininterface::BroadcasterInterface,
+		&'a dyn SyncBroadcaster,
 		&'a TestFeeEstimator,
 		&'a TestLogger,
-		&'a dyn Persist<TestChannelSigner>,
+		&'a dyn SyncPersist,
 	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -398,13 +416,14 @@ pub struct TestChainMonitor<'a> {
 	/// If this is set to Some(), the next round trip serialization check will not hold after an
 	/// update_channel call (not watch_channel) for the given channel_id.
 	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
+	#[cfg(feature = "std")]
+	pub write_blocker: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(
-		chain_source: Option<&'a TestChainSource>,
-		broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger,
-		fee_estimator: &'a TestFeeEstimator, persister: &'a dyn Persist<TestChannelSigner>,
-		keys_manager: &'a TestKeysInterface,
+		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
+		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
 	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
@@ -420,6 +439,8 @@ impl<'a> TestChainMonitor<'a> {
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),
+			#[cfg(feature = "std")]
+			write_blocker: Mutex::new(None),
 		}
 	}
 
@@ -433,6 +454,11 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn watch_channel(
 		&self, channel_id: ChannelId, monitor: ChannelMonitor<TestChannelSigner>,
 	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
+		#[cfg(feature = "std")]
+		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
+			blocker.recv().unwrap();
+		}
+
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
@@ -455,6 +481,11 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn update_channel(
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
 	) -> chain::ChannelMonitorUpdateStatus {
+		#[cfg(feature = "std")]
+		if let Some(blocker) = &*self.write_blocker.lock().unwrap() {
+			blocker.recv().unwrap();
+		}
+
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
@@ -1753,19 +1784,17 @@ impl Drop for TestChainSource {
 
 pub struct TestScorer {
 	/// Stores a tuple of (scid, ChannelUsage)
-	scorer_expectations: RefCell<Option<VecDeque<(u64, ChannelUsage)>>>,
+	scorer_expectations: Mutex<Option<VecDeque<(u64, ChannelUsage)>>>,
 }
 
 impl TestScorer {
 	pub fn new() -> Self {
-		Self { scorer_expectations: RefCell::new(None) }
+		Self { scorer_expectations: Mutex::new(None) }
 	}
 
 	pub fn expect_usage(&self, scid: u64, expectation: ChannelUsage) {
-		self.scorer_expectations
-			.borrow_mut()
-			.get_or_insert_with(|| VecDeque::new())
-			.push_back((scid, expectation));
+		let mut expectations = self.scorer_expectations.lock().unwrap();
+		expectations.get_or_insert_with(|| VecDeque::new()).push_back((scid, expectation));
 	}
 }
 
@@ -1786,7 +1815,7 @@ impl ScoreLookUp for TestScorer {
 			Some(scid) => scid,
 			None => return 0,
 		};
-		if let Some(scorer_expectations) = self.scorer_expectations.borrow_mut().as_mut() {
+		if let Some(scorer_expectations) = self.scorer_expectations.lock().unwrap().as_mut() {
 			match scorer_expectations.pop_front() {
 				Some((scid, expectation)) => {
 					assert_eq!(expectation, usage);
@@ -1824,7 +1853,7 @@ impl Drop for TestScorer {
 			return;
 		}
 
-		if let Some(scorer_expectations) = self.scorer_expectations.borrow().as_ref() {
+		if let Some(scorer_expectations) = self.scorer_expectations.lock().unwrap().as_ref() {
 			if !scorer_expectations.is_empty() {
 				panic!("Unsatisfied scorer expectations: {:?}", scorer_expectations)
 			}

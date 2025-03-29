@@ -113,7 +113,7 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 
 // Integration-test the given KVStore implementation. Test relaying a few payments and check that
 // the persisted data is updated the appropriate number of times.
-pub(crate) fn do_test_store<K: KVStore>(store_0: &K, store_1: &K) {
+pub(crate) fn do_test_store<K: KVStore + Sync>(store_0: &K, store_1: &K) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let chain_mon_0 = test_utils::TestChainMonitor::new(

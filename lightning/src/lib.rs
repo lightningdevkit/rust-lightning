@@ -66,6 +66,8 @@ extern crate core;
 
 #[cfg(ldk_bench)] extern crate criterion;
 
+#[cfg(all(feature = "std", test))] extern crate parking_lot;
+
 #[macro_use]
 pub mod util;
 pub mod chain;

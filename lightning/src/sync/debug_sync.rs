@@ -5,15 +5,16 @@ use core::time::Duration;
 
 use std::cell::RefCell;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Condvar as StdCondvar;
-use std::sync::Mutex as StdMutex;
-use std::sync::MutexGuard as StdMutexGuard;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::RwLock as StdRwLock;
 use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
 
-pub use std::sync::WaitTimeoutResult;
+use parking_lot::Condvar as StdCondvar;
+use parking_lot::Mutex as StdMutex;
+use parking_lot::MutexGuard as StdMutexGuard;
+
+pub use parking_lot::WaitTimeoutResult;
 
 use crate::prelude::*;
 
@@ -46,10 +47,9 @@ impl Condvar {
 		&'a self, guard: MutexGuard<'a, T>, condition: F,
 	) -> LockResult<MutexGuard<'a, T>> {
 		let mutex: &'a Mutex<T> = guard.mutex;
-		self.inner
-			.wait_while(guard.into_inner(), condition)
-			.map(|lock| MutexGuard { mutex, lock })
-			.map_err(|_| ())
+		let mut lock = guard.into_inner();
+		self.inner.wait_while(&mut lock, condition);
+		Ok(MutexGuard { mutex, lock: Some(lock) })
 	}
 
 	#[allow(unused)]
@@ -57,10 +57,9 @@ impl Condvar {
 		&'a self, guard: MutexGuard<'a, T>, dur: Duration, condition: F,
 	) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
 		let mutex = guard.mutex;
-		self.inner
-			.wait_timeout_while(guard.into_inner(), dur, condition)
-			.map_err(|_| ())
-			.map(|(lock, e)| (MutexGuard { mutex, lock }, e))
+		let mut lock = guard.into_inner();
+		let e = self.inner.wait_while_for(&mut lock, condition, dur);
+		Ok((MutexGuard { mutex, lock: Some(lock) }, e))
 	}
 
 	pub fn notify_all(&self) {
@@ -150,7 +149,7 @@ impl LockMetadata {
 			LOCKS_INIT.call_once(|| unsafe {
 				LOCKS = Some(StdMutex::new(new_hash_map()));
 			});
-			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock().unwrap();
+			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock();
 			match locks.entry(lock_constr_location) {
 				hash_map::Entry::Occupied(e) => {
 					assert_eq!(lock_constr_colno,
@@ -185,7 +184,7 @@ impl LockMetadata {
 				}
 			}
 			for (_locked_idx, locked) in held.borrow().iter() {
-				for (locked_dep_idx, _locked_dep) in locked.locked_before.lock().unwrap().iter() {
+				for (locked_dep_idx, _locked_dep) in locked.locked_before.lock().iter() {
 					let is_dep_this_lock = *locked_dep_idx == this.lock_idx;
 					let has_same_construction = *locked_dep_idx == locked.lock_idx;
 					if is_dep_this_lock && !has_same_construction {
@@ -210,7 +209,7 @@ impl LockMetadata {
 					}
 				}
 				// Insert any already-held locks in our locked-before set.
-				let mut locked_before = this.locked_before.lock().unwrap();
+				let mut locked_before = this.locked_before.lock();
 				if !locked_before.contains_key(&locked.lock_idx) {
 					let lockdep = LockDep { lock: Arc::clone(locked), _lockdep_trace: Backtrace::new() };
 					locked_before.insert(lockdep.lock.lock_idx, lockdep);
@@ -237,7 +236,7 @@ impl LockMetadata {
 			// Since a try-lock will simply fail if the lock is held already, we do not
 			// consider try-locks to ever generate lockorder inversions. However, if a try-lock
 			// succeeds, we do consider it to have created lockorder dependencies.
-			let mut locked_before = this.locked_before.lock().unwrap();
+			let mut locked_before = this.locked_before.lock();
 			for (locked_idx, locked) in held.borrow().iter() {
 				if !locked_before.contains_key(locked_idx) {
 					let lockdep =
@@ -252,11 +251,17 @@ impl LockMetadata {
 
 pub struct Mutex<T: Sized> {
 	inner: StdMutex<T>,
+	poisoned: AtomicBool,
 	deps: Arc<LockMetadata>,
 }
+
 impl<T: Sized> Mutex<T> {
 	pub(crate) fn into_inner(self) -> LockResult<T> {
-		self.inner.into_inner().map_err(|_| ())
+		if self.poisoned.load(Ordering::Acquire) {
+			Err(())
+		} else {
+			Ok(self.inner.into_inner())
+		}
 	}
 }
 
@@ -278,14 +283,14 @@ impl<T: Sized + fmt::Debug> fmt::Debug for Mutex<T> {
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct MutexGuard<'a, T: Sized + 'a> {
 	mutex: &'a Mutex<T>,
-	lock: StdMutexGuard<'a, T>,
+	lock: Option<StdMutexGuard<'a, T>>,
 }
 
 impl<'a, T: Sized> MutexGuard<'a, T> {
 	fn into_inner(self) -> StdMutexGuard<'a, T> {
 		// Somewhat unclear why we cannot move out of self.lock, but doing so gets E0509.
 		unsafe {
-			let v: StdMutexGuard<'a, T> = std::ptr::read(&self.lock);
+			let v: StdMutexGuard<'a, T> = std::ptr::read(self.lock.as_ref().unwrap());
 			std::mem::forget(self);
 			v
 		}
@@ -297,6 +302,10 @@ impl<T: Sized> Drop for MutexGuard<'_, T> {
 		LOCKS_HELD.with(|held| {
 			held.borrow_mut().remove(&self.mutex.deps.lock_idx);
 		});
+		if std::thread::panicking() {
+			self.mutex.poisoned.store(true, Ordering::Release);
+		}
+		StdMutexGuard::unlock_fair(self.lock.take().unwrap());
 	}
 }
 
@@ -304,37 +313,52 @@ impl<T: Sized> Deref for MutexGuard<'_, T> {
 	type Target = T;
 
 	fn deref(&self) -> &T {
-		&self.lock.deref()
+		&self.lock.as_ref().unwrap().deref()
 	}
 }
 
 impl<T: Sized> DerefMut for MutexGuard<'_, T> {
 	fn deref_mut(&mut self) -> &mut T {
-		self.lock.deref_mut()
+		self.lock.as_mut().unwrap().deref_mut()
 	}
 }
 
 impl<T> Mutex<T> {
 	pub fn new(inner: T) -> Mutex<T> {
-		Mutex { inner: StdMutex::new(inner), deps: LockMetadata::new() }
+		Mutex {
+			inner: StdMutex::new(inner),
+			poisoned: AtomicBool::new(false),
+			deps: LockMetadata::new(),
+		}
 	}
 
 	pub fn lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
 		LockMetadata::pre_lock(&self.deps, false);
-		self.inner.lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ())
+		let lock = self.inner.lock();
+		if self.poisoned.load(Ordering::Acquire) {
+			Err(())
+		} else {
+			Ok(MutexGuard { mutex: self, lock: Some(lock) })
+		}
 	}
 
 	pub fn try_lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
-		let res =
-			self.inner.try_lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ());
+		let res = self.inner.try_lock().ok_or(());
 		if res.is_ok() {
+			if self.poisoned.load(Ordering::Acquire) {
+				return Err(());
+			}
 			LockMetadata::try_locked(&self.deps);
 		}
-		res
+		res.map(|lock| MutexGuard { mutex: self, lock: Some(lock) })
 	}
 
 	pub fn get_mut<'a>(&'a mut self) -> LockResult<&'a mut T> {
-		self.inner.get_mut().map_err(|_| ())
+		if self.poisoned.load(Ordering::Acquire) {
+			Err(())
+		} else {
+			Ok(self.inner.get_mut())
+		}
 	}
 }
 
@@ -345,9 +369,10 @@ impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 	}
 	type ExclLock = MutexGuard<'a, T>;
 	#[inline]
-	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> {
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<'a, T> {
 		LockMetadata::pre_lock(&self.deps, true);
-		self.inner.lock().map(|lock| MutexGuard { mutex: self, lock }).unwrap()
+		let lock = self.inner.lock();
+		MutexGuard { mutex: self, lock: Some(lock) }
 	}
 }
 
