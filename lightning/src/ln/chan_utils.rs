@@ -984,8 +984,7 @@ impl ChannelTransactionParameters {
 		self.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
 	}
 
-	#[cfg(test)]
-	pub fn test_dummy(channel_value_satoshis: u64) -> Self {
+	pub(crate) fn dummy(channel_value_satoshis: u64) -> Self {
 		let dummy_keys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
 			revocation_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
@@ -1034,8 +1033,8 @@ impl Writeable for ChannelTransactionParameters {
 	}
 }
 
-impl ReadableArgs<u64> for ChannelTransactionParameters {
-	fn read<R: io::Read>(reader: &mut R, read_args: u64) -> Result<Self, DecodeError> {
+impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
+	fn read<R: io::Read>(reader: &mut R, read_args: Option<u64>) -> Result<Self, DecodeError> {
 		let mut holder_pubkeys = RequiredWrapper(None);
 		let mut holder_selected_contest_delay = RequiredWrapper(None);
 		let mut is_outbound_from_holder = RequiredWrapper(None);
@@ -1058,10 +1057,17 @@ impl ReadableArgs<u64> for ChannelTransactionParameters {
 			(13, channel_value_satoshis, option),
 		});
 
-		let channel_value_satoshis = channel_value_satoshis.unwrap_or(read_args);
-		if channel_value_satoshis != read_args {
-			return Err(DecodeError::InvalidValue);
-		}
+		let channel_value_satoshis = match read_args {
+			None => channel_value_satoshis.ok_or(DecodeError::InvalidValue)?,
+			Some(expected_value) => {
+				let channel_value_satoshis = channel_value_satoshis.unwrap_or(expected_value);
+				if channel_value_satoshis == expected_value {
+					channel_value_satoshis
+				} else {
+					return Err(DecodeError::InvalidValue);
+				}
+			},
+		};
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
@@ -1174,8 +1180,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 });
 
 impl HolderCommitmentTransaction {
-	#[cfg(test)]
-	pub fn dummy(channel_value_satoshis: u64, htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
+	pub(crate) fn dummy(channel_value_satoshis: u64, htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -1421,6 +1426,8 @@ pub struct CommitmentTransaction {
 	to_countersignatory_value_sat: Amount,
 	to_broadcaster_delay: Option<u16>, // Added in 0.0.117
 	feerate_per_kw: u32,
+	// The set of non-dust HTLCs included in the commitment. They must be sorted in increasing
+	// output index order.
 	htlcs: Vec<HTLCOutputInCommitment>,
 	// Note that on upgrades, some features of existing outputs may be missed.
 	channel_type_features: ChannelTypeFeatures,
@@ -1570,6 +1577,13 @@ impl CommitmentTransaction {
 		}
 	}
 
+	// Builds the set of outputs for the commitment transaction. There will be an output per
+	// non-dust HTLC, one output for the holder, another for the counterparty, and possibly anchor
+	// output(s).
+	//
+	// The set of outputs are sorted according to BIP-69 ordering, guaranteeing that HTLCs are
+	// returned in increasing output index order.
+	//
 	// This is used in two cases:
 	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
 	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
