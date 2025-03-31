@@ -4495,68 +4495,58 @@ where
 		})
 	}
 
-	fn construct_pending_htlc_status<'a>(
-		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, shared_secret: [u8; 32],
+	fn construct_pending_htlc_fail_msg<'a>(
+		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
+		shared_secret: [u8; 32], inbound_err: InboundHTLCErr
+	) -> HTLCFailureMsg {
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash));
+		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", inbound_err.msg);
+
+		if msg.blinding_point.is_some() {
+			return HTLCFailureMsg::Malformed(
+				msgs::UpdateFailMalformedHTLC {
+					channel_id: msg.channel_id,
+					htlc_id: msg.htlc_id,
+					sha256_of_onion: [0; 32],
+					failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
+				}
+			)
+		}
+
+		let failure = HTLCFailReason::reason(inbound_err.reason, inbound_err.err_data.to_vec())
+					.get_encrypted_failure_packet(&shared_secret, &None);
+		return HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+			channel_id: msg.channel_id,
+			htlc_id: msg.htlc_id,
+			reason: failure.data,
+			attribution_data: failure.attribution_data,
+		});
+	}
+
+	fn get_pending_htlc_info<'a>(
+		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32],
 		decoded_hop: onion_utils::Hop, allow_underpay: bool,
 		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>,
-	) -> PendingHTLCStatus {
-		macro_rules! return_err {
-			($msg: expr, $reason: expr, $data: expr) => {
-				{
-					let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash));
-					log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-					if msg.blinding_point.is_some() {
-						return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
-							msgs::UpdateFailMalformedHTLC {
-								channel_id: msg.channel_id,
-								htlc_id: msg.htlc_id,
-								sha256_of_onion: [0; 32],
-								failure_code: LocalHTLCFailureReason::InvalidOnionBlinding.failure_code(),
-							}
-						))
-					}
-					let failure = HTLCFailReason::reason($reason, $data.to_vec())
-						.get_encrypted_failure_packet(&shared_secret, &None);
-					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						reason: failure.data,
-						attribution_data: failure.attribution_data,
-					}));
-				}
-			}
-		}
+	) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 		match decoded_hop {
 			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } |
 			onion_utils::Hop::TrampolineReceive { .. } | onion_utils::Hop::TrampolineBlindedReceive { .. } => {
 				// OUR PAYMENT!
+				// Note that we could obviously respond immediately with an update_fulfill_htlc
+				// message, however that would leak that we are the recipient of this payment, so
+				// instead we stay symmetric with the forwarding case, only responding (after a
+				// delay) once they've send us a commitment_signed!
 				let current_height: u32 = self.best_block.read().unwrap().height;
-				match create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
+				create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
 					current_height)
-				{
-					Ok(info) => {
-						// Note that we could obviously respond immediately with an update_fulfill_htlc
-						// message, however that would leak that we are the recipient of this payment, so
-						// instead we stay symmetric with the forwarding case, only responding (after a
-						// delay) once they've sent us a commitment_signed!
-						PendingHTLCStatus::Forward(info)
-					},
-					Err(InboundHTLCErr { reason, err_data, msg }) => return_err!(msg, reason , &err_data)
-				}
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
-				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
-					Ok(info) => PendingHTLCStatus::Forward(info),
-					Err(InboundHTLCErr { reason, err_data, msg }) => return_err!(msg, reason, &err_data)
-				}
+				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
 			},
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
-				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
-					Ok(info) => PendingHTLCStatus::Forward(info),
-					Err(InboundHTLCErr { reason, err_data, msg }) => return_err!(msg, reason, &err_data)
-				}
-			}
+				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
+			},
 		}
 	}
 
@@ -5848,15 +5838,14 @@ where
 					}
 				}
 
-				match self.construct_pending_htlc_status(
-					&update_add_htlc, &incoming_counterparty_node_id, shared_secret, next_hop,
-					incoming_accept_underpaying_htlcs, next_packet_details_opt.map(|d| d.next_packet_pubkey),
+				match self.get_pending_htlc_info(
+					&update_add_htlc, shared_secret, next_hop, incoming_accept_underpaying_htlcs,
+					next_packet_details_opt.map(|d| d.next_packet_pubkey),
 				) {
-					PendingHTLCStatus::Forward(htlc_forward) => {
-						htlc_forwards.push((htlc_forward, update_add_htlc.htlc_id));
-					},
-					PendingHTLCStatus::Fail(htlc_fail) => {
+					Ok(info) => htlc_forwards.push((info, update_add_htlc.htlc_id)),
+					Err(inbound_err) => {
 						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
+						let htlc_fail = self.construct_pending_htlc_fail_msg(&update_add_htlc, &incoming_counterparty_node_id, shared_secret, inbound_err);
 						htlc_fails.push((htlc_fail, htlc_destination));
 					},
 				}
