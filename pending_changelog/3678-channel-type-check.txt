@@ -1,0 +1,5 @@
+## API Updates (0.2)
+
+* Upgrading to v0.2.0 from a version prior to 0.0.116 is not allowed when a channel was opened with
+  either `scid_privacy` or `zero_conf` included in its channel type. Upgrade to v0.0.116 first
+  before upgrading to v0.2.0.

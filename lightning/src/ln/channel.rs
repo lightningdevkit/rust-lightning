@@ -10747,7 +10747,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let mut channel_parameters: ChannelTransactionParameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
+		let channel_parameters: ChannelTransactionParameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -10879,9 +10879,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			return Err(DecodeError::UnknownRequiredFeature);
 		}
 
-		// ChannelTransactionParameters may have had an empty features set upon deserialization.
-		// To account for that, we're proactively setting/overriding the field here.
-		channel_parameters.channel_type_features = chan_features;
+		if chan_features != channel_parameters.channel_type_features {
+			return Err(DecodeError::InvalidValue);
+		}
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
