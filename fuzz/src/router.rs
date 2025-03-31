@@ -150,7 +150,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut reader = &data[..];
 			match <$MsgType>::read_from_fixed_length_buffer(&mut reader) {
 				Ok(msg) => {
-					assert_eq!(reader.len(), $len);
+					// Check that we read the slice to the end
+					assert!(reader.is_empty());
 					msg
 				},
 				Err(e) => match e {
