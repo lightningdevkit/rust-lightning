@@ -1598,7 +1598,19 @@ pub enum LocalHTLCFailureReason {
 	DroppedPending,
 	/// The HTLC was failed back because its channel is closed and it has timed out on chain.
 	ChannelClosed,
-	/// UnknownFailureCode represents BOLT04 failure codes that we are not familiar with. We will
+	/// The HTLC was failed because its amount is greater than the capacity of the channel.
+	AmountExceedsCapacity,
+	/// The HTLC was failed because zero amount HTLCs are not allowed.
+	ZeroAmount,
+	/// The HTLC was failed because its amount is less than the smallest HTLC that the channel
+	/// can currently accept.
+	LiquidityMinimum,
+	/// The HTLC was failed because its amount is more than then largest HTLC that the channel
+	/// can currently accept.
+	LiquidityMaximum,
+	/// The HTLC was failed because our remote peer is offline.
+	PeerOffline,
+	/// UnknownFailureCode  represents BOLT04 failure codes that we are not familiar with. We will
 	/// encounter this if:
 	/// - A peer sends us a new failure code that LDK has not yet been upgraded to understand.
 	/// - We read a deprecated failure code from disk that LDK no longer uses.
@@ -1624,7 +1636,12 @@ impl LocalHTLCFailureReason {
 			| Self::DustLimitHolder
 			| Self::DustLimitCounterparty
 			| Self::FeeSpikeBuffer
-			| Self::ChannelNotReady => UPDATE | 7,
+			| Self::ChannelNotReady
+			| Self::AmountExceedsCapacity
+			| Self::ZeroAmount
+			| Self::LiquidityMinimum
+			| Self::LiquidityMaximum
+			| Self::PeerOffline => UPDATE | 7,
 			Self::PermanentChannelFailure | Self::ChannelClosed | Self::DroppedPending => PERM | 8,
 			Self::RequiredChannelFeature => PERM | 9,
 			Self::UnknownNextPeer
@@ -1751,7 +1768,12 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(73, ChannelClosed) => {},
 	(75, UnknownFailureCode) => {
 		(0, code, required),
-	}
+	},
+	(77, AmountExceedsCapacity) => {},
+	(79, ZeroAmount) => {},
+	(81, LiquidityMinimum) => {},
+	(83, LiquidityMaximum) => {},
+	(85, PeerOffline) => {},
 );
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -1851,7 +1873,12 @@ impl HTLCFailReason {
 			| LocalHTLCFailureReason::DustLimitHolder
 			| LocalHTLCFailureReason::DustLimitCounterparty
 			| LocalHTLCFailureReason::FeeSpikeBuffer
-			| LocalHTLCFailureReason::ChannelNotReady => {
+			| LocalHTLCFailureReason::ChannelNotReady
+			| LocalHTLCFailureReason::AmountExceedsCapacity
+			| LocalHTLCFailureReason::ZeroAmount
+			| LocalHTLCFailureReason::LiquidityMinimum
+			| LocalHTLCFailureReason::LiquidityMaximum
+			| LocalHTLCFailureReason::PeerOffline => {
 				debug_assert_eq!(
 					data.len() - 2,
 					u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
