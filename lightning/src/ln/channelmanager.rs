@@ -714,9 +714,8 @@ impl core::hash::Hash for HTLCSource {
 	}
 }
 impl HTLCSource {
-	#[cfg(all(ldk_test_vectors, test))]
+	#[cfg(any(test, all(ldk_test_vectors, feature = "grind_signatures")))]
 	pub fn dummy() -> Self {
-		assert!(cfg!(not(feature = "grind_signatures")));
 		HTLCSource::OutboundRoute {
 			path: Path { hops: Vec::new(), blinded_tail: None },
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
@@ -725,7 +724,6 @@ impl HTLCSource {
 		}
 	}
 
-	#[cfg(debug_assertions)]
 	/// Checks whether this HTLCSource could possibly match the given HTLC output in a commitment
 	/// transaction. Useful to ensure different datastructures match up.
 	pub(crate) fn possibly_matches_output(&self, htlc: &super::chan_utils::HTLCOutputInCommitment) -> bool {

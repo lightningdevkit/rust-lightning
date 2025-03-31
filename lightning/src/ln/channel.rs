@@ -3541,24 +3541,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_data.stats.tx.htlcs().len())));
 		}
 
-		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
-		// `htlcs_and_sigs` vec and in the `holder_commitment_tx` itself, both of which were passed
-		// in the `ChannelMonitorUpdate`. In 0.0.115, support for having a separate set of
-		// outbound-non-dust-HTLCSources in the `ChannelMonitorUpdate` was added, however for
-		// backwards compatibility, we never use it in production. To provide test coverage, here,
-		// we randomly decide (in test/fuzzing builds) to use the new vec sometimes.
-		#[allow(unused_assignments, unused_mut)]
-		let mut separate_nondust_htlc_sources = false;
-		#[cfg(all(feature = "std", any(test, fuzzing)))] {
-			use core::hash::{BuildHasher, Hasher};
-			// Get a random value using the only std API to do so - the DefaultHasher
-			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-			separate_nondust_htlc_sources = rand_val % 2 == 0;
-		}
-
-		let mut nondust_htlc_sources = Vec::with_capacity(htlcs_cloned.len());
-		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
 		let holder_keys = commitment_data.stats.tx.trust().keys();
+		let mut nondust_htlc_sources = Vec::with_capacity(commitment_data.stats.tx.htlcs().len());
+		let mut dust_htlcs = Vec::with_capacity(htlcs_cloned.len() - commitment_data.stats.tx.htlcs().len());
 		for (idx, (htlc, mut source_opt)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.stats.tx.feerate_per_kw(),
@@ -3574,16 +3559,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &holder_keys.countersignatory_htlc_key.to_public_key()) {
 					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 				}
-				if !separate_nondust_htlc_sources {
-					htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source_opt.take()));
+				if htlc.offered {
+					if let Some(source) = source_opt.take() {
+						nondust_htlc_sources.push(source);
+					} else {
+						panic!("Missing outbound HTLC source");
+					}
 				}
 			} else {
-				htlcs_and_sigs.push((htlc, None, source_opt.take()));
-			}
-			if separate_nondust_htlc_sources {
-				if let Some(source) = source_opt.take() {
-					nondust_htlc_sources.push(source);
-				}
+				dust_htlcs.push((htlc, None, source_opt.take()));
 			}
 			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
 		}
@@ -3601,7 +3585,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		Ok(LatestHolderCommitmentTXInfo {
 			commitment_tx: holder_commitment_tx,
-			htlc_outputs: htlcs_and_sigs,
+			htlc_outputs: dust_htlcs,
 			nondust_htlc_sources,
 		})
 	}
