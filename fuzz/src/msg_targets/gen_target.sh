@@ -17,6 +17,8 @@ GEN_TEST() {
 GEN_TEST lightning::ln::msgs::AcceptChannel test_msg_simple ""
 GEN_TEST lightning::ln::msgs::AnnouncementSignatures test_msg_simple ""
 GEN_TEST lightning::ln::msgs::ClosingSigned test_msg_simple ""
+GEN_TEST lightning::ln::msgs::ClosingComplete test_msg_simple ""
+GEN_TEST lightning::ln::msgs::ClosingSig test_msg_simple ""
 GEN_TEST lightning::ln::msgs::CommitmentSigned test_msg_simple ""
 GEN_TEST lightning::ln::msgs::FundingCreated test_msg_simple ""
 GEN_TEST lightning::ln::msgs::ChannelReady test_msg_simple ""
