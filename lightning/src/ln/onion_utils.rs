@@ -1458,6 +1458,7 @@ impl HTLCFailReason {
 		else if failure_code == 21 { debug_assert!(data.is_empty()) }
 		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
 		else if failure_code == 23 { debug_assert!(data.is_empty()) }
+		else if failure_code == INVALID_ONION_BLINDING { debug_assert_eq!(data.len(), 32) }
 		else if failure_code & BADONION != 0 {
 			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
 		}
