@@ -2251,15 +2251,11 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		};
 
 		if self.funding.is_outbound() {
-			if self.dual_funding_context.their_funding_satoshis.unwrap_or(0) == 0 {
-				funding_outputs.push(OutputOwned::SharedControlFullyOwned(shared_funding_output));
-			} else {
-				funding_outputs.push(
-					OutputOwned::Shared(SharedOwnedOutput::new(
-						shared_funding_output, self.dual_funding_context.our_funding_satoshis,
-					))
-				);
-			}
+			funding_outputs.push(
+				OutputOwned::Shared(SharedOwnedOutput::new(
+					shared_funding_output, self.dual_funding_context.our_funding_satoshis,
+				))
+			);
 		} else {
 			let TxOut { value, script_pubkey } = shared_funding_output;
 			expected_remote_shared_funding_output = Some((script_pubkey, value.to_sat()));

@@ -1201,23 +1201,21 @@ impl SharedOwnedOutput {
 pub(super) enum OutputOwned {
 	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
 	Single(TxOut),
-	/// Output with shared control, but fully belonging to local node
-	SharedControlFullyOwned(TxOut),
-	/// Output with shared control and joint ownership
+	/// Output with shared control and value split between the two ends (or fully at one side)
 	Shared(SharedOwnedOutput),
 }
 
 impl OutputOwned {
 	pub fn tx_out(&self) -> &TxOut {
 		match self {
-			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => tx_out,
+			OutputOwned::Single(tx_out) => tx_out,
 			OutputOwned::Shared(output) => &output.tx_out,
 		}
 	}
 
 	fn into_tx_out(self) -> TxOut {
 		match self {
-			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => tx_out,
+			OutputOwned::Single(tx_out) => tx_out,
 			OutputOwned::Shared(output) => output.tx_out,
 		}
 	}
@@ -1229,18 +1227,15 @@ impl OutputOwned {
 	fn is_shared(&self) -> bool {
 		match self {
 			OutputOwned::Single(_) => false,
-			OutputOwned::SharedControlFullyOwned(_) => true,
 			OutputOwned::Shared(_) => true,
 		}
 	}
 
 	fn local_value(&self, local_role: AddingRole) -> u64 {
 		match self {
-			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => {
-				match local_role {
-					AddingRole::Local => tx_out.value.to_sat(),
-					AddingRole::Remote => 0,
-				}
+			OutputOwned::Single(tx_out) => match local_role {
+				AddingRole::Local => tx_out.value.to_sat(),
+				AddingRole::Remote => 0,
 			},
 			OutputOwned::Shared(output) => output.local_owned,
 		}
@@ -1248,11 +1243,9 @@ impl OutputOwned {
 
 	fn remote_value(&self, local_role: AddingRole) -> u64 {
 		match self {
-			OutputOwned::Single(tx_out) | OutputOwned::SharedControlFullyOwned(tx_out) => {
-				match local_role {
-					AddingRole::Local => 0,
-					AddingRole::Remote => tx_out.value.to_sat(),
-				}
+			OutputOwned::Single(tx_out) => match local_role {
+				AddingRole::Local => 0,
+				AddingRole::Remote => tx_out.value.to_sat(),
 			},
 			OutputOwned::Shared(output) => output.remote_owned(),
 		}
@@ -1516,12 +1509,9 @@ impl InteractiveTxConstructor {
 		for output in &outputs_to_contribute {
 			let new_output = match output {
 				OutputOwned::Single(_tx_out) => None,
-				OutputOwned::SharedControlFullyOwned(tx_out) => {
-					Some((tx_out.script_pubkey.clone(), tx_out.value.to_sat()))
-				},
 				OutputOwned::Shared(output) => {
 					// Sanity check
-					if output.local_owned >= output.tx_out.value.to_sat() {
+					if output.local_owned > output.tx_out.value.to_sat() {
 						return Err(AbortReason::InvalidLowFundingOutputValue);
 					}
 					Some((output.tx_out.script_pubkey.clone(), output.local_owned))
@@ -2138,7 +2128,9 @@ mod tests {
 
 	/// Generate a single output that is the funding output
 	fn generate_output(output: &TestOutput) -> Vec<OutputOwned> {
-		vec![OutputOwned::SharedControlFullyOwned(generate_txout(output))]
+		let txout = generate_txout(output);
+		let value = txout.value.to_sat();
+		vec![OutputOwned::Shared(SharedOwnedOutput::new(txout, value))]
 	}
 
 	/// Generate a single P2WSH output that is the funding output
@@ -2707,7 +2699,8 @@ mod tests {
 			.collect::<Vec<(TxIn, TransactionU16LenLimited)>>();
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(128_000), script_pubkey: ScriptBuf::new() };
-		let outputs = vec![OutputOwned::SharedControlFullyOwned(txout)];
+		let value = txout.value.to_sat();
+		let outputs = vec![OutputOwned::Shared(SharedOwnedOutput::new(txout, value))];
 		let funding_feerate_sat_per_1000_weight = 3000;
 
 		let total_inputs: u64 = input_prevouts.iter().map(|o| o.value.to_sat()).sum();
