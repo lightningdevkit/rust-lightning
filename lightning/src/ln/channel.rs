@@ -3764,7 +3764,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 			bitcoin_tx.txid
 		};
-		let htlcs_cloned: Vec<_> = commitment_data.htlcs_included.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
 
 		// If our counterparty updated the channel fee in this commitment transaction, check that
 		// they can actually afford the new fee now.
@@ -3802,8 +3801,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let holder_keys = commitment_data.tx.trust().keys();
 		let mut nondust_htlc_sources = Vec::with_capacity(commitment_data.tx.nondust_htlcs().len());
-		let mut dust_htlcs = Vec::with_capacity(htlcs_cloned.len() - commitment_data.tx.nondust_htlcs().len());
-		for (idx, (htlc, mut source_opt)) in htlcs_cloned.into_iter().enumerate() {
+		let mut dust_htlcs = Vec::with_capacity(commitment_data.htlcs_included.len() - commitment_data.tx.nondust_htlcs().len());
+		for (idx, (htlc, mut source_opt)) in commitment_data.htlcs_included.into_iter().enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.tx.feerate_per_kw(),
 					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, funding.get_channel_type(),
@@ -3820,13 +3819,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}
 				if htlc.offered {
 					if let Some(source) = source_opt.take() {
-						nondust_htlc_sources.push(source);
+						nondust_htlc_sources.push(source.clone());
 					} else {
 						panic!("Missing outbound HTLC source");
 					}
 				}
 			} else {
-				dust_htlcs.push((htlc, None, source_opt.take()));
+				dust_htlcs.push((htlc, None, source_opt.take().cloned()));
 			}
 			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
 		}
@@ -9032,10 +9031,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let mut updates = Vec::with_capacity(self.pending_funding.len() + 1);
 		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
-			let (mut htlcs_ref, counterparty_commitment_tx) =
+			let (htlcs_ref, counterparty_commitment_tx) =
 				self.build_commitment_no_state_update(funding, logger);
 			let htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
-				htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
+				htlcs_ref.into_iter().map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
 
 			if self.pending_funding.is_empty() {
 				// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
