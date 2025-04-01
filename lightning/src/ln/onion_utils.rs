@@ -1060,7 +1060,7 @@ where
 			inner_session_priv.expect("Trampoline hops always have an inner session priv");
 		Some(construct_onion_keys_generic(secp_ctx, hops, blinded_tail, inner_session_priv).map(
 			|(shared_secret, _, _, route_hop_option, _)| {
-				(route_hop_option.map(|th| ErrorHop::TrampolineHop(th)), shared_secret)
+				(route_hop_option.map(|tram_hop| ErrorHop::TrampolineHop(tram_hop)), shared_secret)
 			},
 		))
 	} else {
