@@ -42,7 +42,6 @@ use core::cmp;
 use core::ops::Deref;
 use core::mem::replace;
 use core::mem::swap;
-use crate::types::features::ChannelTypeFeatures;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -220,14 +219,14 @@ pub(crate) enum FeerateStrategy {
 /// do RBF bumping if possible.
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
-	channel_value_satoshis: u64,
+	channel_value_satoshis: u64, // Deprecated as of 0.2.
 	channel_keys_id: [u8; 32], // Deprecated as of 0.2.
 	destination_script: ScriptBuf, // Deprecated as of 0.2.
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 
 	pub(super) signer: ChannelSigner,
-	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
+	channel_transaction_parameters: ChannelTransactionParameters, // Deprecated as of 0.2.
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
 	// it (RBF or CPFP). If an input has been part of an aggregate tx at first claim try, we need to keep it within
@@ -676,7 +675,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 					// We'll locate an anchor output we can spend within the commitment transaction.
 					let channel_parameters = output.channel_parameters.as_ref()
-						.unwrap_or(&self.channel_transaction_parameters);
+						.unwrap_or(self.channel_parameters());
 					let funding_pubkey = &channel_parameters.holder_pubkeys.funding_pubkey;
 					match chan_utils::get_keyed_anchor_output(&tx, funding_pubkey) {
 						// An anchor output was found, so we should yield a funding event externally.
@@ -1203,8 +1202,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
 	}
 
-	pub(crate) fn channel_type_features(&self) -> &ChannelTypeFeatures {
-		&self.channel_transaction_parameters.channel_type_features
+	// Deprecated as of 0.2, only use in cases where it was not previously available.
+	pub(crate) fn channel_parameters(&self) -> &ChannelTransactionParameters {
+		&self.channel_transaction_parameters
 	}
 
 	// Deprecated as of 0.2, only use in cases where it was not previously available.
