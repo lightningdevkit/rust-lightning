@@ -196,6 +196,7 @@ pub(crate) enum ClaimEvent {
 		commitment_tx_fee_satoshis: u64,
 		pending_nondust_htlcs: Vec<HTLCOutputInCommitment>,
 		anchor_output_idx: u32,
+		channel_parameters: ChannelTransactionParameters,
 	},
 	/// Event yielded to signal that the commitment transaction has confirmed and its HTLCs must be
 	/// resolved by broadcasting a transaction with sufficient fee to claim them.
@@ -690,7 +691,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					}
 
 					// We'll locate an anchor output we can spend within the commitment transaction.
-					let funding_pubkey = &self.channel_transaction_parameters.holder_pubkeys.funding_pubkey;
+					let channel_parameters = output.channel_parameters.as_ref()
+						.unwrap_or(&self.channel_transaction_parameters);
+					let funding_pubkey = &channel_parameters.holder_pubkeys.funding_pubkey;
 					match chan_utils::get_keyed_anchor_output(&tx, funding_pubkey) {
 						// An anchor output was found, so we should yield a funding event externally.
 						Some((idx, _)) => {
@@ -705,6 +708,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 									pending_nondust_htlcs: holder_commitment.htlcs().to_vec(),
 									commitment_tx_fee_satoshis: fee_sat,
 									anchor_output_idx: idx,
+									channel_parameters: channel_parameters.clone(),
 								}),
 							))
 						},

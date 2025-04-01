@@ -3279,9 +3279,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding_outp = HolderFundingOutput::build(
 			self.funding.current_holder_commitment.tx.clone(),
-			self.funding.redeem_script.clone(),
-			self.funding.channel_parameters.channel_value_satoshis,
-			self.channel_type_features().clone(),
+			self.funding.channel_parameters.clone(),
 		);
 		let funding_outpoint = self.get_funding_txo();
 		let commitment_package = PackageTemplate::build_package(
@@ -3533,6 +3531,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ClaimEvent::BumpCommitment {
 					package_target_feerate_sat_per_1000_weight, commitment_tx,
 					commitment_tx_fee_satoshis, pending_nondust_htlcs, anchor_output_idx,
+					channel_parameters,
 				} => {
 					let channel_id = self.channel_id;
 					let counterparty_node_id = self.counterparty_node_id;
@@ -3547,8 +3546,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						anchor_descriptor: AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
-								value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
-								transaction_parameters: self.funding.channel_parameters.clone(),
+								value_satoshis: channel_parameters.channel_value_satoshis,
+								transaction_parameters: channel_parameters,
 							},
 							outpoint: BitcoinOutPoint {
 								txid: commitment_txid,
