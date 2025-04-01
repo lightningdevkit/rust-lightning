@@ -3298,10 +3298,10 @@ fn test_update_replay_panics() {
 
 	// Ensure applying the force-close update skipping the last normal update fails
 	let poisoned_monitor = monitor.clone();
-	std::panic::catch_unwind(|| {
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
 		// We should panic, rather than returning an error here.
-	}).unwrap_err();
+	})).unwrap_err();
 
 	// Then apply the last normal and force-close update and make sure applying the preimage
 	// updates out-of-order fails.
@@ -3309,17 +3309,17 @@ fn test_update_replay_panics() {
 	monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 
 	let poisoned_monitor = monitor.clone();
-	std::panic::catch_unwind(|| {
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let _ = poisoned_monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
 		// We should panic, rather than returning an error here.
-	}).unwrap_err();
+	})).unwrap_err();
 
 	// Make sure re-applying the force-close update fails
 	let poisoned_monitor = monitor.clone();
-	std::panic::catch_unwind(|| {
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
 		// We should panic, rather than returning an error here.
-	}).unwrap_err();
+	})).unwrap_err();
 
 	// ...and finally ensure that applying all the updates succeeds.
 	monitor.update_monitor(&updates[2], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();

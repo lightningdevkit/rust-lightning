@@ -1136,7 +1136,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		/// A pending MPP claim which hasn't yet completed.
 		///
 		/// Not written to disk.
-		pending_mpp_claim: Option<(PublicKey, ChannelId, u64, PendingMPPClaimPointer)>,
+		pending_mpp_claim: Option<(PublicKey, ChannelId, PendingMPPClaimPointer)>,
 	},
 	/// Indicates an [`events::Event`] should be surfaced to the user and possibly resume the
 	/// operation of another channel.
@@ -1238,10 +1238,16 @@ impl From<&MPPClaimHTLCSource> for HTLCClaimSource {
 	}
 }
 
+#[derive(Debug)]
+pub(crate) struct PendingMPPClaim {
+	channels_without_preimage: Vec<(PublicKey, OutPoint, ChannelId)>,
+	channels_with_preimage: Vec<(PublicKey, OutPoint, ChannelId)>,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// The source of an HTLC which is being claimed as a part of an incoming payment. Each part is
-/// tracked in [`PendingMPPClaim`] as well as in [`ChannelMonitor`]s, so that it can be converted
-/// to an [`HTLCClaimSource`] for claim replays on startup.
+/// tracked in [`ChannelMonitor`]s, so that it can be converted to an [`HTLCClaimSource`] for claim
+/// replays on startup.
 struct MPPClaimHTLCSource {
 	counterparty_node_id: PublicKey,
 	funding_txo: OutPoint,
@@ -1255,12 +1261,6 @@ impl_writeable_tlv_based!(MPPClaimHTLCSource, {
 	(4, channel_id, required),
 	(6, htlc_id, required),
 });
-
-#[derive(Debug)]
-pub(crate) struct PendingMPPClaim {
-	channels_without_preimage: Vec<MPPClaimHTLCSource>,
-	channels_with_preimage: Vec<MPPClaimHTLCSource>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// When we're claiming a(n MPP) payment, we want to store information about that payment in the
@@ -7184,8 +7184,15 @@ where
 				}
 			}).collect();
 			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
+				let mut channels_without_preimage = Vec::with_capacity(mpp_parts.len());
+				for part in mpp_parts.iter() {
+					let chan = (part.counterparty_node_id, part.funding_txo, part.channel_id);
+					if !channels_without_preimage.contains(&chan) {
+						channels_without_preimage.push(chan);
+					}
+				}
 				Some(Arc::new(Mutex::new(PendingMPPClaim {
-					channels_without_preimage: mpp_parts.clone(),
+					channels_without_preimage,
 					channels_with_preimage: Vec::new(),
 				})))
 			} else {
@@ -7196,7 +7203,7 @@ where
 				let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().and_then(|pending_mpp_claim|
 					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
 						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
-						Some((cp_id, htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id, claim_ptr))
+						Some((cp_id, htlc.prev_hop.channel_id, claim_ptr))
 					} else {
 						None
 					}
@@ -7529,7 +7536,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		for action in actions.into_iter() {
 			match action {
 				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
-					if let Some((counterparty_node_id, chan_id, htlc_id, claim_ptr)) = pending_mpp_claim {
+					if let Some((counterparty_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
 							let mut peer_state = peer_state_mutex.lock().unwrap();
@@ -7540,24 +7547,17 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 										if *pending_claim == claim_ptr {
 											let mut pending_claim_state_lock = pending_claim.0.lock().unwrap();
 											let pending_claim_state = &mut *pending_claim_state_lock;
-											pending_claim_state.channels_without_preimage.retain(|htlc_info| {
+											pending_claim_state.channels_without_preimage.retain(|(cp, op, cid)| {
 												let this_claim =
-													htlc_info.counterparty_node_id == counterparty_node_id
-													&& htlc_info.channel_id == chan_id
-													&& htlc_info.htlc_id == htlc_id;
+													*cp == counterparty_node_id && *cid == chan_id;
 												if this_claim {
-													pending_claim_state.channels_with_preimage.push(htlc_info.clone());
+													pending_claim_state.channels_with_preimage.push((*cp, *op, *cid));
 													false
 												} else { true }
 											});
 											if pending_claim_state.channels_without_preimage.is_empty() {
-												for htlc_info in pending_claim_state.channels_with_preimage.iter() {
-													let freed_chan = (
-														htlc_info.counterparty_node_id,
-														htlc_info.funding_txo,
-														htlc_info.channel_id,
-														blocker.clone()
-													);
+												for (cp, op, cid) in pending_claim_state.channels_with_preimage.iter() {
+													let freed_chan = (*cp, *op, *cid, blocker.clone());
 													freed_channels.push(freed_chan);
 												}
 											}
@@ -14737,8 +14737,16 @@ where
 						if payment_claim.mpp_parts.is_empty() {
 							return Err(DecodeError::InvalidValue);
 						}
+						let mut channels_without_preimage = payment_claim.mpp_parts.iter()
+							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.funding_txo, htlc_info.channel_id))
+							.collect::<Vec<_>>();
+						// If we have multiple MPP parts which were received over the same channel,
+						// we only track it once as once we get a preimage durably in the
+						// `ChannelMonitor` it will be used for all HTLCs with a matching hash.
+						channels_without_preimage.sort_unstable();
+						channels_without_preimage.dedup();
 						let pending_claims = PendingMPPClaim {
-							channels_without_preimage: payment_claim.mpp_parts.clone(),
+							channels_without_preimage,
 							channels_with_preimage: Vec::new(),
 						};
 						let pending_claim_ptr_opt = Some(Arc::new(Mutex::new(pending_claims)));
@@ -14771,7 +14779,7 @@ where
 
 						for part in payment_claim.mpp_parts.iter() {
 							let pending_mpp_claim = pending_claim_ptr_opt.as_ref().map(|ptr| (
-								part.counterparty_node_id, part.channel_id, part.htlc_id,
+								part.counterparty_node_id, part.channel_id,
 								PendingMPPClaimPointer(Arc::clone(&ptr))
 							));
 							let pending_claim_ptr = pending_claim_ptr_opt.as_ref().map(|ptr|
