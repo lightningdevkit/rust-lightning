@@ -2131,12 +2131,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		let mut inner = self.inner.lock().unwrap();
+		let mut lock = self.inner.lock().unwrap();
+		let inner = &mut *lock;
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		let current_height = inner.best_block.height;
 		let conf_target = inner.closure_conf_target();
 		inner.onchain_tx_handler.rebroadcast_pending_claims(
-			current_height, FeerateStrategy::HighestOfPreviousOrNew, &broadcaster, conf_target, &fee_estimator, &logger,
+			current_height, FeerateStrategy::HighestOfPreviousOrNew, &broadcaster, conf_target,
+			&inner.destination_script, &fee_estimator, &logger,
 		);
 	}
 
@@ -2157,12 +2159,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		let mut inner = self.inner.lock().unwrap();
+		let mut lock = self.inner.lock().unwrap();
+		let inner = &mut *lock;
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		let current_height = inner.best_block.height;
 		let conf_target = inner.closure_conf_target();
 		inner.onchain_tx_handler.rebroadcast_pending_claims(
-			current_height, FeerateStrategy::RetryPrevious, &broadcaster, conf_target, &fee_estimator, &logger,
+			current_height, FeerateStrategy::RetryPrevious, &broadcaster, conf_target,
+			&inner.destination_script, &fee_estimator, &logger,
 		);
 	}
 
@@ -3212,7 +3216,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			($commitment_number: expr, $txid: expr, $htlcs: expr) => {
 				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs);
 				let conf_target = self.closure_conf_target();
-				self.onchain_tx_handler.update_claims_view_from_requests(htlc_claim_reqs, self.best_block.height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view_from_requests(
+					htlc_claim_reqs, self.best_block.height, self.best_block.height, broadcaster,
+					conf_target, &self.destination_script, fee_estimator, logger,
+				);
 			}
 		}
 		if let Some(txid) = self.funding.current_counterparty_commitment_txid {
@@ -3261,7 +3268,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// transactions.
 				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&holder_commitment.tx, self.best_block.height);
 				let conf_target = self.closure_conf_target();
-				self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view_from_requests(
+					claim_reqs, self.best_block.height, self.best_block.height, broadcaster,
+					conf_target, &self.destination_script, fee_estimator, logger,
+				);
 			}
 		}
 	}
@@ -3324,7 +3334,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
-			conf_target, fee_estimator, logger,
+			conf_target, &self.destination_script, fee_estimator, logger,
 		);
 	}
 
@@ -4216,7 +4226,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			let conf_target = self.closure_conf_target();
-			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, conf_target, fee_estimator, logger);
+			self.onchain_tx_handler.block_disconnected(
+				height + 1, broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
+			);
 			Vec::new()
 		} else { Vec::new() }
 	}
@@ -4540,8 +4552,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		let conf_target = self.closure_conf_target();
-		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
-		self.onchain_tx_handler.update_claims_view_from_matched_txn(&txn_matched, conf_height, conf_hash, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
+		self.onchain_tx_handler.update_claims_view_from_requests(
+			claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target,
+			&self.destination_script, fee_estimator, logger,
+		);
+		self.onchain_tx_handler.update_claims_view_from_matched_txn(
+			&txn_matched, conf_height, conf_hash, self.best_block.height, broadcaster, conf_target,
+			&self.destination_script, fee_estimator, logger,
+		);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -4581,7 +4599,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let conf_target = self.closure_conf_target();
-		self.onchain_tx_handler.block_disconnected(height, broadcaster, conf_target, &bounded_fee_estimator, logger);
+		self.onchain_tx_handler.block_disconnected(
+			height, broadcaster, conf_target, &self.destination_script, &bounded_fee_estimator, logger
+		);
 
 		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
 	}
@@ -4616,7 +4636,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
 
 		let conf_target = self.closure_conf_target();
-		self.onchain_tx_handler.transaction_unconfirmed(txid, broadcaster, conf_target, fee_estimator, logger);
+		self.onchain_tx_handler.transaction_unconfirmed(
+			txid, broadcaster, conf_target, &self.destination_script, fee_estimator, logger
+		);
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
