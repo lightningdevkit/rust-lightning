@@ -13,10 +13,17 @@ rm *_target.rs
 [ "$(git diff)" != "" ] && exit 1
 popd
 
+export RUSTFLAGS="--cfg=secp256k1_fuzz --cfg=hashes_fuzz"
+
+mkdir -p hfuzz_workspace/full_stack_target/input
+pushd write-seeds
+RUSTFLAGS="$RUSTFLAGS --cfg=fuzzing" cargo run ../hfuzz_workspace/full_stack_target/input
+popd
+
 cargo install --color always --force honggfuzz --no-default-features
 sed -i 's/lto = true//' Cargo.toml
+sed -i 's/codegen-units = 1//' Cargo.toml
 
-export RUSTFLAGS="--cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
 
 cargo --color always hfuzz build
