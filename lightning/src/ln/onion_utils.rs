@@ -2213,8 +2213,7 @@ mod tests {
 		let route = Route { paths: vec![path], route_params: None };
 
 		let onion_keys =
-			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key())
-				.unwrap();
+			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key());
 		assert_eq!(onion_keys.len(), route.paths[0].hops.len());
 		onion_keys
 	}
@@ -2579,13 +2578,12 @@ mod tests {
 				&secp_ctx,
 				&path.blinded_tail.as_ref().unwrap(),
 				&session_priv,
-			)
-			.unwrap();
+			);
 
 			let outer_onion_keys = {
 				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
 				let outer_session_priv = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
-				construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv).unwrap()
+				construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv)
 			};
 
 			let htlc_source = HTLCSource::OutboundRoute {
