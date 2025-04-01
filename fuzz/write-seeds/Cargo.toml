@@ -1,0 +1,15 @@
+[package]
+name = "lightning-fuzz-write-seeds"
+version = "0.0.1"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[features]
+
+[dependencies]
+lightning-fuzz = { path = "../" }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
