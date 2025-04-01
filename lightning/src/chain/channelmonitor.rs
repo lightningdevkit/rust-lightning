@@ -1398,6 +1398,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(25, self.payment_preimages, required),
 			(27, self.first_confirmed_funding_txo, required),
 			(29, self.initial_counterparty_commitment_tx, option),
+			(31, self.funding.channel_parameters, required),
 		});
 
 		Ok(())
@@ -5271,6 +5272,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut holder_pays_commitment_tx_fee = None;
 		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
 		let mut first_confirmed_funding_txo = RequiredWrapper(None);
+		let mut channel_parameters = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -5287,6 +5289,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(25, payment_preimages_with_info, option),
 			(27, first_confirmed_funding_txo, (default_value, outpoint)),
 			(29, initial_counterparty_commitment_tx, option),
+			(31, channel_parameters, (option: ReadableArgs, None)),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -5315,7 +5318,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		let channel_parameters = onchain_tx_handler.channel_transaction_parameters.clone();
+		let channel_parameters = channel_parameters.unwrap_or_else(|| {
+			onchain_tx_handler.channel_parameters().clone()
+		});
 
 		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
 		// wrong `counterparty_payment_script` was being tracked. Fix it now on deserialization to

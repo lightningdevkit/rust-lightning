@@ -463,7 +463,7 @@ impl HolderHTLCOutput {
 			return Some(htlc_descriptor.clone());
 		}
 
-		let channel_parameters = &onchain_tx_handler.channel_transaction_parameters;
+		let channel_parameters = onchain_tx_handler.channel_parameters();
 
 		let get_htlc_descriptor = |holder_commitment: &HolderCommitmentTransaction| {
 			let trusted_tx = holder_commitment.trust();
@@ -614,7 +614,7 @@ impl HolderFundingOutput {
 		&self, onchain_tx_handler: &mut OnchainTxHandler<Signer>,
 	) -> MaybeSignedTransaction {
 		let channel_parameters = self.channel_parameters.as_ref()
-			.unwrap_or(&onchain_tx_handler.channel_transaction_parameters);
+			.unwrap_or(onchain_tx_handler.channel_parameters());
 		let commitment_tx = self.commitment_tx.as_ref()
 			.unwrap_or(onchain_tx_handler.current_holder_commitment_tx());
 		let maybe_signed_tx = onchain_tx_handler.signer
@@ -786,7 +786,7 @@ impl PackageSolvingData {
 		}
 	}
 	fn finalize_input<Signer: EcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
-		let channel_parameters = &onchain_handler.channel_transaction_parameters;
+		let channel_parameters = onchain_handler.channel_parameters();
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
 				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
