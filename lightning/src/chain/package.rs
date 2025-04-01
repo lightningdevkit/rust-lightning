@@ -136,10 +136,19 @@ pub(crate) struct RevokedOutput {
 	amount: Amount,
 	on_counterparty_tx_csv: u16,
 	is_counterparty_balance_on_anchors: Option<()>,
+	channel_parameters: Option<ChannelTransactionParameters>,
 }
 
 impl RevokedOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: Amount, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool) -> Self {
+	pub(crate) fn build(
+		per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: Amount,
+		is_counterparty_balance_on_anchors: bool, channel_parameters: ChannelTransactionParameters,
+	) -> Self {
+		let directed_params = channel_parameters.as_counterparty_broadcastable();
+		let counterparty_keys = directed_params.broadcaster_pubkeys();
+		let counterparty_delayed_payment_base_key = counterparty_keys.delayed_payment_basepoint;
+		let counterparty_htlc_base_key = counterparty_keys.htlc_basepoint;
+		let on_counterparty_tx_csv = directed_params.contest_delay();
 		RevokedOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -148,7 +157,8 @@ impl RevokedOutput {
 			weight: WEIGHT_REVOKED_OUTPUT,
 			amount,
 			on_counterparty_tx_csv,
-			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None }
+			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None },
+			channel_parameters: Some(channel_parameters),
 		}
 	}
 }
@@ -161,7 +171,8 @@ impl_writeable_tlv_based!(RevokedOutput, {
 	(8, weight, required),
 	(10, amount, required),
 	(12, on_counterparty_tx_csv, required),
-	(14, is_counterparty_balance_on_anchors, option)
+	(14, is_counterparty_balance_on_anchors, option),
+	(15, channel_parameters, (option: ReadableArgs, None)), // Added in 0.2.
 });
 
 /// A struct to describe a revoked offered output and corresponding information to generate a
@@ -778,8 +789,8 @@ impl PackageSolvingData {
 		let channel_parameters = &onchain_handler.channel_transaction_parameters;
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
-				let directed_parameters =
-					&onchain_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
+				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
 					directed_parameters.broadcaster_pubkeys().delayed_payment_basepoint,
 					outp.counterparty_delayed_payment_base_key,
@@ -1589,7 +1600,6 @@ mod tests {
 		ChannelTransactionParameters, HolderCommitmentTransaction, HTLCOutputInCommitment,
 	};
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
-	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
 
 	use bitcoin::absolute::LockTime;
@@ -1627,7 +1637,11 @@ mod tests {
 				let secp_ctx = Secp256k1::new();
 				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, Amount::ZERO, 0, $is_counterparty_balance_on_anchors))
+				let channel_parameters = ChannelTransactionParameters::test_dummy(0);
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(
+					dumb_point, dumb_scalar, Amount::ZERO, $is_counterparty_balance_on_anchors,
+					channel_parameters,
+				))
 			}
 		}
 	}
