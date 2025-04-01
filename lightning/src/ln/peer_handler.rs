@@ -271,6 +271,8 @@ impl BaseMessageHandler for ErroringMessageHandler {
 		features.set_scid_privacy_optional();
 		features.set_zero_conf_optional();
 		features.set_route_blinding_optional();
+		#[cfg(simple_close)]
+		features.set_simple_close_optional();
 		features
 	}
 

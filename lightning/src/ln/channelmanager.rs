@@ -13379,7 +13379,7 @@ pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelType
 /// [`ChannelManager`].
 pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// Note that if new features are added here which other peers may (eventually) require, we
-	// should also add the corresponding (optional) bit to the [`ChannelMessageHandler`] impl for
+	// should also add the corresponding (optional) bit to the [`BaseMessageHandler`] impl for
 	// [`ErroringMessageHandler`].
 	let mut features = InitFeatures::empty();
 	features.set_data_loss_protect_required();
@@ -13395,6 +13395,8 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_zero_conf_optional();
 	features.set_route_blinding_optional();
 	features.set_provide_storage_optional();
+	#[cfg(simple_close)]
+	features.set_simple_close_optional();
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
