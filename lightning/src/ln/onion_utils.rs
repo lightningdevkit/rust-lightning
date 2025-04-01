@@ -1044,10 +1044,10 @@ where
 	let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
 
 	// if we have Trampoline hops, the blinded hops are part of the inner Trampoline onion
-	let nontrampoline_bp =
+	let nontrampoline_bt =
 		if path.has_trampoline_hops() { None } else { path.blinded_tail.as_ref() };
 	let nontrampoline_hops =
-		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bp, outer_session_priv)
+		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bt, outer_session_priv)
 			.map(|(shared_secret, _, _, route_hop_option, _)| {
 				(route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret)
 			});
