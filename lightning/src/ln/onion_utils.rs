@@ -308,13 +308,13 @@ where
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 	let unblinded_hops = hops.iter().map(|h| (h.node_pubkey(), Some(h)));
-	let blinded_pks = blinded_tail
+	let blinded_pubkeys = blinded_tail
 		.map(|t| t.hops.iter())
 		.unwrap_or([].iter())
 		.skip(1) // Skip the intro node because it's included in the unblinded hops
 		.map(|h| (&h.blinded_node_id, None));
 
-	unblinded_hops.chain(blinded_pks).enumerate().map(move |(idx, (pubkey, route_hop_opt))| {
+	unblinded_hops.chain(blinded_pubkeys).enumerate().map(move |(idx, (pubkey, route_hop_opt))| {
 		let shared_secret = SharedSecret::new(pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
