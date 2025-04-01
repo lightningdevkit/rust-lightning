@@ -181,19 +181,32 @@ pub(crate) struct RevokedHTLCOutput {
 	weight: u64,
 	amount: u64,
 	htlc: HTLCOutputInCommitment,
+	channel_parameters: Option<ChannelTransactionParameters>,
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> Self {
-		let weight = if htlc.offered { weight_revoked_offered_htlc(channel_type_features) } else { weight_revoked_received_htlc(channel_type_features) };
+	pub(crate) fn build(
+		per_commitment_point: PublicKey, per_commitment_key: SecretKey,
+		htlc: HTLCOutputInCommitment, channel_parameters: ChannelTransactionParameters,
+	) -> Self {
+		let weight = if htlc.offered {
+			weight_revoked_offered_htlc(&channel_parameters.channel_type_features)
+		} else {
+			weight_revoked_received_htlc(&channel_parameters.channel_type_features)
+		};
+		let directed_params = channel_parameters.as_counterparty_broadcastable();
+		let counterparty_keys = directed_params.broadcaster_pubkeys();
+		let counterparty_delayed_payment_base_key = counterparty_keys.delayed_payment_basepoint;
+		let counterparty_htlc_base_key = counterparty_keys.htlc_basepoint;
 		RevokedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
 			counterparty_htlc_base_key,
 			per_commitment_key,
 			weight,
-			amount,
-			htlc
+			amount: htlc.amount_msat / 1000,
+			htlc,
+			channel_parameters: Some(channel_parameters),
 		}
 	}
 }
@@ -206,6 +219,7 @@ impl_writeable_tlv_based!(RevokedHTLCOutput, {
 	(8, weight, required),
 	(10, amount, required),
 	(12, htlc, required),
+	(13, channel_parameters, (option: ReadableArgs, None)), // Added in 0.2.
 });
 
 /// A struct to describe a HTLC output on a counterparty commitment transaction.
@@ -789,8 +803,8 @@ impl PackageSolvingData {
 				} else { return false; }
 			},
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
-				let directed_parameters =
-					&onchain_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
+				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
 					directed_parameters.broadcaster_pubkeys().delayed_payment_basepoint,
 					outp.counterparty_delayed_payment_base_key,
@@ -803,7 +817,9 @@ impl PackageSolvingData {
 					&outp.per_commitment_point, directed_parameters.broadcaster_pubkeys(),
 					directed_parameters.countersignatory_pubkeys(), &onchain_handler.secp_ctx,
 				);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let witness_script = chan_utils::get_htlc_redeemscript(
+					&outp.htlc, &channel_parameters.channel_type_features, &chan_keys
+				);
 				//TODO: should we panic on signer failure ?
 				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(channel_parameters, &bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
 					let mut ser_sig = sig.serialize_der().to_vec();
@@ -1624,7 +1640,12 @@ mod tests {
 				let dumb_point = PublicKey::from_secret_key(&secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: 1_000_000, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, 1_000_000 / 1_000, htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()))
+				let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
+				channel_parameters.channel_type_features =
+					ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+				PackageSolvingData::RevokedHTLCOutput(RevokedHTLCOutput::build(
+					dumb_point, dumb_scalar, htlc, channel_parameters
+				))
 			}
 		}
 	}
