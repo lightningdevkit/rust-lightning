@@ -3762,11 +3762,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
 						let revk_htlc_outp = RevokedHTLCOutput::build(
-							per_commitment_point,
-							self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
-							self.counterparty_commitment_params.counterparty_htlc_base_key,
-							per_commitment_key, htlc.amount_msat / 1000, htlc.clone(),
-							self.channel_type_features(),
+							per_commitment_point, per_commitment_key, htlc.clone(),
+							self.funding.channel_parameters.clone(),
 						);
 						let counterparty_spendable_height = if htlc.offered {
 							htlc.cltv_expiry
