@@ -3562,29 +3562,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} => {
 					let channel_id = self.channel_id;
 					let counterparty_node_id = self.counterparty_node_id;
-					let mut htlc_descriptors = Vec::with_capacity(htlcs.len());
-					for htlc in htlcs {
-						htlc_descriptors.push(HTLCDescriptor {
-							channel_derivation_parameters: ChannelDerivationParameters {
-								keys_id: self.channel_keys_id,
-								value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
-								transaction_parameters: self.funding.channel_parameters.clone(),
-							},
-							commitment_txid: htlc.commitment_txid,
-							per_commitment_number: htlc.per_commitment_number,
-							per_commitment_point: htlc.per_commitment_point,
-							feerate_per_kw: 0,
-							htlc: htlc.htlc,
-							preimage: htlc.preimage,
-							counterparty_sig: htlc.counterparty_sig,
-						});
-					}
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
 						channel_id,
 						counterparty_node_id,
 						claim_id,
 						target_feerate_sat_per_1000_weight,
-						htlc_descriptors,
+						htlc_descriptors: htlcs,
 						tx_lock_time,
 					}));
 				}
@@ -3973,14 +3956,50 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		(claimable_outpoints, outputs_to_watch)
 	}
 
+	fn get_broadcasted_holder_htlc_descriptors(
+		&self, holder_tx: &HolderCommitmentTransaction,
+	) -> Vec<HTLCDescriptor> {
+		let tx = holder_tx.trust();
+		let mut htlcs = Vec::with_capacity(holder_tx.htlcs().len());
+		debug_assert_eq!(holder_tx.htlcs().len(), holder_tx.counterparty_htlc_sigs.len());
+		for (htlc, counterparty_sig) in holder_tx.htlcs().iter().zip(holder_tx.counterparty_htlc_sigs.iter()) {
+			assert!(htlc.transaction_output_index.is_some(), "Expected transaction output index for non-dust HTLC");
+
+			let preimage = if htlc.offered {
+				None
+			} else if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
+				Some(*preimage)
+			} else {
+				// We can't build an HTLC-Success transaction without the preimage
+				continue;
+			};
+
+			htlcs.push(HTLCDescriptor {
+				// TODO(splicing): Consider alternative funding scopes.
+				channel_derivation_parameters: ChannelDerivationParameters {
+					value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
+					keys_id: self.channel_keys_id,
+					transaction_parameters: self.funding.channel_parameters.clone(),
+				},
+				commitment_txid: tx.txid(),
+				per_commitment_number: tx.commitment_number(),
+				per_commitment_point: tx.per_commitment_point(),
+				feerate_per_kw: tx.feerate_per_kw(),
+				htlc: htlc.clone(),
+				preimage,
+				counterparty_sig: *counterparty_sig,
+			});
+		}
+
+		htlcs
+	}
+
 	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
 	fn get_broadcasted_holder_claims(
 		&self, holder_tx: &HolderCommitmentTransaction, conf_height: u32,
 	) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
-		let mut claim_requests = Vec::with_capacity(holder_tx.htlcs().len());
-
 		let tx = holder_tx.trust();
 		let keys = tx.keys();
 		let redeem_script = chan_utils::get_revokeable_redeemscript(
@@ -3990,36 +4009,22 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			redeem_script.to_p2wsh(), holder_tx.per_commitment_point(), keys.revocation_key.clone(),
 		));
 
-		let txid = tx.txid();
-		for htlc in holder_tx.htlcs() {
-			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				let (htlc_output, counterparty_spendable_height) = if htlc.offered {
-					let htlc_output = HolderHTLCOutput::build_offered(
-						htlc.amount_msat, htlc.cltv_expiry, self.channel_type_features().clone()
-					);
-					(htlc_output, conf_height)
+		let claim_requests = self.get_broadcasted_holder_htlc_descriptors(holder_tx).into_iter()
+			.map(|htlc_descriptor| {
+				let counterparty_spendable_height = if htlc_descriptor.htlc.offered {
+					conf_height
 				} else {
-					let payment_preimage = if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
-						preimage.clone()
-					} else {
-						// We can't build an HTLC-Success transaction without the preimage
-						continue;
-					};
-					let htlc_output = HolderHTLCOutput::build_accepted(
-						payment_preimage, htlc.amount_msat, self.channel_type_features().clone()
-					);
-					(htlc_output, htlc.cltv_expiry)
+					htlc_descriptor.htlc.cltv_expiry
 				};
-				let htlc_package = PackageTemplate::build_package(
-					txid, transaction_output_index,
-					PackageSolvingData::HolderHTLCOutput(htlc_output),
+				let transaction_output_index = htlc_descriptor.htlc.transaction_output_index
+					.expect("Expected transaction output index for non-dust HTLC");
+				PackageTemplate::build_package(
+					tx.txid(), transaction_output_index,
+					PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(htlc_descriptor)),
 					counterparty_spendable_height,
-				);
-				claim_requests.push(htlc_package);
-			} else {
-				debug_assert!(false, "Expected transaction output index for non-dust HTLC");
-			}
-		}
+				)
+			})
+			.collect();
 
 		(claim_requests, broadcasted_holder_revokable_script)
 	}
@@ -4153,33 +4158,36 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&mut self, logger: &WithChannelMonitor<L>
 	) -> Vec<Transaction> where L::Target: Logger {
 		log_debug!(logger, "Getting signed copy of latest holder commitment transaction!");
-		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding.redeem_script);
-		let txid = commitment_tx.compute_txid();
+		let commitment_tx = {
+			let sig = self.onchain_tx_handler.signer.unsafe_sign_holder_commitment(
+				&self.funding.channel_parameters, &self.funding.current_holder_commitment.tx,
+				&self.onchain_tx_handler.secp_ctx,
+			).expect("sign holder commitment");
+			self.funding.current_holder_commitment.tx.add_holder_sig(&self.funding.redeem_script, sig)
+		};
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment
 		// transaction confirms due to the CSV 1 encumberance.
 		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			return holder_transactions;
 		}
-		for htlc in self.funding.current_holder_commitment.tx.htlcs() {
-			if let Some(vout) = htlc.transaction_output_index {
-				let preimage = if !htlc.offered {
-					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) { Some(preimage.clone()) } else {
-						// We can't build an HTLC-Success transaction without the preimage
-						continue;
-					}
-				} else { None };
-				if let Some(htlc_tx) = self.onchain_tx_handler.get_maybe_signed_htlc_tx(
-					&::bitcoin::OutPoint { txid, vout }, &preimage
+
+		self.get_broadcasted_holder_htlc_descriptors(&self.funding.current_holder_commitment.tx)
+			.into_iter()
+			.for_each(|htlc_descriptor| {
+				let txid = self.funding.current_holder_commitment.tx.trust().txid();
+				let vout = htlc_descriptor.htlc.transaction_output_index
+					.expect("Expected transaction output index for non-dust HTLC");
+				let htlc_output = HolderHTLCOutput::build(htlc_descriptor);
+				if let Some(htlc_tx) = htlc_output.get_maybe_signed_htlc_tx(
+					&mut self.onchain_tx_handler, &::bitcoin::OutPoint { txid, vout },
 				) {
 					if htlc_tx.is_fully_signed() {
 						holder_transactions.push(htlc_tx.0);
 					}
 				}
-			} else {
-				debug_assert!(false, "Expected transaction output index for non-dust HTLC");
-			}
-		}
+			});
+
 		holder_transactions
 	}
 

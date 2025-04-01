@@ -24,6 +24,7 @@ use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
 use crate::types::payment::PaymentPreimage;
 use crate::ln::chan_utils::{
 	self, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys,
@@ -37,7 +38,7 @@ use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
+use crate::chain::onchaintx::{FeerateStrategy, OnchainTxHandler};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable, RequiredWrapper};
 
@@ -372,25 +373,105 @@ pub(crate) struct HolderHTLCOutput {
 	/// Defaults to 0 for HTLC-Success transactions, which have no expiry
 	cltv_expiry: u32,
 	channel_type_features: ChannelTypeFeatures,
+	htlc_descriptor: Option<HTLCDescriptor>,
 }
 
 impl HolderHTLCOutput {
-	pub(crate) fn build_offered(amount_msat: u64, cltv_expiry: u32, channel_type_features: ChannelTypeFeatures) -> Self {
-		HolderHTLCOutput {
-			preimage: None,
+	pub(crate) fn build(htlc_descriptor: HTLCDescriptor) -> Self {
+		let amount_msat = htlc_descriptor.htlc.amount_msat;
+		let channel_type_features = htlc_descriptor.channel_derivation_parameters
+			.transaction_parameters.channel_type_features.clone();
+		Self {
+			preimage: if htlc_descriptor.htlc.offered {
+				None
+			} else {
+				Some(htlc_descriptor.preimage.expect("Preimage required for accepted holder HTLC claim"))
+			},
 			amount_msat,
-			cltv_expiry,
+			cltv_expiry: if htlc_descriptor.htlc.offered {
+				htlc_descriptor.htlc.cltv_expiry
+			} else {
+				0
+			},
 			channel_type_features,
+			htlc_descriptor: Some(htlc_descriptor),
 		}
 	}
 
-	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount_msat: u64, channel_type_features: ChannelTypeFeatures) -> Self {
-		HolderHTLCOutput {
-			preimage: Some(preimage),
-			amount_msat,
-			cltv_expiry: 0,
-			channel_type_features,
+	pub(crate) fn get_htlc_descriptor<ChannelSigner: EcdsaChannelSigner>(
+		&self, onchain_tx_handler: &OnchainTxHandler<ChannelSigner>, outp: &::bitcoin::OutPoint,
+	) -> Option<HTLCDescriptor> {
+		// Either we have the descriptor, or we have to go construct it because it was not written.
+		if let Some(htlc_descriptor) = self.htlc_descriptor.as_ref() {
+			return Some(htlc_descriptor.clone());
 		}
+
+		let channel_parameters = &onchain_tx_handler.channel_transaction_parameters;
+
+		let get_htlc_descriptor = |holder_commitment: &HolderCommitmentTransaction| {
+			let trusted_tx = holder_commitment.trust();
+			if outp.txid != trusted_tx.txid() {
+				return None;
+			}
+
+			let (htlc, counterparty_sig) =
+				trusted_tx.htlcs().iter().zip(holder_commitment.counterparty_htlc_sigs.iter())
+					.find(|(htlc, _)| htlc.transaction_output_index.unwrap() == outp.vout)
+					.unwrap();
+
+			Some(HTLCDescriptor {
+				channel_derivation_parameters: ChannelDerivationParameters {
+					value_satoshis: channel_parameters.channel_value_satoshis,
+					keys_id: onchain_tx_handler.channel_keys_id(),
+					transaction_parameters: channel_parameters.clone(),
+				},
+				commitment_txid: trusted_tx.txid(),
+				per_commitment_number: trusted_tx.commitment_number(),
+				per_commitment_point: trusted_tx.per_commitment_point(),
+				feerate_per_kw: trusted_tx.feerate_per_kw(),
+				htlc: htlc.clone(),
+				preimage: self.preimage.clone(),
+				counterparty_sig: *counterparty_sig,
+			})
+		};
+
+		// Check if the HTLC spends from the current holder commitment or the previous one otherwise.
+		get_htlc_descriptor(onchain_tx_handler.current_holder_commitment_tx())
+			.or_else(|| onchain_tx_handler.prev_holder_commitment_tx().and_then(|c| get_htlc_descriptor(c)))
+	}
+
+	pub(crate) fn get_maybe_signed_htlc_tx<ChannelSigner: EcdsaChannelSigner>(
+		&self, onchain_tx_handler: &mut OnchainTxHandler<ChannelSigner>, outp: &::bitcoin::OutPoint,
+	) -> Option<MaybeSignedTransaction> {
+		let htlc_descriptor = self.get_htlc_descriptor(onchain_tx_handler, outp)?;
+		let channel_parameters = &htlc_descriptor.channel_derivation_parameters.transaction_parameters;
+		let directed_parameters = channel_parameters.as_holder_broadcastable();
+		let keys = TxCreationKeys::from_channel_static_keys(
+			&htlc_descriptor.per_commitment_point, directed_parameters.broadcaster_pubkeys(),
+			directed_parameters.countersignatory_pubkeys(), &onchain_tx_handler.secp_ctx,
+		);
+
+		let mut htlc_tx = chan_utils::build_htlc_transaction(
+			&htlc_descriptor.commitment_txid, htlc_descriptor.feerate_per_kw,
+			directed_parameters.contest_delay(), &htlc_descriptor.htlc,
+			&channel_parameters.channel_type_features, &keys.broadcaster_delayed_payment_key,
+			&keys.revocation_key
+		);
+
+		if let Ok(htlc_sig) = onchain_tx_handler.signer.sign_holder_htlc_transaction(
+			&htlc_tx, 0, &htlc_descriptor, &onchain_tx_handler.secp_ctx,
+		) {
+			let htlc_redeem_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(
+				&htlc_descriptor.htlc, &channel_parameters.channel_type_features,
+				&keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key,
+			);
+			htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
+				&htlc_sig, &htlc_descriptor.counterparty_sig, &htlc_descriptor.preimage,
+				&htlc_redeem_script, &channel_parameters.channel_type_features,
+			);
+		}
+
+		Some(MaybeSignedTransaction(htlc_tx))
 	}
 }
 
@@ -403,6 +484,7 @@ impl Writeable for HolderHTLCOutput {
 			(4, self.preimage, option),
 			(6, legacy_deserialization_prevention_marker, option),
 			(7, self.channel_type_features, required),
+			(9, self.htlc_descriptor, option), // Added in 0.2.
 		});
 		Ok(())
 	}
@@ -415,6 +497,7 @@ impl Readable for HolderHTLCOutput {
 		let mut preimage = None;
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut htlc_descriptor = None;
 
 		read_tlv_fields!(reader, {
 			(0, amount_msat, required),
@@ -422,15 +505,19 @@ impl Readable for HolderHTLCOutput {
 			(4, preimage, option),
 			(6, _legacy_deserialization_prevention_marker, option),
 			(7, channel_type_features, option),
+			(9, htlc_descriptor, option), // Added in 0.2.
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
+		let channel_type_features =
+			channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
 
 		Ok(Self {
 			amount_msat: amount_msat.0.unwrap(),
 			cltv_expiry: cltv_expiry.0.unwrap(),
 			preimage,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
+			htlc_descriptor,
 		})
 	}
 }
@@ -753,7 +840,7 @@ impl PackageSolvingData {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-				onchain_handler.get_maybe_signed_htlc_tx(outpoint, &outp.preimage)
+				outp.get_maybe_signed_htlc_tx(onchain_handler, outpoint)
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
 				Some(outp.get_maybe_signed_commitment_tx(onchain_handler))
@@ -1064,14 +1151,14 @@ impl PackageTemplate {
 	}
 	pub(crate) fn construct_malleable_package_with_external_funding<Signer: EcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
-	) -> Option<Vec<ExternalHTLCClaim>> {
+	) -> Option<Vec<HTLCDescriptor>> {
 		debug_assert!(self.requires_external_funding());
-		let mut htlcs: Option<Vec<ExternalHTLCClaim>> = None;
+		let mut htlcs: Option<Vec<HTLCDescriptor>> = None;
 		for (previous_output, input) in &self.inputs {
 			match input {
 				PackageSolvingData::HolderHTLCOutput(ref outp) => {
 					debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-					onchain_handler.generate_external_htlc_claim(&previous_output, &outp.preimage).map(|htlc| {
+					outp.get_htlc_descriptor(onchain_handler, &previous_output).map(|htlc| {
 						htlcs.get_or_insert_with(|| Vec::with_capacity(self.inputs.len())).push(htlc);
 					});
 				}
@@ -1451,6 +1538,7 @@ mod tests {
 	};
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
+	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
 
 	use bitcoin::absolute::LockTime;
 	use bitcoin::amount::Amount;
@@ -1535,8 +1623,34 @@ mod tests {
 	macro_rules! dumb_accepted_htlc_output {
 		($features: expr) => {
 			{
+				let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
+				channel_parameters.channel_type_features = $features;
 				let preimage = PaymentPreimage([2;32]);
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0, $features))
+				let htlc = HTLCOutputInCommitment {
+					offered: false,
+					amount_msat: 1337000,
+					cltv_expiry: 420,
+					payment_hash: PaymentHash::from(preimage),
+					transaction_output_index: None,
+				};
+				let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut vec![(htlc.clone(), ())]);
+				let trusted_tx = commitment_tx.trust();
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
+					HTLCDescriptor {
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: channel_parameters.channel_value_satoshis,
+							keys_id: [0; 32],
+							transaction_parameters: channel_parameters,
+						},
+						commitment_txid: trusted_tx.txid(),
+						per_commitment_number: trusted_tx.commitment_number(),
+						per_commitment_point: trusted_tx.per_commitment_point(),
+						feerate_per_kw: trusted_tx.feerate_per_kw(),
+						htlc,
+						preimage: Some(preimage),
+						counterparty_sig: commitment_tx.counterparty_htlc_sigs[0].clone(),
+					},
+				))
 			}
 		}
 	}
@@ -1544,7 +1658,33 @@ mod tests {
 	macro_rules! dumb_offered_htlc_output {
 		($cltv_expiry: expr, $features: expr) => {
 			{
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_offered(0, $cltv_expiry, $features))
+				let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
+				channel_parameters.channel_type_features = $features;
+				let htlc = HTLCOutputInCommitment {
+					offered: true,
+					amount_msat: 1337000,
+					cltv_expiry: $cltv_expiry,
+					payment_hash: PaymentHash::from(PaymentPreimage([2;32])),
+					transaction_output_index: None,
+				};
+				let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut vec![(htlc.clone(), ())]);
+				let trusted_tx = commitment_tx.trust();
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
+					HTLCDescriptor {
+						channel_derivation_parameters: ChannelDerivationParameters {
+							value_satoshis: channel_parameters.channel_value_satoshis,
+							keys_id: [0; 32],
+							transaction_parameters: channel_parameters,
+						},
+						commitment_txid: trusted_tx.txid(),
+						per_commitment_number: trusted_tx.commitment_number(),
+						per_commitment_point: trusted_tx.per_commitment_point(),
+						feerate_per_kw: trusted_tx.feerate_per_kw(),
+						htlc,
+						preimage: None,
+						counterparty_sig: commitment_tx.counterparty_htlc_sigs[0].clone(),
+					},
+				))
 			}
 		}
 	}
