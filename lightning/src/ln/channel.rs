@@ -7083,53 +7083,58 @@ impl<SP: Deref> FundedChannel<SP> where
 
 			// if next_funding_txid is set:
 			let (commitment_update, tx_signatures, tx_abort) = if let Some(next_funding_txid) = msg.next_funding_txid {
+				// if it also sets `next_funding_txid` in its own `channel_reestablish`, but the values don't match:
+				if let Some(our_next_funding_txid) = self.maybe_get_next_funding_txid().filter(|txid| txid != &next_funding_txid) {
+					//   MUST send an `error` and fail the channel.
+					return Err(ChannelError::Close((format!(
+						"Our next_funding_txid ({}) does not match your next_funding_txid ({})",
+						our_next_funding_txid, next_funding_txid,
+					), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) })));
+				}
 				if let Some(session) = &self.interactive_tx_signing_session {
-					// if next_funding_txid matches the latest interactive funding transaction:
-					if session.unsigned_tx().compute_txid() == next_funding_txid {
+					// if next_funding_txid matches the latest interactive funding transaction or the current channel funding transaction:
+					if self.funding.funding_transaction.as_ref().is_some_and(|tx| tx.compute_txid() == next_funding_txid) ||
+						session.unsigned_tx().compute_txid() == next_funding_txid
+					{
+						let counterparty_sent_tx_signatures = session.counterparty_sent_tx_signatures();
+						let has_received_commitment_signed = session.has_received_commitment_signed();
+						let holder_sends_tx_signatures_first = session.holder_sends_tx_signatures_first();
+						let holder_tx_signatures = session.holder_tx_signatures().clone();
 						debug_assert_eq!(session.unsigned_tx().compute_txid(), self.maybe_get_next_funding_txid().unwrap());
-
-						let commitment_update = if !session.counterparty_sent_tx_signatures() && msg.next_local_commitment_number == 0 {
-							// if it has not received tx_signatures for that funding transaction AND
-							// if next_commitment_number is zero:
+						// if next_commitment_number is equal to the commitment number of the commitment_signed message it
+						// sent for this funding transaction or the current channel funding transaction:
+						let commitment_update = if msg.next_local_commitment_number == next_counterparty_commitment_number {
 							//   MUST retransmit its commitment_signed for that funding transaction.
-							let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger)?;
-							Some(msgs::CommitmentUpdate {
-								commitment_signed,
-								update_add_htlcs: vec![],
-								update_fulfill_htlcs: vec![],
-								update_fail_htlcs: vec![],
-								update_fail_malformed_htlcs: vec![],
-								update_fee: None,
-							})
+							self.get_last_commitment_update_for_send(logger).ok()
 						} else { None };
 						// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
 						let tx_signatures = if (
 							// if it has not received tx_signatures for that funding transaction AND
 							// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
 							//   MUST send its tx_signatures for that funding transaction.
-							!session.counterparty_sent_tx_signatures() && session.has_received_commitment_signed() && session.holder_sends_tx_signatures_first()
+							!counterparty_sent_tx_signatures && has_received_commitment_signed && holder_sends_tx_signatures_first
 							// else if it has already received tx_signatures for that funding transaction:
 							//   MUST send its tx_signatures for that funding transaction.
-						) || session.counterparty_sent_tx_signatures() {
+						) || counterparty_sent_tx_signatures {
 							if self.context.channel_state.is_monitor_update_in_progress() {
 								// The `monitor_pending_tx_signatures` field should have already been set in `commitment_signed_initial_v2`
 								// if we were up first for signing and had a monitor update in progress, but check again just in case.
 								debug_assert!(self.context.monitor_pending_tx_signatures.is_some(), "monitor_pending_tx_signatures should already be set");
 								log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
 								if self.context.monitor_pending_tx_signatures.is_none() {
-									self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
+									self.context.monitor_pending_tx_signatures = holder_tx_signatures;
 								}
 								None
 							} else {
 								// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
 								// when the holder provides their witnesses as this will queue a `tx_signatures` if the
 								// holder must send one.
-								session.holder_tx_signatures().clone()
+								holder_tx_signatures
 							}
 						} else {
 							None
 						};
-						if !session.has_received_commitment_signed() {
+						if !has_received_commitment_signed {
 							self.context.expecting_peer_commitment_signed = true;
 						}
 						(commitment_update, tx_signatures, None)
