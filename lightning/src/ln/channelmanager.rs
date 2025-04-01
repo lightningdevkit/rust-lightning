@@ -12775,7 +12775,7 @@ fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
 		.flat_map(|reply_path|
 			message_paths
 				.iter()
-				.map(move |path| (path.clone(), reply_path))
+				.map(move |path| (path, reply_path))
 		)
 		.take(OFFERS_MESSAGE_REQUEST_LIMIT)
 		.for_each(|(path, reply_path)| {
