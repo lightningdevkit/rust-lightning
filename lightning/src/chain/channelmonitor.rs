@@ -3278,6 +3278,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding_outp = HolderFundingOutput::build(
+			self.funding.current_holder_commitment.tx.clone(),
 			self.funding.redeem_script.clone(),
 			self.funding.channel_parameters.channel_value_satoshis,
 			self.channel_type_features().clone(),
@@ -3530,16 +3531,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		for (claim_id, claim_event) in pending_claim_events {
 			match claim_event {
 				ClaimEvent::BumpCommitment {
-					package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_output_idx,
+					package_target_feerate_sat_per_1000_weight, commitment_tx,
+					commitment_tx_fee_satoshis, pending_nondust_htlcs, anchor_output_idx,
 				} => {
 					let channel_id = self.channel_id;
 					let counterparty_node_id = self.counterparty_node_id;
 					let commitment_txid = commitment_tx.compute_txid();
-					debug_assert_eq!(self.funding.current_holder_commitment.tx.trust().txid(), commitment_txid);
-					let pending_htlcs = self.funding.current_holder_commitment.tx.trust().htlcs().to_vec();
-					let channel_value_satoshis = self.funding.channel_parameters.channel_value_satoshis;
-					let commitment_tx_fee_satoshis = channel_value_satoshis -
-						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value.to_sat());
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
 						channel_id,
 						counterparty_node_id,
@@ -3550,7 +3547,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						anchor_descriptor: AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
-								value_satoshis: channel_value_satoshis,
+								value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
 								transaction_parameters: self.funding.channel_parameters.clone(),
 							},
 							outpoint: BitcoinOutPoint {
@@ -3558,7 +3555,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								vout: anchor_output_idx,
 							},
 						},
-						pending_htlcs,
+						pending_htlcs: pending_nondust_htlcs,
 					}));
 				},
 				ClaimEvent::BumpHTLC {

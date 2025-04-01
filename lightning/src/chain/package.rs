@@ -20,12 +20,14 @@ use bitcoin::transaction::{TxOut,TxIn, Transaction};
 use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
-use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 
 use crate::types::payment::PaymentPreimage;
-use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
+use crate::ln::chan_utils::{
+	self, HolderCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment,
+};
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
@@ -440,18 +442,40 @@ impl Readable for HolderHTLCOutput {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: ScriptBuf,
-	pub(crate) funding_amount: Option<u64>,
+	pub(crate) funding_amount_sats: Option<u64>,
 	channel_type_features: ChannelTypeFeatures,
+	pub(crate) commitment_tx: Option<HolderCommitmentTransaction>,
 }
 
 
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: ScriptBuf, funding_amount: u64, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(
+		commitment_tx: HolderCommitmentTransaction, funding_redeemscript: ScriptBuf,
+		funding_amount_sats: u64, channel_type_features: ChannelTypeFeatures,
+	) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
-			funding_amount: Some(funding_amount),
+			funding_amount_sats: Some(funding_amount_sats),
 			channel_type_features,
+			commitment_tx: Some(commitment_tx),
 		}
+	}
+
+	pub(crate) fn get_maybe_signed_commitment_tx<Signer: EcdsaChannelSigner>(
+		&self, onchain_tx_handler: &mut OnchainTxHandler<Signer>,
+	) -> MaybeSignedTransaction {
+		let channel_parameters = &onchain_tx_handler.channel_transaction_parameters;
+		let commitment_tx = self.commitment_tx.as_ref()
+			.unwrap_or(onchain_tx_handler.current_holder_commitment_tx());
+		let maybe_signed_tx = onchain_tx_handler.signer
+			.sign_holder_commitment(channel_parameters, commitment_tx, &onchain_tx_handler.secp_ctx)
+			.map(|holder_sig| {
+				commitment_tx.add_holder_sig(&self.funding_redeemscript, holder_sig)
+			})
+			.unwrap_or_else(|_| {
+				commitment_tx.trust().built_transaction().transaction.clone()
+			});
+		MaybeSignedTransaction(maybe_signed_tx)
 	}
 }
 
@@ -462,7 +486,8 @@ impl Writeable for HolderFundingOutput {
 			(0, self.funding_redeemscript, required),
 			(1, self.channel_type_features, required),
 			(2, legacy_deserialization_prevention_marker, option),
-			(3, self.funding_amount, option),
+			(3, self.funding_amount_sats, option),
+			(5, self.commitment_tx, option), // Added in 0.2
 		});
 		Ok(())
 	}
@@ -473,13 +498,15 @@ impl Readable for HolderFundingOutput {
 		let mut funding_redeemscript = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
-		let mut funding_amount = None;
+		let mut funding_amount_sats = None;
+		let mut commitment_tx = None;
 
 		read_tlv_fields!(reader, {
 			(0, funding_redeemscript, required),
 			(1, channel_type_features, option),
 			(2, _legacy_deserialization_prevention_marker, option),
-			(3, funding_amount, option),
+			(3, funding_amount_sats, option),
+			(5, commitment_tx, option), // Added in 0.2.
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
@@ -487,7 +514,8 @@ impl Readable for HolderFundingOutput {
 		Ok(Self {
 			funding_redeemscript: funding_redeemscript.0.unwrap(),
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
-			funding_amount
+			funding_amount_sats,
+			commitment_tx,
 		})
 	}
 }
@@ -519,7 +547,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
 				debug_assert!(outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-				outp.funding_amount.unwrap()
+				outp.funding_amount_sats.unwrap()
 			}
 		};
 		amt
@@ -716,7 +744,7 @@ impl PackageSolvingData {
 				onchain_handler.get_maybe_signed_htlc_tx(outpoint, &outp.preimage)
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				Some(onchain_handler.get_maybe_signed_holder_tx(&outp.funding_redeemscript))
+				Some(outp.get_maybe_signed_commitment_tx(onchain_handler))
 			}
 			_ => { panic!("API Error!"); }
 		}
@@ -1406,7 +1434,7 @@ where
 mod tests {
 	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc, feerate_bump};
 	use crate::chain::Txid;
-	use crate::ln::chan_utils::HTLCOutputInCommitment;
+	use crate::ln::chan_utils::{HolderCommitmentTransaction, HTLCOutputInCommitment};
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 
@@ -1508,9 +1536,12 @@ mod tests {
 	}
 
 	macro_rules! dumb_funding_output {
-		() => {
-			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(ScriptBuf::new(), 0, ChannelTypeFeatures::only_static_remote_key()))
-		}
+		() => {{
+			let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut Vec::new());
+			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(
+				commitment_tx, ScriptBuf::new(), 0, ChannelTypeFeatures::only_static_remote_key()
+			))
+		}}
 	}
 
 	#[test]
