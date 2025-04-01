@@ -224,10 +224,19 @@ pub(crate) struct CounterpartyOfferedHTLCOutput {
 	preimage: PaymentPreimage,
 	htlc: HTLCOutputInCommitment,
 	channel_type_features: ChannelTypeFeatures,
+	channel_parameters: Option<ChannelTransactionParameters>,
 }
 
 impl CounterpartyOfferedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, channel_type_features: ChannelTypeFeatures) -> Self {
+	pub(crate) fn build(
+		per_commitment_point: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment,
+		channel_parameters: ChannelTransactionParameters,
+	) -> Self {
+		let directed_params = channel_parameters.as_counterparty_broadcastable();
+		let counterparty_keys = directed_params.broadcaster_pubkeys();
+		let counterparty_delayed_payment_base_key = counterparty_keys.delayed_payment_basepoint;
+		let counterparty_htlc_base_key = counterparty_keys.htlc_basepoint;
+		let channel_type_features = channel_parameters.channel_type_features.clone();
 		CounterpartyOfferedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -235,6 +244,7 @@ impl CounterpartyOfferedHTLCOutput {
 			preimage,
 			htlc,
 			channel_type_features,
+			channel_parameters: Some(channel_parameters),
 		}
 	}
 }
@@ -250,6 +260,7 @@ impl Writeable for CounterpartyOfferedHTLCOutput {
 			(8, self.htlc, required),
 			(10, legacy_deserialization_prevention_marker, option),
 			(11, self.channel_type_features, required),
+			(13, self.channel_parameters, option), // Added in 0.2.
 		});
 		Ok(())
 	}
@@ -264,6 +275,7 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 		let mut htlc = RequiredWrapper(None);
 		let mut _legacy_deserialization_prevention_marker: Option<()> = None;
 		let mut channel_type_features = None;
+		let mut channel_parameters = None;
 
 		read_tlv_fields!(reader, {
 			(0, per_commitment_point, required),
@@ -273,9 +285,12 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			(8, htlc, required),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
+			(13, channel_parameters, (option: ReadableArgs, None)), // Added in 0.2.
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
+		let channel_type_features =
+			channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
 
 		Ok(Self {
 			per_commitment_point: per_commitment_point.0.unwrap(),
@@ -283,7 +298,8 @@ impl Readable for CounterpartyOfferedHTLCOutput {
 			counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
 			preimage: preimage.0.unwrap(),
 			htlc: htlc.0.unwrap(),
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
+			channel_parameters,
 		})
 	}
 }
@@ -798,8 +814,8 @@ impl PackageSolvingData {
 				} else { return false; }
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
-				let directed_parameters =
-					&onchain_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+				let channel_parameters = outp.channel_parameters.as_ref().unwrap_or(channel_parameters);
+				let directed_parameters = channel_parameters.as_counterparty_broadcastable();
 				debug_assert_eq!(
 					directed_parameters.broadcaster_pubkeys().delayed_payment_basepoint,
 					outp.counterparty_delayed_payment_base_key,
@@ -812,7 +828,9 @@ impl PackageSolvingData {
 					&outp.per_commitment_point, directed_parameters.broadcaster_pubkeys(),
 					directed_parameters.countersignatory_pubkeys(), &onchain_handler.secp_ctx,
 				);
-				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &onchain_handler.channel_type_features(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let witness_script = chan_utils::get_htlc_redeemscript(
+					&outp.htlc, &channel_parameters.channel_type_features, &chan_keys,
+				);
 
 				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(channel_parameters, &bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
 					let mut ser_sig = sig.serialize_der().to_vec();
@@ -1637,7 +1655,11 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), preimage, htlc, $features))
+				let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
+				channel_parameters.channel_type_features = $features;
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(
+					CounterpartyOfferedHTLCOutput::build(dumb_point, preimage, htlc, channel_parameters)
+				)
 			}
 		}
 	}

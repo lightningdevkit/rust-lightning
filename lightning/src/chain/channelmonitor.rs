@@ -3889,10 +3889,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if preimage.is_some() || !htlc.offered {
 					let counterparty_htlc_outp = if htlc.offered {
 						PackageSolvingData::CounterpartyOfferedHTLCOutput(
-							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
-								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
-								self.counterparty_commitment_params.counterparty_htlc_base_key,
-								preimage.unwrap(), htlc.clone(), self.channel_type_features().clone()))
+							CounterpartyOfferedHTLCOutput::build(
+								*per_commitment_point, preimage.unwrap(), htlc.clone(),
+								self.funding.channel_parameters.clone(),
+							)
+						)
 					} else {
 						PackageSolvingData::CounterpartyReceivedHTLCOutput(
 							CounterpartyReceivedHTLCOutput::build(
