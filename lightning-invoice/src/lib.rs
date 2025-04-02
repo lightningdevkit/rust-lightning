@@ -162,6 +162,9 @@ pub const MAX_LENGTH: usize = 7089;
 
 /// The [`bech32::Bech32`] checksum algorithm, with extended max length suitable
 /// for BOLT11 invoices.
+///
+/// This is not exported to bindings users as it generally shouldn't be used directly publicly
+/// anyway.
 pub enum Bolt11Bech32 {}
 
 impl Checksum for Bolt11Bech32 {
