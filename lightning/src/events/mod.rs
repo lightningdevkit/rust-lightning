@@ -502,7 +502,7 @@ pub enum HTLCHandlingType {
 	/// * The counterparty node modified the HTLC in transit,
 	/// * A probing attack where an intermediary node is trying to detect if we are the ultimate
 	///   recipient for a payment.
-	FailedPayment {
+	ReceiveFailed {
 		/// The payment hash of the payment we attempted to process.
 		payment_hash: PaymentHash
 	},
@@ -520,7 +520,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingType,
 		(0, requested_forward_scid, required),
 	},
 	(3, InvalidOnion) => {},
-	(4, FailedPayment) => {
+	(4, ReceiveFailed) => {
 		(0, payment_hash, required),
 	},
 );
