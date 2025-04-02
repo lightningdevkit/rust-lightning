@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
@@ -399,7 +399,7 @@ pub struct NodeCfg<'a> {
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 }
 
-type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
+pub(crate) type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'node_cfg TestChainMonitor<'chan_mon_cfg>,
 	&'chan_mon_cfg test_utils::TestBroadcaster,
 	&'node_cfg test_utils::TestKeysInterface,
@@ -3259,7 +3259,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	create_node_cfgs_with_persisters(node_count, chanmon_cfgs, chanmon_cfgs.iter().map(|c| &c.persister).collect())
 }
 
-pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl Persist<TestChannelSigner>>) -> Vec<NodeCfg<'a>> {
+pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl test_utils::SyncPersist>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {
