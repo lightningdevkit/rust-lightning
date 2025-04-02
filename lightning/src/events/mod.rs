@@ -471,7 +471,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 pub enum HTLCHandlingType {
 	/// We tried forwarding to a channel but failed to do so. An example of such an instance is when
 	/// there is insufficient capacity in our outbound channel.
-	NextHopChannel {
+	ForwardFailed {
 		/// The `node_id` of the next node. For backwards compatibility, this field is
 		/// marked as optional, versions prior to 0.0.110 may not always be able to provide
 		/// counterparty node information.
@@ -509,7 +509,7 @@ pub enum HTLCHandlingType {
 }
 
 impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingType,
-	(0, NextHopChannel) => {
+	(0, ForwardFailed) => {
 		(0, node_id, required),
 		(2, channel_id, required),
 	},
