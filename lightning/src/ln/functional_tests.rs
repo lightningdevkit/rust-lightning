@@ -22,7 +22,7 @@ use crate::events::bump_transaction::WalletSource;
 use crate::events::{Event, FundingInfo, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
-use crate::ln::channel::{get_holder_selected_channel_reserve_satoshis, Channel, InboundV1Channel, OutboundV1Channel, COINBASE_MATURITY, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
+use crate::ln::channel::{get_holder_selected_channel_reserve_satoshis, Channel, FundedChannelTrait, InboundV1Channel, OutboundV1Channel, COINBASE_MATURITY, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::{chan_utils, onion_utils};

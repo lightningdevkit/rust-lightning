@@ -19,7 +19,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
-use crate::ln::channel::AnnouncementSigsState;
+use crate::ln::channel::{AnnouncementSigsState, FundedChannelTrait};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, MessageSendEvent};
