@@ -11,6 +11,7 @@ use super::msgs::OnionErrorPacket;
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
+use crate::events::HTLCHandlingFailureReason;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
@@ -1728,6 +1729,12 @@ impl Into<LocalHTLCFailureReason> for u16 {
 	}
 }
 
+impl Into<HTLCHandlingFailureReason> for LocalHTLCFailureReason {
+	fn into(self) -> HTLCHandlingFailureReason {
+		HTLCHandlingFailureReason::Local { reason: self }
+	}
+}
+
 impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(1, TemporaryNodeFailure) => {},
 	(3, PermanentNodeFailure) => {},
@@ -2027,6 +2034,17 @@ impl HTLCFailReason {
 				} else {
 					unreachable!();
 				}
+			},
+		}
+	}
+}
+
+impl Into<HTLCHandlingFailureReason> for &HTLCFailReason {
+	fn into(self) -> HTLCHandlingFailureReason {
+		match self.0 {
+			HTLCFailReasonRepr::LightningError { .. } => HTLCHandlingFailureReason::Downstream,
+			HTLCFailReasonRepr::Reason { reason, .. } => {
+				HTLCHandlingFailureReason::Local { reason }
 			},
 		}
 	}
