@@ -1837,7 +1837,7 @@ where
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Non-final intro node Trampoline onion data provided to us as last hop",
-								err_code: INVALID_ONION_BLINDING,
+								err_code: 0x4000 | 22,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
