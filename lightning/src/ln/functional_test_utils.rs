@@ -1049,7 +1049,7 @@ macro_rules! get_channel_type_features {
 			let mut per_peer_state_lock;
 			let mut peer_state_lock;
 			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
-			chan.context().get_channel_type().clone()
+			chan.funding().get_channel_type().clone()
 		}
 	}
 }

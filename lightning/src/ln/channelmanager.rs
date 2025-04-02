@@ -3179,7 +3179,7 @@ macro_rules! emit_channel_pending_event {
 				counterparty_node_id: $channel.context.get_counterparty_node_id(),
 				user_channel_id: $channel.context.get_user_id(),
 				funding_txo: $channel.funding.get_funding_txo().unwrap().into_bitcoin_outpoint(),
-				channel_type: Some($channel.context.get_channel_type().clone()),
+				channel_type: Some($channel.funding.get_channel_type().clone()),
 			}, None));
 			$channel.context.set_channel_pending_event_emitted();
 		}
@@ -3194,7 +3194,7 @@ macro_rules! emit_channel_ready_event {
 				channel_id: $channel.context.channel_id(),
 				user_channel_id: $channel.context.get_user_id(),
 				counterparty_node_id: $channel.context.get_counterparty_node_id(),
-				channel_type: $channel.context.get_channel_type().clone(),
+				channel_type: $channel.funding.get_channel_type().clone(),
 			}, None));
 			$channel.context.set_channel_ready_event_emitted();
 		}
@@ -4341,7 +4341,7 @@ where
 			return Err(("Refusing to forward to a private channel based on our config.", 0x4000 | 10));
 		}
 		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
-			if chan.context.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
+			if chan.funding.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
 				// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
 				// "refuse to forward unless the SCID alias was used", so we pretend
 				// we don't have the channel here.
@@ -6587,7 +6587,7 @@ where
 				for (chan_id, chan) in peer_state.channel_by_id.iter_mut()
 					.filter_map(|(chan_id, chan)| chan.as_funded_mut().map(|chan| (chan_id, chan)))
 				{
-					let new_feerate = if chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+					let new_feerate = if chan.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 						anchor_feerate
 					} else {
 						non_anchor_feerate
@@ -6644,7 +6644,7 @@ where
 					peer_state.channel_by_id.retain(|chan_id, chan| {
 						match chan.as_funded_mut() {
 							Some(funded_chan) => {
-								let new_feerate = if funded_chan.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+								let new_feerate = if funded_chan.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 									anchor_feerate
 								} else {
 									non_anchor_feerate
@@ -7939,7 +7939,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if accept_0conf {
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
 			debug_assert!(channel.context().minimum_depth().unwrap() == 0);
-		} else if channel.context().get_channel_type().requires_zero_conf() {
+		} else if channel.funding().get_channel_type().requires_zero_conf() {
 			let send_msg_err_event = MessageSendEvent::HandleError {
 				node_id: channel.context().get_counterparty_node_id(),
 				action: msgs::ErrorAction::SendErrorMessage{
@@ -11553,7 +11553,7 @@ where
 
 		self.do_chain_event(Some(height), |channel| {
 			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-			if channel.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			if channel.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				if let Some(feerate) = min_anchor_feerate {
 					channel.check_for_stale_feerate(&logger, feerate)?;
 				}
