@@ -858,6 +858,10 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 	secp_ctx: Secp256k1<secp256k1::SignOnly>
 }
 
+enum LogicalMessage<T: core::fmt::Debug + wire::Type + wire::TestEq> {
+	FromWire(wire::Message<T>),
+}
+
 enum MessageHandlingError {
 	PeerHandleError(PeerHandleError),
 	LightningError(LightningError),
@@ -1645,10 +1649,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		self.message_handler.chan_handler.message_received();
 
-		if let Some(message) = unprocessed_message {
-			self.do_handle_message_without_peer_lock(peer_mutex, message, their_node_id, &logger)
-		} else {
-			Ok(None)
+		match unprocessed_message {
+			Some(LogicalMessage::FromWire(message)) => {
+				self.do_handle_message_without_peer_lock(peer_mutex, message, their_node_id, &logger)
+			},
+			None => Ok(None),
 		}
 	}
 
@@ -1662,7 +1667,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		message: wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
 		their_node_id: PublicKey,
 		logger: &WithContext<'a, L>
-	) -> Result<Option<wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError>
+	) -> Result<Option<LogicalMessage<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError>
 	{
 		peer_lock.received_message_since_timer_tick = true;
 
@@ -1774,7 +1779,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			peer_lock.received_channel_announce_since_backlogged = true;
 		}
 
-		Ok(Some(message))
+		Ok(Some(LogicalMessage::FromWire(message)))
 	}
 
 	// Conducts all message processing that doesn't require us to hold the `peer_lock`.
