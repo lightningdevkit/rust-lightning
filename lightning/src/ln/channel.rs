@@ -2491,6 +2491,156 @@ impl<SP: Deref> PendingV2ChannelTrait<SP> for PendingV2Channel<SP> where SP::Tar
 	}
 }
 
+#[cfg(splicing)]
+struct RefundingChannel<SP: Deref> where SP::Target: SignerProvider {
+	pub funded_funding: FundingScope,
+	pub context: ChannelContext<SP>,
+	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
+	holder_commitment_point: HolderCommitmentPoint,
+	/// Indicates whether this funded channel had been established with V2 channel
+	/// establishment.
+	is_v2_established: bool,
+	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
+	#[cfg(splicing)]
+	pending_splice: Option<PendingSplice>,
+
+	pub pending_funding: FundingScope,
+	// Note: there is a single context
+	pub unfunded_context: UnfundedChannelContext,
+	pub dual_funding_context: DualFundingChannelContext,
+	/// The current interactive transaction construction session under negotiation.
+	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	// Note: there is a single interactive_tx_signing_session
+}
+
+#[cfg(splicing)]
+impl<SP: Deref> WithContextAndFunding<SP> for RefundingChannel<SP> where SP::Target: SignerProvider {
+	#[inline]
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+
+	#[inline]
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+
+	#[inline]
+	fn funding(&self) -> &FundingScope {
+		&self.funded_funding
+	}
+
+	#[inline]
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.funded_funding
+	}
+
+	#[inline]
+	fn funding_and_context_mut(&mut self) -> (&mut FundingScope, &mut ChannelContext<SP>) {
+		(&mut self.funded_funding, &mut self.context)
+	}
+}
+
+#[cfg(splicing)]
+impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for RefundingChannel<SP> where SP::Target: SignerProvider {
+	fn received_msg(&self) -> &'static str {
+		"commitment_signed" // TODO ?
+	}
+}
+
+#[cfg(splicing)]
+impl<SP: Deref> FundedChannelTrait<SP> for RefundingChannel<SP> where SP::Target: SignerProvider {
+	#[inline]
+	fn interactive_tx_signing_session_mut(&mut self) -> Option<&mut InteractiveTxSigningSession> {
+		self.interactive_tx_signing_session.as_mut()
+	}
+
+	fn set_interactive_tx_signing_session(&mut self, session: Option<InteractiveTxSigningSession>) {
+		self.interactive_tx_signing_session = session;
+	}
+
+	#[inline]
+	fn holder_commitment_point(&self) -> &HolderCommitmentPoint {
+		&self.holder_commitment_point
+	}
+
+	#[inline]
+	fn holder_commitment_point_mut(&mut self) -> (&mut HolderCommitmentPoint, &ChannelContext<SP>) {
+		(&mut self.holder_commitment_point, &self.context)
+	}
+
+	fn set_holder_commitment_point(&mut self, commitment_point: HolderCommitmentPoint) {
+		self.holder_commitment_point = commitment_point;
+	}
+
+	#[inline]
+	fn is_v2_established(&self) -> bool {
+		self.is_v2_established
+	}
+
+	#[inline]
+	#[cfg(splicing)]
+	fn pending_splice(&self) -> Option<&PendingSplice> {
+		self.pending_splice.as_ref()
+	}
+
+	#[cfg(splicing)]
+	fn set_pending_splice(&mut self, pending_splice: PendingSplice) {
+		self.pending_splice = Some(pending_splice);
+	}
+}
+
+#[cfg(splicing)]
+impl<SP: Deref> PendingV2ChannelTrait<SP> for RefundingChannel<SP> where SP::Target: SignerProvider {
+	#[inline]
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+
+	#[inline]
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+
+	#[inline]
+	fn funding(&self) -> &FundingScope {
+		&self.pending_funding
+	}
+
+	#[inline]
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.pending_funding
+	}
+
+	#[inline]
+	fn funding_and_context_mut(&mut self) -> (&mut FundingScope, &mut ChannelContext<SP>) {
+		(&mut self.pending_funding, &mut self.context)
+	}
+
+	#[inline]
+	fn dual_funding_context(&self) -> &DualFundingChannelContext {
+		&self.dual_funding_context
+	}
+
+	#[inline]
+	fn unfunded_context(&self) -> &UnfundedChannelContext {
+		&self.unfunded_context
+	}
+
+	#[inline]
+	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
+		self.interactive_tx_constructor.as_mut()
+	}
+
+	fn clear_interactive_tx_constructor(&mut self) {
+		self.interactive_tx_constructor.take();
+	}
+
+	fn set_interactive_tx_signing_session(&mut self, session: InteractiveTxSigningSession) {
+		self.interactive_tx_signing_session = Some(session);
+	}
+}
+
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
