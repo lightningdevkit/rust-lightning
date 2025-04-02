@@ -2030,9 +2030,8 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	is_holder_quiescence_initiator: Option<bool>,
 }
 
-/// A channel struct implementing this trait can receive an initial counterparty commitment
-/// transaction signature.
-trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvider {
+/// A channel struct that has a ChannelContext and a FundingScope
+trait WithContextAndFunding<SP: Deref> where SP::Target: SignerProvider {
 	fn context(&self) -> &ChannelContext<SP>;
 
 	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
@@ -2040,7 +2039,11 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	fn funding(&self) -> &FundingScope;
 
 	fn funding_mut(&mut self) -> &mut FundingScope;
+}
 
+/// A channel struct implementing this trait can receive an initial counterparty commitment
+/// transaction signature.
+trait InitialRemoteCommitmentReceiver<SP: Deref>: WithContextAndFunding<SP> where SP::Target: SignerProvider {
 	fn received_msg(&self) -> &'static str;
 
 	fn check_counterparty_commitment_signature<L: Deref>(
@@ -2153,67 +2156,85 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> WithContextAndFunding<SP> for OutboundV1Channel<SP> where SP::Target: SignerProvider {
+	#[inline]
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
 
+	#[inline]
 	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		&mut self.context
 	}
 
+	#[inline]
 	fn funding(&self) -> &FundingScope {
 		&self.funding
 	}
 
+	#[inline]
 	fn funding_mut(&mut self) -> &mut FundingScope {
 		&mut self.funding
 	}
+}
 
+impl<SP: Deref> WithContextAndFunding<SP> for InboundV1Channel<SP> where SP::Target: SignerProvider {
+	#[inline]
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+
+	#[inline]
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+
+	#[inline]
+	fn funding(&self) -> &FundingScope {
+		&self.funding
+	}
+
+	#[inline]
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.funding
+	}
+}
+
+impl<SP: Deref> WithContextAndFunding<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
+	#[inline]
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+
+	#[inline]
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+
+	#[inline]
+	fn funding(&self) -> &FundingScope {
+		&self.funding
+	}
+
+	#[inline]
+	fn funding_mut(&mut self) -> &mut FundingScope {
+		&mut self.funding
+	}
+}
+
+impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn received_msg(&self) -> &'static str {
 		"funding_signed"
 	}
 }
 
 impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.context
-	}
-
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.context
-	}
-
-	fn funding(&self) -> &FundingScope {
-		&self.funding
-	}
-
-	fn funding_mut(&mut self) -> &mut FundingScope {
-		&mut self.funding
-	}
-
 	fn received_msg(&self) -> &'static str {
 		"funding_created"
 	}
 }
 
 impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.context
-	}
-
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.context
-	}
-
-	fn funding(&self) -> &FundingScope {
-		&self.funding
-	}
-
-	fn funding_mut(&mut self) -> &mut FundingScope {
-		&mut self.funding
-	}
-
 	fn received_msg(&self) -> &'static str {
 		"commitment_signed"
 	}
