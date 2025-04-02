@@ -7093,9 +7093,9 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 				if let Some(session) = &self.interactive_tx_signing_session {
 					// if next_funding_txid matches the latest interactive funding transaction or the current channel funding transaction:
-					if self.funding.funding_transaction.as_ref().is_some_and(|tx| tx.compute_txid() == next_funding_txid) ||
-						session.unsigned_tx().compute_txid() == next_funding_txid
-					{
+					let our_next_funding_txid = session.unsigned_tx().compute_txid();
+					let our_current_funding_txid_opt = self.funding.funding_transaction.as_ref().map(|tx| tx.compute_txid());
+					if our_current_funding_txid_opt.map(|txid| txid == next_funding_txid).unwrap_or(false) || our_next_funding_txid == next_funding_txid {
 						let counterparty_sent_tx_signatures = session.counterparty_sent_tx_signatures();
 						let has_received_commitment_signed = session.has_received_commitment_signed();
 						let holder_sends_tx_signatures_first = session.holder_sends_tx_signatures_first();
@@ -7141,7 +7141,13 @@ impl<SP: Deref> FundedChannel<SP> where
 					} else {
 						// The `next_funding_txid` does not match the latest interactive funding transaction so we
 						// MUST send tx_abort to let the remote  know that they can forget this funding transaction.
-						(None, None, Some(msgs::TxAbort { channel_id: self.context.channel_id(), data: vec![] }))
+						(None, None, Some(msgs::TxAbort {
+							channel_id: self.context.channel_id(),
+							data: format!(
+								"next_funding_txid {} does match our latest interactive funding txid {}{}",
+								next_funding_txid, our_next_funding_txid,
+								if let Some(txid) = our_current_funding_txid_opt { format!(" or our current funding txid {}", txid) } else { "".into() }
+							).into_bytes() }))
 					}
 				} else {
 					return Err(ChannelError::Warn("No active signing session. The associated funding transaction may have already been broadcast.".into()));
