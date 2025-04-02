@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
@@ -399,7 +399,7 @@ pub struct NodeCfg<'a> {
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 }
 
-type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
+pub(crate) type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'node_cfg TestChainMonitor<'chan_mon_cfg>,
 	&'chan_mon_cfg test_utils::TestBroadcaster,
 	&'node_cfg test_utils::TestKeysInterface,
@@ -774,6 +774,26 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &
 			assert!(updates.update_fail_malformed_htlcs.is_empty());
 			assert!(updates.update_fee.is_none());
 			updates.commitment_signed.clone()
+		},
+		_ => panic!("Unexpected event"),
+	})
+}
+
+/// Gets a `UpdateHTLCs` and `revoke_and_ack` (i.e. after we get a responding `commitment_signed`
+/// while we have updates in the holding cell).
+pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, recipient: &PublicKey) -> (msgs::CommitmentUpdate, msgs::RevokeAndACK) {
+	let events = node.node().get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	(match events[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(node_id, recipient);
+			(*updates).clone()
+		},
+		_ => panic!("Unexpected event"),
+	}, match events[1] {
+		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
 		},
 		_ => panic!("Unexpected event"),
 	})
@@ -3259,7 +3279,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	create_node_cfgs_with_persisters(node_count, chanmon_cfgs, chanmon_cfgs.iter().map(|c| &c.persister).collect())
 }
 
-pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl Persist<TestChannelSigner>>) -> Vec<NodeCfg<'a>> {
+pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>, persisters: Vec<&'a impl test_utils::SyncPersist>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {

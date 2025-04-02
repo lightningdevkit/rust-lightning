@@ -54,6 +54,9 @@ extern crate alloc;
 pub extern crate lightning_types as types;
 
 pub extern crate bitcoin;
+
+pub extern crate lightning_invoice as bolt11_invoice;
+
 #[cfg(any(test, feature = "std"))]
 extern crate core;
 
@@ -62,6 +65,8 @@ extern crate core;
 #[cfg(not(feature = "std"))] extern crate libm;
 
 #[cfg(ldk_bench)] extern crate criterion;
+
+#[cfg(all(feature = "std", test))] extern crate parking_lot;
 
 #[macro_use]
 pub mod util;

@@ -10,7 +10,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource, ChannelMonitorUpdateStep};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
@@ -1734,6 +1734,12 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	assert_eq!(revoked_htlc_success.lock_time, LockTime::ZERO);
 	assert_ne!(revoked_htlc_timeout.lock_time, LockTime::ZERO);
 
+	// First connect blocks until the HTLC expires with
+	// `COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE` blocks, making us consider all the HTLCs
+	// pinnable claims, which the remainder of the test assumes.
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
+		[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
@@ -1846,8 +1852,6 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	connect_blocks(&nodes[0], revoked_htlc_timeout.lock_time.to_consensus_u32() - nodes[0].best_block_info().1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
-		[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	// As time goes on A may split its revocation claim transaction into multiple.
 	let as_fewer_input_rbf = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	for tx in as_fewer_input_rbf.iter() {
@@ -3296,10 +3300,10 @@ fn test_update_replay_panics() {
 
 	// Ensure applying the force-close update skipping the last normal update fails
 	let poisoned_monitor = monitor.clone();
-	std::panic::catch_unwind(|| {
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
 		// We should panic, rather than returning an error here.
-	}).unwrap_err();
+	})).unwrap_err();
 
 	// Then apply the last normal and force-close update and make sure applying the preimage
 	// updates out-of-order fails.
@@ -3307,17 +3311,17 @@ fn test_update_replay_panics() {
 	monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 
 	let poisoned_monitor = monitor.clone();
-	std::panic::catch_unwind(|| {
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let _ = poisoned_monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
 		// We should panic, rather than returning an error here.
-	}).unwrap_err();
+	})).unwrap_err();
 
 	// Make sure re-applying the force-close update fails
 	let poisoned_monitor = monitor.clone();
-	std::panic::catch_unwind(|| {
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
 		// We should panic, rather than returning an error here.
-	}).unwrap_err();
+	})).unwrap_err();
 
 	// ...and finally ensure that applying all the updates succeeds.
 	monitor.update_monitor(&updates[2], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
