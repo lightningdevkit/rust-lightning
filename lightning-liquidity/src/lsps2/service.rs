@@ -882,9 +882,7 @@ where
 	/// or if the payment queue is empty
 	///
 	/// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
-	pub fn htlc_handling_failed(
-		&self, handling_type: HTLCHandlingType,
-	) -> Result<(), APIError> {
+	pub fn htlc_handling_failed(&self, handling_type: HTLCHandlingType) -> Result<(), APIError> {
 		if let HTLCHandlingType::ForwardFailed { channel_id, .. } = handling_type {
 			let peer_by_channel_id = self.peer_by_channel_id.read().unwrap();
 			if let Some(counterparty_node_id) = peer_by_channel_id.get(&channel_id) {
