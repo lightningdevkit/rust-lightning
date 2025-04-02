@@ -678,7 +678,7 @@ impl ChannelState {
 	fn is_pre_funded_state(&self) -> bool {
 		match self {
 			ChannelState::NegotiatingFunding(_) => true,
-			ChannelState::FundingNegotiated(flags) if !flags.is_their_tx_signatures_sent() && !flags.is_our_tx_signatures_ready() => true,
+			ChannelState::FundingNegotiated(flags) => !flags.is_their_tx_signatures_sent() && !flags.is_our_tx_signatures_ready(),
 			_ => false,
 		}
 	}
