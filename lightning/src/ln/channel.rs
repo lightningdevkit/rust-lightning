@@ -3577,7 +3577,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	fn unset_funding_info(&mut self, funding: &mut FundingScope) {
 		debug_assert!(
-			matches!(self.channel_state, ChannelState::FundingNegotiated(_))
+			matches!(self.channel_state, ChannelState::FundingNegotiated(flags) if !flags.is_their_tx_signatures_sent() && !flags.is_our_tx_signatures_ready())
 				|| matches!(self.channel_state, ChannelState::AwaitingChannelReady(_))
 		);
 		funding.channel_transaction_parameters.funding_outpoint = None;
