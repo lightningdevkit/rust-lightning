@@ -7096,7 +7096,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					let our_next_funding_txid = session.unsigned_tx().compute_txid();
 					let our_current_funding_txid_opt = self.funding.funding_transaction.as_ref().map(|tx| tx.compute_txid());
 					if our_current_funding_txid_opt.map(|txid| txid == next_funding_txid).unwrap_or(false) || our_next_funding_txid == next_funding_txid {
-						let counterparty_sent_tx_signatures = session.counterparty_sent_tx_signatures();
+						let has_received_tx_signatures = session.has_received_tx_signatures();
 						let has_received_commitment_signed = session.has_received_commitment_signed();
 						let holder_sends_tx_signatures_first = session.holder_sends_tx_signatures_first();
 						let holder_tx_signatures = session.holder_tx_signatures().clone();
@@ -7112,10 +7112,10 @@ impl<SP: Deref> FundedChannel<SP> where
 							// if it has not received tx_signatures for that funding transaction AND
 							// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
 							//   MUST send its tx_signatures for that funding transaction.
-							!counterparty_sent_tx_signatures && has_received_commitment_signed && holder_sends_tx_signatures_first
+							!has_received_tx_signatures && has_received_commitment_signed && holder_sends_tx_signatures_first
 							// else if it has already received tx_signatures for that funding transaction:
 							//   MUST send its tx_signatures for that funding transaction.
-						) || counterparty_sent_tx_signatures {
+						) || has_received_tx_signatures {
 							if self.context.channel_state.is_monitor_update_in_progress() {
 								// The `monitor_pending_tx_signatures` field should have already been set in `commitment_signed_initial_v2`
 								// if we were up first for signing and had a monitor update in progress, but check again just in case.
@@ -8497,7 +8497,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// to the txid of that interactive transaction, else we MUST NOT set it.
 		if let Some(signing_session) = &self.interactive_tx_signing_session {
 			// Since we have a signing_session, this implies we've sent an initial `commitment_signed`...
-			if !signing_session.counterparty_sent_tx_signatures() {
+			if !signing_session.has_received_tx_signatures() {
 				// ...but we didn't receive a `tx_signatures` from the counterparty yet.
 				Some(self.funding_outpoint().txid)
 			} else {
