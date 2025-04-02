@@ -2131,11 +2131,12 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 
 		// Now that we're past error-generating stuff, update our local state:
 
+		let is_v2_established = self.is_v2_established();
 		let context = self.context_mut();
 		context.channel_id = channel_id;
 
 		assert!(!context.channel_state.is_monitor_update_in_progress()); // We have not had any monitor(s) yet to fail update!
-		if !context.channel_state.is_interactive_signing() {
+		if !is_v2_established {
 			if context.is_batch_funding() {
 				context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::WAITING_FOR_BATCH);
 			} else {
@@ -2171,6 +2172,19 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
 
 		Ok((channel_monitor, counterparty_initial_commitment_tx))
+	}
+
+	fn is_v2_established(&self) -> bool {
+		let channel_parameters = &self.funding().channel_transaction_parameters;
+		// This will return false if `counterparty_parameters` is `None`. This is possible if we sent `open_channel2`,
+		// but did not yet receive an `accept_channel2`.
+		if let Some(ref counterparty_parameters) = channel_parameters.counterparty_parameters {
+			self.context().channel_id().is_v2_channel_id(
+				&channel_parameters.holder_pubkeys.revocation_basepoint,
+				&counterparty_parameters.pubkeys.revocation_basepoint)
+		} else {
+			false
+		}
 	}
 }
 
