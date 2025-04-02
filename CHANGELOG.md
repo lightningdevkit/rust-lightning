@@ -1,3 +1,40 @@
+# 0.1.2 - Apr 02, 2025 - "Foolishly Edgy Cases"
+
+## API Updates
+ * `lightning-invoice` is now re-exported as `lightning::bolt11_invoice`
+   (#3671).
+
+## Performance Improvements
+ * `rapid-gossip-sync` graph parsing is substantially faster, resolving a
+   regression in 0.1 (#3581).
+ * `NetworkGraph` loading is now substantially faster and does fewer
+   allocations, resulting in a 20% further improvement in `rapid-gossip-sync`
+   loading when initializing from scratch (#3581).
+ * `ChannelMonitor`s for closed channels are no longer always re-persisted
+   immediately after startup, reducing on-startup I/O burden (#3619).
+
+## Bug Fixes
+ * BOLT 11 invoices longer than 1023 bytes long (and up to 7089 bytes) now
+   properly parse (#3665).
+ * In some cases, when using synchronous persistence with higher latency than
+   the latency to communicate with peers, when receiving an MPP payment with
+   multiple parts received over the same channel, a channel could hang and not
+   make progress, eventually leading to a force-closure due to timed-out HTLCs.
+   This has now been fixed (#3680).
+ * Some rare cases with multi-hop BOLT 11 route hints or multiple redundant
+   blinded paths could have led to the router creating invalid `Route`s were
+   fixed (#3586).
+ * Corrected the decay logic in `ProbabilisticScorer`'s historical buckets
+   model. Note that by default historical buckets are only decayed if no new
+   datapoints have been added for a channel for two weeks (#3562).
+ * `{Channel,Onion}MessageHandler::peer_disconnected` will now be called if a
+   different message handler refused connection by returning an `Err` from its
+   `peer_connected` method (#3580).
+ * If the counterparty broadcasts a revoked state with pending HTLCs, those
+   will now be claimed with other outputs which we consider to not be
+   vulnerable to pinning attacks if they are not yet claimable by our
+   counterparty, potentially reducing our exposure to pinning attacks (#3564).
+
 # 0.1.1 - Jan 28, 2025 - "Onchain Matters"
 
 ## API Updates
