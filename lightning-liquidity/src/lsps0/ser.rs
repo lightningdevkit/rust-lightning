@@ -4,6 +4,11 @@
 //! specification](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
+use alloc::string::String;
+
+use core::fmt::{self, Display};
+use core::str::FromStr;
+
 use crate::lsps0::msgs::{
 	LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request, LSPS0Response,
 	LSPS0_LISTPROTOCOLS_METHOD_NAME,
@@ -16,16 +21,13 @@ use crate::lsps1::msgs::{
 use crate::lsps2::msgs::{
 	LSPS2Message, LSPS2Request, LSPS2Response, LSPS2_BUY_METHOD_NAME, LSPS2_GET_INFO_METHOD_NAME,
 };
-use crate::prelude::{HashMap, String};
+use crate::prelude::HashMap;
 
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::wire;
 use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
-
-use core::fmt::{self, Display};
-use core::str::FromStr;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -625,7 +627,7 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 }
 
 pub(crate) mod string_amount {
-	use crate::prelude::{String, ToString};
+	use alloc::string::{String, ToString};
 	use core::str::FromStr;
 	use serde::de::Unexpected;
 	use serde::{Deserialize, Deserializer, Serializer};
@@ -650,7 +652,7 @@ pub(crate) mod string_amount {
 }
 
 pub(crate) mod string_amount_option {
-	use crate::prelude::{String, ToString};
+	use alloc::string::{String, ToString};
 	use core::str::FromStr;
 	use serde::de::Unexpected;
 	use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -679,7 +681,7 @@ pub(crate) mod string_amount_option {
 }
 
 pub(crate) mod string_offer {
-	use crate::prelude::{String, ToString};
+	use alloc::string::{String, ToString};
 	use core::str::FromStr;
 	use lightning::offers::offer::Offer;
 	use serde::de::Unexpected;
@@ -705,7 +707,7 @@ pub(crate) mod string_offer {
 }
 
 pub(crate) mod unchecked_address {
-	use crate::prelude::{String, ToString};
+	use alloc::string::{String, ToString};
 	use bitcoin::Address;
 	use core::str::FromStr;
 	use serde::de::Unexpected;
@@ -732,7 +734,7 @@ pub(crate) mod unchecked_address {
 }
 
 pub(crate) mod unchecked_address_option {
-	use crate::prelude::{String, ToString};
+	use alloc::string::{String, ToString};
 	use bitcoin::Address;
 	use core::str::FromStr;
 	use serde::de::Unexpected;

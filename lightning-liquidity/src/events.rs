@@ -18,8 +18,10 @@
 use crate::lsps0;
 use crate::lsps1;
 use crate::lsps2;
-use crate::prelude::{Vec, VecDeque};
 use crate::sync::{Arc, Mutex};
+
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 
 use core::future::Future;
 use core::task::{Poll, Waker};

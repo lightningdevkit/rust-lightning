@@ -1,8 +1,9 @@
+use alloc::string::String;
 use core::{fmt::Write, ops::Deref};
+
 use lightning::sign::EntropySource;
 
 use crate::lsps0::ser::LSPSRequestId;
-use crate::prelude::String;
 
 pub fn scid_from_human_readable_string(human_readable_scid: &str) -> Result<u64, ()> {
 	let mut parts = human_readable_scid.split('x');

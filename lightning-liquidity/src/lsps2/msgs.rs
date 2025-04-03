@@ -1,5 +1,8 @@
 //! Message, request, and other primitive types used to implement bLIP-52 / LSPS2.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use core::convert::TryFrom;
 
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -13,7 +16,6 @@ use crate::lsps0::ser::{
 	string_amount, string_amount_option, LSPSDateTime, LSPSMessage, LSPSRequestId,
 	LSPSResponseError,
 };
-use crate::prelude::{String, Vec};
 use crate::utils;
 
 pub(crate) const LSPS2_GET_INFO_METHOD_NAME: &str = "lsps2.get_info";

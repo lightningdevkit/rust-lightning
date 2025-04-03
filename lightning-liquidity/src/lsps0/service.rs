@@ -13,10 +13,11 @@
 //! specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
+use alloc::vec::Vec;
+
 use crate::lsps0::msgs::{LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request, LSPS0Response};
 use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId};
 use crate::message_queue::MessageQueue;
-use crate::prelude::Vec;
 use crate::sync::Arc;
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
