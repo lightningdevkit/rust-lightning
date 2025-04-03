@@ -364,9 +364,12 @@ impl OutboundHTLCState {
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(p)) |
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(p)) |
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(p)) => p.as_ref().copied(),
+			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(preimage)) |
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(preimage)) |
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(preimage)) => {
+			debug_assert!(preimage.is_some());
+			*preimage
+		},
 			_ => None,
 		}
 	}
@@ -375,7 +378,10 @@ impl OutboundHTLCState {
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum OutboundHTLCOutcome {
-	/// LDK version 0.0.105+ will always fill in the preimage here.
+	/// Except briefly during deserialization and state transitions between success states,
+	/// we require all success states to hold their corresponding preimage.
+	/// We started always filling in the preimages here in 0.0.105, and the requirement
+	/// that the preimages always be filled in was added in 0.2.
 	Success(Option<PaymentPreimage>),
 	Failure(HTLCFailReason),
 }
@@ -3876,7 +3882,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
-				if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_preimage)) = htlc.state {
+				if htlc.state.preimage().is_some() {
 					value_to_self_msat_offset += htlc.amount_msat as i64;
 				}
 			}
@@ -3889,10 +3895,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
-				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) |
-					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) |
-					OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_))
-				= htlc.state {
+				if htlc.state.preimage().is_some() {
 					value_to_self_msat_offset -= htlc.amount_msat as i64;
 				}
 			}
@@ -5801,6 +5804,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	#[inline]
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentPreimage>, fail_reason: Option<HTLCFailReason>) -> Result<&OutboundHTLCOutput, ChannelError> {
 		assert!(!(check_preimage.is_some() && fail_reason.is_some()), "cannot fail while we have a preimage");
+		assert!(!(check_preimage.is_none() && fail_reason.is_none()), "success states must hold their corresponding preimage");
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				let outcome = match check_preimage {
@@ -10667,6 +10671,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref outcome) => {
 					3u8.write(writer)?;
 					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+						debug_assert!(preimage.is_some(), "success states must hold their corresponding preimage");
 						preimages.push(preimage);
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
@@ -10675,6 +10680,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) => {
 					4u8.write(writer)?;
 					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+						debug_assert!(preimage.is_some(), "success states must hold their corresponding preimage");
 						preimages.push(preimage);
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
@@ -11169,7 +11175,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
 		let mut channel_creation_height = 0u32;
-		let mut preimages_opt: Option<Vec<Option<PaymentPreimage>>> = None;
+		let mut preimages: Vec<Option<PaymentPreimage>> = Vec::new();
 
 		// If we read an old Channel, for simplicity we just treat it as "we never sent an
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
@@ -11223,7 +11229,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
 			(13, channel_creation_height, required),
-			(15, preimages_opt, optional_vec),
+			(15, preimages, required_vec), // The preimages transitioned from optional to required in 0.2
 			(17, announcement_sigs_state, required),
 			(19, latest_inbound_scid_alias, option),
 			(21, outbound_scid_alias, required),
@@ -11251,23 +11257,21 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 
-		if let Some(preimages) = preimages_opt {
-			let mut iter = preimages.into_iter();
-			for htlc in pending_outbound_htlcs.iter_mut() {
-				match &htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(None)) => {
-						htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
-					}
-					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(None)) => {
-						htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
-					}
-					_ => {}
+		let mut iter = preimages.into_iter();
+		for htlc in pending_outbound_htlcs.iter_mut() {
+			match &htlc.state {
+				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(None)) => {
+					htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
 				}
+				OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(None)) => {
+					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
+				}
+				_ => {}
 			}
-			// We expect all preimages to be consumed above
-			if iter.next().is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
+		}
+		// We expect all preimages to be consumed above
+		if iter.next().is_some() {
+			return Err(DecodeError::InvalidValue);
 		}
 
 		let chan_features = channel_type.unwrap();
