@@ -6397,6 +6397,9 @@ impl<SP: Deref> FundedChannel<SP> where
 				self.funding.funding_transaction = funding_tx_opt.clone();
 			}
 
+			// Note that `holder_tx_signatures_opt` will be `None` if we sent `tx_signatures` first, so this
+			// case checks if there is a monitor persist in progress when we need to respond with our `tx_signatures`
+			// and sets it as pending.
 			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
 				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
 				self.context.monitor_pending_tx_signatures = holder_tx_signatures_opt;
