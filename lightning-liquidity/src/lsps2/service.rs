@@ -554,7 +554,7 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref + Clone>
+pub struct LSPS2ServiceHandler<CM: Deref>
 where
 	CM::Target: AChannelManager,
 {
@@ -568,7 +568,7 @@ where
 	config: LSPS2ServiceConfig,
 }
 
-impl<CM: Deref + Clone> LSPS2ServiceHandler<CM>
+impl<CM: Deref> LSPS2ServiceHandler<CM>
 where
 	CM::Target: AChannelManager,
 {
@@ -1355,7 +1355,7 @@ where
 	}
 }
 
-impl<CM: Deref + Clone> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
+impl<CM: Deref> LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM>
 where
 	CM::Target: AChannelManager,
 {
