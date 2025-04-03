@@ -21,69 +21,69 @@
 //!
 //! The following features are currently required in the LDK:
 //! - `VariableLengthOnion` - requires/supports variable-length routing onion payloads
-//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
+//!   (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
 //! - `StaticRemoteKey` - requires/supports static key for remote output
-//!     (see [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more information).
+//!   (see [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more information).
 //!
 //! The following features are currently supported in the LDK:
 //! - `DataLossProtect` - requires/supports that a node which has somehow fallen behind, e.g., has been restored from an old backup,
-//!     can detect that it has fallen behind
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//!   can detect that it has fallen behind
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `InitialRoutingSync` - requires/supports that the sending node needs a complete routing information dump
-//!     (see [BOLT-7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#initial-sync) for more information).
+//!   (see [BOLT-7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#initial-sync) for more information).
 //! - `UpfrontShutdownScript` - commits to a shutdown scriptpubkey when opening a channel
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
 //! - `GossipQueries` - requires/supports more sophisticated gossip control
-//!     (see [BOLT-7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md) for more information).
+//!   (see [BOLT-7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md) for more information).
 //! - `PaymentSecret` - requires/supports that a node supports payment_secret field
-//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
+//!   (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
 //! - `BasicMPP` - requires/supports that a node can receive basic multi-part payments
-//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#basic-multi-part-payments) for more information).
+//!   (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#basic-multi-part-payments) for more information).
 //! - `Wumbo` - requires/supports that a node create large channels. Called `option_support_large_channel` in the spec.
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
 //! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
-//!     and HTLC transactions are pre-signed with zero fee (see
-//!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
-//!     information).
+//!   and HTLC transactions are pre-signed with zero fee (see
+//!   [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
+//!   information).
 //! - `RouteBlinding` - requires/supports that a node can relay payments over blinded paths
-//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#route-blinding) for more information).
+//!   (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#route-blinding) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `DualFund` - requires/supports V2 channel establishment
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-establishment-v2) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-establishment-v2) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
-//!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
+//!   (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
 //     TODO: update link
 //! - `ChannelType` - node supports the channel_type field in open/accept
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `PaymentMetadata` - include additional data in invoices which is passed to recipients in the
-//!      onion.
-//!      (see [BOLT-11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md) for
-//!      more).
+//!    onion.
+//!    (see [BOLT-11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md) for
+//!    more).
 //! - `ZeroConf` - supports accepting HTLCs and using channels prior to funding confirmation
-//!      (see
-//!      [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message)
-//!      for more info).
+//!    (see
+//!    [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message)
+//!    for more info).
 //! - `Keysend` - send funds to a node without an invoice
-//!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
+//!   (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
 //! - `Trampoline` - supports receiving and forwarding Trampoline payments
-//!     (see the [`Trampoline` feature proposal](https://github.com/lightning/bolts/pull/836) for more information).
+//!   (see the [`Trampoline` feature proposal](https://github.com/lightning/bolts/pull/836) for more information).
 //! - `DnsResolver` - supports resolving DNS names to TXT DNSSEC proofs for BIP 353 payments
-//!     (see [bLIP 32](https://github.com/lightning/blips/blob/master/blip-0032.md) for more information).
+//!   (see [bLIP 32](https://github.com/lightning/blips/blob/master/blip-0032.md) for more information).
 //! - `ProvideStorage` - Indicates that we offer the capability to store data of our peers
-//! 	(see [BOLT PR #1110](https://github.com/lightning/bolts/pull/1110) for more info).
+//!   (see [BOLT PR #1110](https://github.com/lightning/bolts/pull/1110) for more info).
 //! - `Quiescence` - protocol to quiesce a channel by indicating that "SomeThing Fundamental is Underway"
-//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-quiescence) for more information).
 //! - `ZeroFeeCommitments` - A channel type which always uses zero transaction fee on commitment transactions.
-//! 	(see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
+//!   (see [BOLT PR #1228](https://github.com/lightning/bolts/pull/1228) for more info).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
-//!     vulnerable (see this
-//!     [mailing list post](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html)
-//!     for more information).
+//!   vulnerable (see this
+//!   [mailing list post](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html)
+//!   for more information).
 //!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 
