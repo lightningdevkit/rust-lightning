@@ -367,7 +367,7 @@ impl OutboundHTLCState {
 			OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(preimage))
 			| OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(preimage))
 			| OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(preimage)) => {
-				preimage.as_ref().copied()
+				Some(*preimage)
 			},
 			_ => None,
 		}
@@ -377,18 +377,10 @@ impl OutboundHTLCState {
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum OutboundHTLCOutcome {
-	/// LDK version 0.0.105+ will always fill in the preimage here.
-	Success(Option<PaymentPreimage>),
+	/// We started always filling in the preimages here in 0.0.105, and the requirement
+	/// that the preimages always be filled in was added in 0.2.
+	Success(PaymentPreimage),
 	Failure(HTLCFailReason),
-}
-
-impl From<Option<HTLCFailReason>> for OutboundHTLCOutcome {
-	fn from(o: Option<HTLCFailReason>) -> Self {
-		match o {
-			None => OutboundHTLCOutcome::Success(None),
-			Some(r) => OutboundHTLCOutcome::Failure(r)
-		}
-	}
 }
 
 impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
@@ -3878,7 +3870,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
-				if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_preimage)) = htlc.state {
+				if htlc.state.preimage().is_some() {
 					value_to_self_msat_offset += htlc.amount_msat as i64;
 				}
 			}
@@ -3891,10 +3883,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				}
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
-				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) |
-					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) |
-					OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_))
-				= htlc.state {
+				if htlc.state.preimage().is_some() {
 					value_to_self_msat_offset -= htlc.amount_msat as i64;
 				}
 			}
@@ -5801,20 +5790,15 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentPreimage>, fail_reason: Option<HTLCFailReason>) -> Result<&OutboundHTLCOutput, ChannelError> {
-		assert!(!(check_preimage.is_some() && fail_reason.is_some()), "cannot fail while we have a preimage");
+	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome) -> Result<&OutboundHTLCOutput, ChannelError> {
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
-				let outcome = match check_preimage {
-					None => fail_reason.into(),
-					Some(payment_preimage) => {
-						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
-						if payment_hash != htlc.payment_hash {
-							return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
-						}
-						OutboundHTLCOutcome::Success(Some(payment_preimage))
+				if let OutboundHTLCOutcome::Success(ref payment_preimage) = outcome {
+					let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
+					if payment_hash != htlc.payment_hash {
+						return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
 					}
-				};
+				}
 				match htlc.state {
 					OutboundHTLCState::LocalAnnounced(_) =>
 						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
@@ -5841,7 +5825,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, Some(msg.payment_preimage), None).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Success(msg.payment_preimage)).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
 	}
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
@@ -5855,7 +5839,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fail_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Failure(fail_reason))?;
 		Ok(())
 	}
 
@@ -5870,7 +5854,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Failure(fail_reason))?;
 		Ok(())
 	}
 
@@ -6016,10 +6000,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				// Grab the preimage, if it exists, instead of cloning
-				let mut reason = OutboundHTLCOutcome::Success(None);
+				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
 				mem::swap(outcome, &mut reason);
-				if let OutboundHTLCOutcome::Success(Some(preimage)) = reason {
+				if let OutboundHTLCOutcome::Success(preimage) = reason {
 					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
 					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
 					// have a `Success(None)` reason. In this case we could forget some HTLC
@@ -6437,8 +6421,8 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
-					// Grab the preimage, if it exists, instead of cloning
-					let mut reason = OutboundHTLCOutcome::Success(None);
+					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
 					mem::swap(outcome, &mut reason);
 					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 					require_commitment = true;
@@ -9013,8 +8997,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
-				// Grab the preimage, if it exists, instead of cloning
-				let mut reason = OutboundHTLCOutcome::Success(None);
+				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
 				mem::swap(outcome, &mut reason);
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 			}
@@ -10639,7 +10623,9 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			}
 		}
 
-		let mut preimages: Vec<&Option<PaymentPreimage>> = vec![];
+		// The elements of this vector will always be `Some` starting in 0.2,
+		// but we still serialize the option to maintain backwards compatibility
+		let mut preimages: Vec<Option<&PaymentPreimage>> = vec![];
 		let mut pending_outbound_skimmed_fees: Vec<Option<u64>> = Vec::new();
 		let mut pending_outbound_blinding_points: Vec<Option<PublicKey>> = Vec::new();
 
@@ -10666,7 +10652,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref outcome) => {
 					3u8.write(writer)?;
 					if let OutboundHTLCOutcome::Success(preimage) = outcome {
-						preimages.push(preimage);
+						preimages.push(Some(preimage));
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
 					reason.write(writer)?;
@@ -10674,7 +10660,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) => {
 					4u8.write(writer)?;
 					if let OutboundHTLCOutcome::Success(preimage) = outcome {
-						preimages.push(preimage);
+						preimages.push(Some(preimage));
 					}
 					let reason: Option<&HTLCFailReason> = outcome.into();
 					reason.write(writer)?;
@@ -11013,15 +10999,30 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 					1 => OutboundHTLCState::Committed,
 					2 => {
 						let option: Option<HTLCFailReason> = Readable::read(reader)?;
-						OutboundHTLCState::RemoteRemoved(option.into())
+						let outcome = match option {
+							Some(r) => OutboundHTLCOutcome::Failure(r),
+							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+						};
+						OutboundHTLCState::RemoteRemoved(outcome)
 					},
 					3 => {
 						let option: Option<HTLCFailReason> = Readable::read(reader)?;
-						OutboundHTLCState::AwaitingRemoteRevokeToRemove(option.into())
+						let outcome = match option {
+							Some(r) => OutboundHTLCOutcome::Failure(r),
+							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+						};
+						OutboundHTLCState::AwaitingRemoteRevokeToRemove(outcome)
 					},
 					4 => {
 						let option: Option<HTLCFailReason> = Readable::read(reader)?;
-						OutboundHTLCState::AwaitingRemovedRemoteRevoke(option.into())
+						let outcome = match option {
+							Some(r) => OutboundHTLCOutcome::Failure(r),
+							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
+							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+						};
+						OutboundHTLCState::AwaitingRemovedRemoteRevoke(outcome)
 					},
 					_ => return Err(DecodeError::InvalidValue),
 				},
@@ -11168,7 +11169,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
 		let mut channel_creation_height = 0u32;
-		let mut preimages_opt: Option<Vec<Option<PaymentPreimage>>> = None;
+		// Starting in 0.2, all the elements in this vector will be `Some`, but they are still
+		// serialized as options to maintain backwards compatibility
+		let mut preimages: Vec<Option<PaymentPreimage>> = Vec::new();
 
 		// If we read an old Channel, for simplicity we just treat it as "we never sent an
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
@@ -11222,7 +11225,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
 			(13, channel_creation_height, required),
-			(15, preimages_opt, optional_vec),
+			(15, preimages, required_vec), // The preimages transitioned from optional to required in 0.2
 			(17, announcement_sigs_state, required),
 			(19, latest_inbound_scid_alias, option),
 			(21, outbound_scid_alias, required),
@@ -11250,23 +11253,27 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
 
-		if let Some(preimages) = preimages_opt {
-			let mut iter = preimages.into_iter();
-			for htlc in pending_outbound_htlcs.iter_mut() {
-				match &htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(None)) => {
-						htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
-					}
-					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(None)) => {
-						htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
-					}
-					_ => {}
+		let mut iter = preimages.into_iter();
+		for htlc in pending_outbound_htlcs.iter_mut() {
+			match &mut htlc.state {
+				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(ref mut preimage)) => {
+					// This variant was initialized like this further above
+					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
+					// Flatten and unwrap the preimage; they are always set starting in 0.2.
+					*preimage = iter.next().flatten().ok_or(DecodeError::InvalidValue)?;
 				}
+				OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(ref mut preimage)) => {
+					// This variant was initialized like this further above
+					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
+					// Flatten and unwrap the preimage; they are always set starting in 0.2.
+					*preimage = iter.next().flatten().ok_or(DecodeError::InvalidValue)?;
+				}
+				_ => {}
 			}
-			// We expect all preimages to be consumed above
-			if iter.next().is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
+		}
+		// We expect all preimages to be consumed above
+		if iter.next().is_some() {
+			return Err(DecodeError::InvalidValue);
 		}
 
 		let chan_features = channel_type.unwrap();
