@@ -4515,3 +4515,54 @@ fn pay_route_without_params() {
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
 	);
 }
+
+#[test]
+fn max_out_mpp_path() {
+	// In this setup, the sender is attempting to route an MPP payment split across the two channels
+	// that it has with its LSP, where the LSP has a single large channel to the recipient.
+	//
+	// Previously a user ran into a pathfinding failure here because our router was not sending the
+	// maximum possible value over the first MPP path it found due to overestimating the fees needed
+	// to cover the following hops. Because the path that had just been found was not maxxed out, our
+	// router assumed that we had already found enough paths to cover the full payment amount and that
+	// we were finding additional paths for the purpose of redundant path selection. This caused the
+	// router to mark the recipient's only channel as exhausted, with the intention of choosing more
+	// unique paths in future iterations. In reality, this ended up with the recipient's only channel
+	// being disabled and subsequently failing to find a route entirely.
+	//
+	// The router has since been updated to fully utilize the capacity of any paths it finds in this
+	// situation, preventing the "redundant path selection" behavior from kicking in.
+
+	let mut user_cfg = test_default_channel_config();
+	user_cfg.channel_config.forwarding_fee_base_msat = 0;
+	user_cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let mut lsp_cfg = test_default_channel_config();
+	lsp_cfg.channel_config.forwarding_fee_base_msat = 0;
+	lsp_cfg.channel_config.forwarding_fee_proportional_millionths = 3000;
+	lsp_cfg.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(
+		3, &node_cfgs, &[Some(user_cfg.clone()), Some(lsp_cfg.clone()), Some(user_cfg.clone())]
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 200_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 300_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 600_000, 0);
+
+	let amt_msat = 350_000_000;
+	let invoice_params = crate::ln::channelmanager::Bolt11InvoiceParameters {
+		amount_msats: Some(amt_msat),
+		..Default::default()
+	};
+	let invoice = nodes[2].node.create_bolt11_invoice(invoice_params).unwrap();
+	let route_params_cfg = crate::routing::router::RouteParametersConfig::default();
+
+	nodes[0].node.pay_for_bolt11_invoice(&invoice, PaymentId([42; 32]), None, route_params_cfg, Retry::Attempts(0)).unwrap();
+
+	assert!(nodes[0].node.list_recent_payments().len() == 1);
+	check_added_monitors(&nodes[0], 2); // one monitor update per MPP part
+	nodes[0].node.get_and_clear_pending_msg_events();
+}
