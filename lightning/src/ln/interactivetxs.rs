@@ -15,6 +15,7 @@ use bitcoin::amount::Amount;
 use bitcoin::consensus::Encodable;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
 use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Weight, Witness};
@@ -314,6 +315,9 @@ pub(crate) struct InteractiveTxSigningSession {
 	received_commitment_signed: bool,
 	holder_tx_signatures: Option<TxSignatures>,
 	counterparty_sent_tx_signatures: bool,
+	/// Signature for optional shared input -- in case of splicing the previous funding transaction.
+	/// Note: field included regardless of splicing feature.
+	pub(crate) shared_signature: Option<Signature>,
 }
 
 impl InteractiveTxSigningSession {
@@ -378,6 +382,7 @@ impl InteractiveTxSigningSession {
 	/// unsigned transaction.
 	pub fn provide_holder_witnesses(
 		&mut self, channel_id: ChannelId, witnesses: Vec<Witness>,
+		shared_input_signature: Option<Signature>,
 	) -> Result<(), ()> {
 		if self.local_inputs_count() != witnesses.len() {
 			return Err(());
@@ -388,7 +393,7 @@ impl InteractiveTxSigningSession {
 			channel_id,
 			tx_hash: self.unsigned_tx.compute_txid(),
 			witnesses: witnesses.into_iter().collect(),
-			shared_input_signature: None,
+			shared_input_signature,
 		});
 
 		Ok(())
@@ -1011,6 +1016,7 @@ macro_rules! define_state_transitions {
 					received_commitment_signed: false,
 					holder_tx_signatures: None,
 					counterparty_sent_tx_signatures: false,
+					shared_signature: None,
 				};
 				Ok(NegotiationComplete(signing_session))
 			}
