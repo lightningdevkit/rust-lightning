@@ -1416,4 +1416,32 @@ mod test {
 		assert!(parse_is_code_length_err(&too_long));
 		assert!(!parse_is_code_length_err(&too_long[..too_long.len() - 1]));
 	}
+
+	#[test]
+	fn test_raw_data_base32_roundtrip() {
+		use crate::ser::Base32Iterable;
+		use crate::RawDataPart;
+		use bech32::Fe32;
+
+		// These are the expected Fe32 values that should round-trip correctly
+		// The critical difference is in the handling of tag 5 (Features) with empty payload
+		let expected_values: Vec<u8> = vec![
+			0, 0, 4, 8, 23, 5, 0, 1, 1, 20, 16, 0, 24, 0, 1, 18, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 24, 0, 1, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0,
+			0, 16, 0, 0, 0, 0, 0, 5, 0, 1, 0, 13, 0, 0,
+		];
+
+		// Convert to Fe32 for processing
+		let values_input: Vec<Fe32> = expected_values
+			.iter()
+			.map(|&v| <Fe32 as TryFrom<u8>>::try_from(v).expect("Value out of range"))
+			.collect();
+
+		// Round-trip through the parser
+		let raw_data = RawDataPart::from_base32(&values_input).unwrap();
+		let actual_output = raw_data.fe_iter().collect::<Vec<_>>();
+
+		// The test fails because the parser doesn't correctly handle empty Features field
+		assert_eq!(values_input, actual_output, "Failed to correctly round-trip BOLT11 data");
+	}
 }

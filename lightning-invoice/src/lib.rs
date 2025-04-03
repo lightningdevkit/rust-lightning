@@ -77,9 +77,9 @@ mod prelude {
 use crate::prelude::*;
 
 /// Re-export serialization traits
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, test))]
 pub use crate::de::FromBase32;
-#[cfg(not(fuzzing))]
+#[cfg(not(any(fuzzing, test)))]
 use crate::de::FromBase32;
 #[cfg(fuzzing)]
 pub use crate::ser::Base32Iterable;
