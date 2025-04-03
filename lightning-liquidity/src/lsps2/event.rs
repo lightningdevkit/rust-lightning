@@ -11,7 +11,8 @@
 
 use super::msgs::LSPS2OpeningFeeParams;
 use crate::lsps0::ser::LSPSRequestId;
-use crate::prelude::{String, Vec};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use bitcoin::secp256k1::PublicKey;
 

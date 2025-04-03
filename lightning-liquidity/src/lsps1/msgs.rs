@@ -1,11 +1,13 @@
 //! Message, request, and other primitive types used to implement bLIP-51 / LSPS1.
 
+use alloc::string::String;
+
+use core::convert::TryFrom;
+
 use crate::lsps0::ser::{
 	string_amount, string_offer, u32_fee_rate, unchecked_address, unchecked_address_option,
 	LSPSDateTime, LSPSMessage, LSPSRequestId, LSPSResponseError,
 };
-
-use crate::prelude::String;
 
 use bitcoin::{Address, FeeRate, OutPoint};
 
@@ -13,8 +15,6 @@ use lightning::offers::offer::Offer;
 use lightning_invoice::Bolt11Invoice;
 
 use serde::{Deserialize, Serialize};
-
-use core::convert::TryFrom;
 
 pub(crate) const LSPS1_GET_INFO_METHOD_NAME: &str = "lsps1.get_info";
 pub(crate) const LSPS1_CREATE_ORDER_METHOD_NAME: &str = "lsps1.create_order";

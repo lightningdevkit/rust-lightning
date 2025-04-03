@@ -52,12 +52,6 @@
 extern crate alloc;
 
 mod prelude {
-	#![allow(unused_imports)]
-	pub use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
-
-	pub use alloc::borrow::ToOwned;
-	pub use alloc::string::ToString;
-
 	pub(crate) use lightning::util::hash_tables::*;
 }
 
