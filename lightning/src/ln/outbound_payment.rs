@@ -2163,11 +2163,11 @@ impl OutboundPayments {
 		#[cfg(any(test, feature = "_test_utils"))]
 		let DecodedOnionFailure {
 			network_update, short_channel_id, payment_failed_permanently, onion_error_code,
-			onion_error_data, failed_within_blinded_path
+			onion_error_data, failed_within_blinded_path, ..
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(any(test, feature = "_test_utils")))]
 		let DecodedOnionFailure {
-			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
+			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path, ..
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);

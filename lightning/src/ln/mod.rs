@@ -54,6 +54,9 @@ pub use onion_utils::create_payment_onion;
 #[cfg(fuzzing)]
 pub use onion_utils::process_onion_failure;
 
+#[cfg(fuzzing)]
+pub use onion_utils::AttributionData;
+
 #[cfg(test)]
 #[allow(unused_mut)]
 pub mod bolt11_payment_tests;
