@@ -9,6 +9,10 @@
 
 //! Contains the main bLIP-51 / LSPS1 server object, [`LSPS1ServiceHandler`].
 
+use alloc::string::String;
+
+use core::ops::Deref;
+
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
 	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
@@ -22,7 +26,7 @@ use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
 };
-use crate::prelude::{new_hash_map, HashMap, String};
+use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 
@@ -36,7 +40,6 @@ use lightning::util::logger::Level;
 use bitcoin::secp256k1::PublicKey;
 
 use chrono::Utc;
-use core::ops::Deref;
 
 /// Server-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]

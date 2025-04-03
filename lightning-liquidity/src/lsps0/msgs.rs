@@ -1,11 +1,11 @@
 //! Message, request, and other primitive types used to implement LSPS0.
 
+use alloc::vec::Vec;
+use core::convert::TryFrom;
+
 use crate::lsps0::ser::{LSPSMessage, LSPSRequestId, LSPSResponseError};
-use crate::prelude::Vec;
 
 use serde::{Deserialize, Serialize};
-
-use core::convert::TryFrom;
 
 pub(crate) const LSPS0_LISTPROTOCOLS_METHOD_NAME: &str = "lsps0.list_protocols";
 
@@ -99,7 +99,8 @@ mod tests {
 
 	use super::*;
 	use crate::lsps0::ser::LSPSMethod;
-	use crate::prelude::ToString;
+
+	use alloc::string::ToString;
 
 	#[test]
 	fn deserializes_request() {

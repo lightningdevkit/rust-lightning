@@ -8,11 +8,16 @@
 
 //! Contains the main bLIP-52 / LSPS2 client object, [`LSPS2ClientHandler`].
 
+use alloc::string::{String, ToString};
+
+use core::default::Default;
+use core::ops::Deref;
+
 use crate::events::EventQueue;
 use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
 use crate::lsps2::event::LSPS2ClientEvent;
 use crate::message_queue::MessageQueue;
-use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet, String, ToString};
+use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::ln::msgs::{ErrorAction, LightningError};
@@ -21,9 +26,6 @@ use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 
 use bitcoin::secp256k1::PublicKey;
-
-use core::default::Default;
-use core::ops::Deref;
 
 use crate::lsps2::msgs::{
 	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,

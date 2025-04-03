@@ -1,4 +1,5 @@
-use crate::prelude::Vec;
+use alloc::vec::Vec;
+
 use bitcoin::secp256k1::PublicKey;
 use lightning::io;
 use lightning::sign::EntropySource;

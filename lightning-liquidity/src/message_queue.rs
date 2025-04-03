@@ -1,7 +1,10 @@
 //! Holds types and traits used to implement message queues for [`LSPSMessage`]s.
 
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+
 use crate::lsps0::ser::LSPSMessage;
-use crate::prelude::{Box, Vec, VecDeque};
 use crate::sync::{Mutex, RwLock};
 
 use bitcoin::secp256k1::PublicKey;

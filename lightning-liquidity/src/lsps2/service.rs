@@ -9,6 +9,12 @@
 
 //! Contains the main bLIP-52 / LSPS2 server-side object, [`LSPS2ServiceHandler`].
 
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+use core::ops::Deref;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
 	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
@@ -22,7 +28,7 @@ use crate::lsps2::utils::{
 };
 use crate::message_queue::MessageQueue;
 use crate::prelude::hash_map::Entry;
-use crate::prelude::{new_hash_map, HashMap, String, ToString, Vec};
+use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use lightning::events::HTLCDestination;
@@ -35,9 +41,6 @@ use lightning::util::logger::Level;
 use lightning_types::payment::PaymentHash;
 
 use bitcoin::secp256k1::PublicKey;
-
-use core::ops::Deref;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::lsps2::msgs::{
 	LSPS2BuyRequest, LSPS2BuyResponse, LSPS2GetInfoRequest, LSPS2GetInfoResponse, LSPS2Message,

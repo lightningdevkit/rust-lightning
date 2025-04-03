@@ -1,3 +1,7 @@
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+
 use crate::events::{EventQueue, LiquidityEvent};
 use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
@@ -17,7 +21,7 @@ use crate::lsps1::service::{LSPS1ServiceConfig, LSPS1ServiceHandler};
 use crate::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
 use crate::lsps2::msgs::LSPS2Message;
 use crate::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
-use crate::prelude::{new_hash_map, new_hash_set, Box, HashMap, HashSet, ToString, Vec};
+use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
 
 use lightning::chain::{self, BestBlock, Confirm, Filter, Listen};
