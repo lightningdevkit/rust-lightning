@@ -4969,6 +4969,13 @@ pub(super) struct DualFundingChannelContext {
 pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
+	/// The signing session for the current interactive tx construction, if any.
+	///
+	/// This is populated when the interactive tx construction phase completes
+	/// (i.e., upon receiving a consecutive `tx_complete`) and the channel enters
+	/// the signing phase (`FundingNegotiated` state with the `INTERACTIVE_SIGNING` flag set).
+	///
+	/// This field is cleared once our counterparty sends a `channel_ready`.
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 	holder_commitment_point: HolderCommitmentPoint,
 	/// Indicates whether this funded channel had been established with V2 channel
