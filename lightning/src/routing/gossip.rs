@@ -1786,7 +1786,7 @@ where
 	}
 
 	fn test_node_counter_consistency(&self) {
-		#[cfg(test)]
+		#[cfg(any(test, fuzzing))]
 		{
 			let channels = self.channels.read().unwrap();
 			let nodes = self.nodes.read().unwrap();
