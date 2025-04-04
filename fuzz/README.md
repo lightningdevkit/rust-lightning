@@ -62,6 +62,7 @@ To run fuzzing using `cargo-fuzz / libFuzzer`, run
 
 ```shell
 rustup install nightly # Note: libFuzzer requires a nightly version of rust.
+export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 cargo +nightly fuzz run --features "libfuzzer_fuzz" msg_ping_target
 ```
 Note: If you encounter a `SIGKILL` during run/build check for OOM in kernel logs and consider
