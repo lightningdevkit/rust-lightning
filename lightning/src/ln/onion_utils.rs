@@ -1547,8 +1547,7 @@ impl HTLCFailReason {
 		const NODE: u16 = 0x2000;
 		const UPDATE: u16 = 0x1000;
 
-		     if failure_code == 1  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
+		if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == 2  | PERM | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == 3  | PERM | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == 4  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
@@ -1575,6 +1574,7 @@ impl HTLCFailReason {
 		else if failure_code == 21 { debug_assert!(data.is_empty()) }
 		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
 		else if failure_code == 23 { debug_assert!(data.is_empty()) }
+		else if failure_code == INVALID_ONION_BLINDING { debug_assert_eq!(data.len(), 32) }
 		else if failure_code & BADONION != 0 {
 			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
 		}
@@ -1975,7 +1975,7 @@ where
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Non-final intro node Trampoline onion data provided to us as last hop",
-								err_code: INVALID_ONION_BLINDING,
+								err_code: 0x4000 | 22,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
@@ -2175,8 +2175,8 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	match R::read(&mut chacha_stream, read_args) {
 		Err(err) => {
 			let error_code = match err {
-				// Unknown realm byte
-				msgs::DecodeError::UnknownVersion => 0x4000 | 1,
+				// Unknown version
+				msgs::DecodeError::UnknownVersion => 0x8000 | 0x4000 | 4,
 				// invalid_onion_payload
 				msgs::DecodeError::UnknownRequiredFeature
 				| msgs::DecodeError::InvalidValue

@@ -2160,7 +2160,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		}
 		{
 			let payment_failed_conditions = PaymentFailedConditions::new()
-				.expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 0]);
+				.expected_htlc_error_data(0x4000 | 22, &[0; 0]);
 			expect_payment_failed_conditions(&nodes[0], payment_hash, true, payment_failed_conditions);
 		}
 	}
