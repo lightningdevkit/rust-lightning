@@ -31,7 +31,7 @@ use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use lightning::events::HTLCDestination;
+use lightning::events::HTLCHandlingType;
 use lightning::ln::channelmanager::{AChannelManager, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
@@ -882,10 +882,8 @@ where
 	/// or if the payment queue is empty
 	///
 	/// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
-	pub fn htlc_handling_failed(
-		&self, failed_next_destination: HTLCDestination,
-	) -> Result<(), APIError> {
-		if let HTLCDestination::NextHopChannel { channel_id, .. } = failed_next_destination {
+	pub fn htlc_handling_failed(&self, handling_type: HTLCHandlingType) -> Result<(), APIError> {
+		if let HTLCHandlingType::NextHopChannel { channel_id, .. } = handling_type {
 			let peer_by_channel_id = self.peer_by_channel_id.read().unwrap();
 			if let Some(counterparty_node_id) = peer_by_channel_id.get(&channel_id) {
 				let outer_state_lock = self.per_peer_state.read().unwrap();
