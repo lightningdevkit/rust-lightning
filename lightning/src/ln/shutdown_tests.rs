@@ -13,14 +13,14 @@
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
-use crate::events::{Event, HTLCDestination, ClosureReason};
+use crate::events::{Event, HTLCHandlingType, ClosureReason};
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
 use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
-use crate::ln::onion_utils::INVALID_ONION_BLINDING;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::script::ShutdownScript;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
@@ -468,7 +468,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]
+		&[HTLCHandlingType::ForwardFailed { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -484,7 +484,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 
 	if blinded_recipient {
 		expect_payment_failed_conditions(&nodes[0], our_payment_hash, false,
-			PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
+			PaymentFailedConditions::new().expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32]));
 	} else {
 		expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 	}
@@ -1336,7 +1336,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	if use_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash_opt.unwrap());
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[0],
-			[HTLCDestination::FailedPayment { payment_hash: payment_hash_opt.unwrap() }]);
+			[HTLCHandlingType::ReceiveFailed { payment_hash: payment_hash_opt.unwrap() }]);
 	} else {
 		*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() *= 10;
 		nodes[0].node.timer_tick_occurred();
