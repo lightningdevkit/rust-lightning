@@ -924,6 +924,15 @@ impl ClaimablePayment {
 			self.htlcs.iter().map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id))
 		)
 	}
+
+	/// Returns the inbound `(channel_id, user_channel_id)` pairs for all HTLCs associated with the payment.
+	///
+	/// Note: The `user_channel_id` will be `None` for HTLCs created using LDK version 0.0.117 or prior.
+	fn inbound_channel_ids(&self) -> Vec<(ChannelId, Option<u128>)> {
+		self.htlcs.iter().map(|htlc| {
+			(htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id)
+		}).collect()
+	}
 }
 
 /// Represent the channel funding transaction type.
