@@ -317,7 +317,7 @@ impl HolderCommitment {
 		let delayed_payment_key = &tx_keys.broadcaster_delayed_payment_key;
 		let per_commitment_point = &tx_keys.per_commitment_point;
 
-		let mut nondust_htlcs = self.tx.htlcs().iter().zip(self.tx.counterparty_htlc_sigs.iter());
+		let mut nondust_htlcs = self.tx.nondust_htlcs().iter().zip(self.tx.counterparty_htlc_sigs.iter());
 		let mut sources = self.nondust_htlc_sources.iter();
 
 		// Use an iterator to write `htlc_outputs` to avoid allocations.
@@ -937,7 +937,7 @@ impl TryFrom<(HolderCommitmentTransaction, HolderSignedTx)> for HolderCommitment
 		// HTLC sources, separately. All offered, non-dust HTLCs must have a source available.
 
 		let mut missing_nondust_source = false;
-		let mut nondust_htlc_sources = Vec::with_capacity(holder_commitment_tx.htlcs().len());
+		let mut nondust_htlc_sources = Vec::with_capacity(holder_commitment_tx.nondust_htlcs().len());
 		let dust_htlcs = holder_signed_tx.htlc_outputs.into_iter().filter_map(|(htlc, _, source)| {
 			// Filter our non-dust HTLCs, while at the same time pushing their sources into
 			// `nondust_htlc_sources`.
@@ -967,16 +967,16 @@ impl TryFrom<(HolderCommitmentTransaction, HolderSignedTx)> for HolderCommitment
 
 impl HolderCommitment {
 	fn has_htlcs(&self) -> bool {
-		self.tx.htlcs().len() > 0 || self.dust_htlcs.len() > 0
+		self.tx.nondust_htlcs().len() > 0 || self.dust_htlcs.len() > 0
 	}
 
 	fn htlcs(&self) -> impl Iterator<Item = &HTLCOutputInCommitment> {
-		self.tx.htlcs().iter().chain(self.dust_htlcs.iter().map(|(htlc, _)| htlc))
+		self.tx.nondust_htlcs().iter().chain(self.dust_htlcs.iter().map(|(htlc, _)| htlc))
 	}
 
 	fn htlcs_with_sources(&self) -> impl Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> {
 		let mut sources = self.nondust_htlc_sources.iter();
-		let nondust_htlcs = self.tx.htlcs().iter().map(move |htlc| {
+		let nondust_htlcs = self.tx.nondust_htlcs().iter().map(move |htlc| {
 			let mut source = None;
 			if htlc.offered && htlc.transaction_output_index.is_some() {
 				source = sources.next();
@@ -3093,8 +3093,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
 			// `holder_commitment_tx`. In the future, we'll no longer provide the redundant data
 			// and just pass in source data via `nondust_htlc_sources`.
-			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.trust().htlcs().len());
-			for (a, b) in htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).map(|(h, _, _)| h).zip(holder_commitment_tx.trust().htlcs().iter()) {
+			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.trust().nondust_htlcs().len());
+			for (a, b) in htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).map(|(h, _, _)| h).zip(holder_commitment_tx.trust().nondust_htlcs().iter()) {
 				debug_assert_eq!(a, b);
 			}
 			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.counterparty_htlc_sigs.len());
@@ -3104,7 +3104,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 			// Backfill the non-dust HTLC sources.
 			debug_assert!(nondust_htlc_sources.is_empty());
-			nondust_htlc_sources.reserve_exact(holder_commitment_tx.htlcs().len());
+			nondust_htlc_sources.reserve_exact(holder_commitment_tx.nondust_htlcs().len());
 			let dust_htlcs = htlc_outputs.into_iter().filter_map(|(htlc, _, source)| {
 				// Filter our non-dust HTLCs, while at the same time pushing their sources into
 				// `nondust_htlc_sources`.
@@ -3124,7 +3124,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// `nondust_htlc_sources` and the `holder_commitment_tx`
 			{
 				let mut prev = -1;
-				for htlc in holder_commitment_tx.trust().htlcs().iter() {
+				for htlc in holder_commitment_tx.trust().nondust_htlcs().iter() {
 					assert!(htlc.transaction_output_index.unwrap() as i32 > prev);
 					prev = htlc.transaction_output_index.unwrap() as i32;
 				}
@@ -3132,10 +3132,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 			debug_assert!(htlc_outputs.iter().all(|(htlc, _, _)| htlc.transaction_output_index.is_none()));
 			debug_assert!(htlc_outputs.iter().all(|(_, sig_opt, _)| sig_opt.is_none()));
-			debug_assert_eq!(holder_commitment_tx.trust().htlcs().len(), holder_commitment_tx.counterparty_htlc_sigs.len());
+			debug_assert_eq!(holder_commitment_tx.trust().nondust_htlcs().len(), holder_commitment_tx.counterparty_htlc_sigs.len());
 
 			let mut sources = nondust_htlc_sources.iter();
-			for htlc in holder_commitment_tx.trust().htlcs().iter() {
+			for htlc in holder_commitment_tx.trust().nondust_htlcs().iter() {
 				if htlc.offered {
 					let source = sources.next().expect("Non-dust HTLC sources didn't match commitment tx");
 					assert!(source.possibly_matches_output(htlc));
@@ -3526,7 +3526,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let counterparty_node_id = self.counterparty_node_id;
 					let commitment_txid = commitment_tx.compute_txid();
 					debug_assert_eq!(self.funding.current_holder_commitment.tx.trust().txid(), commitment_txid);
-					let pending_htlcs = self.funding.current_holder_commitment.tx.trust().htlcs().to_vec();
+					let pending_htlcs = self.funding.current_holder_commitment.tx.trust().nondust_htlcs().to_vec();
 					let channel_value_satoshis = self.funding.channel_parameters.channel_value_satoshis;
 					let commitment_tx_fee_satoshis = channel_value_satoshis -
 						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value.to_sat());
@@ -3973,7 +3973,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn get_broadcasted_holder_claims(
 		&self, holder_tx: &HolderCommitmentTransaction, conf_height: u32,
 	) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
-		let mut claim_requests = Vec::with_capacity(holder_tx.htlcs().len());
+		let mut claim_requests = Vec::with_capacity(holder_tx.nondust_htlcs().len());
 
 		let tx = holder_tx.trust();
 		let keys = tx.keys();
@@ -3985,7 +3985,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		));
 
 		let txid = tx.txid();
-		for htlc in holder_tx.htlcs() {
+		for htlc in holder_tx.nondust_htlcs() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				let (htlc_output, counterparty_spendable_height) = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
@@ -4020,9 +4020,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	// Returns holder HTLC outputs to watch and react to in case of spending.
 	fn get_broadcasted_holder_watch_outputs(&self, holder_tx: &HolderCommitmentTransaction) -> Vec<(u32, TxOut)> {
-		let mut watch_outputs = Vec::with_capacity(holder_tx.htlcs().len());
+		let mut watch_outputs = Vec::with_capacity(holder_tx.nondust_htlcs().len());
 		let tx = holder_tx.trust();
-		for htlc in holder_tx.htlcs() {
+		for htlc in holder_tx.nondust_htlcs() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				watch_outputs.push((
 					transaction_output_index,
@@ -4115,7 +4115,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let txid = self.funding.current_holder_commitment.tx.trust().txid();
 			log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}", txid);
 			let mut outpoint = BitcoinOutPoint { txid, vout: 0 };
-			for htlc in self.funding.current_holder_commitment.tx.htlcs() {
+			for htlc in self.funding.current_holder_commitment.tx.nondust_htlcs() {
 				if let Some(vout) = htlc.transaction_output_index {
 					outpoint.vout = vout;
 					self.onchain_tx_handler.abandon_claim(&outpoint);
@@ -4129,7 +4129,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if txid != *confirmed_commitment_txid {
 				log_trace!(logger, "Canceling claims for previously broadcast holder commitment {}", txid);
 				let mut outpoint = BitcoinOutPoint { txid, vout: 0 };
-				for htlc in prev_holder_commitment.tx.htlcs() {
+				for htlc in prev_holder_commitment.tx.nondust_htlcs() {
 					if let Some(vout) = htlc.transaction_output_index {
 						outpoint.vout = vout;
 						self.onchain_tx_handler.abandon_claim(&outpoint);
@@ -4155,7 +4155,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if self.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
 			return holder_transactions;
 		}
-		for htlc in self.funding.current_holder_commitment.tx.htlcs() {
+		for htlc in self.funding.current_holder_commitment.tx.nondust_htlcs() {
 			if let Some(vout) = htlc.transaction_output_index {
 				let preimage = if !htlc.offered {
 					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) { Some(preimage.clone()) } else {
