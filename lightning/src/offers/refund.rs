@@ -338,7 +338,8 @@ macro_rules! refund_builder_methods { (
 			$self.refund.payer.0 = metadata;
 		}
 
-		let mut bytes = Vec::new();
+		const REFUND_ALLOCATION_SIZE: usize = 512;
+		let mut bytes = Vec::with_capacity(REFUND_ALLOCATION_SIZE);
 		$self.refund.write(&mut bytes).unwrap();
 
 		Ok(Refund {

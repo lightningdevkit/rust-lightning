@@ -1,15 +1,16 @@
-//! Contains the main LSPS0 client-side object, [`LSPS0ClientHandler`].
+//! Contains the main bLIP-50 / LSPS0 client-side object, [`LSPS0ClientHandler`].
 //!
-//! Please refer to the [LSPS0
-//! specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0) for more
+//! Please refer to the [bLIP-50 / LSPS0
+//! specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md) for more
 //! information.
 
-use crate::events::{Event, EventQueue};
+use crate::events::EventQueue;
 use crate::lsps0::event::LSPS0ClientEvent;
 use crate::lsps0::msgs::{
-	LSPS0Message, LSPS0Request, LSPS0Response, ListProtocolsRequest, ListProtocolsResponse,
+	LSPS0ListProtocolsRequest, LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request,
+	LSPS0Response,
 };
-use crate::lsps0::ser::{ProtocolMessageHandler, ResponseError};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSResponseError};
 use crate::message_queue::MessageQueue;
 use crate::sync::Arc;
 use crate::utils;
@@ -22,7 +23,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use core::ops::Deref;
 
-/// A message handler capable of sending and handling LSPS0 messages.
+/// A message handler capable of sending and handling bLIP-50 / LSPS0 messages.
 pub struct LSPS0ClientHandler<ES: Deref>
 where
 	ES::Target: EntropySource,
@@ -43,15 +44,15 @@ where
 		Self { entropy_source, pending_messages, pending_events }
 	}
 
-	/// Calls LSPS0's `list_protocols`.
+	/// Calls bLIP-50 / LSPS0's `list_protocols`.
 	///
-	/// Please refer to the [LSPS0
-	/// specifcation](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS0#lsps-specification-support-query)
+	/// Please refer to the [bLIP-50 / LSPS0
+	/// specifcation](https://github.com/lightning/blips/blob/master/blip-0050.md#lsps-specification-support-query)
 	/// for more information.
 	pub fn list_protocols(&self, counterparty_node_id: &PublicKey) {
 		let msg = LSPS0Message::Request(
 			utils::generate_request_id(&self.entropy_source),
-			LSPS0Request::ListProtocols(ListProtocolsRequest {}),
+			LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {}),
 		);
 
 		self.pending_messages.enqueue(counterparty_node_id, msg.into());
@@ -61,29 +62,27 @@ where
 		&self, response: LSPS0Response, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
 		match response {
-			LSPS0Response::ListProtocols(ListProtocolsResponse { protocols }) => {
-				self.pending_events.enqueue(Event::LSPS0Client(
-					LSPS0ClientEvent::ListProtocolsResponse {
-						counterparty_node_id: *counterparty_node_id,
-						protocols,
-					},
-				));
+			LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols }) => {
+				self.pending_events.enqueue(LSPS0ClientEvent::ListProtocolsResponse {
+					counterparty_node_id: *counterparty_node_id,
+					protocols,
+				});
 				Ok(())
 			},
-			LSPS0Response::ListProtocolsError(ResponseError { code, message, data, .. }) => {
-				Err(LightningError {
-					err: format!(
-						"ListProtocols error received. code = {}, message = {}, data = {:?}",
-						code, message, data
-					),
-					action: ErrorAction::IgnoreAndLog(Level::Info),
-				})
-			},
+			LSPS0Response::ListProtocolsError(LSPSResponseError {
+				code, message, data, ..
+			}) => Err(LightningError {
+				err: format!(
+					"ListProtocols error received. code = {}, message = {}, data = {:?}",
+					code, message, data
+				),
+				action: ErrorAction::IgnoreAndLog(Level::Info),
+			}),
 		}
 	}
 }
 
-impl<ES: Deref> ProtocolMessageHandler for LSPS0ClientHandler<ES>
+impl<ES: Deref> LSPSProtocolMessageHandler for LSPS0ClientHandler<ES>
 where
 	ES::Target: EntropySource,
 {
@@ -114,7 +113,7 @@ mod tests {
 	use alloc::string::ToString;
 	use alloc::sync::Arc;
 
-	use crate::lsps0::ser::{LSPSMessage, RequestId};
+	use crate::lsps0::ser::{LSPSMessage, LSPSRequestId};
 	use crate::tests::utils::{self, TestEntropy};
 
 	use super::*;
@@ -147,8 +146,8 @@ mod tests {
 		assert_eq!(
 			*message,
 			LSPSMessage::LSPS0(LSPS0Message::Request(
-				RequestId("00000000000000000000000000000000".to_string()),
-				LSPS0Request::ListProtocols(ListProtocolsRequest {})
+				LSPSRequestId("00000000000000000000000000000000".to_string()),
+				LSPS0Request::ListProtocols(LSPS0ListProtocolsRequest {})
 			))
 		);
 	}

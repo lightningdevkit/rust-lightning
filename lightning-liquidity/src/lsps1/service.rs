@@ -7,20 +7,26 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains the main LSPS1 server object, [`LSPS1ServiceHandler`].
+//! Contains the main bLIP-51 / LSPS1 server object, [`LSPS1ServiceHandler`].
+
+use alloc::string::String;
+
+use core::ops::Deref;
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
-	ChannelInfo, CreateOrderRequest, CreateOrderResponse, GetInfoResponse, GetOrderRequest,
-	LSPS1Message, LSPS1Options, LSPS1Request, LSPS1Response, OrderId, OrderParameters, OrderState,
-	PaymentInfo, LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
+	LSPS1ChannelInfo, LSPS1CreateOrderRequest, LSPS1CreateOrderResponse, LSPS1GetInfoResponse,
+	LSPS1GetOrderRequest, LSPS1Message, LSPS1Options, LSPS1OrderId, LSPS1OrderParams,
+	LSPS1OrderState, LSPS1PaymentInfo, LSPS1Request, LSPS1Response,
+	LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 };
-use super::utils::is_valid;
 use crate::message_queue::MessageQueue;
 
-use crate::events::{Event, EventQueue};
-use crate::lsps0::ser::{ProtocolMessageHandler, RequestId, ResponseError};
-use crate::prelude::{new_hash_map, HashMap, String, ToString};
+use crate::events::EventQueue;
+use crate::lsps0::ser::{
+	LSPSDateTime, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+};
+use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, RwLock};
 use crate::utils;
 
@@ -34,9 +40,8 @@ use lightning::util::logger::Level;
 use bitcoin::secp256k1::PublicKey;
 
 use chrono::Utc;
-use core::ops::Deref;
 
-/// Server-side configuration options for LSPS1 channel requests.
+/// Server-side configuration options for bLIP-51 / LSPS1 channel requests.
 #[derive(Clone, Debug)]
 pub struct LSPS1ServiceConfig {
 	/// A token to be send with each channel request.
@@ -55,8 +60,8 @@ impl From<ChannelStateError> for LightningError {
 
 #[derive(PartialEq, Debug)]
 enum OutboundRequestState {
-	OrderCreated { order_id: OrderId },
-	WaitingPayment { order_id: OrderId },
+	OrderCreated { order_id: LSPS1OrderId },
+	WaitingPayment { order_id: LSPS1OrderId },
 	Ready,
 }
 
@@ -72,9 +77,9 @@ impl OutboundRequestState {
 }
 
 struct OutboundLSPS1Config {
-	order: OrderParameters,
-	created_at: chrono::DateTime<Utc>,
-	payment: PaymentInfo,
+	order: LSPS1OrderParams,
+	created_at: LSPSDateTime,
+	payment: LSPS1PaymentInfo,
 }
 
 struct OutboundCRChannel {
@@ -84,8 +89,8 @@ struct OutboundCRChannel {
 
 impl OutboundCRChannel {
 	fn new(
-		order: OrderParameters, created_at: chrono::DateTime<Utc>, order_id: OrderId,
-		payment: PaymentInfo,
+		order: LSPS1OrderParams, created_at: LSPSDateTime, order_id: LSPS1OrderId,
+		payment: LSPS1PaymentInfo,
 	) -> Self {
 		Self {
 			state: OutboundRequestState::OrderCreated { order_id },
@@ -106,26 +111,26 @@ impl OutboundCRChannel {
 
 #[derive(Default)]
 struct PeerState {
-	outbound_channels_by_order_id: HashMap<OrderId, OutboundCRChannel>,
-	request_to_cid: HashMap<RequestId, u128>,
-	pending_requests: HashMap<RequestId, LSPS1Request>,
+	outbound_channels_by_order_id: HashMap<LSPS1OrderId, OutboundCRChannel>,
+	request_to_cid: HashMap<LSPSRequestId, u128>,
+	pending_requests: HashMap<LSPSRequestId, LSPS1Request>,
 }
 
 impl PeerState {
-	fn insert_outbound_channel(&mut self, order_id: OrderId, channel: OutboundCRChannel) {
+	fn insert_outbound_channel(&mut self, order_id: LSPS1OrderId, channel: OutboundCRChannel) {
 		self.outbound_channels_by_order_id.insert(order_id, channel);
 	}
 
-	fn insert_request(&mut self, request_id: RequestId, channel_id: u128) {
+	fn insert_request(&mut self, request_id: LSPSRequestId, channel_id: u128) {
 		self.request_to_cid.insert(request_id, channel_id);
 	}
 
-	fn remove_outbound_channel(&mut self, order_id: OrderId) {
+	fn remove_outbound_channel(&mut self, order_id: LSPS1OrderId) {
 		self.outbound_channels_by_order_id.remove(&order_id);
 	}
 }
 
-/// The main object allowing to send and receive LSPS1 messages.
+/// The main object allowing to send and receive bLIP-51 / LSPS1 messages.
 pub struct LSPS1ServiceHandler<ES: Deref, CM: Deref + Clone, C: Deref>
 where
 	ES::Target: EntropySource,
@@ -165,9 +170,9 @@ where
 	}
 
 	fn handle_get_info_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
-		let response = LSPS1Response::GetInfo(GetInfoResponse {
+		let response = LSPS1Response::GetInfo(LSPS1GetInfoResponse {
 			options: self
 				.config
 				.supported_options
@@ -185,10 +190,11 @@ where
 	}
 
 	fn handle_create_order_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: CreateOrderRequest,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		params: LSPS1CreateOrderRequest,
 	) -> Result<(), LightningError> {
 		if !is_valid(&params.order, &self.config.supported_options.as_ref().unwrap()) {
-			let response = LSPS1Response::CreateOrderError(ResponseError {
+			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
 				message: format!("Order does not match options supported by LSP server"),
 				data: Some(format!(
@@ -220,13 +226,11 @@ where
 				.insert(request_id.clone(), LSPS1Request::CreateOrder(params.clone()));
 		}
 
-		self.pending_events.enqueue(Event::LSPS1Service(
-			LSPS1ServiceEvent::RequestForPaymentDetails {
-				request_id,
-				counterparty_node_id: *counterparty_node_id,
-				order: params.order,
-			},
-		));
+		self.pending_events.enqueue(LSPS1ServiceEvent::RequestForPaymentDetails {
+			request_id,
+			counterparty_node_id: *counterparty_node_id,
+			order: params.order,
+		});
 
 		Ok(())
 	}
@@ -237,8 +241,8 @@ where
 	///
 	/// [`LSPS1ServiceEvent::RequestForPaymentDetails`]: crate::lsps1::event::LSPS1ServiceEvent::RequestForPaymentDetails
 	pub fn send_payment_details(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, payment: PaymentInfo,
-		created_at: chrono::DateTime<Utc>,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		payment: LSPS1PaymentInfo, created_at: LSPSDateTime,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -259,10 +263,10 @@ where
 
 							peer_state_lock.insert_outbound_channel(order_id.clone(), channel);
 
-							let response = LSPS1Response::CreateOrder(CreateOrderResponse {
+							let response = LSPS1Response::CreateOrder(LSPS1CreateOrderResponse {
 								order: params.order,
 								order_id,
-								order_state: OrderState::Created,
+								order_state: LSPS1OrderState::Created,
 								created_at,
 								payment,
 								channel: None,
@@ -303,10 +307,11 @@ where
 	}
 
 	fn handle_get_order_request(
-		&self, request_id: RequestId, counterparty_node_id: &PublicKey, params: GetOrderRequest,
+		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
+		params: LSPS1GetOrderRequest,
 	) -> Result<(), LightningError> {
 		let outer_state_lock = self.per_peer_state.read().unwrap();
-		match outer_state_lock.get(&counterparty_node_id) {
+		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -323,11 +328,11 @@ where
 
 				if let Err(e) = outbound_channel.awaiting_payment() {
 					peer_state_lock.outbound_channels_by_order_id.remove(&params.order_id);
-					self.pending_events.enqueue(Event::LSPS1Service(LSPS1ServiceEvent::Refund {
+					self.pending_events.enqueue(LSPS1ServiceEvent::Refund {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
 						order_id: params.order_id,
-					}));
+					});
 					return Err(e);
 				}
 
@@ -335,13 +340,11 @@ where
 					.pending_requests
 					.insert(request_id.clone(), LSPS1Request::GetOrder(params.clone()));
 
-				self.pending_events.enqueue(Event::LSPS1Service(
-					LSPS1ServiceEvent::CheckPaymentConfirmation {
-						request_id,
-						counterparty_node_id: *counterparty_node_id,
-						order_id: params.order_id,
-					},
-				));
+				self.pending_events.enqueue(LSPS1ServiceEvent::CheckPaymentConfirmation {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					order_id: params.order_id,
+				});
 			},
 			None => {
 				return Err(LightningError {
@@ -363,8 +366,8 @@ where
 	///
 	/// [`LSPS1ServiceEvent::CheckPaymentConfirmation`]: crate::lsps1::event::LSPS1ServiceEvent::CheckPaymentConfirmation
 	pub fn update_order_status(
-		&self, request_id: RequestId, counterparty_node_id: PublicKey, order_id: OrderId,
-		order_state: OrderState, channel: Option<ChannelInfo>,
+		&self, request_id: LSPSRequestId, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
+		order_state: LSPS1OrderState, channel: Option<LSPS1ChannelInfo>,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -378,11 +381,11 @@ where
 					{
 						let config = &outbound_channel.config;
 
-						let response = LSPS1Response::GetOrder(CreateOrderResponse {
+						let response = LSPS1Response::GetOrder(LSPS1CreateOrderResponse {
 							order_id,
 							order: config.order.clone(),
 							order_state,
-							created_at: config.created_at,
+							created_at: config.created_at.clone(),
 							payment: config.payment.clone(),
 							channel,
 						});
@@ -416,13 +419,13 @@ where
 		result
 	}
 
-	fn generate_order_id(&self) -> OrderId {
+	fn generate_order_id(&self) -> LSPS1OrderId {
 		let bytes = self.entropy_source.get_secure_random_bytes();
-		OrderId(utils::hex_str(&bytes[0..16]))
+		LSPS1OrderId(utils::hex_str(&bytes[0..16]))
 	}
 }
 
-impl<ES: Deref, CM: Deref + Clone, C: Deref> ProtocolMessageHandler
+impl<ES: Deref, CM: Deref + Clone, C: Deref> LSPSProtocolMessageHandler
 	for LSPS1ServiceHandler<ES, CM, C>
 where
 	ES::Target: EntropySource,
@@ -456,4 +459,26 @@ where
 			},
 		}
 	}
+}
+
+fn check_range(min: u64, max: u64, value: u64) -> bool {
+	(value >= min) && (value <= max)
+}
+
+fn is_valid(order: &LSPS1OrderParams, options: &LSPS1Options) -> bool {
+	let bool = check_range(
+		options.min_initial_client_balance_sat,
+		options.max_initial_client_balance_sat,
+		order.client_balance_sat,
+	) && check_range(
+		options.min_initial_lsp_balance_sat,
+		options.max_initial_lsp_balance_sat,
+		order.lsp_balance_sat,
+	) && check_range(
+		1,
+		options.max_channel_expiry_blocks.into(),
+		order.channel_expiry_blocks.into(),
+	);
+
+	bool
 }

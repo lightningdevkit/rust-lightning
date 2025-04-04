@@ -7,11 +7,12 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains LSPS2 event types
+//! Contains bLIP-52 / LSPS2 event types
 
-use super::msgs::OpeningFeeParams;
-use crate::lsps0::ser::RequestId;
-use crate::prelude::{String, Vec};
+use super::msgs::LSPS2OpeningFeeParams;
+use crate::lsps0::ser::LSPSRequestId;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -25,18 +26,18 @@ pub enum LSPS2ClientEvent {
 	///
 	/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
 	OpeningParametersReady {
-		/// The identifier of the issued LSPS2 `get_info` request, as returned by
+		/// The identifier of the issued bLIP-52 / LSPS2 `get_info` request, as returned by
 		/// [`LSPS2ClientHandler::request_opening_params`]
 		///
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS2ClientHandler::request_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::request_opening_params
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP that provided this response.
 		counterparty_node_id: PublicKey,
 		/// The menu of fee parameters the LSP is offering at this time.
 		/// You must select one of these if you wish to proceed.
-		opening_fee_params_menu: Vec<OpeningFeeParams>,
+		opening_fee_params_menu: Vec<LSPS2OpeningFeeParams>,
 	},
 	/// Provides the necessary information to generate a payable invoice that then may be given to
 	/// the payer.
@@ -44,13 +45,13 @@ pub enum LSPS2ClientEvent {
 	/// When the invoice is paid, the LSP will open a channel with the previously agreed upon
 	/// parameters to you.
 	InvoiceParametersReady {
-		/// The identifier of the issued LSPS2 `buy` request, as returned by
+		/// The identifier of the issued bLIP-52 / LSPS2 `buy` request, as returned by
 		/// [`LSPS2ClientHandler::select_opening_params`].
 		///
 		/// This can be used to track which request this event corresponds to.
 		///
 		/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the LSP.
 		counterparty_node_id: PublicKey,
 		/// The intercept short channel id to use in the route hint.
@@ -62,7 +63,7 @@ pub enum LSPS2ClientEvent {
 	},
 }
 
-/// An event which an LSPS2 server should take some action in response to.
+/// An event which an bLIP-52 / LSPS2 server should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS2ServiceEvent {
 	/// A request from a client for information about JIT Channel parameters.
@@ -79,7 +80,7 @@ pub enum LSPS2ServiceEvent {
 		/// An identifier that must be passed to [`LSPS2ServiceHandler::opening_fee_params_generated`].
 		///
 		/// [`LSPS2ServiceHandler::opening_fee_params_generated`]: crate::lsps2::service::LSPS2ServiceHandler::opening_fee_params_generated
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The node id of the client making the information request.
 		counterparty_node_id: PublicKey,
 		/// An optional token that can be used as an API key, coupon code, etc.
@@ -99,11 +100,11 @@ pub enum LSPS2ServiceEvent {
 		/// An identifier that must be passed into [`LSPS2ServiceHandler::invoice_parameters_generated`].
 		///
 		/// [`LSPS2ServiceHandler::invoice_parameters_generated`]: crate::lsps2::service::LSPS2ServiceHandler::invoice_parameters_generated
-		request_id: RequestId,
+		request_id: LSPSRequestId,
 		/// The client node id that is making this request.
 		counterparty_node_id: PublicKey,
 		/// The channel parameters they have selected.
-		opening_fee_params: OpeningFeeParams,
+		opening_fee_params: LSPS2OpeningFeeParams,
 		/// The size of the initial payment they would like to receive.
 		payment_size_msat: Option<u64>,
 	},

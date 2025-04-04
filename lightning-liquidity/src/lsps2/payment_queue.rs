@@ -1,4 +1,5 @@
-use crate::prelude::Vec;
+use alloc::vec::Vec;
+
 use lightning::ln::channelmanager::InterceptId;
 use lightning_types::payment::PaymentHash;
 

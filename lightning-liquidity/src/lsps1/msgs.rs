@@ -1,21 +1,19 @@
-//! Message, request, and other primitive types used to implement LSPS1.
+//! Message, request, and other primitive types used to implement bLIP-51 / LSPS1.
+
+use alloc::string::String;
+
+use core::convert::TryFrom;
 
 use crate::lsps0::ser::{
-	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSMessage,
-	RequestId, ResponseError,
+	string_amount, u32_fee_rate, unchecked_address, unchecked_address_option, LSPSDateTime,
+	LSPSMessage, LSPSRequestId, LSPSResponseError,
 };
-
-use crate::prelude::String;
 
 use bitcoin::{Address, FeeRate, OutPoint};
 
 use lightning_invoice::Bolt11Invoice;
 
 use serde::{Deserialize, Serialize};
-
-use chrono::Utc;
-
-use core::convert::TryFrom;
 
 pub(crate) const LSPS1_GET_INFO_METHOD_NAME: &str = "lsps1.get_info";
 pub(crate) const LSPS1_CREATE_ORDER_METHOD_NAME: &str = "lsps1.create_order";
@@ -27,15 +25,16 @@ pub(crate) const LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE: i32 = 100
 
 /// The identifier of an order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
-pub struct OrderId(pub String);
+pub struct LSPS1OrderId(pub String);
 
 /// A request made to an LSP to retrieve the supported options.
 ///
-/// Please refer to the [LSPS1 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1#1-lsps1info)
-/// for more information.
+/// Please refer to the [bLIP-51 / LSPS1
+/// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#1-lsps1get_info) for
+/// more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(default)]
-pub struct GetInfoRequest {}
+pub struct LSPS1GetInfoRequest {}
 
 /// An object representing the supported protocol options.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -68,9 +67,9 @@ pub struct LSPS1Options {
 	pub max_channel_balance_sat: u64,
 }
 
-/// A response to a [`GetInfoRequest`].
+/// A response to a [`LSPS1GetInfoRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct GetInfoResponse {
+pub struct LSPS1GetInfoResponse {
 	/// All options supported by the LSP.
 	#[serde(flatten)]
 	pub options: LSPS1Options,
@@ -78,13 +77,14 @@ pub struct GetInfoResponse {
 
 /// A request made to an LSP to create an order.
 ///
-/// Please refer to the [LSPS1 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1#2-lsps1create_order)
+/// Please refer to the [bLIP-51 / LSPS1
+/// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#2-lsps1create_order)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CreateOrderRequest {
+pub struct LSPS1CreateOrderRequest {
 	/// The order made.
 	#[serde(flatten)]
-	pub order: OrderParameters,
+	pub order: LSPS1OrderParams,
 	/// The address where the LSP will send the funds if the order fails.
 	#[serde(default)]
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -92,9 +92,9 @@ pub struct CreateOrderRequest {
 	pub refund_onchain_address: Option<Address>,
 }
 
-/// An object representing an LSPS1 channel order.
+/// An object representing an bLIP-51 / LSPS1 channel order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct OrderParameters {
+pub struct LSPS1OrderParams {
 	/// Indicates how many satoshi the LSP will provide on their side.
 	#[serde(with = "string_amount")]
 	pub lsp_balance_sat: u64,
@@ -116,28 +116,28 @@ pub struct OrderParameters {
 	pub announce_channel: bool,
 }
 
-/// A response to a [`CreateOrderRequest`].
+/// A response to a [`LSPS1CreateOrderRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CreateOrderResponse {
+pub struct LSPS1CreateOrderResponse {
 	/// The id of the channel order.
-	pub order_id: OrderId,
+	pub order_id: LSPS1OrderId,
 	/// The parameters of channel order.
 	#[serde(flatten)]
-	pub order: OrderParameters,
+	pub order: LSPS1OrderParams,
 	/// The datetime when the order was created
-	pub created_at: chrono::DateTime<Utc>,
+	pub created_at: LSPSDateTime,
 	/// The current state of the order.
-	pub order_state: OrderState,
+	pub order_state: LSPS1OrderState,
 	/// Contains details about how to pay for the order.
-	pub payment: PaymentInfo,
+	pub payment: LSPS1PaymentInfo,
 	/// Contains information about the channel state.
-	pub channel: Option<ChannelInfo>,
+	pub channel: Option<LSPS1ChannelInfo>,
 }
 
-/// An object representing the state of an order.
+/// An object representing the status of an order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum OrderState {
+pub enum LSPS1OrderState {
 	/// The order has been created.
 	Created,
 	/// The LSP has opened the channel and published the funding transaction.
@@ -148,20 +148,20 @@ pub enum OrderState {
 
 /// Details regarding how to pay for an order.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct PaymentInfo {
+pub struct LSPS1PaymentInfo {
 	/// A Lightning payment using BOLT 11.
-	pub bolt11: Option<Bolt11PaymentInfo>,
+	pub bolt11: Option<LSPS1Bolt11PaymentInfo>,
 	/// An onchain payment.
-	pub onchain: Option<OnchainPaymentInfo>,
+	pub onchain: Option<LSPS1OnchainPaymentInfo>,
 }
 
 /// A Lightning payment using BOLT 11.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Bolt11PaymentInfo {
+pub struct LSPS1Bolt11PaymentInfo {
 	/// Indicates the current state of the payment.
-	pub state: PaymentState,
+	pub state: LSPS1PaymentState,
 	/// The datetime when the payment option expires.
-	pub expires_at: chrono::DateTime<Utc>,
+	pub expires_at: LSPSDateTime,
 	/// The total fee the LSP will charge to open this channel in satoshi.
 	#[serde(with = "string_amount")]
 	pub fee_total_sat: u64,
@@ -174,11 +174,11 @@ pub struct Bolt11PaymentInfo {
 
 /// An onchain payment.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct OnchainPaymentInfo {
+pub struct LSPS1OnchainPaymentInfo {
 	/// Indicates the current state of the payment.
-	pub state: PaymentState,
+	pub state: LSPS1PaymentState,
 	/// The datetime when the payment option expires.
-	pub expires_at: chrono::DateTime<Utc>,
+	pub expires_at: LSPSDateTime,
 	/// The total fee the LSP will charge to open this channel in satoshi.
 	#[serde(with = "string_amount")]
 	pub fee_total_sat: u64,
@@ -209,7 +209,7 @@ pub struct OnchainPaymentInfo {
 /// been deprecated and `REFUNDED` should be used instead.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum PaymentState {
+pub enum LSPS1PaymentState {
 	/// A payment is expected.
 	ExpectPayment,
 	/// A sufficient payment has been received.
@@ -221,7 +221,7 @@ pub enum PaymentState {
 
 /// Details regarding a detected on-chain payment.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct OnchainPayment {
+pub struct LSPS1OnchainPayment {
 	/// The outpoint of the payment.
 	pub outpoint: String,
 	/// The amount of satoshi paid.
@@ -233,60 +233,61 @@ pub struct OnchainPayment {
 
 /// Details regarding the state of an ordered channel.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ChannelInfo {
+pub struct LSPS1ChannelInfo {
 	/// The datetime when the funding transaction has been published.
-	pub funded_at: chrono::DateTime<Utc>,
+	pub funded_at: LSPSDateTime,
 	/// The outpoint of the funding transaction.
 	pub funding_outpoint: OutPoint,
 	/// The earliest datetime when the channel may be closed by the LSP.
-	pub expires_at: chrono::DateTime<Utc>,
+	pub expires_at: LSPSDateTime,
 }
 
 /// A request made to an LSP to retrieve information about an previously made order.
 ///
-/// Please refer to the [LSPS1 specification](https://github.com/BitcoinAndLightningLayerSpecs/lsp/tree/main/LSPS1#21-lsps1get_order)
+/// Please refer to the [bLIP-51 / LSPS1
+/// specification](https://github.com/lightning/blips/blob/master/blip-0051.md#21-lsps1get_order)
 /// for more information.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct GetOrderRequest {
+pub struct LSPS1GetOrderRequest {
 	/// The id of the order.
-	pub order_id: OrderId,
+	pub order_id: LSPS1OrderId,
 }
 
-/// An enum that captures all the valid JSON-RPC requests in the LSPS1 protocol.
+/// An enum that captures all the valid JSON-RPC requests in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Request {
 	/// A request to learn about the options supported by the LSP.
-	GetInfo(GetInfoRequest),
+	GetInfo(LSPS1GetInfoRequest),
 	/// A request to create a channel order.
-	CreateOrder(CreateOrderRequest),
+	CreateOrder(LSPS1CreateOrderRequest),
 	/// A request to query a previously created channel order.
-	GetOrder(GetOrderRequest),
+	GetOrder(LSPS1GetOrderRequest),
 }
 
-/// An enum that captures all the valid JSON-RPC responses in the LSPS1 protocol.
+/// An enum that captures all the valid JSON-RPC responses in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Response {
-	/// A successful response to a [`GetInfoRequest`].
-	GetInfo(GetInfoResponse),
-	/// An error response to a [`GetInfoRequest`].
-	GetInfoError(ResponseError),
-	/// A successful response to a [`CreateOrderRequest`].
-	CreateOrder(CreateOrderResponse),
-	/// An error response to a [`CreateOrderRequest`].
-	CreateOrderError(ResponseError),
-	/// A successful response to a [`GetOrderRequest`].
-	GetOrder(CreateOrderResponse),
-	/// An error response to a [`GetOrderRequest`].
-	GetOrderError(ResponseError),
+	/// A successful response to a [`LSPS1GetInfoRequest`].
+	GetInfo(LSPS1GetInfoResponse),
+	/// An error response to a [`LSPS1GetInfoRequest`].
+	GetInfoError(LSPSResponseError),
+	/// A successful response to a [`LSPS1CreateOrderRequest`].
+	CreateOrder(LSPS1CreateOrderResponse),
+	/// An error response to a [`LSPS1CreateOrderRequest`].
+	CreateOrderError(LSPSResponseError),
+	/// A successful response to a [`LSPS1GetOrderRequest`].
+	GetOrder(LSPS1CreateOrderResponse),
+	/// An error response to a [`LSPS1GetOrderRequest`].
+	GetOrderError(LSPSResponseError),
 }
 
-/// An enum that captures all valid JSON-RPC messages in the LSPS1 protocol.
+/// An enum that captures all valid JSON-RPC messages in the bLIP-51 / LSPS1 protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LSPS1Message {
 	/// An LSPS1 JSON-RPC request.
-	Request(RequestId, LSPS1Request),
+	Request(LSPSRequestId, LSPS1Request),
 	/// An LSPS1 JSON-RPC response.
-	Response(RequestId, LSPS1Response),
+	Response(LSPSRequestId, LSPS1Response),
 }
 
 impl TryFrom<LSPSMessage> for LSPS1Message {
@@ -348,7 +349,7 @@ mod tests {
 	fn parse_spec_test_vectors() {
 		// Here, we simply assert that we're able to parse all examples given in LSPS1.
 		let json_str = r#"{}"#;
-		let _get_info_request: GetInfoRequest = serde_json::from_str(json_str).unwrap();
+		let _get_info_request: LSPS1GetInfoRequest = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"min_required_channel_confirmations": 0,
@@ -362,7 +363,7 @@ mod tests {
 			"min_channel_balance_sat": "50000",
 			"max_channel_balance_sat": "100000000"
 		}"#;
-		let _get_info_response: GetInfoResponse = serde_json::from_str(json_str).unwrap();
+		let _get_info_response: LSPS1GetInfoResponse = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"lsp_balance_sat": "5000000",
@@ -374,7 +375,8 @@ mod tests {
 			"refund_onchain_address": "bc1qvmsy0f3yyes6z9jvddk8xqwznndmdwapvrc0xrmhd3vqj5rhdrrq6hz49h",
 			"announce_channel": true
 		}"#;
-		let _create_order_request: CreateOrderRequest = serde_json::from_str(json_str).unwrap();
+		let _create_order_request: LSPS1CreateOrderRequest =
+			serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"state" : "EXPECT_PAYMENT",
@@ -383,7 +385,7 @@ mod tests {
 			"order_total_sat": "200888",
 			"invoice": "lnbc252u1p3aht9ysp580g4633gd2x9lc5al0wd8wx0mpn9748jeyz46kqjrpxn52uhfpjqpp5qgf67tcqmuqehzgjm8mzya90h73deafvr4m5705l5u5l4r05l8cqdpud3h8ymm4w3jhytnpwpczqmt0de6xsmre2pkxzm3qydmkzdjrdev9s7zhgfaqxqyjw5qcqpjrzjqt6xptnd85lpqnu2lefq4cx070v5cdwzh2xlvmdgnu7gqp4zvkus5zapryqqx9qqqyqqqqqqqqqqqcsq9q9qyysgqen77vu8xqjelum24hgjpgfdgfgx4q0nehhalcmuggt32japhjuksq9jv6eksjfnppm4hrzsgyxt8y8xacxut9qv3fpyetz8t7tsymygq8yzn05"
 		}"#;
-		let _bolt11_payment: Bolt11PaymentInfo = serde_json::from_str(json_str).unwrap();
+		let _bolt11_payment: LSPS1Bolt11PaymentInfo = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"state": "EXPECT_PAYMENT",
@@ -394,7 +396,7 @@ mod tests {
 			"min_onchain_payment_confirmations": 1,
 			"min_fee_for_0conf": 253
 		}"#;
-		let _onchain_payment: OnchainPaymentInfo = serde_json::from_str(json_str).unwrap();
+		let _onchain_payment: LSPS1OnchainPaymentInfo = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"bolt11": {
@@ -414,7 +416,7 @@ mod tests {
 				"min_fee_for_0conf": 253
 			}
 		}"#;
-		let _payment: PaymentInfo = serde_json::from_str(json_str).unwrap();
+		let _payment: LSPS1PaymentInfo = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"order_id": "bb4b5d0a-8334-49d8-9463-90a6d413af7c",
@@ -448,26 +450,27 @@ mod tests {
 			},
 			"channel": null
 		}"#;
-		let _create_order_response: CreateOrderResponse = serde_json::from_str(json_str).unwrap();
+		let _create_order_response: LSPS1CreateOrderResponse =
+			serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"order_id": "bb4b5d0a-8334-49d8-9463-90a6d413af7c"
 		}"#;
-		let _get_order_request: GetOrderRequest = serde_json::from_str(json_str).unwrap();
+		let _get_order_request: LSPS1GetOrderRequest = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#"{
 			"funded_at": "2012-04-23T18:25:43.511Z",
 			"funding_outpoint": "0301e0480b374b32851a9462db29dc19fe830a7f7d7a88b81612b9d42099c0ae:0",
 			"expires_at": "2012-04-23T18:25:43.511Z"
 		}"#;
-		let _channel: ChannelInfo = serde_json::from_str(json_str).unwrap();
+		let _channel: LSPS1ChannelInfo = serde_json::from_str(json_str).unwrap();
 
 		let json_str = r#""CANCELLED""#;
-		let payment_state: PaymentState = serde_json::from_str(json_str).unwrap();
-		assert_eq!(payment_state, PaymentState::Refunded);
+		let payment_state: LSPS1PaymentState = serde_json::from_str(json_str).unwrap();
+		assert_eq!(payment_state, LSPS1PaymentState::Refunded);
 
 		let json_str = r#""REFUNDED""#;
-		let payment_state: PaymentState = serde_json::from_str(json_str).unwrap();
-		assert_eq!(payment_state, PaymentState::Refunded);
+		let payment_state: LSPS1PaymentState = serde_json::from_str(json_str).unwrap();
+		assert_eq!(payment_state, LSPS1PaymentState::Refunded);
 	}
 }
