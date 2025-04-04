@@ -543,7 +543,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		let update_add_commit = SendEvent::from_node(&nodes[0]);
 
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add_commit.msgs[0]);
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &update_add_commit.commitment_msg);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &update_add_commit.commitment_msg);
 		check_added_monitors(&nodes[1], 1);
 		let (raa, cs) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
@@ -551,7 +551,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		check_added_monitors(&nodes[0], 1);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		if !not_stale {
-			nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &cs);
+			nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &cs);
 			check_added_monitors(&nodes[0], 1);
 			// A now revokes their original state, at which point reconnect should panic
 			let raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -1043,7 +1043,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 
 	let payment_event = SendEvent::from_node(&nodes[1]);
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors!(nodes[2], 1);
 
 	if claim_htlc {

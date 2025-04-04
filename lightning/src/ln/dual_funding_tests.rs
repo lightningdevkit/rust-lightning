@@ -122,7 +122,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	let _msg_commitment_signed_from_1 = match msg_events[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+		MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, ref updates } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			updates.commitment_signed.clone()
 		},

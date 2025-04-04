@@ -622,15 +622,17 @@ impl Hash for SocketDescriptor {
 mod tests {
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use bitcoin::Network;
+	use bitcoin::{Network, Txid};
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager};
+	use lightning::ln::types::ChannelId;
 	use lightning::routing::gossip::NodeId;
 	use lightning::types::features::*;
 	use lightning::util::test_utils::TestNodeSigner;
 
 	use tokio::sync::mpsc;
 
+	use std::collections::BTreeMap;
 	use std::mem;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::{Arc, Mutex};
@@ -723,6 +725,11 @@ mod tests {
 		) {
 		}
 		fn handle_commitment_signed(&self, _their_node_id: PublicKey, _msg: &CommitmentSigned) {}
+		fn handle_commitment_signed_batch(
+			&self, _their_node_id: PublicKey, _channel_id: ChannelId,
+			_batch: BTreeMap<Txid, CommitmentSigned>,
+		) {
+		}
 		fn handle_revoke_and_ack(&self, _their_node_id: PublicKey, _msg: &RevokeAndACK) {}
 		fn handle_update_fee(&self, _their_node_id: PublicKey, _msg: &UpdateFee) {}
 		fn handle_announcement_signatures(

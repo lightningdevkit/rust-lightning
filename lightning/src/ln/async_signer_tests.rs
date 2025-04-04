@@ -262,7 +262,7 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enabl
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::ReleaseCommitmentSecret);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.handle_commitment_signed_batch_test(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	let mut enabled_signer_ops = new_hash_set();
@@ -456,7 +456,7 @@ fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCas
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
-	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.handle_commitment_signed_batch_test(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	let events = dst.node.get_and_clear_pending_msg_events();
@@ -580,7 +580,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAc
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.handle_commitment_signed_batch_test(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	if test_case != UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
@@ -690,13 +690,13 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_fulfill_htlcs, ref commitment_signed, .. } } => {
+		MessageSendEvent::UpdateHTLCs { node_id: _, channel_id: _, updates: msgs::CommitmentUpdate { ref update_fulfill_htlcs, ref commitment_signed, .. } } => {
 			nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]);
 			expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 			if monitor_update_failure {
 				chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			}
-			nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), commitment_signed);
+			nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), commitment_signed);
 			if monitor_update_failure {
 				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 			} else {
@@ -766,7 +766,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 
 	// Now that everything is restored, get the CS + RAA and handle them.
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().commitment_signed);
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), as_resp.1.as_ref().unwrap());
 	let (bs_revoke_and_ack, bs_second_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 2);
@@ -777,12 +777,12 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	let as_commitment_signed = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_commitment_signed);
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_commitment_signed.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_commitment_signed.commitment_signed);
 	let bs_second_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[1], 1);

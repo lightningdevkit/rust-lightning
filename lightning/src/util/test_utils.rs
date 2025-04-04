@@ -79,6 +79,8 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning_invoice::RawBolt11Invoice;
 
+use alloc::collections::BTreeMap;
+
 use crate::io;
 use crate::prelude::*;
 use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient, SignerProvider};
@@ -1052,6 +1054,12 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	}
 	fn handle_commitment_signed(&self, _their_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
 		self.received_msg(wire::Message::CommitmentSigned(msg.clone()));
+	}
+	fn handle_commitment_signed_batch(
+		&self, _their_node_id: PublicKey, _channel_id: ChannelId,
+		_batch: BTreeMap<Txid, msgs::CommitmentSigned>,
+	) {
+		unreachable!()
 	}
 	fn handle_revoke_and_ack(&self, _their_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
 		self.received_msg(wire::Message::RevokeAndACK(msg.clone()));

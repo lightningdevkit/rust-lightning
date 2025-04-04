@@ -96,7 +96,8 @@ fn test_monitor_and_persister_update_fail() {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		if let Some(channel) = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2).as_funded_mut() {
-			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+			assert_eq!(updates.commitment_signed.len(), 1);
+			if let Ok(Some(update)) = channel.commitment_signed(&updates.commitment_signed[0], &node_cfgs[0].logger) {
 				// Check that the persister returns InProgress (and will never actually complete)
 				// as the monitor update errors.
 				if let ChannelMonitorUpdateStatus::InProgress = chain_mon.chain_monitor.update_channel(chan.2, &update) {} else { panic!("Expected monitor paused"); }
@@ -273,7 +274,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	let (bs_initial_fulfill, bs_initial_commitment_signed) = match events_2[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			assert!(update_add_htlcs.is_empty());
 			assert_eq!(update_fulfill_htlcs.len(), 1);
@@ -293,7 +294,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 					_ => panic!("Unexpected event"),
 				}
 
-				nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), commitment_signed);
+				nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), commitment_signed);
 				check_added_monitors!(nodes[0], 1);
 				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 			}
@@ -393,7 +394,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 				_ => panic!("Unexpected event"),
 			}
 
-			nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_resp.2.as_ref().unwrap().commitment_signed);
+			nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_resp.2.as_ref().unwrap().commitment_signed);
 			let as_resp_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 			// No commitment_signed so get_event_msg's assert(len == 1) passes
 			check_added_monitors!(nodes[0], 1);
@@ -413,7 +414,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert!(bs_resp == second_bs_resp);
 		}
 
-		(SendEvent::from_commitment_update(nodes[1].node.get_our_node_id(), as_resp.2.unwrap()), as_resp.1.unwrap())
+		(SendEvent::from_commitment_update(nodes[1].node.get_our_node_id(), channel_id, as_resp.2.unwrap()), as_resp.1.unwrap())
 	} else {
 		let mut events_4 = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events_4.len(), 2);
@@ -429,7 +430,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	let bs_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	// nodes[1] is awaiting an RAA from nodes[0] still so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[1], 1);
@@ -523,12 +524,12 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		}
 	}
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_commitment_update.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_commitment_update.commitment_signed);
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_commitment_update.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_commitment_update.commitment_signed);
 	let bs_second_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[1], 1);
@@ -613,7 +614,7 @@ fn test_monitor_update_fail_cs() {
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &send_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &send_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -634,7 +635,7 @@ fn test_monitor_update_fail_cs() {
 		_ => panic!("Unexpected event"),
 	}
 	match responses[1] {
-		MessageSendEvent::UpdateHTLCs { ref updates, ref node_id } => {
+		MessageSendEvent::UpdateHTLCs { ref updates, ref node_id, channel_id: _ } => {
 			assert!(updates.update_add_htlcs.is_empty());
 			assert!(updates.update_fulfill_htlcs.is_empty());
 			assert!(updates.update_fail_htlcs.is_empty());
@@ -643,7 +644,7 @@ fn test_monitor_update_fail_cs() {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 
 			chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-			nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+			nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 			check_added_monitors!(nodes[0], 1);
 			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -760,14 +761,14 @@ fn test_monitor_update_raa_while_paused() {
 	let send_event_2 = SendEvent::from_event(nodes[1].node.get_and_clear_pending_msg_events().remove(0));
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event_1.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &send_event_1.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &send_event_1.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &send_event_2.msgs[0]);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -785,11 +786,11 @@ fn test_monitor_update_raa_while_paused() {
 	check_added_monitors!(nodes[1], 1);
 	let bs_cs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_update_raa.1);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_update_raa.1);
 	check_added_monitors!(nodes[1], 1);
 	let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_cs.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_cs.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
@@ -893,7 +894,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 		send_event = SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
 		nodes[1].node.handle_update_add_htlc(nodes[2].node.get_our_node_id(), &send_event.msgs[0]);
-		nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &send_event.commitment_msg);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &send_event.commitment_msg);
 		check_added_monitors!(nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		(Some(payment_preimage_4), Some(payment_hash_4))
@@ -919,7 +920,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// ordering of the two events that both go to nodes[2] have to stay in the same order.
 	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events_3);
 	let messages_a = match nodes_0_event {
-		MessageSendEvent::UpdateHTLCs { node_id, mut updates } => {
+		MessageSendEvent::UpdateHTLCs { node_id, mut updates, channel_id: _ } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
 			assert!(updates.update_fulfill_htlcs.is_empty());
 			assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -955,7 +956,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &send_event_b.msgs[0]);
 	let as_cs;
 	if test_ignore_second_cs {
-		nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &send_event_b.commitment_msg);
+		nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &send_event_b.commitment_msg);
 		check_added_monitors!(nodes[2], 1);
 		let bs_revoke_and_ack = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[2].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &raa.unwrap());
@@ -971,10 +972,10 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		check_added_monitors!(nodes[1], 1);
 		as_cs = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 
-		nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &bs_cs.commitment_signed);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &bs_cs.commitment_signed);
 		check_added_monitors!(nodes[1], 1);
 	} else {
-		nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &send_event_b.commitment_msg);
+		nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &send_event_b.commitment_msg);
 		check_added_monitors!(nodes[2], 1);
 
 		let bs_revoke_and_commit = nodes[2].node.get_and_clear_pending_msg_events();
@@ -992,14 +993,14 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		as_cs = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 
 		match bs_revoke_and_commit[1] {
-			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, ref updates } => {
 				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 				assert!(updates.update_add_htlcs.is_empty());
 				assert!(updates.update_fail_htlcs.is_empty());
 				assert!(updates.update_fail_malformed_htlcs.is_empty());
 				assert!(updates.update_fulfill_htlcs.is_empty());
 				assert!(updates.update_fee.is_none());
-				nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &updates.commitment_signed);
+				nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &updates.commitment_signed);
 				check_added_monitors!(nodes[1], 1);
 			},
 			_ => panic!("Unexpected event"),
@@ -1015,7 +1016,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 
 	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &as_cs.update_add_htlcs[0]);
-	nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &as_cs.commitment_signed);
+	nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &as_cs.commitment_signed);
 	check_added_monitors!(nodes[2], 1);
 	let bs_second_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
@@ -1027,7 +1028,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &bs_second_cs.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &bs_second_cs.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	let as_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
 
@@ -1206,7 +1207,7 @@ fn raa_no_response_awaiting_raa_state() {
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -1216,7 +1217,7 @@ fn raa_no_response_awaiting_raa_state() {
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_responses.1);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_responses.1);
 	check_added_monitors!(nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
@@ -1226,7 +1227,7 @@ fn raa_no_response_awaiting_raa_state() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1258,12 +1259,12 @@ fn raa_no_response_awaiting_raa_state() {
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_responses.1);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_responses.1);
 	check_added_monitors!(nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
@@ -1277,7 +1278,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_update.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_update.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
@@ -1348,7 +1349,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	// Note that nodes[1] not updating monitor here is OK - it wont take action on the new HTLC
@@ -1365,11 +1366,11 @@ fn claim_while_disconnected_monitor_update_fail() {
 	assert_eq!(bs_msgs.len(), 2);
 
 	match bs_msgs[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+		MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, ref updates } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 			expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
-			nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+			nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 			check_added_monitors!(nodes[0], 1);
 
 			let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -1391,11 +1392,11 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let as_commitment = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
 	let bs_commitment = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_commitment.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_commitment.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_commitment.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_commitment.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
@@ -1447,7 +1448,7 @@ fn monitor_failed_no_reestablish_response() {
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
@@ -1479,7 +1480,7 @@ fn monitor_failed_no_reestablish_response() {
 
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_responses.1);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_responses.1);
 	check_added_monitors!(nodes[0], 1);
 
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -1524,13 +1525,13 @@ fn first_message_on_recv_ordering() {
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_responses.1);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_responses.1);
 	check_added_monitors!(nodes[0], 1);
 
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -1560,7 +1561,7 @@ fn first_message_on_recv_ordering() {
 	// RAA/CS response, which should be generated when we call channel_monitor_update (with the
 	// appropriate HTLC acceptance).
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1575,7 +1576,7 @@ fn first_message_on_recv_ordering() {
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_responses.1);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_responses.1);
 	check_added_monitors!(nodes[0], 1);
 
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -2063,7 +2064,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	assert!(as_update_fee_msgs.update_fee.is_some());
 
 	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), as_update_fee_msgs.update_fee.as_ref().unwrap());
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_update_fee_msgs.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_update_fee_msgs.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	// bs_first_raa is not delivered until it is re-generated after reconnect
@@ -2095,7 +2096,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 
 	nodes[0].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &bs_initial_send_msgs.update_add_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_initial_send_msgs.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_initial_send_msgs.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
@@ -2103,11 +2104,11 @@ fn test_pending_update_fee_ack_on_reconnect() {
 
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
 	check_added_monitors!(nodes[0], 1);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id()).commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id()).commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_cs);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_cs);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
 	check_added_monitors!(nodes[0], 1);
@@ -2225,19 +2226,19 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 	assert!(update_msgs.update_fee.is_some());
 	nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), update_msgs.update_fee.as_ref().unwrap());
 	if parallel_updates {
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &update_msgs.commitment_signed);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &update_msgs.commitment_signed);
 		check_added_monitors!(nodes[1], 1);
 		let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
 		check_added_monitors!(nodes[0], 1);
 		let as_second_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_first_cs);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_first_cs);
 		check_added_monitors!(nodes[0], 1);
 		let as_first_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
 		nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), as_second_update.update_fee.as_ref().unwrap());
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_second_update.commitment_signed);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_update.commitment_signed);
 		check_added_monitors!(nodes[1], 1);
 		let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
@@ -2248,7 +2249,7 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_second_raa);
 		check_added_monitors!(nodes[0], 1);
 
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_cs.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_cs.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
@@ -2324,7 +2325,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	check_added_monitors!(nodes[0], 1);
 
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send.msgs[0]);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &send.commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &send.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
 	let (raa, cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -2404,11 +2405,11 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	assert_eq!(events.len(), 1);
 
 	// Deliver the pending in-flight CS
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &cs);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &cs);
 	check_added_monitors!(nodes[0], 1);
 
 	let commitment_msg = match events.pop().unwrap() {
-		MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+		MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			assert!(updates.update_fail_htlcs.is_empty());
 			assert!(updates.update_fail_malformed_htlcs.is_empty());
@@ -2423,7 +2424,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		_ => panic!("Unexpected event type!"),
 	};
 
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &commitment_msg);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -2492,13 +2493,13 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 
 		let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &send_event.commitment_msg);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &send_event.commitment_msg);
 		check_added_monitors!(nodes[1], 1);
 
 		let (bs_raa, bs_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 		check_added_monitors!(nodes[0], 1);
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_cs);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_cs);
 		check_added_monitors!(nodes[0], 1);
 
 		as_raa = Some(get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id()));
@@ -2687,7 +2688,7 @@ fn double_temp_error() {
 	assert_eq!(msg_events.len(), 1);
 	let (update_fulfill_1, commitment_signed_b1, node_id) = {
 		match &msg_events[0] {
-			&MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			&MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);
 				assert!(update_fail_htlcs.is_empty());
@@ -2702,7 +2703,7 @@ fn double_temp_error() {
 	nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &update_fulfill_1);
 	check_added_monitors!(nodes[0], 0);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &commitment_signed_b1);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &commitment_signed_b1);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.process_pending_htlc_forwards();
 	let (raa_a1, commitment_signed_a1) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -2710,7 +2711,7 @@ fn double_temp_error() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &raa_a1);
 	check_added_monitors!(nodes[1], 1);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &commitment_signed_a1);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &commitment_signed_a1);
 	check_added_monitors!(nodes[1], 1);
 
 	// Complete the second HTLC.
@@ -2718,7 +2719,7 @@ fn double_temp_error() {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		(match &events[0] {
-			MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+			MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 				assert!(updates.update_add_htlcs.is_empty());
 				assert!(updates.update_fail_htlcs.is_empty());
@@ -2974,7 +2975,7 @@ fn test_blocked_chan_preimage_release() {
 	// Finish the CS dance between nodes[0] and nodes[1]. Note that until the event handling, the
 	// update_fulfill_htlc + CS is held, even though the preimage is already on disk for the
 	// channel.
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_htlc_fulfill_updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_htlc_fulfill_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let (a, raa) = do_main_commitment_signed_dance(&nodes[1], &nodes[0], false);
 	assert!(a.is_none());
@@ -3051,13 +3052,13 @@ fn do_test_inverted_mon_completion_order(with_latest_manager: bool, complete_bc_
 	// Now step the Commitment Signed Dance between B and C forward a bit (or fully), ensuring we
 	// won't get the preimage when the nodes reconnect and we have to get it from the
 	// ChannelMonitor.
-	nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	if complete_bc_commitment_dance {
 		let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 		nodes[2].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_revoke_and_ack);
 		check_added_monitors(&nodes[2], 1);
-		nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_commitment_signed);
+		nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_commitment_signed);
 		check_added_monitors(&nodes[2], 1);
 		let cs_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
@@ -3215,7 +3216,7 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 	// Now step the Commitment Signed Dance between B and C forward a bit, ensuring we won't get
 	// the preimage when the nodes reconnect, at which point we have to ensure we get it from the
 	// ChannelMonitor.
-	nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let _ = get_revoke_commit_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 
@@ -3368,13 +3369,13 @@ fn test_sync_async_persist_doesnt_hang() {
 	let bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 	let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors(&nodes[1], 1);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_cs);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_cs);
 	check_added_monitors(&nodes[1], 1);
 
 	let bs_final_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
@@ -3394,7 +3395,7 @@ fn test_sync_async_persist_doesnt_hang() {
 
 	let bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
-	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
+	nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 
 	// At this point, we have completed an extra `ChannelMonitorUpdate` but the `ChannelManager`
@@ -3418,7 +3419,7 @@ fn test_sync_async_persist_doesnt_hang() {
 	// Finally, complete the claiming of the second payment
 	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors(&nodes[1], 1);
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_cs);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_cs);
 	check_added_monitors(&nodes[1], 1);
 
 	let bs_final_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
@@ -3465,13 +3466,13 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 
 	// Now step the Commitment Signed Dance between B and C and check that after the final RAA B
 	// doesn't let the preimage-removing monitor update fly.
-	nodes[1].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &cs_updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let (bs_raa, bs_cs) = get_revoke_commit_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 
 	nodes[2].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors(&nodes[2], 1);
-	nodes[2].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_cs);
+	nodes[2].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_cs);
 	check_added_monitors(&nodes[2], 1);
 
 	let cs_final_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
@@ -3609,7 +3610,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 		let mut c_update = msg_events.iter()
 			.filter(|ev| matches!(ev, MessageSendEvent::UpdateHTLCs { node_id, .. } if *node_id == node_c_id))
 			.cloned().collect::<Vec<_>>();
-		let a_filtermap = |ev| if let MessageSendEvent::UpdateHTLCs { node_id, updates } = ev {
+		let a_filtermap = |ev| if let MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } = ev {
 			if node_id == node_a_id {
 				Some(updates)
 			} else {
@@ -3686,14 +3687,14 @@ fn test_partial_claim_mon_update_compl_actions() {
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[3], Some(1000), false, false);
 	let _bs_updates_for_a = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
-	nodes[1].node.handle_commitment_signed(nodes[3].node.get_our_node_id(), &updates.commitment_signed);
+	nodes[1].node.handle_commitment_signed_batch_test(nodes[3].node.get_our_node_id(), &updates.commitment_signed);
 	check_added_monitors(&nodes[1], 1);
 	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &nodes[3].node.get_our_node_id());
 
 	nodes[3].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors(&nodes[3], 0);
 
-	nodes[3].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_cs);
+	nodes[3].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_cs);
 	check_added_monitors(&nodes[3], 0);
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -3723,7 +3724,7 @@ fn test_partial_claim_mon_update_compl_actions() {
 			expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
 			let _cs_updates_for_a = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
 
-			nodes[2].node.handle_commitment_signed(nodes[3].node.get_our_node_id(), &updates.commitment_signed);
+			nodes[2].node.handle_commitment_signed_batch_test(nodes[3].node.get_our_node_id(), &updates.commitment_signed);
 			check_added_monitors(&nodes[2], 1);
 		},
 		_ => panic!(),
@@ -3734,7 +3735,7 @@ fn test_partial_claim_mon_update_compl_actions() {
 	nodes[3].node.handle_revoke_and_ack(nodes[2].node.get_our_node_id(), &cs_raa);
 	check_added_monitors(&nodes[3], 1);
 
-	nodes[3].node.handle_commitment_signed(nodes[2].node.get_our_node_id(), &cs_cs);
+	nodes[3].node.handle_commitment_signed_batch_test(nodes[2].node.get_our_node_id(), &cs_cs);
 	check_added_monitors(&nodes[3], 1);
 
 	let ds_raa = get_event_msg!(nodes[3], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
@@ -3981,7 +3982,7 @@ fn test_single_channel_multiple_mpp() {
 	nodes[7].node.handle_update_fulfill_htlc(node_8_id, &first_updates.update_fulfill_htlcs[0]);
 	check_added_monitors(&nodes[7], 1);
 	expect_payment_forwarded!(nodes[7], nodes[1], nodes[8], Some(1000), false, false);
-	nodes[7].node.handle_commitment_signed(node_8_id, &first_updates.commitment_signed);
+	nodes[7].node.handle_commitment_signed_batch_test(node_8_id, &first_updates.commitment_signed);
 	check_added_monitors(&nodes[7], 1);
 	let (raa, cs) = get_revoke_commit_msgs(&nodes[7], &node_8_id);
 
@@ -4022,7 +4023,7 @@ fn test_single_channel_multiple_mpp() {
 
 	// Now drive everything to the end, at least as far as node 7 is concerned...
 	*nodes[8].chain_monitor.write_blocker.lock().unwrap() = None;
-	nodes[8].node.handle_commitment_signed(node_7_id, &cs);
+	nodes[8].node.handle_commitment_signed_batch_test(node_7_id, &cs);
 	check_added_monitors(&nodes[8], 1);
 
 	let (updates, raa) = get_updates_and_revoke(&nodes[8], &nodes[7].node.get_our_node_id());
@@ -4038,7 +4039,7 @@ fn test_single_channel_multiple_mpp() {
 		next_source += 1;
 	}
 
-	nodes[7].node.handle_commitment_signed(node_8_id, &updates.commitment_signed);
+	nodes[7].node.handle_commitment_signed_batch_test(node_8_id, &updates.commitment_signed);
 	nodes[7].node.handle_revoke_and_ack(node_8_id, &raa);
 	if updates.update_fulfill_htlcs.get(2).is_some() {
 		check_added_monitors(&nodes[7], 5);
@@ -4049,7 +4050,7 @@ fn test_single_channel_multiple_mpp() {
 	let (raa, cs) = get_revoke_commit_msgs(&nodes[7], &node_8_id);
 
 	nodes[8].node.handle_revoke_and_ack(node_7_id, &raa);
-	nodes[8].node.handle_commitment_signed(node_7_id, &cs);
+	nodes[8].node.handle_commitment_signed_batch_test(node_7_id, &cs);
 	check_added_monitors(&nodes[8], 2);
 
 	let (updates, raa) = get_updates_and_revoke(&nodes[8], &node_7_id);
@@ -4065,7 +4066,7 @@ fn test_single_channel_multiple_mpp() {
 		expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
 	}
 
-	nodes[7].node.handle_commitment_signed(node_8_id, &updates.commitment_signed);
+	nodes[7].node.handle_commitment_signed_batch_test(node_8_id, &updates.commitment_signed);
 	nodes[7].node.handle_revoke_and_ack(node_8_id, &raa);
 	if updates.update_fulfill_htlcs.get(2).is_some() {
 		check_added_monitors(&nodes[7], 5);
@@ -4075,7 +4076,7 @@ fn test_single_channel_multiple_mpp() {
 
 	let (raa, cs) = get_revoke_commit_msgs(&nodes[7], &node_8_id);
 	nodes[8].node.handle_revoke_and_ack(node_7_id, &raa);
-	nodes[8].node.handle_commitment_signed(node_7_id, &cs);
+	nodes[8].node.handle_commitment_signed_batch_test(node_7_id, &cs);
 	check_added_monitors(&nodes[8], 2);
 
 	let raa = get_event_msg!(nodes[8], MessageSendEvent::SendRevokeAndACK, node_7_id);

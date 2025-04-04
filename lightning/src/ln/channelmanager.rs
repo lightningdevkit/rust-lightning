@@ -3730,7 +3730,7 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &FundedChannel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
 		// a scid or a scid alias. Therefore reallocations may still occur, but is
@@ -3745,11 +3745,13 @@ where
 				let peer_state = &mut *peer_state_lock;
 				res.extend(peer_state.channel_by_id.iter()
 					// Only `Channels` in the `Channel::Funded` phase can be considered funded.
-					.filter_map(|(chan_id, chan)| chan.as_funded().map(|chan| (chan_id, chan)))
+					.filter(|(_, chan)| chan.is_funded())
 					.filter(f)
 					.map(|(_channel_id, channel)| {
-						ChannelDetails::from_channel_context(&channel.context, &channel.funding, best_block_height,
-							peer_state.latest_features.clone(), &self.fee_estimator)
+						ChannelDetails::from_channel(
+							channel, best_block_height, peer_state.latest_features.clone(),
+							&self.fee_estimator,
+						)
 					})
 				);
 			}
@@ -3772,9 +3774,11 @@ where
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				for (context, funding) in peer_state.channel_by_id.iter().map(|(_, chan)| (chan.context(), chan.funding())) {
-					let details = ChannelDetails::from_channel_context(context, funding, best_block_height,
-						peer_state.latest_features.clone(), &self.fee_estimator);
+				for (_, channel) in peer_state.channel_by_id.iter() {
+					let details = ChannelDetails::from_channel(
+						channel, best_block_height, peer_state.latest_features.clone(),
+						&self.fee_estimator,
+					);
 					res.push(details);
 				}
 			}
@@ -3792,7 +3796,7 @@ where
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
 		// really wanted anyway.
-		self.list_funded_channels_with_filter(|&(_, ref channel)| channel.context.is_live())
+		self.list_funded_channels_with_filter(|&(_, ref channel)| channel.context().is_live())
 	}
 
 	/// Gets the list of channels we have with a given counterparty, in random order.
@@ -3804,13 +3808,15 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			let features = &peer_state.latest_features;
-			let context_to_details = |(context, funding)| {
-				ChannelDetails::from_channel_context(context, funding, best_block_height, features.clone(), &self.fee_estimator)
+			let channel_to_details = |channel| {
+				ChannelDetails::from_channel(
+					channel, best_block_height, features.clone(), &self.fee_estimator,
+				)
 			};
 			return peer_state.channel_by_id
 				.iter()
-				.map(|(_, chan)| (chan.context(), chan.funding()))
-				.map(context_to_details)
+				.map(|(_, chan)| (chan))
+				.map(channel_to_details)
 				.collect();
 		}
 		vec![]
@@ -6066,7 +6072,7 @@ where
 								let maybe_optimal_channel = peer_state.channel_by_id.values_mut()
 									.filter_map(Channel::as_funded_mut)
 									.filter_map(|chan| {
-										let balances = chan.context.get_available_balances(&chan.funding, &self.fee_estimator);
+										let balances = chan.get_available_balances(&self.fee_estimator);
 										if outgoing_amt_msat <= balances.next_outbound_htlc_limit_msat &&
 											outgoing_amt_msat >= balances.next_outbound_htlc_minimum_msat &&
 											chan.context.is_usable() {
@@ -7692,6 +7698,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if let Some(update) = commitment_update {
 				pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
 					node_id: counterparty_node_id,
+					channel_id: channel.context.channel_id(),
 					updates: update,
 				});
 			}
@@ -8523,8 +8530,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 					peer_state.pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
 						node_id: counterparty_node_id,
+						channel_id: msg.channel_id,
 						updates: CommitmentUpdate {
-							commitment_signed,
+							commitment_signed: vec![commitment_signed],
 							update_add_htlcs: vec![],
 							update_fulfill_htlcs: vec![],
 							update_fail_htlcs: vec![],
@@ -9015,6 +9023,38 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+		}
+	}
+
+	fn internal_commitment_signed_batch(&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, batch: &BTreeMap<Txid, msgs::CommitmentSigned>) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				let chan = chan_entry.get_mut();
+				let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
+				let funding_txo = chan.funding().get_funding_txo();
+				if let Some(chan) = chan.as_funded_mut() {
+					let monitor_update_opt = try_channel_entry!(
+						self, peer_state, chan.commitment_signed_batch(batch, &&logger), chan_entry
+					);
+
+					if let Some(monitor_update) = monitor_update_opt {
+						handle_new_monitor_update!(
+							self, funding_txo.unwrap(), monitor_update, peer_state_lock, peer_state,
+							per_peer_state, chan
+						);
+					}
+				}
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), channel_id))
 		}
 	}
 
@@ -9732,6 +9772,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 				let cu_msg = msgs.commitment_update.map(|updates| MessageSendEvent::UpdateHTLCs {
 					node_id,
+					channel_id: chan.context().channel_id(),
 					updates,
 				});
 				let raa_msg = msgs.revoke_and_ack.map(|msg| MessageSendEvent::SendRevokeAndACK {
@@ -12125,6 +12166,11 @@ where
 	fn handle_commitment_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_commitment_signed(&counterparty_node_id, msg), counterparty_node_id);
+	}
+
+	fn handle_commitment_signed_batch(&self, counterparty_node_id: PublicKey, channel_id: ChannelId, batch: BTreeMap<Txid, msgs::CommitmentSigned>) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let _ = handle_error!(self, self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, &batch), counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
@@ -15095,17 +15141,17 @@ mod tests {
 		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
 		check_added_monitors!(nodes[1], 1);
 		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_first_cs);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
 		check_added_monitors!(nodes[1], 1);
 		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
-		nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
@@ -15113,7 +15159,7 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
 		check_added_monitors!(nodes[1], 1);
-		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
 		check_added_monitors!(nodes[1], 1);
 		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
@@ -16475,10 +16521,10 @@ pub mod bench {
 					Retry::Attempts(0)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc($node_a.get_our_node_id(), &payment_event.msgs[0]);
-				$node_b.handle_commitment_signed($node_a.get_our_node_id(), &payment_event.commitment_msg);
+				$node_b.handle_commitment_signed_batch_test($node_a.get_our_node_id(), &payment_event.commitment_msg);
 				let (raa, cs) = get_revoke_commit_msgs(&ANodeHolder { node: &$node_b }, &$node_a.get_our_node_id());
 				$node_a.handle_revoke_and_ack($node_b.get_our_node_id(), &raa);
-				$node_a.handle_commitment_signed($node_b.get_our_node_id(), &cs);
+				$node_a.handle_commitment_signed_batch_test($node_b.get_our_node_id(), &cs);
 				$node_b.handle_revoke_and_ack($node_a.get_our_node_id(), &get_event_msg!(ANodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
 
 				expect_pending_htlcs_forwardable!(ANodeHolder { node: &$node_b });
@@ -16487,17 +16533,17 @@ pub mod bench {
 				expect_payment_claimed!(ANodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
-					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+					MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
 						assert_eq!(node_id, $node_a.get_our_node_id());
 						$node_a.handle_update_fulfill_htlc($node_b.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-						$node_a.handle_commitment_signed($node_b.get_our_node_id(), &updates.commitment_signed);
+						$node_a.handle_commitment_signed_batch_test($node_b.get_our_node_id(), &updates.commitment_signed);
 					},
 					_ => panic!("Failed to generate claim event"),
 				}
 
 				let (raa, cs) = get_revoke_commit_msgs(&ANodeHolder { node: &$node_a }, &$node_b.get_our_node_id());
 				$node_b.handle_revoke_and_ack($node_a.get_our_node_id(), &raa);
-				$node_b.handle_commitment_signed($node_a.get_our_node_id(), &cs);
+				$node_b.handle_commitment_signed_batch_test($node_a.get_our_node_id(), &cs);
 				$node_a.handle_revoke_and_ack($node_b.get_our_node_id(), &get_event_msg!(ANodeHolder { node: &$node_b }, MessageSendEvent::SendRevokeAndACK, $node_a.get_our_node_id()));
 
 				expect_payment_sent!(ANodeHolder { node: &$node_a }, payment_preimage);

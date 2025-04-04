@@ -368,7 +368,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let prev_holder_commitment = Readable::read(reader)?;
 		let _prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>> = Readable::read(reader)?;
 
-		let channel_parameters = ReadableArgs::<u64>::read(reader, channel_value_satoshis)?;
+		let channel_parameters = ReadableArgs::<Option<u64>>::read(reader, Some(channel_value_satoshis))?;
 
 		// Read the serialized signer bytes, but don't deserialize them, as we'll obtain our signer
 		// by re-deriving the private key material.
