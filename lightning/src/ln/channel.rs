@@ -8548,10 +8548,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			Ok(res) => res,
 			Err(_) => return None,
 		};
-		match self.sign_channel_announcement(node_signer, announcement) {
-			Ok(res) => Some(res),
-			Err(_) => None,
-		}
+		self.sign_channel_announcement(node_signer, announcement).ok()
 	}
 
 	/// May panic if called on a channel that wasn't immediately-previously
