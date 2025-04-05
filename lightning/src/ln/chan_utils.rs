@@ -614,6 +614,13 @@ impl HTLCOutputInCommitment {
 	pub const fn to_bitcoin_amount(&self) -> Amount {
 		Amount::from_sat(self.amount_msat / 1000)
 	}
+
+	pub(crate) fn is_data_equal(&self, other: &HTLCOutputInCommitment) -> bool {
+		self.offered == other.offered
+			&& self.amount_msat == other.amount_msat
+			&& self.cltv_expiry == other.cltv_expiry
+			&& self.payment_hash == other.payment_hash
+	}
 }
 
 impl_writeable_tlv_based!(HTLCOutputInCommitment, {
@@ -1182,7 +1189,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 
 impl HolderCommitmentTransaction {
 	#[cfg(test)]
-	pub fn dummy(channel_value_satoshis: u64, htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
+	pub fn dummy(channel_value_satoshis: u64, nondust_htlcs: &Vec<HTLCOutputInCommitment>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -1205,11 +1212,10 @@ impl HolderCommitmentTransaction {
 			channel_value_satoshis,
 		};
 		let mut counterparty_htlc_sigs = Vec::new();
-		for _ in 0..htlcs.len() {
+		for _ in 0..nondust_htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, &dummy_key, 0, 0, 0, htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx);
-		htlcs.sort_by_key(|htlc| htlc.0.transaction_output_index);
+		let inner = CommitmentTransaction::new(0, &dummy_key, 0, 0, 0, nondust_htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx);
 		HolderCommitmentTransaction {
 			inner,
 			counterparty_sig: dummy_sig,
@@ -1430,7 +1436,7 @@ pub struct CommitmentTransaction {
 	feerate_per_kw: u32,
 	// The set of non-dust HTLCs included in the commitment. They must be sorted in increasing
 	// output index order.
-	htlcs: Vec<HTLCOutputInCommitment>,
+	nondust_htlcs: Vec<HTLCOutputInCommitment>,
 	// Note that on upgrades, some features of existing outputs may be missed.
 	channel_type_features: ChannelTypeFeatures,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
@@ -1446,7 +1452,7 @@ impl PartialEq for CommitmentTransaction {
 			self.to_broadcaster_value_sat == o.to_broadcaster_value_sat &&
 			self.to_countersignatory_value_sat == o.to_countersignatory_value_sat &&
 			self.feerate_per_kw == o.feerate_per_kw &&
-			self.htlcs == o.htlcs &&
+			self.nondust_htlcs == o.nondust_htlcs &&
 			self.channel_type_features == o.channel_type_features &&
 			self.keys == o.keys;
 		if eq {
@@ -1468,7 +1474,7 @@ impl Writeable for CommitmentTransaction {
 			(6, self.feerate_per_kw, required),
 			(8, self.keys, required),
 			(10, self.built, required),
-			(12, self.htlcs, required_vec),
+			(12, self.nondust_htlcs, required_vec),
 			(14, legacy_deserialization_prevention_marker, option),
 			(15, self.channel_type_features, required),
 		});
@@ -1486,7 +1492,7 @@ impl Readable for CommitmentTransaction {
 			(6, feerate_per_kw, required),
 			(8, keys, required),
 			(10, built, required),
-			(12, htlcs, required_vec),
+			(12, nondust_htlcs, required_vec),
 			(14, _legacy_deserialization_prevention_marker, (option, explicit_type: ())),
 			(15, channel_type_features, option),
 		});
@@ -1503,32 +1509,23 @@ impl Readable for CommitmentTransaction {
 			feerate_per_kw: feerate_per_kw.0.unwrap(),
 			keys: keys.0.unwrap(),
 			built: built.0.unwrap(),
-			htlcs,
+			nondust_htlcs,
 			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
 		})
 	}
 }
 
 impl CommitmentTransaction {
-	/// Construct an object of the class while assigning transaction output indices to HTLCs.
-	///
-	/// Populates HTLCOutputInCommitment.transaction_output_index in htlcs_with_aux.
-	///
-	/// The generic T allows the caller to match the HTLC output index with auxiliary data.
-	/// This auxiliary data is not stored in this object.
-	///
 	/// Only include HTLCs that are above the dust limit for the channel.
-	///
-	/// This is not exported to bindings users due to the generic though we likely should expose a version without
-	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>) -> CommitmentTransaction {
+	/// The broadcaster and countersignatory amounts MUST be EITHER 0 or ABOVE DUST.
+	pub fn new(commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, feerate_per_kw: u32, nondust_htlcs: &Vec<HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
 		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
 
-		// Sort outputs and populate output indices while keeping track of the auxiliary data
-		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters);
+		let (outputs, nondust_htlcs) = Self::build_outputs_and_htlcs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, nondust_htlcs, channel_parameters);
 
-		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
+		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
@@ -1537,7 +1534,7 @@ impl CommitmentTransaction {
 			to_countersignatory_value_sat,
 			to_broadcaster_delay: Some(channel_parameters.contest_delay()),
 			feerate_per_kw,
-			htlcs,
+			nondust_htlcs,
 			channel_type_features: channel_parameters.channel_type_features().clone(),
 			keys,
 			built: BuiltCommitmentTransaction {
@@ -1555,11 +1552,11 @@ impl CommitmentTransaction {
 		self
 	}
 
-	fn internal_rebuild_transaction(&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters) -> BuiltCommitmentTransaction {
-		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
+	fn rebuild_transaction(&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters) -> BuiltCommitmentTransaction {
+		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(self.commitment_number, channel_parameters);
 
-		let mut htlcs_with_aux = self.htlcs.iter().map(|h| (h.clone(), ())).collect();
-		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, channel_parameters);
+		let txout_htlc_pairs: Vec<(TxOut, Option<&HTLCOutputInCommitment>)> = Self::build_txout_htlc_pairs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &self.nondust_htlcs, channel_parameters);
+		let outputs = txout_htlc_pairs.into_iter().map(|(output, _)| output).collect();
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
@@ -1579,25 +1576,44 @@ impl CommitmentTransaction {
 		}
 	}
 
-	// Builds the set of outputs for the commitment transaction. There will be an output per
-	// non-dust HTLC, one output for the holder, another for the counterparty, and possibly anchor
-	// output(s).
+	// This function splits the txout-HTLC pairs into two vectors, one for the txouts, and another for the HTLCs.
+	// As it pushes each HTLC into the HTLC vector, this function also populates the output index of that HTLC.
+	fn build_outputs_and_htlcs(keys: &TxCreationKeys, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, nondust_htlcs: &Vec<HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters) -> (Vec<TxOut>, Vec<HTLCOutputInCommitment>) {
+		let txout_htlc_pairs: Vec<(TxOut, Option<&HTLCOutputInCommitment>)> = Self::build_txout_htlc_pairs(keys, to_broadcaster_value_sat, to_countersignatory_value_sat, &nondust_htlcs, channel_parameters);
+		let mut outputs: Vec<TxOut> = Vec::with_capacity(txout_htlc_pairs.len());
+		let mut nondust_htlcs: Vec<HTLCOutputInCommitment> = Vec::with_capacity(txout_htlc_pairs.len());
+		for (idx, (output, htlc)) in txout_htlc_pairs.into_iter().enumerate() {
+			if let Some(htlc) = htlc {
+				let mut htlc = htlc.clone();
+				htlc.transaction_output_index = Some(idx as u32);
+				nondust_htlcs.push(htlc);
+			}
+			outputs.push(output);
+		}
+		(outputs, nondust_htlcs)
+	}
+
+	// Builds the set of outputs for the commitment transaction. Each HTLC output is paired with its corresponding data.
+	// There will be an output for all passed HTLCs, since they are all non-dust.
+	// Then depending on amounts, and features, this function assigns holder, counterparty, and anchor outputs.
 	//
 	// The set of outputs are sorted according to BIP-69 ordering, guaranteeing that HTLCs are
 	// returned in increasing output index order.
 	//
 	// This is used in two cases:
-	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
-	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
-	// - building of a bitcoin transaction during a verify() call, in which case T is just ()
-	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> (Vec<TxOut>, Vec<HTLCOutputInCommitment>) {
+	// - initial sorting of outputs / HTLCs in the constructor, via `build_outputs_and_htlcs`
+	// - building of a bitcoin transaction during a verify() call
+	//
+	// Note that the HTLC data in the second column of the returned table is NOT populated with the
+	// output indices of the HTLCs; this is done in `build_outputs_and_htlcs`.
+	fn build_txout_htlc_pairs<'a>(keys: &TxCreationKeys, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, nondust_htlcs: &'a Vec<HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters) -> Vec<(TxOut, Option<&'a HTLCOutputInCommitment>)> {
 		let countersignatory_payment_point = &channel_parameters.countersignatory_pubkeys().payment_point;
 		let countersignatory_funding_key = &channel_parameters.countersignatory_pubkeys().funding_pubkey;
 		let broadcaster_funding_key = &channel_parameters.broadcaster_pubkeys().funding_pubkey;
 		let channel_type = channel_parameters.channel_type_features();
 		let contest_delay = channel_parameters.contest_delay();
 
-		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
+		let mut txout_htlc_pairs: Vec<(TxOut, Option<&HTLCOutputInCommitment>)> = Vec::with_capacity(nondust_htlcs.len() + 4);
 
 		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_type.supports_anchors_zero_fee_htlc_tx() {
@@ -1605,7 +1621,7 @@ impl CommitmentTransaction {
 			} else {
 				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_payment_point.serialize()).into())
 			};
-			txouts.push((
+			txout_htlc_pairs.push((
 				TxOut {
 					script_pubkey: script.clone(),
 					value: to_countersignatory_value_sat,
@@ -1620,7 +1636,7 @@ impl CommitmentTransaction {
 				contest_delay,
 				&keys.broadcaster_delayed_payment_key,
 			);
-			txouts.push((
+			txout_htlc_pairs.push((
 				TxOut {
 					script_pubkey: redeem_script.to_p2wsh(),
 					value: to_broadcaster_value_sat,
@@ -1630,9 +1646,9 @@ impl CommitmentTransaction {
 		}
 
 		if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			if to_broadcaster_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
+			if to_broadcaster_value_sat > Amount::ZERO || !nondust_htlcs.is_empty() {
 				let anchor_script = get_keyed_anchor_redeemscript(broadcaster_funding_key);
-				txouts.push((
+				txout_htlc_pairs.push((
 					TxOut {
 						script_pubkey: anchor_script.to_p2wsh(),
 						value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
@@ -1641,9 +1657,9 @@ impl CommitmentTransaction {
 				));
 			}
 
-			if to_countersignatory_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
+			if to_countersignatory_value_sat > Amount::ZERO || !nondust_htlcs.is_empty() {
 				let anchor_script = get_keyed_anchor_redeemscript(countersignatory_funding_key);
-				txouts.push((
+				txout_htlc_pairs.push((
 					TxOut {
 						script_pubkey: anchor_script.to_p2wsh(),
 						value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
@@ -1653,44 +1669,35 @@ impl CommitmentTransaction {
 			}
 		}
 
-		let mut htlcs = Vec::with_capacity(htlcs_with_aux.len());
-		for (htlc, _) in htlcs_with_aux {
+		for htlc in nondust_htlcs {
 			let script = get_htlc_redeemscript(htlc, channel_type, keys);
 			let txout = TxOut {
 				script_pubkey: script.to_p2wsh(),
 				value: htlc.to_bitcoin_amount(),
 			};
-			txouts.push((txout, Some(htlc)));
+			txout_htlc_pairs.push((txout, Some(htlc)));
 		}
 
 		// Sort output in BIP-69 order (amount, scriptPubkey).  Tie-breaks based on HTLC
 		// CLTV expiration height.
-		sort_outputs(&mut txouts, |a, b| {
-			if let &Some(ref a_htlcout) = a {
-				if let &Some(ref b_htlcout) = b {
-					a_htlcout.cltv_expiry.cmp(&b_htlcout.cltv_expiry)
+		sort_outputs(&mut txout_htlc_pairs, |a: &Option<&HTLCOutputInCommitment>, b: &Option<&HTLCOutputInCommitment>| {
+			if let Some(a) = a {
+				if let Some(b) = b {
+					a.cltv_expiry.cmp(&b.cltv_expiry)
 						// Note that due to hash collisions, we have to have a fallback comparison
 						// here for fuzzing mode (otherwise at least chanmon_fail_consistency
 						// may fail)!
-						.then(a_htlcout.payment_hash.0.cmp(&b_htlcout.payment_hash.0))
+						.then(a.payment_hash.cmp(&b.payment_hash))
 				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
 				// close the channel due to mismatches - they're doing something dumb:
 				} else { cmp::Ordering::Equal }
 			} else { cmp::Ordering::Equal }
 		});
 
-		let mut outputs = Vec::with_capacity(txouts.len());
-		for (idx, out) in txouts.drain(..).enumerate() {
-			if let Some(htlc) = out.1 {
-				htlc.transaction_output_index = Some(idx as u32);
-				htlcs.push(htlc.clone());
-			}
-			outputs.push(out.0);
-		}
-		(outputs, htlcs)
+		txout_htlc_pairs
 	}
 
-	fn internal_build_inputs(commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters) -> (u64, Vec<TxIn>) {
+	fn build_inputs(commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters) -> (u64, Vec<TxIn>) {
 		let broadcaster_pubkeys = channel_parameters.broadcaster_pubkeys();
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
 		let commitment_transaction_number_obscure_factor = get_commitment_transaction_number_obscure_factor(
@@ -1746,8 +1753,8 @@ impl CommitmentTransaction {
 	///
 	/// This is not exported to bindings users as we cannot currently convert Vec references to/from C, though we should
 	/// expose a less effecient version which creates a Vec of references in the future.
-	pub fn htlcs(&self) -> &Vec<HTLCOutputInCommitment> {
-		&self.htlcs
+	pub fn nondust_htlcs(&self) -> &Vec<HTLCOutputInCommitment> {
+		&self.nondust_htlcs
 	}
 
 	/// Trust our pre-built transaction and derived transaction creation public keys.
@@ -1773,7 +1780,7 @@ impl CommitmentTransaction {
 		if keys != self.keys {
 			return Err(());
 		}
-		let tx = self.internal_rebuild_transaction(&keys, channel_parameters);
+		let tx = self.rebuild_transaction(&keys, channel_parameters);
 		if self.built.transaction != tx.transaction || self.built.txid != tx.txid {
 			return Err(());
 		}
@@ -1831,10 +1838,10 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		let inner = self.inner;
 		let keys = &inner.keys;
 		let txid = inner.built.txid;
-		let mut ret = Vec::with_capacity(inner.htlcs.len());
+		let mut ret = Vec::with_capacity(inner.nondust_htlcs.len());
 		let holder_htlc_key = derive_private_key(secp_ctx, &inner.keys.per_commitment_point, htlc_base_key);
 
-		for this_htlc in inner.htlcs.iter() {
+		for this_htlc in inner.nondust_htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &self.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
@@ -1852,7 +1859,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		preimage: &Option<PaymentPreimage>,
 	) -> Transaction {
 		let keys = &self.inner.keys;
-		let this_htlc = &self.inner.htlcs[htlc_index];
+		let this_htlc = &self.inner.nondust_htlcs[htlc_index];
 		assert!(this_htlc.transaction_output_index.is_some());
 		// if we don't have preimage for an HTLC-Success, we can't generate an HTLC transaction.
 		if !this_htlc.offered && preimage.is_none() { unreachable!(); }
@@ -1874,7 +1881,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	) -> Witness {
 		let keys = &self.inner.keys;
 		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(
-			&self.inner.htlcs[htlc_index], &self.channel_type_features, &keys.broadcaster_htlc_key,
+			&self.inner.nondust_htlcs[htlc_index], &self.channel_type_features, &keys.broadcaster_htlc_key,
 			&keys.countersignatory_htlc_key, &keys.revocation_key
 		);
 		build_htlc_input_witness(
@@ -1998,7 +2005,7 @@ mod tests {
 		commitment_number: u64,
 		per_commitment_point: PublicKey,
 		feerate_per_kw: u32,
-		htlcs_with_aux: Vec<(HTLCOutputInCommitment, ())>,
+		nondust_htlcs: Vec<HTLCOutputInCommitment>,
 		channel_parameters: ChannelTransactionParameters,
 		counterparty_pubkeys: ChannelPublicKeys,
 		secp_ctx: Secp256k1::<secp256k1::All>,
@@ -2026,13 +2033,13 @@ mod tests {
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 				channel_value_satoshis: 3000,
 			};
-			let htlcs_with_aux = Vec::new();
+			let nondust_htlcs = Vec::new();
 
 			Self {
 				commitment_number: 0,
 				per_commitment_point,
 				feerate_per_kw: 1,
-				htlcs_with_aux,
+				nondust_htlcs,
 				channel_parameters,
 				counterparty_pubkeys,
 				secp_ctx,
@@ -2040,9 +2047,9 @@ mod tests {
 		}
 
 		fn build(&mut self, to_broadcaster_sats: u64, to_countersignatory_sats: u64) -> CommitmentTransaction {
-			CommitmentTransaction::new_with_auxiliary_htlc_data(
+			CommitmentTransaction::new(
 				self.commitment_number, &self.per_commitment_point, to_broadcaster_sats, to_countersignatory_sats, self.feerate_per_kw,
-				&mut self.htlcs_with_aux, &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
+				&self.nondust_htlcs, &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
 			)
 		}
 	}
@@ -2088,7 +2095,7 @@ mod tests {
 
 		// Generate broadcaster output and received and offered HTLC outputs,  w/o anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
-		builder.htlcs_with_aux = vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())];
+		builder.nondust_htlcs = vec![received_htlc.clone(), offered_htlc.clone()];
 		let tx = builder.build(3000, 0);
 		let keys = tx.trust().keys();
 		assert_eq!(tx.built.transaction.output.len(), 3);
@@ -2101,7 +2108,7 @@ mod tests {
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
-		builder.htlcs_with_aux = vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())];
+		builder.nondust_htlcs = vec![received_htlc.clone(), offered_htlc.clone()];
 		let tx = builder.build(3000, 0);
 		assert_eq!(tx.built.transaction.output.len(), 5);
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
