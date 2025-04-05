@@ -94,4 +94,5 @@ RUSTFLAGS='-D warnings' cargo clippy -- \
 	-A clippy::unnecessary_unwrap \
 	-A clippy::unused_unit \
 	-A clippy::useless_conversion \
-	-A clippy::unnecessary_map_or `# to be removed once we hit MSRV 1.70`
+	-A clippy::unnecessary_map_or `# to be removed once we hit MSRV 1.70` \
+	-A clippy::manual_repeat_n `# to be removed once we hit MSRV 1.86`
