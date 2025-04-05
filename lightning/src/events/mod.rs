@@ -23,11 +23,12 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::offers::invoice::Bolt12Invoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
@@ -949,6 +950,18 @@ pub enum Event {
 		///
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
+		/// The BOLT 12 invoice that was paid. `None` if the payment was a non BOLT 12 payment.
+		///
+		/// The BOLT 12 invoice is useful for proof of payment because it contains the
+		/// payment hash. A third party can verify that the payment was made by
+		/// showing the invoice and confirming that the payment hash matches
+		/// the hash of the payment preimage.
+		///
+		/// However, the [`PaidBolt12Invoice`] can also be of type [`StaticInvoice`], which
+		/// is a special [`Bolt12Invoice`] where proof of payment is not possible.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		bolt12_invoice: Option<PaidBolt12Invoice>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
 	/// provide failure information for each path attempt in the payment, including retries.
@@ -1556,7 +1569,7 @@ impl Writeable for Event {
 					(13, payment_id, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
+			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat, ref bolt12_invoice } => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
@@ -1564,6 +1577,7 @@ impl Writeable for Event {
 					(3, payment_id, option),
 					(5, fee_paid_msat, option),
 					(7, amount_msat, option),
+					(9, bolt12_invoice, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -1898,12 +1912,14 @@ impl MaybeReadable for Event {
 					let mut payment_id = None;
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
+					let mut bolt12_invoice = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
 						(3, payment_id, option),
 						(5, fee_paid_msat, option),
 						(7, amount_msat, option),
+						(9, bolt12_invoice, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
@@ -1914,6 +1930,7 @@ impl MaybeReadable for Event {
 						payment_hash: payment_hash.unwrap(),
 						amount_msat,
 						fee_paid_msat,
+						bolt12_invoice,
 					}))
 				};
 				f()
@@ -2438,3 +2455,19 @@ impl<T: EventHandler> EventHandler for Arc<T> {
 		self.deref().handle_event(event)
 	}
 }
+
+/// The BOLT 12 invoice that was paid, surfaced in [`Event::PaymentSent::bolt12_invoice`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaidBolt12Invoice {
+	/// The BOLT 12 invoice specified by the BOLT 12 specification,
+	/// allowing the user to perform proof of payment.
+	Bolt12Invoice(Bolt12Invoice),
+	/// The Static invoice, used in the async payment specification update proposal,
+	/// where the user cannot perform proof of payment.
+	StaticInvoice(StaticInvoice),
+ }
+
+impl_writeable_tlv_based_enum!(PaidBolt12Invoice,
+	{0, Bolt12Invoice} => (),
+	{2, StaticInvoice} => (),
+);

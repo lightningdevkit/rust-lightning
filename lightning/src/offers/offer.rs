@@ -743,7 +743,6 @@ impl Offer {
 			.chain(TlvStream::new(bytes).range(EXPERIMENTAL_OFFER_TYPES))
 	}
 
-	#[cfg(async_payments)]
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<(OfferId, Option<Keypair>), ()> {

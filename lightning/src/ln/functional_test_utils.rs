@@ -13,7 +13,7 @@
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, PathFailure, PaymentPurpose, PaymentFailureReason};
+use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -2317,7 +2317,7 @@ macro_rules! expect_payment_claimed {
 pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 	expected_payment_preimage: PaymentPreimage, expected_fee_msat_opt: Option<Option<u64>>,
 	expect_per_path_claims: bool, expect_post_ev_mon_update: bool,
-) {
+) -> Option<PaidBolt12Invoice> {
 	let events = node.node().get_and_clear_pending_events();
 	let expected_payment_hash = PaymentHash(
 		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).to_byte_array());
@@ -2329,8 +2329,10 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 	if expect_post_ev_mon_update {
 		check_added_monitors(node, 1);
 	}
+	// We return the invoice because some test may want to check the invoice details.
+	let invoice;
 	let expected_payment_id = match events[0] {
-		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat } => {
+		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat, ref bolt12_invoice } => {
 			assert_eq!(expected_payment_preimage, *payment_preimage);
 			assert_eq!(expected_payment_hash, *payment_hash);
 			assert!(amount_msat.is_some());
@@ -2339,6 +2341,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 			} else {
 				assert!(fee_paid_msat.is_some());
 			}
+			invoice = bolt12_invoice.clone();
 			payment_id.unwrap()
 		},
 		_ => panic!("Unexpected event"),
@@ -2354,19 +2357,20 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 			}
 		}
 	}
+	invoice
 }
 
 #[macro_export]
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
-		$crate::expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, true);
+		$crate::expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, true)
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
-		$crate::expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true);
+		$crate::expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true)
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => {
 		$crate::ln::functional_test_utils::expect_payment_sent(&$node, $expected_payment_preimage,
-			$expected_fee_msat_opt.map(|o| Some(o)), $expect_paths, true);
+			$expected_fee_msat_opt.map(|o| Some(o)), $expect_paths, true)
 	}
 }
 
@@ -3130,20 +3134,22 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 
 	expected_total_fee_msat
 }
-pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) {
+pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) -> Option<PaidBolt12Invoice> {
 	let origin_node = args.origin_node;
 	let payment_preimage = args.payment_preimage;
 	let skip_last = args.skip_last;
 	let expected_total_fee_msat = do_claim_payment_along_route(args);
 	if !skip_last {
-		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat));
+		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat))
+	} else {
+		None
 	}
 }
 
-pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_preimage: PaymentPreimage) {
+pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_preimage: PaymentPreimage) -> Option<PaidBolt12Invoice> {
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(origin_node, &[expected_route], our_payment_preimage)
-	);
+	)
 }
 
 pub const TEST_FINAL_CLTV: u32 = 70;
