@@ -123,7 +123,7 @@ use core::{cmp, mem};
 use core::borrow::Borrow;
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
+use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -10891,6 +10891,23 @@ where
 		now
 	}
 
+	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
+		self.per_peer_state.read().unwrap()
+			.iter()
+			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
+			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
+			.map(|(node_id, peer)| MessageForwardNode {
+				node_id: *node_id,
+				short_channel_id: peer.channel_by_id
+					.iter()
+					.filter(|(_, channel)| channel.context().is_usable())
+					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
+					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+			})
+			.collect::<Vec<_>>()
+	}
+
 	/// Creates a collection of blinded paths by delegating to
 	/// [`MessageRouter::create_blinded_paths`].
 	///
@@ -10899,13 +10916,10 @@ where
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
-		let peers = self.per_peer_state.read().unwrap()
-			.iter()
-			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
-			.filter(|(_, peer)| peer.is_connected)
-			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, _)| *node_id)
-			.collect::<Vec<_>>();
+		let peers = self.get_peers_for_blinded_path()
+			.into_iter()
+			.map(|node| node.node_id)
+			.collect();
 
 		self.message_router
 			.create_blinded_paths(recipient, context, peers, secp_ctx)
@@ -10920,20 +10934,7 @@ where
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
-		let peers = self.per_peer_state.read().unwrap()
-			.iter()
-			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
-			.filter(|(_, peer)| peer.is_connected)
-			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, peer)| MessageForwardNode {
-				node_id: *node_id,
-				short_channel_id: peer.channel_by_id
-					.iter()
-					.filter(|(_, channel)| channel.context().is_usable())
-					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
-					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
-			})
-			.collect::<Vec<_>>();
+		let peers = self.get_peers_for_blinded_path();
 
 		self.message_router
 			.create_compact_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
