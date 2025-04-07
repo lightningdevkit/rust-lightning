@@ -2318,6 +2318,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
 		change_destination_opt: Option<ScriptBuf>,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
 	{
@@ -2327,7 +2328,9 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
 
-		// TODO(splicing): Add prev funding tx as input, must be provided as a parameter
+		if let Some(prev_funding_input) = prev_funding_input {
+			funding_inputs.push(prev_funding_input);
+		}
 
 		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
