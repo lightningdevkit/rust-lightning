@@ -1153,7 +1153,7 @@ pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 ///
 ///   * The expected interval between ticks (1 minute).
 ///   * The average convergence delay of updates across the network, i.e., ~300 seconds on average
-///      for a node to see an update as seen on `<https://arxiv.org/pdf/2205.12737.pdf>`.
+///    for a node to see an update as seen on `<https://arxiv.org/pdf/2205.12737.pdf>`.
 ///   * `EXPIRE_PREV_CONFIG_TICKS` = convergence_delay / tick_interval
 pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
 

@@ -59,13 +59,13 @@
 //! - `SCIDPrivacy` - supply channel aliases for routing
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `PaymentMetadata` - include additional data in invoices which is passed to recipients in the
-//!    onion.
-//!    (see [BOLT-11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md) for
-//!    more).
+//!   onion.
+//!   (see [BOLT-11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md) for
+//!   more).
 //! - `ZeroConf` - supports accepting HTLCs and using channels prior to funding confirmation
-//!    (see
-//!    [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message)
-//!    for more info).
+//!   (see
+//!   [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message)
+//!   for more info).
 //! - `Keysend` - send funds to a node without an invoice
 //!   (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
 //! - `Trampoline` - supports receiving and forwarding Trampoline payments
