@@ -4139,21 +4139,24 @@ mod tests {
 			short_channel_id: 42,
 		});
 
-		// Apply some update to set the last-update time to now
-		scorer.payment_path_failed(&payment_path_for_amount(1000), 42, Duration::ZERO);
+		// Initialize the state for channel 42
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
+
+		// Apply an update to set the last-update time to 1 second
+		scorer.payment_path_failed(&payment_path_for_amount(490), 42, Duration::from_secs(1));
 
 		// If no time has passed, we get the full probing_diversity_penalty_msat
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_000_000);
 
 		// As time passes the penalty decreases.
-		scorer.time_passed(Duration::from_secs(1));
+		scorer.time_passed(Duration::from_secs(2));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 999_976);
 
-		scorer.time_passed(Duration::from_secs(2));
+		scorer.time_passed(Duration::from_secs(3));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 999_953);
 
 		// Once we've gotten halfway through the day our penalty is 1/4 the configured value.
-		scorer.time_passed(Duration::from_secs(86400/2));
+		scorer.time_passed(Duration::from_secs(86400/2 + 1));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 250_000);
 	}
 }
