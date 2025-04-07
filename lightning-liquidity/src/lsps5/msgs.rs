@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use super::url_utils::LSPSUrl;
 
-/// Maximum allowed length for an app_name (in bytes)
+/// Maximum allowed length for an `app_name` (in bytes)
 pub const MAX_APP_NAME_LENGTH: usize = 64;
 
 /// Maximum allowed length for a webhook URL (in characters)
@@ -39,84 +39,12 @@ pub(crate) const LSPS5_SET_WEBHOOK_METHOD_NAME: &str = "lsps5.set_webhook";
 pub(crate) const LSPS5_LIST_WEBHOOKS_METHOD_NAME: &str = "lsps5.list_webhooks";
 pub(crate) const LSPS5_REMOVE_WEBHOOK_METHOD_NAME: &str = "lsps5.remove_webhook";
 
-pub(crate) const LSPS5_WEBHOOK_REGISTERED: &str = "lsps5.webhook_registered";
-pub(crate) const LSPS5_PAYMENT_INCOMING: &str = "lsps5.payment_incoming";
-pub(crate) const LSPS5_EXPIRY_SOON: &str = "lsps5.expiry_soon";
-pub(crate) const LSPS5_LIQUIDITY_MANAGEMENT_REQUEST: &str = "lsps5.liquidity_management_request";
-pub(crate) const LSPS5_ONION_MESSAGE_INCOMING: &str = "lsps5.onion_message_incoming";
-
-/// Webhook notification methods defined in LSPS5
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum WebhookNotificationMethod {
-	/// Webhook has been successfully registered
-	LSPS5WebhookRegistered,
-	/// Client has payments pending to be received
-	LSPS5PaymentIncoming,
-	/// HTLC or time-bound contract is about to expire
-	LSPS5ExpirySoon {
-		/// Block height when timeout occurs and the LSP would be forced to close the channel
-		timeout: u32,
-	},
-	/// LSP wants to take back some liquidity
-	LSPS5LiquidityManagementRequest,
-	/// Client has onion messages pending
-	LSPS5OnionMessageIncoming,
-}
-
-impl WebhookNotificationMethod {
-	/// Extract parameters for JSON serialization
-	pub fn parameters_json_value(&self) -> serde_json::Value {
-		match self {
-			Self::LSPS5WebhookRegistered => serde_json::json!({}),
-			Self::LSPS5PaymentIncoming => serde_json::json!({}),
-			Self::LSPS5ExpirySoon { timeout } => serde_json::json!({ "timeout": timeout }),
-			Self::LSPS5LiquidityManagementRequest => serde_json::json!({}),
-			Self::LSPS5OnionMessageIncoming => serde_json::json!({}),
-		}
-	}
-}
-
-impl Serialize for WebhookNotificationMethod {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-	where
-		S: serde::Serializer,
-	{
-		match self {
-			Self::LSPS5WebhookRegistered => serializer.serialize_str(LSPS5_WEBHOOK_REGISTERED),
-			Self::LSPS5PaymentIncoming => serializer.serialize_str(LSPS5_PAYMENT_INCOMING),
-			Self::LSPS5ExpirySoon { .. } => serializer.serialize_str(LSPS5_EXPIRY_SOON),
-			Self::LSPS5LiquidityManagementRequest => {
-				serializer.serialize_str(LSPS5_LIQUIDITY_MANAGEMENT_REQUEST)
-			},
-			Self::LSPS5OnionMessageIncoming => {
-				serializer.serialize_str(LSPS5_ONION_MESSAGE_INCOMING)
-			},
-		}
-	}
-}
-
-impl<'de> Deserialize<'de> for WebhookNotificationMethod {
-	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-	where
-		D: serde::Deserializer<'de>,
-	{
-		let s = String::deserialize(deserializer)?;
-		match s.as_str() {
-			LSPS5_WEBHOOK_REGISTERED => Ok(Self::LSPS5WebhookRegistered),
-			LSPS5_PAYMENT_INCOMING => Ok(Self::LSPS5PaymentIncoming),
-			LSPS5_EXPIRY_SOON => {
-				// Default timeout when deserializing without params
-				// The actual timeout will be set from the params field later
-				Ok(Self::LSPS5ExpirySoon { timeout: 0 })
-			},
-			LSPS5_LIQUIDITY_MANAGEMENT_REQUEST => Ok(Self::LSPS5LiquidityManagementRequest),
-			LSPS5_ONION_MESSAGE_INCOMING => Ok(Self::LSPS5OnionMessageIncoming),
-			_ => {
-				Err(serde::de::Error::custom(format!("Unknown webhook notification method: {}", s)))
-			},
-		}
-	}
-}
+pub(crate) const LSPS5_WEBHOOK_REGISTERED_NOTIFICATION: &str = "lsps5.webhook_registered";
+pub(crate) const LSPS5_PAYMENT_INCOMING_NOTIFICATION: &str = "lsps5.payment_incoming";
+pub(crate) const LSPS5_EXPIRY_SOON_NOTIFICATION: &str = "lsps5.expiry_soon";
+pub(crate) const LSPS5_LIQUIDITY_MANAGEMENT_REQUEST_NOTIFICATION: &str =
+	"lsps5.liquidity_management_request";
+pub(crate) const LSPS5_ONION_MESSAGE_INCOMING_NOTIFICATION: &str = "lsps5.onion_message_incoming";
 
 /// App name for LSPS5 webhooks (max 64 bytes UTF-8)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -254,7 +182,7 @@ impl LSPS5WebhookUrl {
 		}
 
 		// Check for localhost and private IPs
-		if let Some(host) = self.0.host_str() {
+		if let Some(host) = self.0.host() {
 			if host == "localhost" || host.starts_with("127.") || host == "::1" {
 				return Err(LSPSResponseError {
 					code: LSPS5_URL_PARSE_ERROR_CODE,
@@ -368,6 +296,24 @@ pub struct RemoveWebhookRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RemoveWebhookResponse {}
 
+/// Webhook notification methods defined in LSPS5
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WebhookNotificationMethod {
+	/// Webhook has been successfully registered
+	LSPS5WebhookRegistered,
+	/// Client has payments pending to be received
+	LSPS5PaymentIncoming,
+	/// HTLC or time-bound contract is about to expire
+	LSPS5ExpirySoon {
+		/// Block height when timeout occurs and the LSP would be forced to close the channel
+		timeout: u32,
+	},
+	/// LSP wants to take back some liquidity
+	LSPS5LiquidityManagementRequest,
+	/// Client has onion messages pending
+	LSPS5OnionMessageIncoming,
+}
+
 /// Webhook notification payload
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebhookNotification {
@@ -416,8 +362,33 @@ impl Serialize for WebhookNotification {
 	{
 		let mut map = serializer.serialize_map(Some(3))?;
 		map.serialize_entry("jsonrpc", &self.jsonrpc)?;
-		map.serialize_entry("method", &self.method)?;
-		map.serialize_entry("params", &self.method.parameters_json_value())?;
+
+		let method_name = match &self.method {
+			WebhookNotificationMethod::LSPS5WebhookRegistered => {
+				LSPS5_WEBHOOK_REGISTERED_NOTIFICATION
+			},
+			WebhookNotificationMethod::LSPS5PaymentIncoming => LSPS5_PAYMENT_INCOMING_NOTIFICATION,
+			WebhookNotificationMethod::LSPS5ExpirySoon { .. } => LSPS5_EXPIRY_SOON_NOTIFICATION,
+			WebhookNotificationMethod::LSPS5LiquidityManagementRequest => {
+				LSPS5_LIQUIDITY_MANAGEMENT_REQUEST_NOTIFICATION
+			},
+			WebhookNotificationMethod::LSPS5OnionMessageIncoming => {
+				LSPS5_ONION_MESSAGE_INCOMING_NOTIFICATION
+			},
+		};
+		map.serialize_entry("method", &method_name)?;
+
+		let params = match &self.method {
+			WebhookNotificationMethod::LSPS5WebhookRegistered => serde_json::json!({}),
+			WebhookNotificationMethod::LSPS5PaymentIncoming => serde_json::json!({}),
+			WebhookNotificationMethod::LSPS5ExpirySoon { timeout } => {
+				serde_json::json!({ "timeout": timeout })
+			},
+			WebhookNotificationMethod::LSPS5LiquidityManagementRequest => serde_json::json!({}),
+			WebhookNotificationMethod::LSPS5OnionMessageIncoming => serde_json::json!({}),
+		};
+		map.serialize_entry("params", &params)?;
+
 		map.end()
 	}
 }
@@ -430,15 +401,19 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 		#[derive(Deserialize)]
 		struct Helper {
 			jsonrpc: String,
-			method: WebhookNotificationMethod,
+			method: String,
 			params: serde_json::Value,
 		}
 
 		let helper = Helper::deserialize(deserializer)?;
 
-		// Now update the method with parameters from the params field
-		let method = match helper.method {
-			WebhookNotificationMethod::LSPS5ExpirySoon { .. } => {
+		let method = match helper.method.as_str() {
+			LSPS5_WEBHOOK_REGISTERED_NOTIFICATION => {
+				WebhookNotificationMethod::LSPS5WebhookRegistered
+			},
+			LSPS5_PAYMENT_INCOMING_NOTIFICATION => WebhookNotificationMethod::LSPS5PaymentIncoming,
+			LSPS5_EXPIRY_SOON_NOTIFICATION => {
+				// Directly extract timeout from params
 				if let Some(timeout) = helper.params.get("timeout").and_then(|t| t.as_u64()) {
 					WebhookNotificationMethod::LSPS5ExpirySoon { timeout: timeout as u32 }
 				} else {
@@ -447,7 +422,15 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 					));
 				}
 			},
-			other => other,
+			LSPS5_LIQUIDITY_MANAGEMENT_REQUEST_NOTIFICATION => {
+				WebhookNotificationMethod::LSPS5LiquidityManagementRequest
+			},
+			LSPS5_ONION_MESSAGE_INCOMING_NOTIFICATION => {
+				WebhookNotificationMethod::LSPS5OnionMessageIncoming
+			},
+			_ => {
+				return Err(serde::de::Error::custom(format!("Unknown method: {}", helper.method)))
+			},
 		};
 
 		Ok(WebhookNotification { jsonrpc: helper.jsonrpc, method })
@@ -676,15 +659,6 @@ mod tests {
 		} else {
 			panic!("Expected LSPS5ExpirySoon variant after deserialization");
 		}
-	}
-
-	#[test]
-	fn test_notification_method_parameter_extraction() {
-		let method1 = WebhookNotificationMethod::LSPS5WebhookRegistered;
-		let method2 = WebhookNotificationMethod::LSPS5ExpirySoon { timeout: 500 };
-
-		assert_eq!(method1.parameters_json_value(), serde_json::json!({}));
-		assert_eq!(method2.parameters_json_value(), serde_json::json!({"timeout": 500}));
 	}
 
 	#[test]
