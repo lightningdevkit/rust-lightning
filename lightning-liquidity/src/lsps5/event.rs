@@ -71,8 +71,9 @@ pub enum LSPS5ServiceEvent {
 		request_id: LSPSRequestId,
 	},
 
-	/// This event occurs when the LSP needs to send a notification to a client's webhook.
+	/// A notification needs to be sent to a client's webhook
 	///
+	/// This event occurs when the LSP needs to send a notification to a client's webhook.
 	/// When this event is received, the LSP should:
 	/// 1. Serialize the notification to JSON
 	/// 2. Make an HTTP POST request to the provided URL with the given headers and the serialized notification
