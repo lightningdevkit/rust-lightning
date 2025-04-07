@@ -704,7 +704,7 @@ where C::Target: chain::Filter,
 		let our_peer_storage = OurPeerStorage::create_from_data(self.our_peerstorage_encryption_key.clone(), Vec::new(), self.entropy_source.get_secure_random_bytes());
 		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
 		self.pending_send_only_events.lock().unwrap().push(MessageSendEvent::SendPeerStorage { node_id: their_node_id,
-			msg: msgs::PeerStorage { data: our_peer_storage.encrypted_data() } })
+			msg: msgs::PeerStorage { data: our_peer_storage.into_vec() } })
 	}
 }
 

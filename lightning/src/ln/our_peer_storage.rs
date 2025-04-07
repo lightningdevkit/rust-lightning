@@ -20,27 +20,21 @@ use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::prelude::*;
 
 /// [`OurPeerStorage`] is used to store channel information that allows for the creation of a
-/// `peer_storage` backup. It includes versioning and timestamping for comparison between
-/// instances of [`OurPeerStorage`].
+/// `peer_storage` backup.
 ///
 /// This structure is designed to serialize channel data for backup and supports encryption
-/// and decryption to ensure data integrity and security during exchange or storage.
+/// and decryption using `ChaCha20Poly1305RFC` to ensure data integrity and security during exchange or storage.
 ///
 /// # Key Methods
-/// - `create_from_data`: Returns an encrypted [`OurPeerStorage`] instance created from the provided data.
-/// - `decrypt_our_peer_storage`: Decrypts the [`OurPeerStorage::encrypted_data`] using the key and returns decrypted data.
-///
-/// # Usage
-/// This structure can be used for securely managing and exchanging peer storage backups. It
-/// includes methods for encryption and decryption using `ChaCha20Poly1305RFC`, making it
-/// suitable for on-the-wire transmission.
+/// - [`OurPeerStorage::create_from_data`]: Returns an encrypted [`OurPeerStorage`] instance created from the provided data.
+/// - [`OurPeerStorage::decrypt_our_peer_storage`]: Decrypts the [`OurPeerStorage::encrypted_data`] using the key and returns decrypted data.
 ///
 /// ## Example
 /// ```
 /// use lightning::ln::our_peer_storage::OurPeerStorage;
 /// use lightning::sign::PeerStorageKey;
 /// let key = PeerStorageKey{inner: [0u8; 32]};
-/// let our_peer_storage = OurPeerStorage::create_from_data(key.clone(), vec![1, 2, 3]);
+/// let our_peer_storage = OurPeerStorage::create_from_data(key.clone(), vec![1, 2, 3], [0u8; 32]);
 /// let decrypted_data = our_peer_storage.decrypt_our_peer_storage(key).unwrap();
 /// assert_eq!(decrypted_data, vec![1, 2, 3]);
 /// ```
@@ -56,14 +50,15 @@ impl OurPeerStorage {
 	}
 
 	/// Get encrypted data stored inside [`OurPeerStorage`].
-	pub fn encrypted_data(&self) -> Vec<u8> {
-		self.encrypted_data.clone()
+	pub fn into_vec(self) -> Vec<u8> {
+		self.encrypted_data
 	}
 
 	/// Creates a serialised representation of [`OurPeerStorage`] from the given `ser_channels` data.
 	///
-	/// This function takes a `key` (for encryption) and `ser_channels` data
-	/// (serialised channel information), and returns a serialised [`OurPeerStorage`] as a `Vec<u8>`.
+	/// This function takes a `key` (for encryption), `ser_channels` data
+	/// (serialised channel information) and random_bytes (to derive nonce for encryption) and returns a serialised
+	/// [`OurPeerStorage`] as a `Vec<u8>`.
 	///
 	/// The resulting serialised data is intended to be directly used for transmission to the peers.
 	pub fn create_from_data(
