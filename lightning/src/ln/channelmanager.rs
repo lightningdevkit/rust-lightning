@@ -56,7 +56,7 @@ use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
-use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, RouteParametersConfig, Router, FixedRouter, Route};
+use crate::routing::router::{BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteHop, RouteParameters, RouteParametersConfig, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils::{self};
@@ -628,6 +628,7 @@ impl Readable for InterceptId {
 pub(crate) enum SentHTLCId {
 	PreviousHopData { short_channel_id: u64, htlc_id: u64 },
 	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
+	TrampolineForward { session_priv: [u8; SECRET_KEY_SIZE], previous_short_channel_id: u64, htlc_id: u64 }
 }
 impl SentHTLCId {
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
@@ -638,6 +639,11 @@ impl SentHTLCId {
 			},
 			HTLCSource::OutboundRoute { session_priv, .. } =>
 				Self::OutboundRoute { session_priv: session_priv.secret_bytes() },
+			HTLCSource::TrampolineForward { previous_hop_data, session_priv, .. } => Self::TrampolineForward {
+				session_priv: session_priv.secret_bytes(),
+				previous_short_channel_id: previous_hop_data.short_channel_id,
+				htlc_id: previous_hop_data.htlc_id,
+			},
 		}
 	}
 }
@@ -649,6 +655,11 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	(2, OutboundRoute) => {
 		(0, session_priv, required),
 	},
+	(4, TrampolineForward) => {
+		(0, session_priv, required),
+		(2, previous_short_channel_id, required),
+		(4, htlc_id, required),
+	},
 );
 
 mod fuzzy_channelmanager {
@@ -659,6 +670,12 @@ mod fuzzy_channelmanager {
 	#[derive(Clone, Debug, PartialEq, Eq)]
 	pub enum HTLCSource {
 		PreviousHopData(HTLCPreviousHopData),
+		TrampolineForward {
+			previous_hop_data: HTLCPreviousHopData,
+			incoming_trampoline_shared_secret: [u8; 32],
+			hops: Vec<RouteHop>,
+			session_priv: SecretKey,
+		},
 		OutboundRoute {
 			path: Path,
 			session_priv: SecretKey,
@@ -709,6 +726,13 @@ impl core::hash::Hash for HTLCSource {
 				session_priv[..].hash(hasher);
 				payment_id.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
+			},
+			HTLCSource::TrampolineForward { previous_hop_data, incoming_trampoline_shared_secret, hops, session_priv } => {
+				2u8.hash(hasher);
+				previous_hop_data.hash(hasher);
+				incoming_trampoline_shared_secret.hash(hasher);
+				hops.hash(hasher);
+				session_priv[..].hash(hasher);
 			},
 		}
 	}
@@ -7067,6 +7091,61 @@ where
 					failed_next_destination: destination,
 				}, None));
 			},
+			HTLCSource::TrampolineForward { previous_hop_data, incoming_trampoline_shared_secret, .. } => {
+				// todo: what do we want to do with this given we do not wish to propagate it directly?
+				let _decoded_onion_failure = onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
+
+				let incoming_packet_shared_secret = previous_hop_data.incoming_packet_shared_secret;
+				let channel_id = previous_hop_data.channel_id;
+				let short_channel_id = previous_hop_data.short_channel_id;
+				let htlc_id = previous_hop_data.htlc_id;
+				let blinded_failure = previous_hop_data.blinded_failure;
+				log_trace!(
+					WithContext::from(&self.logger, None, Some(channel_id), Some(*payment_hash)),
+					"Failing {}HTLC with payment_hash {} backwards from us following Trampoline forwarding failure: {:?}",
+					if blinded_failure.is_some() { "blinded " } else { "" }, &payment_hash, onion_error
+				);
+				let failure = match blinded_failure {
+					Some(BlindedFailure::FromIntroductionNode) => {
+						let blinded_onion_error = HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32]);
+						let err_packet = blinded_onion_error.get_encrypted_failure_packet(
+							&incoming_packet_shared_secret, &Some(incoming_trampoline_shared_secret.clone())
+						);
+						HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+					},
+					Some(BlindedFailure::FromBlindedNode) => {
+						HTLCForwardInfo::FailMalformedHTLC {
+							htlc_id,
+							failure_code: INVALID_ONION_BLINDING,
+							sha256_of_onion: [0; 32]
+						}
+					},
+					None => {
+						let err_code = 0x2000 | 25;
+						let err_packet = HTLCFailReason::reason(err_code, Vec::new())
+							.get_encrypted_failure_packet(&incoming_packet_shared_secret, &Some(incoming_trampoline_shared_secret.clone()));
+						HTLCForwardInfo::FailHTLC { htlc_id, err_packet }
+					}
+				};
+
+				push_forward_event = self.decode_update_add_htlcs.lock().unwrap().is_empty();
+				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+				push_forward_event &= forward_htlcs.is_empty();
+				match forward_htlcs.entry(short_channel_id) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(failure);
+					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec!(failure));
+					}
+				}
+				mem::drop(forward_htlcs);
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push_back((events::Event::HTLCHandlingFailed {
+					prev_channel_id: channel_id,
+					failed_next_destination: destination,
+				}, None));
+			},
 		}
 		push_forward_event
 	}
@@ -7471,7 +7550,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					session_priv, path, from_onchain, ev_completion_action, &self.pending_events,
 					&self.logger);
 			},
-			HTLCSource::PreviousHopData(hop_data) => {
+			HTLCSource::PreviousHopData(hop_data) | HTLCSource::TrampolineForward { previous_hop_data: hop_data, .. } => {
 				let prev_channel_id = hop_data.channel_id;
 				let prev_user_channel_id = hop_data.user_channel_id;
 				let prev_node_id = hop_data.counterparty_node_id;
@@ -13176,6 +13255,24 @@ impl Readable for HTLCSource {
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
+			2 => {
+				let mut previous_hop_data: crate::util::ser::RequiredWrapper<HTLCPreviousHopData> = crate::util::ser::RequiredWrapper(None);
+				let mut incoming_trampoline_shared_secret: crate::util::ser::RequiredWrapper<[u8; 32]> = crate::util::ser::RequiredWrapper(None);
+				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
+				let mut hops = Vec::new();
+				read_tlv_fields!(reader, {
+					(0, previous_hop_data, required),
+					(2, incoming_trampoline_shared_secret, required),
+					(4, session_priv, required),
+					(6, hops, required_vec),
+				});
+				Ok(HTLCSource::TrampolineForward {
+					previous_hop_data: previous_hop_data.0.unwrap(),
+					incoming_trampoline_shared_secret: incoming_trampoline_shared_secret.0.unwrap(),
+					hops,
+					session_priv: session_priv.0.unwrap(),
+				})
+			},
 			_ => Err(DecodeError::UnknownRequiredFeature),
 		}
 	}
@@ -13200,6 +13297,16 @@ impl Writeable for HTLCSource {
 			HTLCSource::PreviousHopData(ref field) => {
 				1u8.write(writer)?;
 				field.write(writer)?;
+			}
+			HTLCSource::TrampolineForward { ref previous_hop_data, ref incoming_trampoline_shared_secret, ref session_priv, hops: hops_ref } => {
+				2u8.write(writer)?;
+				let hops = hops_ref.clone();
+				write_tlv_fields!(writer, {
+					(0, previous_hop_data, required),
+					(2, incoming_trampoline_shared_secret, required),
+					(4, session_priv, required),
+					(6, hops, required_vec),
+				 });
 			}
 		}
 		Ok(())
@@ -14334,7 +14441,7 @@ where
 					for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs() {
 						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
 						match htlc_source {
-							HTLCSource::PreviousHopData(prev_hop_data) => {
+							HTLCSource::PreviousHopData(prev_hop_data) | HTLCSource::TrampolineForward { previous_hop_data: prev_hop_data, .. } => {
 								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
 									info.prev_funding_outpoint == prev_hop_data.outpoint &&
 										info.prev_htlc_id == prev_hop_data.htlc_id
