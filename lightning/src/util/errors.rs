@@ -123,6 +123,7 @@ pub(crate) fn get_onion_error_description(error_code: u16) -> (&'static str, &'s
 	match error_code {
 		_c if _c == PERM|1 => ("The realm byte was not understood by the processing node", "invalid_realm"),
 		_c if _c == NODE|2 => ("Node indicated temporary node failure", "temporary_node_failure"),
+		_c if _c == NODE|26 => ("Node indicated the fee amount or CLTV value was below that required by the Trampoline node", "trampoline_fee_or_expiry_insufficient"),
 		_c if _c == PERM|NODE|2 => ("Node indicated permanent node failure", "permanent_node_failure"),
 		_c if _c == PERM|NODE|3 => ("Node indicated the required node feature is missing in the onion", "required_node_feature_missing"),
 		_c if _c == BADONION|PERM|4 => ("Node indicated the version by is not understood", "invalid_onion_version"),
