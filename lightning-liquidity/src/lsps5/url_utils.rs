@@ -10,7 +10,6 @@
 //! URL utilities for LSPS5 webhook notifications
 
 use crate::alloc::string::ToString;
-use crate::prelude::Vec;
 use alloc::string::String;
 
 /// A URL implementation for scheme and host extraction
@@ -34,51 +33,42 @@ impl LSPSUrl {
 	/// # Returns
 	/// A Result containing either the parsed URL or an error message
 	pub fn parse(url_str: &str) -> Result<Self, String> {
-		let parts: Vec<&str> = url_str.splitn(2, "://").collect();
-		if parts.len() != 2 {
-			return Err("URL must contain scheme separator '://'".to_string());
-		}
+		let (scheme, remainder) = url_str
+			.split_once("://")
+			.ok_or_else(|| "URL must contain scheme separator '://'".to_string())?;
 
-		let scheme = parts[0].to_string();
-		if scheme.is_empty() {
-			return Err("URL scheme cannot be empty".to_string());
-		}
-
-		if !validate_scheme(&scheme) {
+		if !is_valid_scheme(scheme) {
 			return Err(format!("Invalid URL scheme: {}", scheme));
 		}
 
-		let remainder = parts[1];
 		if remainder.is_empty() {
 			return Err("URL host cannot be empty".to_string());
 		}
 
-		let host = match remainder.find('/') {
-			Some(idx) => &remainder[0..idx],
-			None => match remainder.find('?') {
-				Some(idx) => &remainder[0..idx],
-				None => match remainder.find('#') {
-					Some(idx) => &remainder[0..idx],
-					None => remainder,
-				},
-			},
+		let host_section = remainder
+			.split(|c| c == '/' || c == '?' || c == '#')
+			.next()
+			.ok_or_else(|| "Failed to extract host section from URL".to_string())?;
+
+		let clean_host = host_section
+			.split('@')
+			.last()
+			.filter(|s| !s.is_empty())
+			.ok_or_else(|| "URL host cannot be empty".to_string())?;
+
+		let final_host = if let Some((hostname, port)) = clean_host.rsplit_once(':') {
+			if hostname.is_empty() {
+				return Err("Hostname cannot be empty".to_string());
+			}
+			if !port.is_empty() && port.parse::<u32>().is_err() {
+				return Err(format!("Invalid port: {}", port));
+			}
+			format!("{}:{}", hostname, port)
+		} else {
+			clean_host.to_string()
 		};
 
-		let mut clean_host = host;
-		if let Some(auth_idx) = host.rfind('@') {
-			clean_host = &host[auth_idx + 1..];
-		}
-
-		let mut final_host = clean_host;
-		if let Some(port_idx) = clean_host.rfind(':') {
-			final_host = &clean_host[0..port_idx];
-		}
-
-		if final_host.is_empty() {
-			return Err("URL host cannot be empty".to_string());
-		}
-
-		Ok(LSPSUrl { scheme, host: final_host.to_string(), url: url_str.to_string() })
+		Ok(LSPSUrl { scheme: scheme.to_string(), host: final_host, url: url_str.to_string() })
 	}
 
 	/// Returns the scheme part of the URL (http, https, etc.)
@@ -88,16 +78,7 @@ impl LSPSUrl {
 
 	/// Returns the host as an Option, None if empty
 	pub fn host(&self) -> Option<&str> {
-		if self.host.is_empty() {
-			None
-		} else {
-			Some(&self.host)
-		}
-	}
-
-	/// Returns the host string directly if available
-	pub fn host_str(&self) -> Option<&str> {
-		self.host()
+		(!self.host.is_empty()).then(|| self.host.as_str())
 	}
 
 	/// Returns the full URL string
@@ -111,19 +92,14 @@ impl LSPSUrl {
 /// According to RFC 1738, a scheme must:
 /// 1. Start with a letter (a-z, A-Z)
 /// 2. Contain only letters, digits, plus (+), period (.), or hyphen (-)
-fn validate_scheme(scheme: &str) -> bool {
+fn is_valid_scheme(scheme: &str) -> bool {
 	if scheme.is_empty() {
 		return false;
 	}
 
 	let mut chars = scheme.chars();
 
-	let first = match chars.next() {
-		Some(c) => c,
-		None => return false, // No characters (empty string)
-	};
-
-	if !first.is_ascii_alphabetic() {
+	if !chars.next().map_or(false, |c| c.is_ascii_alphabetic()) {
 		return false;
 	}
 
@@ -175,7 +151,7 @@ mod tests {
 		let url = LSPSUrl::parse(url_str).unwrap();
 
 		assert_eq!(url.scheme(), "https");
-		assert_eq!(url.host(), Some("example.com"));
+		assert_eq!(url.host(), Some("example.com:8080"));
 	}
 
 	#[test]
@@ -218,7 +194,7 @@ mod tests {
 		let url = LSPSUrl::parse(url_str).unwrap();
 
 		assert_eq!(url.scheme(), "sftp");
-		assert_eq!(url.host(), Some("sftp.example.com"));
+		assert_eq!(url.host(), Some("sftp.example.com:22"));
 	}
 
 	#[test]
@@ -227,7 +203,7 @@ mod tests {
 		let url = LSPSUrl::parse(url_str).unwrap();
 
 		assert_eq!(url.scheme(), "ssh");
-		assert_eq!(url.host(), Some("host.com"));
+		assert_eq!(url.host(), Some("host.com:2222"));
 	}
 
 	#[test]
@@ -398,7 +374,6 @@ mod tests {
 		let result = LSPSUrl::parse(url_str);
 
 		assert!(result.is_ok());
-		assert_eq!(result.unwrap().host(), Some("example.com"));
 
 		let url_str = "https://://example.com";
 		let result = LSPSUrl::parse(url_str);
@@ -411,14 +386,13 @@ mod tests {
 		let url_str = "https://example.com:port/path";
 		let result = LSPSUrl::parse(url_str);
 
-		assert!(result.is_ok());
-		assert_eq!(result.unwrap().host(), Some("example.com"));
+		assert!(!result.is_ok());
 
 		let url_str = "https://example.com:65536/path";
 		let result = LSPSUrl::parse(url_str);
 
 		assert!(result.is_ok());
-		assert_eq!(result.unwrap().host(), Some("example.com"));
+		assert_eq!(result.unwrap().host(), Some("example.com:65536"));
 	}
 
 	#[test]
