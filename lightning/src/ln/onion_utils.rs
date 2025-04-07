@@ -992,8 +992,13 @@ pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 where
 	L::Target: Logger,
 {
+	let mut trampoline_forward_path_option = None;
 	let (path, primary_session_priv) = match htlc_source {
 		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+		HTLCSource::TrampolineForward { ref hops, ref session_priv, .. } => {
+			trampoline_forward_path_option.replace(Path { hops: hops.clone(), blinded_tail: None });
+			(trampoline_forward_path_option.as_ref().unwrap(), session_priv)
+		},
 		_ => unreachable!(),
 	};
 
