@@ -11,6 +11,9 @@
 //! It supports encryption and decryption to maintain data integrity and security during
 //! transmission.
 //!
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
+
 use crate::sign::PeerStorageKey;
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
@@ -63,13 +66,20 @@ impl OurPeerStorage {
 	/// (serialised channel information), and returns a serialised [`OurPeerStorage`] as a `Vec<u8>`.
 	///
 	/// The resulting serialised data is intended to be directly used for transmission to the peers.
-	pub fn create_from_data(key: PeerStorageKey, mut ser_channels: Vec<u8>) -> OurPeerStorage {
-		let n = 0u64;
+	pub fn create_from_data(
+		key: PeerStorageKey, mut ser_channels: Vec<u8>, random_bytes: [u8; 32],
+	) -> OurPeerStorage {
+		let key_hash = Sha256::const_hash(&key.inner);
 
 		let plaintext_len = ser_channels.len();
 
-		let mut nonce = [0; 12];
-		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+		// Compute Sha256(Sha256(key) + random_bytes).
+		let mut sha = Sha256::engine();
+		sha.input(&key_hash.to_byte_array());
+		sha.input(&random_bytes);
+
+		let mut nonce = [0u8; 12];
+		nonce[4..].copy_from_slice(&Sha256::from_engine(sha).to_byte_array()[0..8]);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
 		let mut tag = [0; 16];
@@ -77,13 +87,18 @@ impl OurPeerStorage {
 
 		ser_channels.extend_from_slice(&tag);
 
+		// Append `random_bytes` in front of the encrypted_blob.
+		ser_channels.splice(0..0, random_bytes);
 		Self { encrypted_data: ser_channels }
 	}
 
 	/// Decrypt `OurPeerStorage` using the `key`, result is stored inside the `res`.
 	/// Returns an error if the the `cyphertext` is not correct.
 	pub fn decrypt_our_peer_storage(mut self, key: PeerStorageKey) -> Result<Vec<u8>, ()> {
-		const MIN_CYPHERTEXT_LEN: usize = 16;
+		let key_hash = Sha256::const_hash(&key.inner);
+
+		// Length of tag + Length of random_bytes
+		const MIN_CYPHERTEXT_LEN: usize = 16 + 32;
 		let cyphertext_len = self.encrypted_data.len();
 
 		// Ensure the cyphertext is at least as large as the MIN_CYPHERTEXT_LEN.
@@ -91,12 +106,16 @@ impl OurPeerStorage {
 			return Err(());
 		}
 
-		// Split the cyphertext into the encrypted data and the authentication tag.
-		let (encrypted_data, tag) = self.encrypted_data.split_at_mut(cyphertext_len - 16);
+		// Ciphertext is of the form: random_bytes(32 bytes) + encrypted_data + tag(16 bytes).
+		let (data_mut, tag) = self.encrypted_data.split_at_mut(cyphertext_len - 16);
+		let (random_bytes, encrypted_data) = data_mut.split_at_mut(32);
 
-		let n = 0u64;
-		let mut nonce = [0; 12];
-		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+		let mut sha = Sha256::engine();
+		sha.input(&key_hash.to_byte_array());
+		sha.input(random_bytes);
+
+		let mut nonce = [0u8; 12];
+		nonce[4..].copy_from_slice(&Sha256::from_engine(sha).to_byte_array()[0..8]);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
 
@@ -105,6 +124,7 @@ impl OurPeerStorage {
 		}
 
 		self.encrypted_data.truncate(cyphertext_len - 16);
+		self.encrypted_data.drain(0..32);
 
 		Ok(self.encrypted_data)
 	}

@@ -101,6 +101,7 @@ type ChainMonitor = chainmonitor::ChainMonitor<
 	Arc<test_utils::TestFeeEstimator>,
 	Arc<test_utils::TestLogger>,
 	Arc<FilesystemStore>,
+	Arc<KeysManager>,
 >;
 
 type PGS = Arc<
@@ -431,6 +432,7 @@ pub(crate) fn create_liquidity_node(
 		logger.clone(),
 		fee_estimator.clone(),
 		kv_store.clone(),
+		keys_manager.clone(),
 		keys_manager.get_peer_storage_key(),
 	));
 	let best_block = BestBlock::from_network(network);

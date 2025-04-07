@@ -36,6 +36,7 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
+use lightning::sign::EntropySource;
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 #[cfg(feature = "std")]
@@ -911,8 +912,11 @@ impl BackgroundProcessor {
 		P: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
+		ES: 'static + Deref + Send,
 		M: 'static
-			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Deref<
+				Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>,
+			>
 			+ Send
 			+ Sync,
 		CM: 'static + Deref + Send + Sync,
@@ -935,6 +939,7 @@ impl BackgroundProcessor {
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 		PS::Target: 'static + Persister<'a, CM, L, S>,
+		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager + Send + Sync,
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
@@ -1160,6 +1165,7 @@ mod tests {
 		Arc<test_utils::TestFeeEstimator>,
 		Arc<test_utils::TestLogger>,
 		Arc<FilesystemStore>,
+		Arc<KeysManager>,
 	>;
 
 	type PGS = Arc<
@@ -1569,6 +1575,7 @@ mod tests {
 				logger.clone(),
 				fee_estimator.clone(),
 				kv_store.clone(),
+				keys_manager.clone(),
 				keys_manager.get_peer_storage_key(),
 			));
 			let best_block = BestBlock::from_network(network);

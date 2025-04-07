@@ -721,7 +721,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
 	Arc<L>,
 	IgnoringMessageHandler,
 	Arc<KeysManager>,
-	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>>>,
+	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>, Arc<KeysManager>>>,
 >;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
@@ -743,7 +743,7 @@ pub type SimpleRefPeerManager<
 	&'logger L,
 	IgnoringMessageHandler,
 	&'c KeysManager,
-	&'j ChainMonitor<&'a M, C, &'b T, &'c F, &'logger L, &'c KeysManager>,
+	&'j ChainMonitor<&'a M, C, &'b T, &'c F, &'logger L, &'c KeysManager, &'c KeysManager>,
 >;
 
 
