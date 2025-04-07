@@ -9,6 +9,7 @@ use lightning::sign::EntropySource;
 
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::secp256k1::SecretKey;
 use bitcoin::Network;
 use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 use lightning::chain::{chainmonitor, BestBlock, Confirm};
@@ -34,6 +35,8 @@ use lightning::util::persist::{
 	SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::test_utils;
+use lightning_liquidity::lsps2::client::{LSPS2ClientConfig, LSPS2ClientHandler};
+use lightning_liquidity::lsps2::service::{LSPS2ServiceConfig, LSPS2ServiceHandler};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManager, LiquidityServiceConfig};
 use lightning_persister::fs_store::FilesystemStore;
 
@@ -487,7 +490,7 @@ pub(crate) fn create_liquidity_node(
 	}
 }
 
-pub(crate) fn create_service_and_client_nodes(
+fn create_service_and_client_nodes(
 	persist_dir: &str, service_config: LiquidityServiceConfig, client_config: LiquidityClientConfig,
 ) -> (Node, Node) {
 	let persist_temp_path = env::temp_dir().join(persist_dir);
@@ -670,4 +673,54 @@ fn advance_chain(node: &mut Node, num_blocks: u32) {
 			node.chain_monitor.best_block_updated(&header, height);
 		}
 	}
+}
+
+pub(crate) fn setup_test_lsps2() -> (
+	&'static LSPS2ClientHandler<Arc<KeysManager>>,
+	&'static LSPS2ServiceHandler<Arc<ChannelManager>>,
+	bitcoin::secp256k1::PublicKey,
+	bitcoin::secp256k1::PublicKey,
+	&'static Node,
+	&'static Node,
+	[u8; 32],
+) {
+	let promise_secret = [42; 32];
+	let signing_key = SecretKey::from_slice(&promise_secret).unwrap();
+	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
+	let service_config = LiquidityServiceConfig {
+		#[cfg(lsps1_service)]
+		lsps1_service_config: None,
+		lsps2_service_config: Some(lsps2_service_config),
+		advertise_service: true,
+	};
+
+	let lsps2_client_config = LSPS2ClientConfig::default();
+	let client_config = LiquidityClientConfig {
+		lsps1_client_config: None,
+		lsps2_client_config: Some(lsps2_client_config),
+	};
+
+	let (service_node, client_node) =
+		create_service_and_client_nodes("webhook_registration_flow", service_config, client_config);
+
+	// Leak the nodes to extend their lifetime to 'static since this is test code
+	let service_node = Box::leak(Box::new(service_node));
+	let client_node = Box::leak(Box::new(client_node));
+
+	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	let secp = bitcoin::secp256k1::Secp256k1::new();
+	let service_node_id = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
+	let client_node_id = client_node.channel_manager.get_our_node_id();
+
+	(
+		client_handler,
+		service_handler,
+		service_node_id,
+		client_node_id,
+		service_node,
+		client_node,
+		promise_secret,
+	)
 }
