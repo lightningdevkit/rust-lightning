@@ -845,7 +845,7 @@ pub fn get_err_msg(node: &Node, recipient: &PublicKey) -> msgs::ErrorMessage {
 			assert_eq!(node_id, recipient);
 			msg.as_ref().unwrap().clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events[0]),
 	}
 }
 
