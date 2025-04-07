@@ -13,7 +13,7 @@
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, PathFailure, PaymentPurpose, PaymentFailureReason};
+use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCHandlingType, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -24,6 +24,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEven
 use crate::ln::outbound_payment::Retry;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::onion_message::messenger::OnionMessenger;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
@@ -1968,8 +1969,8 @@ macro_rules! expect_htlc_handling_failed_destinations {
 		for event in $events {
 			match event {
 				$crate::events::Event::PendingHTLCsForwardable { .. } => { },
-				$crate::events::Event::HTLCHandlingFailed { ref failed_next_destination, .. } => {
-					assert!($expected_failures.contains(&failed_next_destination));
+				$crate::events::Event::HTLCHandlingFailed { ref handling_type, .. } => {
+					assert!($expected_failures.contains(&handling_type));
 					num_expected_failures -= 1;
 				},
 				_ => panic!("Unexpected destination"),
@@ -1980,9 +1981,9 @@ macro_rules! expect_htlc_handling_failed_destinations {
 }
 
 /// Checks that an [`Event::PendingHTLCsForwardable`] is available in the given events and, if
-/// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCDestination`] is included in the
+/// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCHandlingType`] is included in the
 /// `expected_failures` set.
-pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCDestination]) {
+pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCHandlingType]) {
 	let count = expected_failures.len() + 1;
 	assert_eq!(events.len(), count);
 	assert!(events.iter().find(|event| matches!(event, Event::PendingHTLCsForwardable { .. })).is_some());
@@ -2152,7 +2153,7 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 
 	if fail_backwards {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node_a,
-			vec![crate::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id }]);
+			vec![crate::events::HTLCHandlingType::ForwardFailed{ node_id: Some(node_b.node.get_our_node_id()), channel_id }]);
 		check_added_monitors!(node_a, 1);
 
 		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
@@ -2511,7 +2512,7 @@ pub fn expect_probe_successful_events(node: &Node, mut probe_results: Vec<(Payme
 }
 
 pub struct PaymentFailedConditions<'a> {
-	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,
+	pub(crate) expected_htlc_error_data: Option<(LocalHTLCFailureReason, &'a [u8])>,
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
@@ -2540,8 +2541,8 @@ impl<'a> PaymentFailedConditions<'a> {
 		self.expected_blamed_chan_closed = Some(closed);
 		self
 	}
-	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
-		self.expected_htlc_error_data = Some((code, data));
+	pub fn expected_htlc_error_data(mut self, reason: LocalHTLCFailureReason, data: &'a [u8]) -> Self {
+		self.expected_htlc_error_data = Some((reason, data));
 		self
 	}
 	pub fn retry_expected(mut self) -> Self {
@@ -2562,11 +2563,11 @@ macro_rules! expect_payment_failed_with_update {
 
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! expect_payment_failed {
-	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
+	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_reason: expr, $expected_error_data: expr)*) => {
 		#[allow(unused_mut)]
 		let mut conditions = $crate::ln::functional_test_utils::PaymentFailedConditions::new();
 		$(
-			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
+			conditions = conditions.expected_htlc_error_data($expected_error_reason, &$expected_error_data);
 		)*
 		$crate::ln::functional_test_utils::expect_payment_failed_conditions(&$node, $expected_payment_hash, $payment_failed_permanently, conditions);
 	};
@@ -2587,8 +2588,9 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
+				let reason: LocalHTLCFailureReason = error_code.unwrap().into();
 				if let Some((code, data)) = conditions.expected_htlc_error_data {
-					assert_eq!(error_code.unwrap(), code, "unexpected error code");
+					assert_eq!(reason, code, "unexpected error code");
 					assert_eq!(&error_data.as_ref().unwrap()[..], data, "unexpected error data");
 				}
 			}
@@ -2680,7 +2682,7 @@ pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
 	pub is_probe: bool,
 	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
 	pub payment_metadata: Option<Vec<u8>>,
-	pub expected_failure: Option<HTLCDestination>,
+	pub expected_failure: Option<HTLCHandlingType>,
 }
 
 impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
@@ -2723,7 +2725,7 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		self.payment_metadata = Some(payment_metadata);
 		self
 	}
-	pub fn expect_failure(mut self, failure: HTLCDestination) -> Self {
+	pub fn expect_failure(mut self, failure: HTLCHandlingType) -> Self {
 		self.payment_claimable_expected = false;
 		self.expected_failure = Some(failure);
 		self
@@ -2862,7 +2864,7 @@ pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expect
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
 		expect_htlc_handling_failed_destinations!(
 			path.last().unwrap().node.get_and_clear_pending_events(),
-			&[HTLCDestination::FailedPayment { payment_hash: *payment_hash }]
+			&[HTLCHandlingType::ReceiveFailed { payment_hash: *payment_hash }]
 		);
 	}
 }
@@ -3174,7 +3176,7 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash);
-	let expected_destinations: Vec<HTLCDestination> = repeat(HTLCDestination::FailedPayment { payment_hash: our_payment_hash }).take(expected_paths.len()).collect();
+	let expected_destinations: Vec<HTLCHandlingType> = repeat(HTLCHandlingType::ReceiveFailed { payment_hash: our_payment_hash }).take(expected_paths.len()).collect();
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(expected_paths[0].last().unwrap(), expected_destinations);
 
 	pass_failed_payment_back(origin_node, expected_paths, skip_last, our_payment_hash, PaymentFailureReason::RecipientRejected);
@@ -3217,7 +3219,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 				node.node.handle_update_fail_htlc(prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 				commitment_signed_dance!(node, prev_node, next_msgs.as_ref().unwrap().1, update_next_node);
 				if !update_next_node {
-					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node, vec![HTLCDestination::NextHopChannel { node_id: Some(prev_node.node.get_our_node_id()), channel_id: next_msgs.as_ref().unwrap().0.channel_id }]);
+					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node, vec![HTLCHandlingType::ForwardFailed { node_id: Some(prev_node.node.get_our_node_id()), channel_id: next_msgs.as_ref().unwrap().0.channel_id }]);
 				}
 			}
 			let events = node.node.get_and_clear_pending_msg_events();
