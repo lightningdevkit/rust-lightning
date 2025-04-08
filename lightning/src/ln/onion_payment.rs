@@ -36,6 +36,14 @@ pub struct InboundHTLCErr {
 	pub msg: &'static str,
 }
 
+/// Writes payment data for invalid or unknown payment error code.
+pub (super) fn invalid_payment_err_data(amt_msat: u64, current_height: u32) -> Vec<u8>{
+	let mut err_data = Vec::with_capacity(12);
+	err_data.extend_from_slice(&amt_msat.to_be_bytes());
+	err_data.extend_from_slice(&current_height.to_be_bytes());
+	err_data
+}
+
 fn check_blinded_payment_constraints(
 	amt_msat: u64, cltv_expiry: u32, constraints: &PaymentConstraints
 ) -> Result<(), ()> {
@@ -333,11 +341,9 @@ pub(super) fn create_recv_pending_htlc_info(
 	// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
 	// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
 	if cltv_expiry <= current_height + HTLC_FAIL_BACK_BUFFER + 1 {
-		let mut err_data = Vec::with_capacity(12);
-		err_data.extend_from_slice(&amt_msat.to_be_bytes());
-		err_data.extend_from_slice(&current_height.to_be_bytes());
 		return Err(InboundHTLCErr {
-			err_code: 0x4000 | 15, err_data,
+			err_code: 0x4000 | 15,
+			err_data: invalid_payment_err_data(amt_msat, current_height),
 			msg: "The final CLTV expiry is too soon to handle",
 		});
 	}
@@ -361,8 +367,8 @@ pub(super) fn create_recv_pending_htlc_info(
 		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 		if hashed_preimage != payment_hash {
 			return Err(InboundHTLCErr {
-				err_code: 0x4000|22,
-				err_data: Vec::new(),
+				err_code: 0x4000 | 15,
+				err_data: invalid_payment_err_data(amt_msat, current_height),
 				msg: "Payment preimage didn't match payment hash",
 			});
 		}
