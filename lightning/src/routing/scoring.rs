@@ -1556,6 +1556,7 @@ DirectedChannelLiquidity<L, HT, T> {
 				chan_descr, existing_max_msat, amount_msat);
 		}
 		self.update_history_buckets(0, duration_since_epoch);
+		*self.last_datapoint_time = duration_since_epoch;
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
@@ -1571,6 +1572,7 @@ DirectedChannelLiquidity<L, HT, T> {
 				chan_descr, existing_min_msat, amount_msat);
 		}
 		self.update_history_buckets(0, duration_since_epoch);
+		*self.last_datapoint_time = duration_since_epoch;
 	}
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
@@ -1580,6 +1582,7 @@ DirectedChannelLiquidity<L, HT, T> {
 		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
 		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
 		self.set_max_liquidity_msat(max_liquidity_msat, duration_since_epoch);
+		*self.last_datapoint_time = duration_since_epoch;
 		self.update_history_buckets(amount_msat, duration_since_epoch);
 	}
 
@@ -1603,7 +1606,6 @@ DirectedChannelLiquidity<L, HT, T> {
 			*self.max_liquidity_offset_msat = 0;
 		}
 		*self.last_updated = duration_since_epoch;
-		*self.last_datapoint_time = duration_since_epoch;
 	}
 
 	/// Adjusts the upper bound of the channel liquidity balance in this direction.
@@ -1613,7 +1615,6 @@ DirectedChannelLiquidity<L, HT, T> {
 			*self.min_liquidity_offset_msat = 0;
 		}
 		*self.last_updated = duration_since_epoch;
-		*self.last_datapoint_time = duration_since_epoch;
 	}
 }
 
@@ -4143,7 +4144,7 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::ZERO);
 
 		// Apply an update to set the last-update time to 1 second
-		scorer.payment_path_failed(&payment_path_for_amount(490), 42, Duration::from_secs(1));
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42, Duration::from_secs(1));
 
 		// If no time has passed, we get the full probing_diversity_penalty_msat
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_000_000);
