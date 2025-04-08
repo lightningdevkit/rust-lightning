@@ -1050,33 +1050,6 @@ impl BackgroundProcessor {
 		}
 	}
 
-	/// Creates a new [`BackgroundProcessorBuilder`] to construct a   [`BackgroundProcessor`] with optional components.
-	pub fn builder<'a, PS, EH, M, CM, PGS, RGS, G, UL, L, PM>(
-		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
-	) -> BackgroundProcessorBuilder<'a, PS, EH, M, CM, (), PGS, RGS, G, UL, L, PM, ()>
-	where
-		PS: 'static + Deref + Send,
-		EH: 'static + EventHandler + Send,
-		M: 'static + Deref + Send + Sync,
-		CM: 'static + Deref + Send + Sync,
-		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
-		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
-		UL: 'static + Deref + Send + Sync,
-		L: 'static + Deref + Send + Sync,
-		PM: 'static + Deref + Send + Sync,
-	{
-		BackgroundProcessorBuilder::new(
-			persister,
-			event_handler,
-			chain_monitor,
-			channel_manager,
-			gossip_sync,
-			peer_manager,
-			logger,
-		)
-	}
 }
 
 /// A builder for constructing a [`BackgroundProcessor`] with optional components.
@@ -1084,8 +1057,6 @@ impl BackgroundProcessor {
 /// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessor`]
 /// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
 /// concrete types for components that aren't being used.
-///
-/// Use [`BackgroundProcessor::builder`] to create a new builder instance.
 #[cfg(feature = "std")]
 pub struct BackgroundProcessorBuilder<
 	'a,
@@ -1169,7 +1140,7 @@ where
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
 {
-	/// Creates a new builder instance. This is an internal method - use [`BackgroundProcessor::builder`] instead.
+	/// Creates a new builder instance.
 	pub(crate) fn new(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
@@ -2906,7 +2877,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::builder(
+		let bg_processor = BackgroundProcessorBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
