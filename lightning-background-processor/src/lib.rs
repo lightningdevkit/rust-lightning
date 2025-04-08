@@ -1050,55 +1050,6 @@ impl BackgroundProcessor {
 		}
 	}
 
-	/// Creates a new [`BackgroundProcessorBuilder`] to construct a   [`BackgroundProcessor`] with optional components.
-	pub fn builder<
-		'a,
-		UL: 'static + Deref + Send + Sync,
-		CF: 'static + Deref + Send + Sync,
-		T: 'static + Deref + Send + Sync,
-		F: 'static + Deref + Send + Sync,
-		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
-		L: 'static + Deref + Send + Sync,
-		P: 'static + Deref + Send + Sync,
-		EH: 'static + EventHandler + Send,
-		PS: 'static + Deref + Send,
-		M: 'static
-			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
-			+ Send
-			+ Sync,
-		CM: 'static + Deref + Send + Sync,
-		OM: 'static + Deref + Send + Sync,
-		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
-		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-		PM: 'static + Deref + Send + Sync,
-		S: 'static + Deref<Target = SC> + Send + Sync,
-		SC: for<'b> WriteableScore<'b>,
-	>(
-		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
-	) -> BackgroundProcessorBuilder<'a, UL, CF, T, F, G, L, P, EH, PS, M, CM, OM, PGS, RGS, PM, S, SC>
-	where
-		UL::Target: 'static + UtxoLookup,
-		CF::Target: 'static + chain::Filter,
-		T::Target: 'static + BroadcasterInterface,
-		F::Target: 'static + FeeEstimator,
-		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, S>,
-		CM::Target: AChannelManager + Send + Sync,
-		OM::Target: AOnionMessenger + Send + Sync,
-		PM::Target: APeerManager + Send + Sync,
-	{
-		BackgroundProcessorBuilder::new(
-			persister,
-			event_handler,
-			chain_monitor,
-			channel_manager,
-			gossip_sync,
-			peer_manager,
-			logger,
-		)
-	}
 }
 
 /// A builder for constructing a [`BackgroundProcessor`] with optional components.
@@ -1106,8 +1057,6 @@ impl BackgroundProcessor {
 /// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessor`]
 /// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
 /// concrete types for components that aren't being used.
-///
-/// Use [`BackgroundProcessor::builder`] to create a new builder instance.
 #[cfg(feature = "std")]
 pub struct BackgroundProcessorBuilder<
 	'a,
@@ -1191,8 +1140,8 @@ where
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
 {
-	/// Creates a new builder instance. This is an internal method - use [`BackgroundProcessor::builder`] instead.
-	pub fn new(
+	/// Creates a new builder instance.
+	pub(crate) fn new(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
 	) -> Self {
@@ -2928,7 +2877,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::builder(
+		let bg_processor = BackgroundProcessorBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
