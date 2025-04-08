@@ -1212,7 +1212,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedV2(chan) => &chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => chan.funded_channel.context(),
+			ChannelPhase::RefundingV2(chan) => chan.context(),
 		}
 	}
 
@@ -1224,7 +1224,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedInboundV1(chan) => &mut chan.context,
 			ChannelPhase::UnfundedV2(chan) => &mut chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2(chan) => chan.funded_channel.context_mut(),
+			ChannelPhase::RefundingV2(chan) => chan.context_mut(),
 		}
 	}
 
@@ -1550,7 +1550,7 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, signing_session: InteractiveTxSigningSession, logger: &L
+		&mut self, counterparty_node_id: &PublicKey, signing_session: InteractiveTxSigningSession, logger: &L
 	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
@@ -1558,15 +1558,15 @@ impl<SP: Deref> Channel<SP> where
 		match self.phase {
 			ChannelPhase::UnfundedV2(ref mut chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let (commitment_signed, event) = chan.funding_tx_constructed(signing_session, &&logger)?;
+				let (commitment_signed, event) = chan.funding_tx_constructed(counterparty_node_id, signing_session, &&logger)?;
 				Ok((commitment_signed, event))
 			}
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2(ref mut chan) => {
-				let logger = WithChannelContext::from(logger, &chan.funded_channel.context, None);
+				let logger = WithChannelContext::from(logger, &chan.context(), None);
 				// let (signing_session, holder_commitment_point, commitment_signed, event) =
 				let (commitment_signed, event) =
-					chan.funding_tx_constructed(signing_session, &&logger)?;
+					chan.funding_tx_constructed(counterparty_node_id, signing_session, &&logger)?;
 				let _res = self.phase_from_splice_to_funded()?;
 				Ok((commitment_signed, event))
 			}
@@ -1609,7 +1609,7 @@ impl<SP: Deref> Channel<SP> where
 				holder_commitment_point: chan.funded_channel.holder_commitment_point,
 				is_v2_established: true,
 				pending_splice: None,
-				pending_splice_post: None,
+				// pending_splice_post: None,
 			});
 			Ok(())
 		} else {
@@ -1708,8 +1708,8 @@ impl<SP: Deref> Channel<SP> where
 					is_v2_established: true,
 					#[cfg(splicing)]
 					pending_splice: None,
-					#[cfg(splicing)]
-					pending_splice_post: None,
+					// #[cfg(splicing)]
+					// pending_splice_post: None,
 				};
 				let res = funded_channel.commitment_signed_initial_v2(msg, best_block, signer_provider, logger)
 					.map(|monitor| (Some(monitor), None))
@@ -1819,7 +1819,7 @@ struct RefundingChannel<SP: Deref> where SP::Target: SignerProvider {
 	pending_interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 
 	/// TODO remove
-	/// Info about an in-progress, pending splice (if any), on the post-splice channel
+	/// Info about an in-progress, pending splice, on the post-splice channel
 	pending_splice_post: PendingSplicePost,
 }
 
@@ -1885,6 +1885,18 @@ impl<SP: Deref> PendingV2ChannelTrait<SP> for RefundingChannel<SP> where SP::Tar
 	fn set_interactive_tx_signing_session(&mut self, session: InteractiveTxSigningSession) {
 		self.pending_interactive_tx_signing_session = Some(session);
 	}
+
+	fn is_splice_pending(&self) -> bool {
+		true
+	}
+
+	fn opt_sign_prev_funding(&mut self, partly_signed_transaction: Transaction, signing_session: &mut InteractiveTxSigningSession) -> Result<Transaction, ChannelError> {
+		// Add signature for prev funding input
+		// Note: here the transaction is used for signing, input&output order matters
+		let (partly_signed_tx, holder_signature) = self.prev_funding_tx_sign(&partly_signed_transaction, None)?;
+		signing_session.shared_signature = Some(holder_signature);
+		Ok(partly_signed_tx)
+	}
 }
 
 #[cfg(splicing)]
@@ -1899,14 +1911,6 @@ impl<SP: Deref> RefundingChannel<SP> where SP::Target: SignerProvider {
 			pending_interactive_tx_signing_session: None,
 			pending_splice_post,
 		}
-	}
-
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.funded_channel.context
-	}
-
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.funded_channel.context
 	}
 
 	/// Handle splice_init
@@ -1973,6 +1977,72 @@ impl<SP: Deref> RefundingChannel<SP> where SP::Target: SignerProvider {
 		// );
 		log_info!(logger, "Splicing process started, new channel value {}, outgoing {}, channel_id {}",
 			self.pending_funding.get_value_satoshis(), is_outgoing, self.context().channel_id);
+	}
+
+	/// Prepare the witness on the current funding tx input (used in the splicing case),
+	/// containing our holder signature, and optionally the counterparty signature, or its empty placholder.
+	#[cfg(splicing)]
+	fn prev_funding_tx_sign(
+		&self, transaction: &Transaction, counterparty_sig: Option<Signature>,
+	) -> Result<(Transaction, Signature), ChannelError> {
+		let (prev_funding_input_index, pre_channel_value) =
+			(
+				self.pending_splice_post.find_input_of_previous_funding(&transaction)?,
+				self.pending_splice_post.pre_channel_value
+			);
+		debug_assert!(prev_funding_input_index < transaction.input.len());
+
+		// #SPLICE-SIG
+		// the redeem script
+		let sig_order_ours_first = self.pending_funding.get_holder_pubkeys().funding_pubkey.serialize() < self.pending_funding.counterparty_funding_pubkey().serialize();
+		// log_info!(logger, "Pubkeys used for redeem script: {} {} {}", &self.pending_funding.get_holder_pubkeys().funding_pubkey, &self.pending_funding.counterparty_funding_pubkey(), sig_order_ours_first);
+
+		let redeem_script = self.pending_funding.get_funding_redeemscript();
+		let holder_signature = self.prev_funding_tx_create_holder_sig(&transaction, prev_funding_input_index, pre_channel_value)?; // , &redeem_script)?;
+		let mut holder_sig = holder_signature.serialize_der().to_vec();
+		holder_sig.push(EcdsaSighashType::All as u8);
+		// counterparty signature
+		let cp_sig = match counterparty_sig {
+			Some(s) => {
+				let mut sb = s.serialize_der().to_vec();
+				sb.push(EcdsaSighashType::All as u8);
+				sb
+			},
+			None => Vec::new(), // placeholder
+		};
+		// prepare witness stack
+		let mut witness = Witness::new();
+		witness.push(Vec::new());
+		if sig_order_ours_first {
+			witness.push(holder_sig);
+			witness.push(cp_sig);
+		} else {
+			witness.push(cp_sig);
+			witness.push(holder_sig);
+		}
+		witness.push(redeem_script.clone().into_bytes());
+
+		let mut tx = transaction.clone();
+		tx.input[prev_funding_input_index as usize].witness = witness;
+		Ok((tx, holder_signature))
+	}
+
+	/// Create signature for the current funding tx input, used in the splicing case.
+	#[cfg(splicing)]
+	fn prev_funding_tx_create_holder_sig(&self, transaction: &Transaction, input_index: usize, input_value: u64/*, _redeem_script: &ScriptBuf*/) -> Result<Signature, ChannelError> {
+		// #SPLICE-SIG
+		match &self.context().holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				ecdsa.sign_splicing_funding_input(&self.pending_funding.channel_transaction_parameters, transaction, input_index, input_value, /*&redeem_script, */&self.context().secp_ctx)
+					.map_err(|_e| {
+						let msg = "Failed to sign the previous funding input in the new splicing funding tx";
+						ChannelError::Close((msg.to_owned(), ClosureReason::ProcessingError { err: msg.to_owned() }))
+					})
+			},
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!()
+		}
 	}
 }
 
@@ -2748,6 +2818,11 @@ pub(super) trait PendingV2ChannelTrait<SP: Deref> where SP::Target: SignerProvid
 	fn set_interactive_tx_constructor(&mut self, iatxc: Option<InteractiveTxConstructor>);
 	fn clear_interactive_tx_constructor(&mut self);
 	fn set_interactive_tx_signing_session(&mut self, session: InteractiveTxSigningSession);
+	fn is_splice_pending(&self) -> bool;
+
+	/// Invoked during funding_tx_constructed(), to sign previous funding tx input
+	// Applicable only in case of splicing.
+	fn opt_sign_prev_funding(&mut self, partly_signed_transaction: Transaction, signing_session: &mut InteractiveTxSigningSession) -> Result<Transaction, ChannelError>;
 
 	/// Prepare and start interactive transaction negotiation.
 	/// `change_destination_opt` - Optional destination for optional change; if None,
@@ -2920,13 +2995,14 @@ pub(super) trait PendingV2ChannelTrait<SP: Deref> where SP::Target: SignerProvid
 	}
 
 	fn funding_tx_constructed<L: Deref>(
-		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
+		&mut self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, logger: &L
 	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
 		let our_funding_satoshis = self.dual_funding_context().our_funding_satoshis;
 		let transaction_number = self.unfunded_context().transaction_number();
+		let is_splice_pending = self.is_splice_pending();
 
 		let mut output_index = None;
 		let expected_spk = self.funding().get_funding_redeemscript().to_p2wsh();
@@ -2952,10 +3028,15 @@ pub(super) trait PendingV2ChannelTrait<SP: Deref> where SP::Target: SignerProvid
 				)));
 		};
 		self.funding_mut().channel_transaction_parameters.funding_outpoint = Some(outpoint);
+		// self.context_mut().holder_signer.as_mut_ecdsa().provide_channel_parameters(&self.post_funding.channel_transaction_parameters);
 
-		self.context().assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
+		// Assert for no commitment, unless splicing
+		if !is_splice_pending {
+			self.context().assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
+		}
+
 		let (funding_mut, context_mut) = self.funding_and_context_mut();
-		let commitment_signed = context_mut.get_initial_commitment_signed(&funding_mut, logger);
+		let commitment_signed = context_mut.get_initial_commitment_signed(funding_mut, is_splice_pending, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
 				self.funding_mut().funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
@@ -2967,6 +3048,10 @@ pub(super) trait PendingV2ChannelTrait<SP: Deref> where SP::Target: SignerProvid
 			},
 		};
 
+		let partly_signed_transaction = signing_session.unsigned_tx.clone().build_unsigned_tx();
+		let signed_transaction = self.opt_sign_prev_funding(partly_signed_transaction, &mut signing_session)?;
+
+		/* TODO remove
 		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
 			if signing_session.provide_holder_witnesses(self.context().channel_id, Vec::new()).is_err() {
@@ -3004,14 +3089,40 @@ pub(super) trait PendingV2ChannelTrait<SP: Deref> where SP::Target: SignerProvid
 				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
 			)));
 		};
+		*/
+
+		let mut funding_ready_for_sig_event = None;
+		if our_funding_satoshis == 0 {
+			let _res = signing_session.provide_holder_witnesses(self.context().channel_id, Vec::new(), signing_session.shared_signature.clone());
+		} else {
+			funding_ready_for_sig_event = Some(Event::FundingTransactionReadyForSigning {
+				channel_id: self.context().channel_id,
+				counterparty_node_id: *counterparty_node_id,
+				// user_channel_id: self.context().user_id,
+				// Note: here the transaction is used for signing, input&output order matters
+				unsigned_transaction: signed_transaction,
+			});
+		}
 
 		self.context_mut().channel_state = ChannelState::FundingNegotiated;
 
 		// Clear the interactive transaction constructor
 		self.clear_interactive_tx_constructor();
-		self.set_interactive_tx_signing_session(signing_session);
 
-		Ok((commitment_signed, funding_ready_for_sig_event))
+		match self.unfunded_context().holder_commitment_point {
+			Some(_holder_commitment_point) => {
+				// self.set_interactive_tx_signing_session(signing_session);
+				// Ok((signing_session, holder_commitment_point, commitment_signed, funding_ready_for_sig_event))
+				Ok((commitment_signed, funding_ready_for_sig_event))
+			},
+			None => {
+				let err = ChannelError::close(format!(
+					"Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+					self.context().channel_id(),
+				));
+				Err(err)
+			},
+		}
 	}
 }
 
@@ -3075,6 +3186,15 @@ impl<SP: Deref> PendingV2ChannelTrait<SP> for PendingV2Channel<SP> where SP::Tar
 
 	fn set_interactive_tx_signing_session(&mut self, session: InteractiveTxSigningSession) {
 		self.interactive_tx_signing_session = Some(session);
+	}
+
+	fn is_splice_pending(&self) -> bool {
+		false
+	}
+
+	fn opt_sign_prev_funding(&mut self, partly_signed_transaction: Transaction, _signing_session: &mut InteractiveTxSigningSession) -> Result<Transaction, ChannelError> {
+		// not applicable, no op
+		Ok(partly_signed_transaction)
 	}
 }
 
@@ -5324,21 +5444,24 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	}
 
 	fn get_initial_commitment_signed<L: Deref>(
-		&mut self, funding: &FundingScope, logger: &L
+		&mut self, funding: &FundingScope, is_splice: bool, logger: &L
 	) -> Result<msgs::CommitmentSigned, ChannelError>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
-		if !matches!(
-			self.channel_state, ChannelState::NegotiatingFunding(flags)
-			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
-		) {
-			debug_assert!(false);
-			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
-				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
-			)));
+		// TODO reset state?, put back check always
+		if !is_splice {
+			if !matches!(
+				self.channel_state, ChannelState::NegotiatingFunding(flags)
+				if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+			) {
+				debug_assert!(false);
+				return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
+					immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
+					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
+				)));
+			}
 		}
 
 		let signature = match self.get_initial_counterparty_commitment_signature(funding, logger) {
@@ -5551,9 +5674,9 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
 	#[cfg(splicing)]
 	pending_splice: Option<PendingSplice>,
-	/// Info about an in-progress, pending splice (if any), on the post-splice channel
-	#[cfg(splicing)]
-	pending_splice_post: Option<PendingSplicePost>,
+	// /// Info about an in-progress, pending splice (if any), on the post-splice channel
+	// #[cfg(splicing)]
+	// pending_splice_post: Option<PendingSplicePost>,
 
 }
 
@@ -10420,8 +10543,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
-			#[cfg(splicing)]
-			pending_splice_post: None,
+			// #[cfg(splicing)]
+			// pending_splice_post: None,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
@@ -10699,8 +10822,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
-			#[cfg(splicing)]
-			pending_splice_post: None,
+			// #[cfg(splicing)]
+			// pending_splice_post: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
 			|| channel.context.signer_pending_channel_ready;
@@ -10762,6 +10885,9 @@ pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 	/// The signing session created after `tx_complete` handling
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
+	// /// Info about an in-progress, pending splice (if any), on the post-splice channel
+	// #[cfg(splicing)]
+	// pending_splice_post: Option<PendingSplicePost>,
 }
 
 impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
@@ -10831,6 +10957,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
+			// #[cfg(splicing)]
+			// pending_splice_post: None,
 		};
 		Ok(chan)
 	}
@@ -11005,6 +11133,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			interactive_tx_constructor,
 			interactive_tx_signing_session: None,
 			unfunded_context,
+			// #[cfg(splicing)]
+			// pending_splice_post: None,
 		})
 	}
 
@@ -12166,8 +12296,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			holder_commitment_point,
 			#[cfg(splicing)]
 			pending_splice: None,
-			#[cfg(splicing)]
-			pending_splice_post: None,
+			// #[cfg(splicing)]
+			// pending_splice_post: None,
 		})
 	}
 }
