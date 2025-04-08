@@ -622,6 +622,21 @@ impl HTLCOutputInCommitment {
 			&& self.cltv_expiry == other.cltv_expiry
 			&& self.payment_hash == other.payment_hash
 	}
+
+	pub(crate) fn is_dust(&self, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64, features: &ChannelTypeFeatures) -> bool {
+		let htlc_tx_fee_sat = if features.supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let htlc_tx_weight = if self.offered {
+				htlc_timeout_tx_weight(features)
+			} else {
+				htlc_success_tx_weight(features)
+			};
+			// As required by the spec, round down
+			feerate_per_kw as u64 * htlc_tx_weight / 1000
+		};
+		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
+	}
 }
 
 impl_writeable_tlv_based!(HTLCOutputInCommitment, {
