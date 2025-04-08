@@ -12257,7 +12257,7 @@ mod tests {
 		}
 
 		macro_rules! test_commitment_common {
-			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $opt_anchors: expr, {
+			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $channel_type_features: expr, {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
 			} ) => { {
 				let commitment_data = chan.context.build_commitment_transaction(&chan.funding,
@@ -12307,9 +12307,9 @@ mod tests {
 					let keys = commitment_tx.trust().keys();
 					let mut htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.context.feerate_per_kw,
 						chan.funding.get_counterparty_selected_contest_delay().unwrap(),
-						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
-					let htlc_sighashtype = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+						&htlc, $channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $channel_type_features, &keys);
+					let htlc_sighashtype = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 					let htlc_sighash = Message::from_digest(sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap().as_raw_hash().to_byte_array());
 					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
 
@@ -12340,13 +12340,15 @@ mod tests {
 						preimage: preimage.clone(),
 						counterparty_sig: *htlc_counterparty_sig,
 					}, &secp_ctx).unwrap();
-					let num_anchors = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
+					let num_anchors = if $channel_type_features.supports_anchors_zero_fee_htlc_tx() { 2 } else { 0 };
 					assert_eq!(htlc.transaction_output_index, Some($htlc_idx + num_anchors), "output index");
 
 					let signature = Signature::from_der(&<Vec<u8>>::from_hex($htlc_sig_hex).unwrap()[..]).unwrap();
 					assert_eq!(signature, htlc_holder_sig, "htlc sig");
-					let trusted_tx = holder_commitment_tx.trust();
-					htlc_tx.input[0].witness = trusted_tx.build_htlc_input_witness($htlc_idx, htlc_counterparty_sig, &htlc_holder_sig, &preimage);
+					htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
+						&htlc_holder_sig, htlc_counterparty_sig, &preimage, &htlc_redeemscript,
+						$channel_type_features,
+					);
 					log_trace!(logger, "htlc_tx = {}", serialize(&htlc_tx).as_hex());
 					assert_eq!(serialize(&htlc_tx)[..], <Vec<u8>>::from_hex($htlc_tx_hex).unwrap()[..], "htlc tx");
 				})*
