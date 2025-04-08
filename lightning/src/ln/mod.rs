@@ -46,7 +46,7 @@ pub mod wire;
 #[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 pub(crate) mod interactivetxs;
 
-pub use onion_utils::create_payment_onion;
+pub use onion_utils::{create_payment_onion, LocalHTLCFailureReason};
 // Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
