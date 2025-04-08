@@ -482,6 +482,13 @@ fn test_quiescence_timeout_while_waiting_for_holder_stfu() {
 	check_added_monitors(&nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
+	// Since nodes[0] has no context of the quiescence attempt yet, it should not disconnect the
+	// counterparty just because it hasn't completed it's monitor update in a timely manner.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
 	nodes[0].node.handle_stfu(node_id_1, &stfu);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
