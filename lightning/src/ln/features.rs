@@ -22,7 +22,8 @@ use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Writer, Readable, Writeable, WithoutLength};
 
 fn write_be<W: Writer>(w: &mut W, le_flags: &[u8]) -> Result<(), io::Error> {
-	for f in le_flags.iter().rev() { // Swap back to big-endian
+	// Swap back to big-endian
+	for f in le_flags.iter().rev() {
 		f.write(w)?;
 	}
 	Ok(())
