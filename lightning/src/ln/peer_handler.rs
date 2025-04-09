@@ -716,6 +716,7 @@ impl Peer {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
+#[rustfmt::skip]
 pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
@@ -735,6 +736,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
+#[rustfmt::skip]
 pub type SimpleRefPeerManager<
 	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, 'mr, SD, M, T, F, C, L
 > = PeerManager<
@@ -755,6 +757,7 @@ pub type SimpleRefPeerManager<
 /// This is not exported to bindings users as general cover traits aren't useful in other
 /// languages.
 #[allow(missing_docs)]
+#[rustfmt::skip]
 pub trait APeerManager {
 	type Descriptor: SocketDescriptor;
 	type CMT: ChannelMessageHandler + ?Sized;
@@ -773,6 +776,7 @@ pub trait APeerManager {
 	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
 }
 
+#[rustfmt::skip]
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref>
 APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 	CM::Target: ChannelMessageHandler,
@@ -3082,7 +3086,9 @@ mod tests {
 		peers
 	}
 
-	fn try_establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor, Result<bool, PeerHandleError>, Result<bool, PeerHandleError>) {
+	type TestPeer<'a> = PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>;
+
+	fn try_establish_connection<'a>(peer_a: &TestPeer<'a>, peer_b: &TestPeer<'a>) -> (FileDescriptor, FileDescriptor, Result<bool, PeerHandleError>, Result<bool, PeerHandleError>) {
 		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
 		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
 
@@ -3113,7 +3119,7 @@ mod tests {
 	}
 
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+	fn establish_connection<'a>(peer_a: &TestPeer<'a>, peer_b: &TestPeer<'a>) -> (FileDescriptor, FileDescriptor) {
 		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
 		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
 
