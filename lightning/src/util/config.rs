@@ -25,6 +25,10 @@ pub struct ChannelHandshakeConfig {
 	/// Applied only for inbound channels (see [`ChannelHandshakeLimits::max_minimum_depth`] for the
 	/// equivalent limit applied to outbound channels).
 	///
+	/// Also used when splicing the channel for the number of confirmations needed before sending a
+	/// `splice_locked` message to the counterparty. The spliced funds are considered locked in when
+	/// both parties have exchanged `splice_locked`.
+	///
 	/// A lower-bound of `1` is applied, requiring all channels to have a confirmed commitment
 	/// transaction before operation. If you wish to accept channels with zero confirmations, see
 	/// [`UserConfig::manually_accept_inbound_channels`] and

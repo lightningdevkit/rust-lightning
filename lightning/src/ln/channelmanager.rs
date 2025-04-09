@@ -3302,13 +3302,20 @@ macro_rules! send_channel_ready {
 		let outbound_alias_insert = short_to_chan_info.insert($channel.context.outbound_scid_alias(), ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
 		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
 			"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
+		insert_short_channel_id!(short_to_chan_info, $channel);
+	}}
+}
+
+macro_rules! insert_short_channel_id {
+	($short_to_chan_info: ident, $channel: expr) => {{
 		if let Some(real_scid) = $channel.funding.get_short_channel_id() {
-			let scid_insert = short_to_chan_info.insert(real_scid, ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
+			let scid_insert = $short_to_chan_info.insert(real_scid, ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
 			assert!(scid_insert.is_none() || scid_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
 				"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
 		}
 	}}
 }
+
 macro_rules! emit_funding_tx_broadcast_safe_event {
 	($locked_events: expr, $channel: expr, $funding_txo: expr) => {
 		if !$channel.context.funding_tx_broadcast_safe_event_emitted() {
@@ -12126,6 +12133,8 @@ where
 
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
+	#[cfg(splicing)]
+	Splice(msgs::SpliceLocked),
 }
 
 impl<
@@ -12197,6 +12206,18 @@ where
 										} else {
 											log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", funded_channel.context.channel_id());
 										}
+									},
+									#[cfg(splicing)]
+									Some(FundingConfirmedMessage::Splice(splice_locked)) => {
+										if !funded_channel.has_pending_splice() {
+											let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+											insert_short_channel_id!(short_to_chan_info, funded_channel);
+										}
+
+										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+											node_id: funded_channel.context.get_counterparty_node_id(),
+											msg: splice_locked,
+										});
 									},
 									None => {},
 								}
