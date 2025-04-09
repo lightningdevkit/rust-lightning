@@ -236,11 +236,11 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 /// [`rebroadcast_pending_claims`]: Self::rebroadcast_pending_claims
 pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref>
 	where C::Target: chain::Filter,
-        T::Target: BroadcasterInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
-        P::Target: Persist<ChannelSigner>,
-		ES::Target: EntropySource,
+		  T::Target: BroadcasterInterface,
+		  F::Target: FeeEstimator,
+		  L::Target: Logger,
+		  P::Target: Persist<ChannelSigner>,
+		  ES::Target: EntropySource,
 {
 	monitors: RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
 	chain_source: Option<C>,
@@ -265,11 +265,11 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where C::Target: chain::Filter,
-	    T::Target: BroadcasterInterface,
-	    F::Target: FeeEstimator,
-	    L::Target: Logger,
-	    P::Target: Persist<ChannelSigner>,
-		ES::Target: EntropySource,
+	  T::Target: BroadcasterInterface,
+	  F::Target: FeeEstimator,
+	  L::Target: Logger,
+	  P::Target: Persist<ChannelSigner>,
+	  ES::Target: EntropySource,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the given chain data. See
@@ -701,7 +701,10 @@ where C::Target: chain::Filter,
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
 
-		let our_peer_storage = OurPeerStorage::create_from_data(self.our_peerstorage_encryption_key.clone(), Vec::new(), self.entropy_source.get_secure_random_bytes());
+		let random_bytes = self.entropy_source.get_secure_random_bytes();
+		let peer_storage_key = self.our_peerstorage_encryption_key;
+		let serialised_channels = Vec::new();
+		let our_peer_storage = OurPeerStorage::create_from_data(peer_storage_key, serialised_channels, random_bytes);
 		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
 		self.pending_send_only_events.lock().unwrap().push(MessageSendEvent::SendPeerStorage { node_id: their_node_id,
 			msg: msgs::PeerStorage { data: our_peer_storage.into_vec() } })
@@ -710,11 +713,11 @@ where C::Target: chain::Filter,
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> BaseMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where C::Target: chain::Filter,
-		T::Target: BroadcasterInterface,
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-		P::Target: Persist<ChannelSigner>,
-		ES::Target: EntropySource,
+	  T::Target: BroadcasterInterface,
+	  F::Target: FeeEstimator,
+	  L::Target: Logger,
+	  P::Target: Persist<ChannelSigner>,
+	  ES::Target: EntropySource,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut pending_events = self.pending_send_only_events.lock().unwrap();
@@ -834,11 +837,11 @@ where
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref, ES: Deref>
 chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where C::Target: chain::Filter,
-	    T::Target: BroadcasterInterface,
-	    F::Target: FeeEstimator,
-	    L::Target: Logger,
-	    P::Target: Persist<ChannelSigner>,
-		ES::Target: EntropySource,
+	  T::Target: BroadcasterInterface,
+	  F::Target: FeeEstimator,
+	  L::Target: Logger,
+	  P::Target: Persist<ChannelSigner>,
+	  ES::Target: EntropySource,
 {
 	fn watch_channel(&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
