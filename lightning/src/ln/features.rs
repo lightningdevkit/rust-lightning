@@ -9,17 +9,17 @@
 
 //! Implementations of extensions on features.
 
-use lightning_types::features::{InitFeatures, NodeFeatures, ChannelFeatures};
-use lightning_types::features::{Bolt11InvoiceFeatures, OfferFeatures, InvoiceRequestFeatures};
-use lightning_types::features::{Bolt12InvoiceFeatures, BlindedHopFeatures};
 use lightning_types::features::ChannelTypeFeatures;
+use lightning_types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
+use lightning_types::features::{Bolt11InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
+use lightning_types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::{io, io_extras};
 use crate::ln::msgs::DecodeError;
-use crate::util::ser::{Writer, Readable, Writeable, WithoutLength};
+use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
+use crate::{io, io_extras};
 
 fn write_be<W: Writer>(w: &mut W, le_flags: &[u8]) -> Result<(), io::Error> {
 	// Swap back to big-endian
@@ -43,7 +43,7 @@ macro_rules! impl_feature_len_prefixed_write {
 				Ok(Self::from_be_bytes(Vec::<u8>::read(r)?))
 			}
 		}
-	}
+	};
 }
 impl_feature_len_prefixed_write!(InitFeatures);
 impl_feature_len_prefixed_write!(ChannelFeatures);
@@ -65,7 +65,7 @@ macro_rules! impl_feature_tlv_write {
 				Ok(WithoutLength::<Self>::read(r)?.0)
 			}
 		}
-	}
+	};
 }
 
 impl_feature_tlv_write!(ChannelTypeFeatures);
@@ -87,7 +87,7 @@ macro_rules! impl_feature_write_without_length {
 				Ok(WithoutLength($features::from_be_bytes(v)))
 			}
 		}
-	}
+	};
 }
 
 impl_feature_write_without_length!(Bolt12InvoiceFeatures);
