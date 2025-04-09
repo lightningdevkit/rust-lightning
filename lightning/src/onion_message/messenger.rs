@@ -1576,7 +1576,7 @@ where
 	///
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
 	pub async fn process_pending_events_async<
-		Future: core::future::Future<Output = Result<(), ReplayEvent>> + core::marker::Unpin,
+		Future: core::future::Future<Output = Result<(), ReplayEvent>>,
 		H: Fn(Event) -> Future,
 	>(
 		&self, handler: H,
