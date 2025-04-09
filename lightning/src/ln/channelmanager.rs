@@ -11664,6 +11664,8 @@ where
 
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
+	#[cfg(splicing)]
+	Splice(msgs::SpliceLocked),
 }
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
@@ -11724,6 +11726,13 @@ where
 										} else {
 											log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", funded_channel.context.channel_id());
 										}
+									},
+									#[cfg(splicing)]
+									Some(FundingConfirmedMessage::Splice(splice_locked)) => {
+										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+											node_id: funded_channel.context.get_counterparty_node_id(),
+											msg: splice_locked,
+										});
 									},
 									None => {},
 								}
