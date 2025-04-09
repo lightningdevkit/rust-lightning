@@ -13,7 +13,6 @@ lightning/src/ln/blinded_payment_tests.rs
 lightning/src/ln/chan_utils.rs
 lightning/src/ln/chanmon_update_fail_tests.rs
 lightning/src/ln/channel.rs
-lightning/src/ln/channel_id.rs
 lightning/src/ln/channelmanager.rs
 lightning/src/ln/functional_test_utils.rs
 lightning/src/ln/functional_tests.rs
