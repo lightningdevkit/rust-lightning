@@ -754,10 +754,27 @@ pub async fn process_events_async<
 	Sleeper: Fn(Duration) -> SleepFuture,
 	FetchTime: Fn() -> Option<Duration>,
 >(
-	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
-	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-	logger: L, scorer: Option<S>, sleeper: Sleeper, mobile_interruptable_platform: bool,
-	fetch_time: FetchTime,
+	config: BackgroundProcessorConfig<
+		'a,
+		UL,
+		CF,
+		T,
+		F,
+		G,
+		L,
+		P,
+		EH,
+		PS,
+		M,
+		CM,
+		OM,
+		PGS,
+		RGS,
+		PM,
+		S,
+		SC,
+	>,
+	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
@@ -773,11 +790,11 @@ where
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
-		let network_graph = gossip_sync.network_graph();
-		let event_handler = &event_handler;
-		let scorer = &scorer;
-		let logger = &logger;
-		let persister = &persister;
+		let network_graph = config.gossip_sync.network_graph();
+		let event_handler = &config.event_handler;
+		let scorer = &config.scorer;
+		let logger = &config.logger;
+		let persister = &config.persister;
 		let fetch_time = &fetch_time;
 		// We should be able to drop the Box once our MSRV is 1.68
 		Box::pin(async move {
@@ -802,30 +819,30 @@ where
 		})
 	};
 	define_run_body!(
-		persister,
-		chain_monitor,
-		chain_monitor.process_pending_events_async(async_event_handler).await,
-		channel_manager,
-		channel_manager.get_cm().process_pending_events_async(async_event_handler).await,
-		onion_messenger,
-		if let Some(om) = &onion_messenger {
+		config.persister,
+		config.chain_monitor,
+		config.chain_monitor.process_pending_events_async(async_event_handler).await,
+		config.channel_manager,
+		config.channel_manager.get_cm().process_pending_events_async(async_event_handler).await,
+		config.onion_messenger,
+		if let Some(om) = &config.onion_messenger {
 			om.get_om().process_pending_events_async(async_event_handler).await
 		},
-		peer_manager,
-		gossip_sync,
-		logger,
-		scorer,
+		config.peer_manager,
+		config.gossip_sync,
+		config.logger,
+		config.scorer,
 		should_break,
 		{
-			let om_fut = if let Some(om) = onion_messenger.as_ref() {
+			let om_fut = if let Some(om) = config.onion_messenger.as_ref() {
 				let fut = om.get_om().get_update_future();
 				OptionalSelector { optional_future: Some(fut) }
 			} else {
 				OptionalSelector { optional_future: None }
 			};
 			let fut = Selector {
-				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
-				b: chain_monitor.get_update_future(),
+				a: config.channel_manager.get_cm().get_event_or_persistence_needed_future(),
+				b: config.chain_monitor.get_update_future(),
 				c: om_fut,
 				d: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
@@ -1010,6 +1027,98 @@ impl BackgroundProcessor {
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
 
+	/// Creates a new [`BackgroundProcessor`] from a [`BackgroundProcessorConfig`].
+	/// This provides a more structured approach to configuration. The processor will start processing events immediately upon creation.
+	///
+	/// This method is functionally equivalent to [`BackgroundProcessor::start`], but takes a configuration
+	/// object instead of individual parameters.
+	///
+	/// # Example
+	/// ```
+	/// # use lightning_background_processor::*;
+	/// let config = BackgroundProcessorBuilder::new(
+	///     persister,
+	///     event_handler,
+	///     chain_monitor,
+	///     channel_manager,
+	///     gossip_sync,
+	///     peer_manager,
+	///     logger
+	/// )
+	/// .with_onion_messenger(messenger)
+	/// .with_scorer(scorer)
+	/// .build();
+	/// let bg_processor = BackgroundProcessor::from_config(config);
+	/// ```
+	pub fn from_config<
+		'a,
+		UL: 'static + Deref + Send + Sync,
+		CF: 'static + Deref + Send + Sync,
+		T: 'static + Deref + Send + Sync,
+		F: 'static + Deref + Send + Sync,
+		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
+		L: 'static + Deref + Send + Sync,
+		P: 'static + Deref + Send + Sync,
+		EH: 'static + EventHandler + Send,
+		PS: 'static + Deref + Send,
+		M: 'static
+			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Send
+			+ Sync,
+		CM: 'static + Deref + Send + Sync,
+		OM: 'static + Deref + Send + Sync,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+		PM: 'static + Deref + Send + Sync,
+		S: 'static + Deref<Target = SC> + Send + Sync,
+		SC: for<'b> WriteableScore<'b>,
+	>(
+		config: BackgroundProcessorConfig<
+			'a,
+			UL,
+			CF,
+			T,
+			F,
+			G,
+			L,
+			P,
+			EH,
+			PS,
+			M,
+			CM,
+			OM,
+			PGS,
+			RGS,
+			PM,
+			S,
+			SC,
+		>,
+	) -> Self
+	where
+		UL::Target: 'static + UtxoLookup,
+		CF::Target: 'static + chain::Filter,
+		T::Target: 'static + BroadcasterInterface,
+		F::Target: 'static + FeeEstimator,
+		L::Target: 'static + Logger,
+		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+		PS::Target: 'static + Persister<'a, CM, L, S>,
+		CM::Target: AChannelManager + Send + Sync,
+		OM::Target: AOnionMessenger + Send + Sync,
+		PM::Target: APeerManager + Send + Sync,
+	{
+		Self::start(
+			config.persister,
+			config.event_handler,
+			config.chain_monitor,
+			config.channel_manager,
+			config.onion_messenger,
+			config.gossip_sync,
+			config.peer_manager,
+			config.logger,
+			config.scorer,
+		)
+	}
+
 	/// Join `BackgroundProcessor`'s thread, returning any error that occurred while persisting
 	/// [`ChannelManager`].
 	///
@@ -1049,7 +1158,102 @@ impl BackgroundProcessor {
 			None => Ok(()),
 		}
 	}
+}
 
+/// Configuration for synchronous [`BackgroundProcessor`]
+#[cfg_attr(feature = "futures", doc = "and asynchronous [`process_events_async`]")]
+/// event processing.
+///
+/// This configuration holds all components needed for background processing,
+/// including required components (like the channel manager and peer manager) and optional
+/// components (like the onion messenger and scorer).
+///
+/// The configuration can be constructed using [`BackgroundProcessorBuilder`], which provides
+/// a convenient builder pattern for setting up both required and optional components.
+///
+/// This same configuration can be used for
+#[cfg_attr(
+	not(feature = "futures"),
+	doc = "creating a [`BackgroundProcessor`] via [`BackgroundProcessor::from_config`]."
+)]
+#[cfg_attr(
+	feature = "futures",
+	doc = "both:
+/// * Creating a [`BackgroundProcessor`] via [`BackgroundProcessor::from_config`]
+/// * Running the async variant of the background processor via [`process_events_async`]"
+)]
+///
+/// # Example
+/// ```
+/// # use lightning_background_processor::*;
+/// let config = BackgroundProcessorBuilder::new(
+///     persister,
+///     event_handler,
+///     chain_monitor,
+///     channel_manager,
+///     gossip_sync,
+///     peer_manager,
+///     logger
+/// )
+/// .with_onion_messenger(messenger)  // Optional
+/// .with_scorer(scorer)              // Optional
+/// .build();
+///
+/// // Use with BackgroundProcessor
+/// let processor = BackgroundProcessor::from_config(config);
+///
+#[cfg_attr(
+	feature = "futures",
+	doc = "
+/// // Or use with async processing
+/// process_events_async(config, sleeper, mobile_interruptable_platform, fetch_time).await?;"
+)]
+/// ```
+#[cfg(feature = "std")]
+pub struct BackgroundProcessorConfig<
+	'a,
+	UL: 'static + Deref + Send + Sync,
+	CF: 'static + Deref + Send + Sync,
+	T: 'static + Deref + Send + Sync,
+	F: 'static + Deref + Send + Sync,
+	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
+	L: 'static + Deref + Send + Sync,
+	P: 'static + Deref + Send + Sync,
+	EH: 'static + EventHandler + Send,
+	PS: 'static + Deref + Send,
+	M: 'static
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+		+ Send
+		+ Sync,
+	CM: 'static + Deref + Send + Sync,
+	OM: 'static + Deref + Send + Sync,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
+	PM: 'static + Deref + Send + Sync,
+	S: 'static + Deref<Target = SC> + Send + Sync,
+	SC: for<'b> WriteableScore<'b>,
+> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	CM::Target: AChannelManager + Send + Sync,
+	OM::Target: AOnionMessenger + Send + Sync,
+	PM::Target: APeerManager + Send + Sync,
+{
+	persister: PS,
+	event_handler: EH,
+	chain_monitor: M,
+	channel_manager: CM,
+	onion_messenger: Option<OM>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>,
+	peer_manager: PM,
+	logger: L,
+	scorer: Option<S>,
+	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
 }
 
 /// A builder for constructing a [`BackgroundProcessor`] with optional components.
@@ -1171,19 +1375,23 @@ where
 		self
 	}
 
-	/// Builds and starts the [`BackgroundProcessor`].
-	pub fn build(self) -> BackgroundProcessor {
-		BackgroundProcessor::start(
-			self.persister,
-			self.event_handler,
-			self.chain_monitor,
-			self.channel_manager,
-			self.onion_messenger,
-			self.gossip_sync,
-			self.peer_manager,
-			self.logger,
-			self.scorer,
-		)
+	/// Builds and returns a [`BackgroundProcessorConfig`] object.
+	pub fn build(
+		self,
+	) -> BackgroundProcessorConfig<'a, UL, CF, T, F, G, L, P, EH, PS, M, CM, OM, PGS, RGS, PM, S, SC>
+	{
+		BackgroundProcessorConfig {
+			persister: self.persister,
+			event_handler: self.event_handler,
+			chain_monitor: self.chain_monitor,
+			channel_manager: self.channel_manager,
+			onion_messenger: self.onion_messenger,
+			gossip_sync: self.gossip_sync,
+			peer_manager: self.peer_manager,
+			logger: self.logger,
+			scorer: self.scorer,
+			_phantom: PhantomData,
+		}
 	}
 }
 
@@ -2129,16 +2337,21 @@ mod tests {
 			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 
-		let bp_future = super::process_events_async(
+		let config = BackgroundProcessorBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+		)
+		.with_onion_messenger(nodes[0].messenger.clone())
+		.with_scorer(nodes[0].scorer.clone())
+		.build();
+
+		let bp_future = super::process_events_async(
+			config,
 			move |dur: Duration| {
 				Box::pin(async move {
 					tokio::time::sleep(dur).await;
@@ -2608,17 +2821,22 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
-		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
-		let bp_future = super::process_events_async(
+		let config = BackgroundProcessorBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+		)
+		.with_onion_messenger(nodes[0].messenger.clone())
+		.with_scorer(nodes[0].scorer.clone())
+		.build();
+
+		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
+		let bp_future = super::process_events_async(
+			config,
 			move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
 				Box::pin(async move {
@@ -2821,16 +3039,21 @@ mod tests {
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
-		let bp_future = super::process_events_async(
+		let config = BackgroundProcessorBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+		)
+		.with_onion_messenger(nodes[0].messenger.clone())
+		.with_scorer(nodes[0].scorer.clone())
+		.build();
+
+		let bp_future = super::process_events_async(
+			config,
 			move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
 				Box::pin(async move {
@@ -2877,7 +3100,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessorBuilder::new(
+		let config = BackgroundProcessorBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
@@ -2889,6 +3112,8 @@ mod tests {
 		.with_onion_messenger(nodes[0].messenger.clone())
 		.with_scorer(nodes[0].scorer.clone())
 		.build();
+
+		let bg_processor = BackgroundProcessor::from_config(config);
 
 		macro_rules! check_persisted_data {
 			($node: expr, $filepath: expr) => {
