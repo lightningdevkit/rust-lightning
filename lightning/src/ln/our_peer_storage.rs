@@ -12,7 +12,7 @@
 //! transmission.
 //!
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
 
 use crate::sign::PeerStorageKey;
 
@@ -45,13 +45,33 @@ pub struct OurPeerStorage {
 
 impl OurPeerStorage {
 	/// Creates a new [`OurPeerStorage`] with given encrypted_data.
-	pub fn new(encrypted_data: Vec<u8>) -> Self {
-		Self { encrypted_data }
+	pub fn new(encrypted_data: Vec<u8>) -> Result<Self, ()> {
+		// Length of tag + Length of random_bytes
+		const MIN_CYPHERTEXT_LEN: usize = 16 + 32;
+
+		if encrypted_data.len() < MIN_CYPHERTEXT_LEN {
+			Err(())
+		} else {
+			Ok(Self { encrypted_data })
+		}
 	}
 
 	/// Get encrypted data stored inside [`OurPeerStorage`].
 	pub fn into_vec(self) -> Vec<u8> {
 		self.encrypted_data
+	}
+
+	/// Nonce for encryption and decryption: Hmac(Sha256(key) + random_bytes).
+	fn derive_nonce(key: &PeerStorageKey, random_bytes: &[u8]) -> [u8; 12] {
+		let key_hash = Sha256::const_hash(&key.inner);
+
+		let mut hmac = HmacEngine::<Sha256>::new(key_hash.as_byte_array());
+		hmac.input(&random_bytes);
+		let mut nonce = [0u8; 12];
+		// First 4 bytes of the nonce should be 0.
+		nonce[4..].copy_from_slice(&Hmac::from_engine(hmac).to_byte_array()[0..8]);
+
+		nonce
 	}
 
 	/// Creates a serialised representation of [`OurPeerStorage`] from the given `ser_channels` data.
@@ -64,17 +84,8 @@ impl OurPeerStorage {
 	pub fn create_from_data(
 		key: PeerStorageKey, mut ser_channels: Vec<u8>, random_bytes: [u8; 32],
 	) -> OurPeerStorage {
-		let key_hash = Sha256::const_hash(&key.inner);
-
 		let plaintext_len = ser_channels.len();
-
-		// Compute Sha256(Sha256(key) + random_bytes).
-		let mut sha = Sha256::engine();
-		sha.input(&key_hash.to_byte_array());
-		sha.input(&random_bytes);
-
-		let mut nonce = [0u8; 12];
-		nonce[4..].copy_from_slice(&Sha256::from_engine(sha).to_byte_array()[0..8]);
+		let nonce = OurPeerStorage::derive_nonce(&key, &random_bytes);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
 		let mut tag = [0; 16];
@@ -90,27 +101,13 @@ impl OurPeerStorage {
 	/// Decrypt `OurPeerStorage` using the `key`, result is stored inside the `res`.
 	/// Returns an error if the the `cyphertext` is not correct.
 	pub fn decrypt_our_peer_storage(mut self, key: PeerStorageKey) -> Result<Vec<u8>, ()> {
-		let key_hash = Sha256::const_hash(&key.inner);
-
-		// Length of tag + Length of random_bytes
-		const MIN_CYPHERTEXT_LEN: usize = 16 + 32;
 		let cyphertext_len = self.encrypted_data.len();
-
-		// Ensure the cyphertext is at least as large as the MIN_CYPHERTEXT_LEN.
-		if cyphertext_len < MIN_CYPHERTEXT_LEN {
-			return Err(());
-		}
 
 		// Ciphertext is of the form: random_bytes(32 bytes) + encrypted_data + tag(16 bytes).
 		let (data_mut, tag) = self.encrypted_data.split_at_mut(cyphertext_len - 16);
 		let (random_bytes, encrypted_data) = data_mut.split_at_mut(32);
 
-		let mut sha = Sha256::engine();
-		sha.input(&key_hash.to_byte_array());
-		sha.input(random_bytes);
-
-		let mut nonce = [0u8; 12];
-		nonce[4..].copy_from_slice(&Sha256::from_engine(sha).to_byte_array()[0..8]);
+		let nonce = OurPeerStorage::derive_nonce(&key, random_bytes);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&key.inner, &nonce, b"");
 
@@ -122,5 +119,21 @@ impl OurPeerStorage {
 		self.encrypted_data.drain(0..32);
 
 		Ok(self.encrypted_data)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::ln::our_peer_storage::OurPeerStorage;
+	use crate::sign::PeerStorageKey;
+
+	#[test]
+	fn test_peer_storage_encryption_decryption() {
+		let key = PeerStorageKey { inner: [0u8; 32] };
+
+		let our_peer_storage =
+			OurPeerStorage::create_from_data(key.clone(), vec![42u8; 32], [200; 32]);
+		let decrypted_data = our_peer_storage.decrypt_our_peer_storage(key).unwrap();
+		assert_eq!(decrypted_data, vec![42u8; 32]);
 	}
 }
