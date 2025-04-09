@@ -737,8 +737,9 @@ pub async fn process_events_async<
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
+	ES: 'static + Deref + Send,
 	M: 'static
-		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
 		+ Send
 		+ Sync,
 	CM: 'static + Deref + Send + Sync,
@@ -765,6 +766,7 @@ where
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 	PS::Target: 'static + Persister<'a, CM, L, S>,
+	ES::Target: 'static + EntropySource,
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
