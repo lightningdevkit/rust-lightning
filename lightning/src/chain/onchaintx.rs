@@ -688,7 +688,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 								OnchainClaim::Event(ClaimEvent::BumpCommitment {
 									package_target_feerate_sat_per_1000_weight,
 									commitment_tx: tx,
-									pending_nondust_htlcs: holder_commitment.htlcs().to_vec(),
+									pending_nondust_htlcs: holder_commitment.nondust_htlcs().to_vec(),
 									commitment_tx_fee_satoshis: fee_sat,
 									anchor_output_idx: idx,
 									channel_parameters: channel_parameters.clone(),
@@ -1339,7 +1339,7 @@ mod tests {
 		let holder_commit = tx_handler.current_holder_commitment_tx();
 		let holder_commit_txid = holder_commit.trust().txid();
 		let mut requests = Vec::new();
-		for (htlc, counterparty_sig) in holder_commit.htlcs().iter().zip(holder_commit.counterparty_htlc_sigs.iter()) {
+		for (htlc, counterparty_sig) in holder_commit.nondust_htlcs().iter().zip(holder_commit.counterparty_htlc_sigs.iter()) {
 			requests.push(PackageTemplate::build_package(
 				holder_commit_txid,
 				htlc.transaction_output_index.unwrap(),

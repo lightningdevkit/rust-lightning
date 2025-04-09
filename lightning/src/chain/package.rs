@@ -472,7 +472,7 @@ impl HolderHTLCOutput {
 			}
 
 			let (htlc, counterparty_sig) =
-				trusted_tx.htlcs().iter().zip(holder_commitment.counterparty_htlc_sigs.iter())
+				trusted_tx.nondust_htlcs().iter().zip(holder_commitment.counterparty_htlc_sigs.iter())
 					.find(|(htlc, _)| htlc.transaction_output_index.unwrap() == outp.vout)
 					.unwrap();
 
