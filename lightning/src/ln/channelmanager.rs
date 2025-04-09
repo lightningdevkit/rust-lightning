@@ -8338,7 +8338,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		let our_peerstorage_encryption_key = self.node_signer.get_peer_storage_key();
-		let our_peer_storage = OurPeerStorage::new(msg.data);
+		let our_peer_storage = OurPeerStorage::new(msg.data).unwrap();
 
 		match our_peer_storage.decrypt_our_peer_storage(our_peerstorage_encryption_key) {
 			Ok(decrypted_data) => {
