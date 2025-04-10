@@ -2379,7 +2379,7 @@ fn test_trampoline_unblinded_receive() {
 }
 
 #[test]
-fn test_trampoline_forward_rejection() {
+fn test_trampoline_constraint_enforcement() {
 	const TOTAL_NODE_COUNT: usize = 3;
 
 	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
@@ -2472,7 +2472,7 @@ fn test_trampoline_forward_rejection() {
 	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
 		.with_payment_preimage(payment_preimage)
 		.without_claimable_event()
-		.expect_failure(HTLCDestination::FailedPayment { payment_hash });
+		.expect_failure(HTLCDestination::InvalidOnion);
 	do_pass_along_path(args);
 
 	{
@@ -2490,10 +2490,9 @@ fn test_trampoline_forward_rejection() {
 		do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
 	}
 	{
-		// Expect a PERM|10 (unknown_next_peer) error while we are unable to route forwarding
-		// Trampoline payments.
+		// Expect a NODE|26 (unknown_next_peer) error due to an outer/inner onion enforcement violation
 		let payment_failed_conditions = PaymentFailedConditions::new()
-			.expected_htlc_error_data(0x4000 | 10, &[0; 0]);
+			.expected_htlc_error_data(0x2000 | 26, &[0; 0]);
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
 	}
 }
