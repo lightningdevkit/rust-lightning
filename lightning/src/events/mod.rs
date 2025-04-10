@@ -490,6 +490,14 @@ pub enum HTLCDestination {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64
 	},
+	/// We couldn't forward to the next Trampoline node. That may happen if we cannot find a route,
+	/// or if the route we found didn't work out
+	FailedTrampolineForward {
+		/// The node ID of the next Trampoline hop we tried forwarding to
+		requested_next_node_id: PublicKey,
+		/// The channel we tried forwarding over, if we have settled on one
+		forward_scid: Option<u64>,
+	},
 	/// We couldn't decode the incoming onion to obtain the forwarding details.
 	InvalidOnion,
 	/// Failure scenario where an HTLC may have been forwarded to be intended for us,
@@ -522,6 +530,10 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 	(3, InvalidOnion) => {},
 	(4, FailedPayment) => {
 		(0, payment_hash, required),
+	},
+	(5, FailedTrampolineForward) => {
+		(0, requested_next_node_id, required),
+		(2, forward_scid, option),
 	},
 );
 
