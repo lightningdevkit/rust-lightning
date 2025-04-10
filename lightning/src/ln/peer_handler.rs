@@ -1387,10 +1387,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+		// `unwrap` SAFETY: `their_node_id` is guaranteed to be `Some` after the handshake
+		let node_id = peer.their_node_id.unwrap().0;
 		if is_gossip_msg(message.type_id()) {
-			log_gossip!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap().0));
+			log_gossip!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(node_id));
 		} else {
-			log_trace!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap().0))
+			log_trace!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(node_id));
 		}
 		peer.msgs_sent_since_pong += 1;
 		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
