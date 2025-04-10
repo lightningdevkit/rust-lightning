@@ -308,27 +308,25 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 	}
 }
 
-#[inline]
-fn construct_onion_keys_generic_callback<'a, T, H, FType>(
-	secp_ctx: &Secp256k1<T>, hops: &'a [H], blinded_tail: Option<&BlindedTail>,
-	session_priv: &SecretKey, mut callback: FType,
-) -> Result<(), secp256k1::Error>
+fn construct_onion_keys_generic<'a, T, H>(
+	secp_ctx: &'a Secp256k1<T>, hops: &'a [H], blinded_tail: Option<&'a BlindedTail>,
+	session_priv: &SecretKey,
+) -> impl Iterator<Item = (SharedSecret, [u8; 32], PublicKey, Option<&'a H>, usize)> + 'a
 where
 	T: secp256k1::Signing,
 	H: HopInfo,
-	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&'a H>, usize),
 {
 	let mut blinded_priv = session_priv.clone();
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-	let unblinded_hops_iter = hops.iter().map(|h| (h.node_pubkey(), Some(h)));
-	let blinded_pks_iter = blinded_tail
+	let unblinded_hops = hops.iter().map(|h| (h.node_pubkey(), Some(h)));
+	let blinded_pubkeys = blinded_tail
 		.map(|t| t.hops.iter())
 		.unwrap_or([].iter())
 		.skip(1) // Skip the intro node because it's included in the unblinded hops
 		.map(|h| (&h.blinded_node_id, None));
 
-	for (idx, (pubkey, route_hop_opt)) in unblinded_hops_iter.chain(blinded_pks_iter).enumerate() {
+	unblinded_hops.chain(blinded_pubkeys).enumerate().map(move |(idx, (pubkey, route_hop_opt))| {
 		let shared_secret = SharedSecret::new(pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
@@ -338,19 +336,19 @@ where
 
 		let ephemeral_pubkey = blinded_pub;
 
-		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
+		blinded_priv = blinded_priv
+			.mul_tweak(&Scalar::from_be_bytes(blinding_factor).expect("You broke SHA-256"))
+			.expect("Blinding are never invalid as we picked the starting private key randomly");
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-		callback(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx);
-	}
-
-	Ok(())
+		(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx)
+	})
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey,
-) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+) -> Vec<OnionKeys> {
 	let mut res = Vec::with_capacity(path.hops.len());
 
 	let blinded_tail = path.blinded_tail.as_ref().and_then(|t| {
@@ -359,56 +357,47 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 		}
 		Some(t)
 	});
-	construct_onion_keys_generic_callback(
-		secp_ctx,
-		&path.hops,
-		blinded_tail,
-		session_priv,
-		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
-			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
+	let iter = construct_onion_keys_generic(secp_ctx, &path.hops, blinded_tail, session_priv);
+	for (shared_secret, _blinding_factor, ephemeral_pubkey, _, _) in iter {
+		let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
 
-			res.push(OnionKeys {
-				#[cfg(test)]
-				shared_secret,
-				#[cfg(test)]
-				blinding_factor: _blinding_factor,
-				ephemeral_pubkey,
-				rho,
-				mu,
-			});
-		},
-	)?;
+		res.push(OnionKeys {
+			#[cfg(test)]
+			shared_secret,
+			#[cfg(test)]
+			blinding_factor: _blinding_factor,
+			ephemeral_pubkey,
+			rho,
+			mu,
+		});
+	}
 
-	Ok(res)
+	res
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 pub(super) fn construct_trampoline_onion_keys<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, blinded_tail: &BlindedTail, session_priv: &SecretKey,
-) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+) -> Vec<OnionKeys> {
 	let mut res = Vec::with_capacity(blinded_tail.trampoline_hops.len());
 
-	construct_onion_keys_generic_callback(
-		secp_ctx,
-		&blinded_tail.trampoline_hops,
-		Some(blinded_tail),
-		session_priv,
-		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
-			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
+	let hops = &blinded_tail.trampoline_hops;
+	let iter = construct_onion_keys_generic(secp_ctx, &hops, Some(blinded_tail), session_priv);
+	for (shared_secret, _blinding_factor, ephemeral_pubkey, _, _) in iter {
+		let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
 
-			res.push(OnionKeys {
-				#[cfg(test)]
-				shared_secret,
-				#[cfg(test)]
-				blinding_factor: _blinding_factor,
-				ephemeral_pubkey,
-				rho,
-				mu,
-			});
-		},
-	)?;
+		res.push(OnionKeys {
+			#[cfg(test)]
+			shared_secret,
+			#[cfg(test)]
+			blinding_factor: _blinding_factor,
+			ephemeral_pubkey,
+			rho,
+			mu,
+		});
+	}
 
-	Ok(res)
+	res
 }
 
 pub(super) fn build_trampoline_onion_payloads<'a>(
@@ -1036,8 +1025,7 @@ where
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-#[inline]
-pub(super) fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
+fn process_onion_failure_inner<T: secp256k1::Signing, L: Deref>(
 	secp_ctx: &Secp256k1<T>, logger: &L, path: &Path, outer_session_priv: &SecretKey,
 	inner_session_priv: Option<&SecretKey>, mut encrypted_packet: OnionErrorPacket,
 ) -> DecodedOnionFailure
@@ -1107,50 +1095,39 @@ where
 		}
 	}
 
-	let (num_blinded_hops, num_trampoline_hops) =
-		path.blinded_tail.as_ref().map_or((0, 0), |bt| (bt.hops.len(), bt.trampoline_hops.len()));
+	let num_blinded_hops = path.blinded_tail.as_ref().map_or(0, |bt| bt.hops.len());
 
-	// We are first collecting all the unblinded `RouteHop`s inside `onion_keys`. Then, if applicable,
-	// we will add all the `TrampolineHop`s, and finally, the blinded hops.
-	let mut onion_keys =
-		Vec::with_capacity(path.hops.len() + num_trampoline_hops + num_blinded_hops);
+	// if we have Trampoline hops, the blinded hops are part of the inner Trampoline onion
+	let nontrampoline_bt =
+		if path.has_trampoline_hops() { None } else { path.blinded_tail.as_ref() };
+	let nontrampolines =
+		construct_onion_keys_generic(secp_ctx, &path.hops, nontrampoline_bt, outer_session_priv)
+			.map(|(shared_secret, _, _, route_hop_option, _)| {
+				(route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret)
+			});
 
-	construct_onion_keys_generic_callback(
-		secp_ctx,
-		&path.hops,
-		// if we have Trampoline hops, the blinded hops are part of the inner Trampoline onion
-		if path.has_trampoline_hops() { None } else { path.blinded_tail.as_ref() },
-		outer_session_priv,
-		|shared_secret, _, _, route_hop_option: Option<&RouteHop>, _| {
-			onion_keys.push((route_hop_option.map(|rh| ErrorHop::RouteHop(rh)), shared_secret))
-		},
-	)
-	.expect("Route we used spontaneously grew invalid keys in the middle of it?");
-
-	if path.has_trampoline_hops() {
-		construct_onion_keys_generic_callback(
-			secp_ctx,
-			// Trampoline hops are part of the blinded tail, so this can never panic
-			&path.blinded_tail.as_ref().unwrap().trampoline_hops,
-			path.blinded_tail.as_ref(),
-			inner_session_priv.expect("Trampoline hops always have an inner session priv"),
-			|shared_secret, _, _, trampoline_hop_option: Option<&TrampolineHop>, _| {
-				onion_keys.push((
-					trampoline_hop_option.map(|th| ErrorHop::TrampolineHop(th)),
-					shared_secret,
-				))
+	let trampolines = if path.has_trampoline_hops() {
+		// Trampoline hops are part of the blinded tail, so this can never panic
+		let blinded_tail = path.blinded_tail.as_ref();
+		let hops = &blinded_tail.unwrap().trampoline_hops;
+		let inner_session_priv =
+			inner_session_priv.expect("Trampoline hops always have an inner session priv");
+		Some(construct_onion_keys_generic(secp_ctx, hops, blinded_tail, inner_session_priv).map(
+			|(shared_secret, _, _, route_hop_option, _)| {
+				(route_hop_option.map(|tram_hop| ErrorHop::TrampolineHop(tram_hop)), shared_secret)
 			},
-		)
-		.expect("Route we used spontaneously grew invalid keys in the middle of it?");
-	}
+		))
+	} else {
+		None
+	};
 
 	// In the best case, paths can be up to 27 hops. But attribution data can only be conveyed back to the sender from
 	// the first 20 hops. Determine the number of hops to be used for attribution data.
 	let attributable_hop_count = usize::min(path.hops.len(), MAX_HOPS);
 
 	// Handle packed channel/node updates for passing back for the route handler
-	let mut iterator = onion_keys.into_iter().enumerate().peekable();
-	while let Some((route_hop_idx, (route_hop_option, shared_secret))) = iterator.next() {
+	let mut iter = nontrampolines.chain(trampolines.into_iter().flatten()).enumerate().peekable();
+	while let Some((route_hop_idx, (route_hop_option, shared_secret))) = iter.next() {
 		let route_hop = match route_hop_option.as_ref() {
 			Some(hop) => hop,
 			None => {
@@ -1172,7 +1149,7 @@ where
 		// For 1-hop blinded paths, the final `ErrorHop` entry is the recipient.
 		// In our case that means that if we're on the last iteration, and there is no more than one
 		// blinded hop, the current iteration references the last non-blinded hop.
-		let next_hop = iterator.peek();
+		let next_hop = iter.peek();
 		is_from_final_non_blinded_node = next_hop.is_none() && num_blinded_hops <= 1;
 		let failing_route_hop = if is_from_final_non_blinded_node {
 			route_hop
@@ -2104,11 +2081,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 				)?;
 
 			let onion_keys =
-				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &session_priv).map_err(
-					|_| APIError::InvalidRoute {
-						err: "Pubkey along hop was maliciously selected".to_owned(),
-					},
-				)?;
+				construct_trampoline_onion_keys(&secp_ctx, &blinded_tail, &session_priv);
 			let trampoline_packet = construct_trampoline_onion_packet(
 				trampoline_payloads,
 				onion_keys,
@@ -2141,9 +2114,7 @@ pub(crate) fn create_payment_onion_internal<T: secp256k1::Signing>(
 	)?;
 
 	let outer_session_priv = outer_session_priv_override.as_ref().unwrap_or(session_priv);
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, outer_session_priv).map_err(|_| {
-		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
-	})?;
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, outer_session_priv);
 	let outer_onion_prng_seed = secondary_prng_seed.unwrap_or(prng_seed);
 	let onion_packet =
 		construct_onion_packet(onion_payloads, onion_keys, outer_onion_prng_seed, payment_hash)
@@ -2542,8 +2513,7 @@ mod tests {
 		let route = Route { paths: vec![path], route_params: None };
 
 		let onion_keys =
-			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key())
-				.unwrap();
+			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key());
 		assert_eq!(onion_keys.len(), route.paths[0].hops.len());
 		onion_keys
 	}
@@ -3015,13 +2985,12 @@ mod tests {
 				&secp_ctx,
 				&path.blinded_tail.as_ref().unwrap(),
 				&session_priv,
-			)
-			.unwrap();
+			);
 
 			let outer_onion_keys = {
 				let session_priv_hash = Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
 				let outer_session_priv = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
-				construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv).unwrap()
+				construct_onion_keys(&Secp256k1::new(), &path, &outer_session_priv)
 			};
 
 			let htlc_source = HTLCSource::OutboundRoute {
@@ -3203,16 +3172,11 @@ mod tests {
 		let path = Path { hops, blinded_tail: None };
 
 		// Calculate shared secrets.
-		let mut onion_keys = Vec::new();
 		let session_key = get_test_session_key();
-		construct_onion_keys_generic_callback(
-			&secp_ctx,
-			&path.hops,
-			None,
-			&session_key,
-			|shared_secret, _, _, _, _| onion_keys.push(shared_secret),
-		)
-		.unwrap();
+		let onion_keys: Vec<_> =
+			construct_onion_keys_generic(&secp_ctx, &path.hops, None, &session_key)
+				.map(|(key, ..)| key)
+				.collect();
 
 		// Construct the htlc source.
 		let logger = TestLogger::new();

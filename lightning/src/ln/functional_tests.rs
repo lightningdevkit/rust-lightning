@@ -1501,7 +1501,7 @@ pub fn test_fee_spike_violation_fails_htlc() {
 
 	let cur_height = nodes[1].node.best_block.read().unwrap().height + 1;
 
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
 		3460001, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
@@ -1687,7 +1687,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[1].node.best_block.read().unwrap().height + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
 		700_000, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
@@ -1867,7 +1867,7 @@ pub fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route_2.paths[0], recv_value_2, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
@@ -3919,7 +3919,7 @@ pub fn fail_backward_pending_htlc_upon_channel_failure() {
 		let recipient_onion_fields = RecipientOnionFields::secret_only(payment_secret);
 		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
 			&route.paths[0], 50_000, &recipient_onion_fields, current_height, &None, None, None).unwrap();
-		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
 		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 
 		// Send a 0-msat update_add_htlc to fail the channel.
@@ -6932,7 +6932,7 @@ pub fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	route.paths[0].hops[0].fee_msat = send_amt;
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
+	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv);
 	let recipient_onion_fields = RecipientOnionFields::secret_only(our_payment_secret);
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0], send_amt, &recipient_onion_fields, cur_height, &None, None, None).unwrap();
@@ -8749,7 +8749,7 @@ pub fn test_onion_value_mpp_set_calculation() {
 			let session_priv = [3; 32];
 			let height = nodes[0].best_block_info().1;
 			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
-			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv);
 			let recipient_onion_fields = RecipientOnionFields::secret_only(our_payment_secret);
 			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], 100_000,
 				&recipient_onion_fields, height + 1, &None, None, None).unwrap();
