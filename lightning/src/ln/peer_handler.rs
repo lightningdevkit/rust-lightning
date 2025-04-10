@@ -2597,7 +2597,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (node_id, msg) in self.message_handler.custom_message_handler.get_and_clear_pending_msg() {
 					if peers_to_disconnect.get(&node_id).is_some() { continue; }
-					self.enqueue_message(&mut *if let Some(peer) = get_peer_for_forwarding!(&node_id) { peer } else { continue; }, &msg);
+					let mut peer = if let Some(peer) = get_peer_for_forwarding!(&node_id) { peer } else { continue; };
+					self.enqueue_message(&mut peer, &msg);
 				}
 
 				for (descriptor, peer_mutex) in peers.iter() {
