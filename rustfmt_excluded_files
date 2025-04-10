@@ -13,9 +13,7 @@ lightning/src/ln/blinded_payment_tests.rs
 lightning/src/ln/chan_utils.rs
 lightning/src/ln/chanmon_update_fail_tests.rs
 lightning/src/ln/channel.rs
-lightning/src/ln/channel_id.rs
 lightning/src/ln/channelmanager.rs
-lightning/src/ln/features.rs
 lightning/src/ln/functional_test_utils.rs
 lightning/src/ln/functional_tests.rs
 lightning/src/ln/inbound_payment.rs
@@ -34,7 +32,6 @@ lightning/src/ln/peer_handler.rs
 lightning/src/ln/priv_short_conf_tests.rs
 lightning/src/ln/reload_tests.rs
 lightning/src/ln/reorg_tests.rs
-lightning/src/ln/script.rs
 lightning/src/ln/shutdown_tests.rs
 lightning/src/routing/mod.rs
 lightning/src/routing/router.rs
