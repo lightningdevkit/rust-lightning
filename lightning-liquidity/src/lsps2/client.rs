@@ -191,7 +191,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		result: LSPS2GetInfoResponse,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -208,7 +208,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS2ClientEvent::OpeningParametersReady {
+				event_queue_notifier.enqueue(LSPS2ClientEvent::OpeningParametersReady {
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					opening_fee_params_menu: result.opening_fee_params_menu,
@@ -259,7 +259,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		result: LSPS2BuyResponse,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -276,7 +276,7 @@ where
 					})?;
 
 				if let Ok(intercept_scid) = result.jit_channel_scid.to_scid() {
-					self.pending_events.enqueue(LSPS2ClientEvent::InvoiceParametersReady {
+					event_queue_notifier.enqueue(LSPS2ClientEvent::InvoiceParametersReady {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
 						intercept_scid,

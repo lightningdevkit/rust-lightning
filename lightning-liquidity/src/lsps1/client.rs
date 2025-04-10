@@ -110,7 +110,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		result: LSPS1GetInfoResponse,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.write().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -127,7 +127,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS1ClientEvent::SupportedOptionsReady {
+				event_queue_notifier.enqueue(LSPS1ClientEvent::SupportedOptionsReady {
 					counterparty_node_id: *counterparty_node_id,
 					supported_options: result.options,
 					request_id,
@@ -148,7 +148,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -165,7 +165,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS1ClientEvent::SupportedOptionsRequestFailed {
+				event_queue_notifier.enqueue(LSPS1ClientEvent::SupportedOptionsRequestFailed {
 					request_id: request_id.clone(),
 					counterparty_node_id: *counterparty_node_id,
 					error: error.clone(),
@@ -227,7 +227,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -244,7 +244,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS1ClientEvent::OrderCreated {
+				event_queue_notifier.enqueue(LSPS1ClientEvent::OrderCreated {
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					order_id: response.order_id,
@@ -271,7 +271,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -288,7 +288,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS1ClientEvent::OrderRequestFailed {
+				event_queue_notifier.enqueue(LSPS1ClientEvent::OrderRequestFailed {
 					request_id: request_id.clone(),
 					counterparty_node_id: *counterparty_node_id,
 					error: error.clone(),
@@ -350,7 +350,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		response: LSPS1CreateOrderResponse,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -367,7 +367,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS1ClientEvent::OrderStatus {
+				event_queue_notifier.enqueue(LSPS1ClientEvent::OrderStatus {
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					order_id: response.order_id,
@@ -394,7 +394,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
-		let _event_queue_notifier = self.pending_events.notifier();
+		let event_queue_notifier = self.pending_events.notifier();
 
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
@@ -411,7 +411,7 @@ where
 					});
 				}
 
-				self.pending_events.enqueue(LSPS1ClientEvent::OrderRequestFailed {
+				event_queue_notifier.enqueue(LSPS1ClientEvent::OrderRequestFailed {
 					request_id: request_id.clone(),
 					counterparty_node_id: *counterparty_node_id,
 					error: error.clone(),
