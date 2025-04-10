@@ -51,7 +51,7 @@ use crate::ln::inbound_payment;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
-use crate::ln::channel::PendingV2Channel;
+use crate::ln::channel::{PendingV2Channel, PendingV2ChannelTrait};
 use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
