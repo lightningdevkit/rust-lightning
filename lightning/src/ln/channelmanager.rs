@@ -86,6 +86,7 @@ use crate::ln::outbound_payment::{
 	StaleExpiration,
 };
 use crate::ln::types::ChannelId;
+use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::flow::OffersMessageFlow;
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY,
@@ -14264,6 +14265,7 @@ where
 			(15, self.inbound_payment_id_secret, required),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
+			(21, self.flow.writeable_async_receive_offer_cache(), required),
 		});
 
 		Ok(())
@@ -14843,6 +14845,7 @@ where
 		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
+		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -14860,6 +14863,7 @@ where
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, option),
 			(19, peer_storage_dir, optional_vec),
+			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -15546,7 +15550,7 @@ where
 			chain_hash, best_block, our_network_pubkey,
 			highest_seen_timestamp, expanded_inbound_key,
 			secp_ctx.clone(), args.message_router
-		);
+		).with_async_payments_offers_cache(async_receive_offer_cache);
 
 		let channel_manager = ChannelManager {
 			chain_hash,
