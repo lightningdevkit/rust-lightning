@@ -32,7 +32,6 @@ lightning/src/ln/peer_handler.rs
 lightning/src/ln/priv_short_conf_tests.rs
 lightning/src/ln/reload_tests.rs
 lightning/src/ln/reorg_tests.rs
-lightning/src/ln/script.rs
 lightning/src/ln/shutdown_tests.rs
 lightning/src/routing/mod.rs
 lightning/src/routing/router.rs
