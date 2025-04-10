@@ -3196,17 +3196,19 @@ mod tests {
 						let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
 						if peers[0].read_event(&mut fd_a, &b_data).is_err() { break; }
 
+						let node_id_1 = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 						cfgs[0].chan_handler.pending_events.lock().unwrap()
 							.push(MessageSendEvent::SendShutdown {
-								node_id: peers[1].node_signer.get_node_id(Recipient::Node).unwrap(),
+								node_id: node_id_1,
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
 									scriptpubkey: bitcoin::ScriptBuf::new(),
 								},
 							});
+						let node_id_0 = peers[0].node_signer.get_node_id(Recipient::Node).unwrap();
 						cfgs[1].chan_handler.pending_events.lock().unwrap()
 							.push(MessageSendEvent::SendShutdown {
-								node_id: peers[0].node_signer.get_node_id(Recipient::Node).unwrap(),
+								node_id: node_id_0,
 								msg: msgs::Shutdown {
 									channel_id: ChannelId::new_zero(),
 									scriptpubkey: bitcoin::ScriptBuf::new(),
