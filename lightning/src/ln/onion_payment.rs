@@ -624,7 +624,34 @@ where
 				outgoing_cltv_value
 			})
 		}
-		onion_utils::Hop::TrampolineForward { next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
+		onion_utils::Hop::TrampolineForward { ref outer_hop_data, next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, outer_shared_secret, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
+			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
+				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
+			if let Err(()) = check_trampoline_sanity(outer_hop_data, outgoing_cltv_value, amt_to_forward) {
+				return encode_relay_error("Underflow calculating outbound amount or CLTV value for Trampoline forward",
+					0x2000 | 26, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &[0; 0]);
+			}
+			Some(NextPacketDetails {
+				next_packet_pubkey: next_trampoline_packet_pubkey,
+				outgoing_connector: HopConnector::Trampoline(next_trampoline),
+				outgoing_amt_msat: amt_to_forward,
+				outgoing_cltv_value,
+			})
+		}
+		onion_utils::Hop::TrampolineBlindedForward { ref outer_hop_data, next_trampoline_hop_data: msgs::InboundTrampolineBlindedForwardPayload { next_trampoline, ref payment_relay, ref payment_constraints, ref features, .. }, outer_shared_secret, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
+			let (amt_to_forward, outgoing_cltv_value) = match check_blinded_forward(
+				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
+			) {
+				Ok((amt, cltv)) => (amt, cltv),
+				Err(()) => {
+					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded forward",
+						INVALID_ONION_BLINDING, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &[0; 32]);
+				}
+			};
+			if let Err(()) = check_trampoline_sanity(outer_hop_data, outgoing_cltv_value, amt_to_forward) {
+				return encode_relay_error("Underflow calculating outbound amount or CLTV value for Trampoline forward",
+					0x2000 | 26, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &[0; 0]);
+			}
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
