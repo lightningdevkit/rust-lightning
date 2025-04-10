@@ -7415,6 +7415,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.channel_state.is_peer_disconnected()
 			// Cleared upon receiving `stfu`.
 			|| self.context.channel_state.is_local_stfu_sent()
+			// Cleared upon becoming quiescent.
+			|| self.context.channel_state.is_remote_stfu_sent()
 			// Cleared upon receiving a message that triggers the end of quiescence.
 			|| self.context.channel_state.is_quiescent()
 			// Cleared upon receiving `revoke_and_ack`.

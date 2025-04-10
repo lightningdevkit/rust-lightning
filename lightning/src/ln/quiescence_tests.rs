@@ -445,18 +445,62 @@ fn test_quiescence_timeout() {
 	}
 
 	let f = |event| {
-		if let MessageSendEvent::HandleError { action, .. } = event {
-			if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
-				Some(())
-			} else {
-				None
-			}
-		} else {
-			None
-		}
+		matches!(
+			event, MessageSendEvent::HandleError { action , .. }
+			if matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. })
+		)
 	};
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().into_iter().find_map(f).is_some());
-	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().find_map(f).is_some());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().into_iter().any(f));
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().any(f));
+}
+
+#[test]
+fn test_quiescence_timeout_while_waiting_for_holder_stfu() {
+	// Test that we'll disconnect if the holder does not send their stfu within a reasonable
+	// time if the counterparty already sent one.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &chan_id).unwrap();
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Don't allow nodes[1] to complete monitor updates, such that it cannot send `stfu` after
+	// receiving one because it has a pending channel update.
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+
+	// Both nodes should trigger a disconnect:
+	//   - nodes[0] because they were not able to complete the monitor update in time
+	//   - nodes[1] because they did not receive a `stfu` in time
+	let f = |event| {
+		matches!(
+			event, MessageSendEvent::HandleError { action , .. }
+			if matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. })
+		)
+	};
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().into_iter().any(f));
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().any(f));
 }
 
 #[test]
@@ -487,16 +531,11 @@ fn test_quiescence_timeout_while_waiting_for_counterparty_stfu() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// nodes[1] didn't receive nodes[0]'s stfu within the timeout so it'll disconnect.
-	let f = |&ref event| {
-		if let MessageSendEvent::HandleError { action, .. } = event {
-			if let msgs::ErrorAction::DisconnectPeerWithWarning { .. } = action {
-				Some(())
-			} else {
-				None
-			}
-		} else {
-			None
-		}
+	let f = |event| {
+		matches!(
+			event, MessageSendEvent::HandleError { action , .. }
+			if matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. })
+		)
 	};
-	assert!(nodes[1].node.get_and_clear_pending_msg_events().iter().find_map(f).is_some());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().any(f));
 }
