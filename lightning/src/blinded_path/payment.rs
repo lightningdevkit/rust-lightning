@@ -31,6 +31,7 @@ use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::PaymentSecret;
+use crate::types::routing::RoutingFees;
 use crate::util::ser::{
 	FixedLengthReader, HighZeroBytesDroppedBigSize, LengthReadableArgs, Readable, WithoutLength,
 	Writeable, Writer,
@@ -692,22 +693,17 @@ pub(crate) fn amt_to_forward_msat(
 	u64::try_from(amt_to_forward).ok()
 }
 
-pub(super) fn compute_payinfo(
-	intermediate_nodes: &[PaymentForwardNode], payee_tlvs: &UnauthenticatedReceiveTlvs,
-	payee_htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-) -> Result<BlindedPayInfo, ()> {
+// Returns (aggregated_base_fee, aggregated_proportional_fee)
+pub(crate) fn compute_aggregated_base_prop_fee<I>(hops_fees: I) -> Result<(u64, u64), ()>
+where
+	I: DoubleEndedIterator<Item = RoutingFees>,
+{
 	let mut curr_base_fee: u64 = 0;
 	let mut curr_prop_mil: u64 = 0;
-	let mut cltv_expiry_delta: u16 = min_final_cltv_expiry_delta;
-	for tlvs in intermediate_nodes.iter().rev().map(|n| &n.tlvs) {
-		// In the future, we'll want to take the intersection of all supported features for the
-		// `BlindedPayInfo`, but there are no features in that context right now.
-		if tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) {
-			return Err(());
-		}
+	for fees in hops_fees.rev() {
+		let next_base_fee = fees.base_msat as u64;
+		let next_prop_mil = fees.proportional_millionths as u64;
 
-		let next_base_fee = tlvs.payment_relay.fee_base_msat as u64;
-		let next_prop_mil = tlvs.payment_relay.fee_proportional_millionths as u64;
 		// Use integer arithmetic to compute `ceil(a/b)` as `(a+b-1)/b`
 		// ((curr_base_fee * (1_000_000 + next_prop_mil)) / 1_000_000) + next_base_fee
 		curr_base_fee = curr_base_fee
@@ -724,14 +720,34 @@ pub(super) fn compute_payinfo(
 			.map(|f| f / 1_000_000)
 			.and_then(|f| f.checked_sub(1_000_000))
 			.ok_or(())?;
-
-		cltv_expiry_delta =
-			cltv_expiry_delta.checked_add(tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
 	}
+
+	Ok((curr_base_fee, curr_prop_mil))
+}
+
+pub(super) fn compute_payinfo(
+	intermediate_nodes: &[PaymentForwardNode], payee_tlvs: &UnauthenticatedReceiveTlvs,
+	payee_htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
+) -> Result<BlindedPayInfo, ()> {
+	let (aggregated_base_fee, aggregated_prop_fee) =
+		compute_aggregated_base_prop_fee(intermediate_nodes.iter().map(|node| RoutingFees {
+			base_msat: node.tlvs.payment_relay.fee_base_msat,
+			proportional_millionths: node.tlvs.payment_relay.fee_proportional_millionths,
+		}))?;
 
 	let mut htlc_minimum_msat: u64 = 1;
 	let mut htlc_maximum_msat: u64 = 21_000_000 * 100_000_000 * 1_000; // Total bitcoin supply
+	let mut cltv_expiry_delta: u16 = min_final_cltv_expiry_delta;
 	for node in intermediate_nodes.iter() {
+		// In the future, we'll want to take the intersection of all supported features for the
+		// `BlindedPayInfo`, but there are no features in that context right now.
+		if node.tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) {
+			return Err(());
+		}
+
+		cltv_expiry_delta =
+			cltv_expiry_delta.checked_add(node.tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
+
 		// The min htlc for an intermediate node is that node's min minus the fees charged by all of the
 		// following hops for forwarding that min, since that fee amount will automatically be included
 		// in the amount that this node receives and contribute towards reaching its min.
@@ -754,8 +770,8 @@ pub(super) fn compute_payinfo(
 		return Err(());
 	}
 	Ok(BlindedPayInfo {
-		fee_base_msat: u32::try_from(curr_base_fee).map_err(|_| ())?,
-		fee_proportional_millionths: u32::try_from(curr_prop_mil).map_err(|_| ())?,
+		fee_base_msat: u32::try_from(aggregated_base_fee).map_err(|_| ())?,
+		fee_proportional_millionths: u32::try_from(aggregated_prop_fee).map_err(|_| ())?,
 		cltv_expiry_delta,
 		htlc_minimum_msat,
 		htlc_maximum_msat,
