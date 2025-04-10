@@ -66,6 +66,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdat
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
+use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
@@ -13759,6 +13760,7 @@ where
 		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
 		let mut inbound_payment_id_secret = None;
 		let mut peer_storage_dir: Option<Vec<(PublicKey, Vec<u8>)>> = None;
+		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -13776,6 +13778,7 @@ where
 			(15, inbound_payment_id_secret, option),
 			(17, in_flight_monitor_updates, required),
 			(19, peer_storage_dir, optional_vec),
+			(21, async_receive_offer_cache, (default_value, async_receive_offer_cache)),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		let peer_storage_dir: Vec<(PublicKey, Vec<u8>)> = peer_storage_dir.unwrap_or_else(Vec::new);
@@ -14430,7 +14433,12 @@ where
 		}
 
 		let best_block = BestBlock::new(best_block_hash, best_block_height);
-		let flow = OffersMessageFlow::new(chain_hash, best_block, our_network_pubkey, highest_seen_timestamp, expanded_inbound_key, secp_ctx.clone(), args.message_router);
+		let flow = OffersMessageFlow::new(
+			chain_hash, best_block, our_network_pubkey, highest_seen_timestamp, expanded_inbound_key,
+			secp_ctx.clone(), args.message_router
+		).with_async_payments_offers_cache(
+			async_receive_offer_cache, &args.default_config.paths_to_static_invoice_server[..]
+		);
 
 		let channel_manager = ChannelManager {
 			chain_hash,
