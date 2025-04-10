@@ -1041,7 +1041,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// handshake.
 	pub fn list_peers(&self) -> Vec<PeerDetails> {
 		let peers = self.peers.read().unwrap();
-		peers.values().filter_map(|peer_mutex| {
+		let filter_fn = |peer_mutex: &Mutex<Peer>| {
 			let p = peer_mutex.lock().unwrap();
 			if !p.handshake_complete() {
 				return None;
@@ -1057,7 +1057,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				is_inbound_connection: p.inbound_connection,
 			};
 			Some(details)
-		}).collect()
+		};
+		peers.values().filter_map(filter_fn).collect()
 	}
 
 	/// Returns the [`PeerDetails`] of a connected peer that has completed the initial handshake.
