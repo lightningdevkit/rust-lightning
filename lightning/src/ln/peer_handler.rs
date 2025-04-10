@@ -1386,7 +1386,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
-		let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+		let their_node_id = peer.their_node_id.map(|p| p.0);
+		let logger = WithContext::from(&self.logger, their_node_id, None, None);
 		// `unwrap` SAFETY: `their_node_id` is guaranteed to be `Some` after the handshake
 		let node_id = peer.their_node_id.unwrap().0;
 		if is_gossip_msg(message.type_id()) {
@@ -1488,7 +1489,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 					macro_rules! insert_node_id {
 						() => {
-							let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+							let their_node_id = peer.their_node_id.map(|p| p.0);
+							let logger = WithContext::from(&self.logger, their_node_id, None, None);
 							match self.node_id_to_descriptor.lock().unwrap().entry(peer.their_node_id.unwrap().0) {
 								hash_map::Entry::Occupied(e) => {
 									log_trace!(logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap().0));
@@ -1581,7 +1583,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_buffer.resize(18, 0);
 								peer.pending_read_is_header = true;
 
-								let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+								let their_node_id = peer.their_node_id.map(|p| p.0);
+								let logger = WithContext::from(&self.logger, their_node_id, None, None);
 								let message = match message_result {
 									Ok(x) => x,
 									Err(e) => {
@@ -2107,7 +2110,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
-					let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+					let their_node_id = peer.their_node_id.map(|p| p.0);
+					let logger = WithContext::from(&self.logger, their_node_id, None, None);
 					if peer.buffer_full_drop_gossip_broadcast() && !allow_large_buffer {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -2135,7 +2139,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
-					let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+					let their_node_id = peer.their_node_id.map(|p| p.0);
+					let logger = WithContext::from(&self.logger, their_node_id, None, None);
 					if peer.buffer_full_drop_gossip_broadcast() && !allow_large_buffer {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -2163,7 +2168,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					debug_assert!(peer.their_node_id.is_some());
 					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
-					let logger = WithContext::from(&self.logger, peer.their_node_id.map(|p| p.0), None, None);
+					let their_node_id = peer.their_node_id.map(|p| p.0);
+					let logger = WithContext::from(&self.logger, their_node_id, None, None);
 					if peer.buffer_full_drop_gossip_broadcast() && !allow_large_buffer {
 						log_gossip!(logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
