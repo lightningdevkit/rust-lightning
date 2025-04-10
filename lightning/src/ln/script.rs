@@ -9,6 +9,7 @@ use bitcoin::secp256k1::PublicKey;
 use crate::ln::channelmanager;
 use crate::types::features::InitFeatures;
 use crate::ln::msgs::DecodeError;
+use crate::util::config::UserConfig;
 use crate::util::ser::{Readable, Writeable, Writer};
 
 use crate::io;
@@ -128,7 +129,8 @@ impl TryFrom<ScriptBuf> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
 	fn try_from(script: ScriptBuf) -> Result<Self, Self::Error> {
-		Self::try_from((script, &channelmanager::provided_init_features(&crate::util::config::UserConfig::default())))
+		let features = channelmanager::provided_init_features(&UserConfig::default());
+		Self::try_from((script, &features))
 	}
 }
 
