@@ -1927,7 +1927,7 @@ where
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, node_signer),
+					(hop_data.current_path_key, node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((
