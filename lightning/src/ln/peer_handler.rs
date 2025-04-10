@@ -716,7 +716,6 @@ impl Peer {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-#[rustfmt::skip]
 pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
@@ -757,7 +756,6 @@ pub type SimpleRefPeerManager<
 /// This is not exported to bindings users as general cover traits aren't useful in other
 /// languages.
 #[allow(missing_docs)]
-#[rustfmt::skip]
 pub trait APeerManager {
 	type Descriptor: SocketDescriptor;
 	type CMT: ChannelMessageHandler + ?Sized;
@@ -776,7 +774,6 @@ pub trait APeerManager {
 	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
 }
 
-#[rustfmt::skip]
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref>
 APeerManager for PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 	CM::Target: ChannelMessageHandler,
