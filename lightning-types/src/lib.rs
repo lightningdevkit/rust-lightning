@@ -14,7 +14,7 @@
 //! See the `lightning` crate for usage of these.
 
 #![cfg_attr(not(test), no_std)]
-#![deny(missing_docs)]
+#![cfg_attr(not(fuzzing), deny(missing_docs))]
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]

@@ -90,14 +90,13 @@
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
 use core::{cmp, fmt};
 
 use alloc::vec::Vec;
 
 mod sealed {
 	use super::Features;
-
-	use alloc::vec::Vec;
 
 	/// The context in which [`Features`] are applicable. Defines which features are known to the
 	/// implementation, though specification of them as required or optional is up to the code
@@ -297,68 +296,68 @@ mod sealed {
 
 				/// Returns whether the feature is required by the given flags.
 				#[inline]
-				fn requires_feature(flags: &Vec<u8>) -> bool {
+				fn requires_feature(flags: &[u8]) -> bool {
 					flags.len() > Self::BYTE_OFFSET &&
 						(flags[Self::BYTE_OFFSET] & Self::REQUIRED_MASK) != 0
 				}
 
 				/// Returns whether the feature is supported by the given flags.
 				#[inline]
-				fn supports_feature(flags: &Vec<u8>) -> bool {
+				fn supports_feature(flags: &[u8]) -> bool {
 					flags.len() > Self::BYTE_OFFSET &&
 						(flags[Self::BYTE_OFFSET] & (Self::REQUIRED_MASK | Self::OPTIONAL_MASK)) != 0
 				}
 
 				/// Sets the feature's required (even) bit in the given flags.
 				#[inline]
-				fn set_required_bit(flags: &mut Vec<u8>) {
-					if flags.len() <= Self::BYTE_OFFSET {
-						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
+				fn set_required_bit(obj: &mut Features<Self>) {
+					if obj.flags.len() <= Self::BYTE_OFFSET {
+						obj.flags.resize(Self::BYTE_OFFSET + 1, 0u8);
 					}
 
-					flags[Self::BYTE_OFFSET] |= Self::REQUIRED_MASK;
-					flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
+					obj.flags[Self::BYTE_OFFSET] |= Self::REQUIRED_MASK;
+					obj.flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
 				}
 
 				/// Sets the feature's optional (odd) bit in the given flags.
 				#[inline]
-				fn set_optional_bit(flags: &mut Vec<u8>) {
-					if flags.len() <= Self::BYTE_OFFSET {
-						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
+				fn set_optional_bit(obj: &mut Features<Self>) {
+					if obj.flags.len() <= Self::BYTE_OFFSET {
+						obj.flags.resize(Self::BYTE_OFFSET + 1, 0u8);
 					}
 
-					flags[Self::BYTE_OFFSET] |= Self::OPTIONAL_MASK;
+					obj.flags[Self::BYTE_OFFSET] |= Self::OPTIONAL_MASK;
 				}
 
 				/// Clears the feature's required (even) and optional (odd) bits from the given
 				/// flags.
 				#[inline]
-				fn clear_bits(flags: &mut Vec<u8>) {
-					if flags.len() > Self::BYTE_OFFSET {
-						flags[Self::BYTE_OFFSET] &= !Self::REQUIRED_MASK;
-						flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
+				fn clear_bits(obj: &mut Features<Self>) {
+					if obj.flags.len() > Self::BYTE_OFFSET {
+						obj.flags[Self::BYTE_OFFSET] &= !Self::REQUIRED_MASK;
+						obj.flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
 					}
 
-					let last_non_zero_byte = flags.iter().rposition(|&byte| byte != 0);
+					let last_non_zero_byte = obj.flags.iter().rposition(|&byte| byte != 0);
 					let size = if let Some(offset) = last_non_zero_byte { offset + 1 } else { 0 };
-					flags.resize(size, 0u8);
+					obj.flags.resize(size, 0u8);
 				}
 			}
 
 			impl <T: $feature> Features<T> {
 				/// Set this feature as optional.
 				pub fn $optional_setter(&mut self) {
-					<T as $feature>::set_optional_bit(&mut self.flags);
+					<T as $feature>::set_optional_bit(self);
 				}
 
 				/// Set this feature as required.
 				pub fn $required_setter(&mut self) {
-					<T as $feature>::set_required_bit(&mut self.flags);
+					<T as $feature>::set_required_bit(self);
 				}
 
 				/// Unsets this feature.
 				pub fn $clear(&mut self) {
-					<T as $feature>::clear_bits(&mut self.flags);
+					<T as $feature>::clear_bits(self);
 				}
 
 				/// Checks if this feature is supported.
@@ -661,6 +660,9 @@ mod sealed {
 		supports_trampoline_routing,
 		requires_trampoline_routing
 	);
+	// By default, allocate enough bytes to cover up to Trampoline. Update this as new features are
+	// added which we expect to appear commonly across contexts.
+	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (57 + 7) / 8;
 	define_feature!(
 		259,
 		DnsResolver,
@@ -700,14 +702,138 @@ mod sealed {
 const ANY_REQUIRED_FEATURES_MASK: u8 = 0b01_01_01_01;
 const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
 
+// Vecs are always 3 pointers long, so `FeatureFlags` is never shorter than 24 bytes on 64-bit
+// platforms no matter what we do.
+//
+// Luckily, because `Vec` uses a `NonNull` pointer to its buffer, the two-variant enum is free
+// space-wise, but we only get the remaining 2 usizes in length available for our own stuff (as any
+// other value is interpreted as the `Heap` variant).
+//
+// Thus, as long as we never use more than 16 bytes (15 bytes for the data and one byte for the
+// length) for our Held variant `FeatureFlags` is the same length as a `Vec` in memory.
+const DIRECT_ALLOC_BYTES: usize = if sealed::MIN_FEATURES_ALLOCATION_BYTES > 8 * 2 - 1 {
+	sealed::MIN_FEATURES_ALLOCATION_BYTES
+} else {
+	8 * 2 - 1
+};
+const _ASSERT: () = assert!(DIRECT_ALLOC_BYTES <= u8::MAX as usize);
+
+#[cfg(fuzzing)]
+#[derive(Clone, PartialEq, Eq)]
+pub enum FeatureFlags {
+	Held { bytes: [u8; DIRECT_ALLOC_BYTES], len: u8 },
+	Heap(Vec<u8>),
+}
+
+#[cfg(not(fuzzing))]
+#[derive(Clone, PartialEq, Eq)]
+enum FeatureFlags {
+	Held { bytes: [u8; DIRECT_ALLOC_BYTES], len: u8 },
+	Heap(Vec<u8>),
+}
+
+impl FeatureFlags {
+	fn empty() -> Self {
+		Self::Held { bytes: [0; DIRECT_ALLOC_BYTES], len: 0 }
+	}
+
+	fn from(vec: Vec<u8>) -> Self {
+		if vec.len() <= DIRECT_ALLOC_BYTES {
+			let mut bytes = [0; DIRECT_ALLOC_BYTES];
+			bytes[..vec.len()].copy_from_slice(&vec);
+			Self::Held { bytes, len: vec.len() as u8 }
+		} else {
+			Self::Heap(vec)
+		}
+	}
+
+	fn resize(&mut self, new_len: usize, default: u8) {
+		match self {
+			Self::Held { bytes, len } => {
+				let start_len = *len as usize;
+				if new_len <= DIRECT_ALLOC_BYTES {
+					bytes[start_len..].copy_from_slice(&[default; DIRECT_ALLOC_BYTES][start_len..]);
+					*len = new_len as u8;
+				} else {
+					let mut vec = Vec::new();
+					vec.resize(new_len, default);
+					vec[..start_len].copy_from_slice(&bytes[..start_len]);
+					*self = Self::Heap(vec);
+				}
+			},
+			Self::Heap(vec) => {
+				vec.resize(new_len, default);
+				if new_len <= DIRECT_ALLOC_BYTES {
+					let mut bytes = [0; DIRECT_ALLOC_BYTES];
+					bytes[..new_len].copy_from_slice(&vec[..new_len]);
+					*self = Self::Held { bytes, len: new_len as u8 };
+				}
+			},
+		}
+	}
+
+	fn len(&self) -> usize {
+		self.deref().len()
+	}
+
+	fn iter(
+		&self,
+	) -> (impl Clone + ExactSizeIterator<Item = &u8> + DoubleEndedIterator<Item = &u8>) {
+		let slice = self.deref();
+		slice.iter()
+	}
+
+	fn iter_mut(
+		&mut self,
+	) -> (impl ExactSizeIterator<Item = &mut u8> + DoubleEndedIterator<Item = &mut u8>) {
+		let slice = self.deref_mut();
+		slice.iter_mut()
+	}
+}
+
+impl Deref for FeatureFlags {
+	type Target = [u8];
+	fn deref(&self) -> &[u8] {
+		match self {
+			FeatureFlags::Held { bytes, len } => &bytes[..*len as usize],
+			FeatureFlags::Heap(vec) => &vec,
+		}
+	}
+}
+
+impl DerefMut for FeatureFlags {
+	fn deref_mut(&mut self) -> &mut [u8] {
+		match self {
+			FeatureFlags::Held { bytes, len } => &mut bytes[..*len as usize],
+			FeatureFlags::Heap(vec) => &mut vec[..],
+		}
+	}
+}
+
+impl PartialOrd for FeatureFlags {
+	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+impl Ord for FeatureFlags {
+	fn cmp(&self, other: &Self) -> cmp::Ordering {
+		self.deref().cmp(other.deref())
+	}
+}
+impl fmt::Debug for FeatureFlags {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		self.deref().fmt(fmt)
+	}
+}
+
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
 ///
 /// This is not exported to bindings users as we map the concrete feature types below directly instead
 #[derive(Eq)]
-pub struct Features<T: sealed::Context> {
+pub struct Features<T: sealed::Context + ?Sized> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
-	flags: Vec<u8>,
+	flags: FeatureFlags,
 	mark: PhantomData<T>,
 }
 
@@ -744,7 +870,7 @@ impl<T: sealed::Context> Hash for Features<T> {
 		nonzero_flags.hash(hasher);
 	}
 }
-impl<T: sealed::Context> PartialEq for Features<T> {
+impl<T: sealed::Context + ?Sized> PartialEq for Features<T> {
 	fn eq(&self, o: &Self) -> bool {
 		let mut o_iter = o.flags.iter();
 		let mut self_iter = self.flags.iter();
@@ -879,17 +1005,15 @@ impl ChannelTypeFeatures {
 	/// Constructs a ChannelTypeFeatures with only static_remotekey set
 	pub fn only_static_remote_key() -> Self {
 		let mut ret = Self::empty();
-		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
+		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret);
 		ret
 	}
 
 	/// Constructs a ChannelTypeFeatures with anchors support
 	pub fn anchors_zero_htlc_fee_and_dependencies() -> Self {
 		let mut ret = Self::empty();
-		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
-		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(
-			&mut ret.flags,
-		);
+		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret);
+		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(&mut ret);
 		ret
 	}
 }
@@ -897,7 +1021,7 @@ impl ChannelTypeFeatures {
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
 	pub fn empty() -> Self {
-		Features { flags: Vec::new(), mark: PhantomData }
+		Features { flags: FeatureFlags::empty(), mark: PhantomData }
 	}
 
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
@@ -910,7 +1034,7 @@ impl<T: sealed::Context> Features<T> {
 				None
 			}
 		});
-		let mut flags = Vec::new();
+		let mut flags = FeatureFlags::empty();
 		flags.resize(flag_iter.clone().count(), 0);
 		for (i, byte) in flag_iter {
 			flags[i] = byte;
@@ -923,7 +1047,7 @@ impl<T: sealed::Context> Features<T> {
 	///
 	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
-		Features { flags, mark: PhantomData }
+		Features { flags: FeatureFlags::from(flags), mark: PhantomData }
 	}
 
 	/// Returns the feature set as a list of bytes, in little-endian. This is in reverse byte order
@@ -938,7 +1062,7 @@ impl<T: sealed::Context> Features<T> {
 	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_be_bytes(mut flags: Vec<u8>) -> Features<T> {
 		flags.reverse(); // Swap to little-endian
-		Self { flags, mark: PhantomData }
+		Self { flags: FeatureFlags::from(flags), mark: PhantomData }
 	}
 
 	/// Returns true if this `Features` has any optional flags set
@@ -1331,7 +1455,7 @@ mod tests {
 		use std::hash::{Hash, Hasher};
 
 		let mut zerod_features = InitFeatures::empty();
-		zerod_features.flags = vec![0];
+		zerod_features.flags = FeatureFlags::Heap(vec![0]);
 		let empty_features = InitFeatures::empty();
 		assert!(empty_features.flags.is_empty());
 
@@ -1342,5 +1466,28 @@ mod tests {
 		let mut empty_hash = DefaultHasher::new();
 		empty_features.hash(&mut empty_hash);
 		assert_eq!(zerod_hash.finish(), empty_hash.finish());
+	}
+
+	#[test]
+	fn test_feature_flags_transitions() {
+		// Tests transitions from stack to heap and back in `FeatureFlags`
+		let mut flags = FeatureFlags::empty();
+		assert!(matches!(flags, FeatureFlags::Held { .. }));
+
+		flags.resize(DIRECT_ALLOC_BYTES, 42);
+		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES);
+		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		assert!(matches!(flags, FeatureFlags::Held { .. }));
+
+		flags.resize(DIRECT_ALLOC_BYTES * 2, 43);
+		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES * 2);
+		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		assert!(flags.iter().skip(DIRECT_ALLOC_BYTES).all(|b| *b == 43));
+		assert!(matches!(flags, FeatureFlags::Heap(_)));
+
+		flags.resize(DIRECT_ALLOC_BYTES, 0);
+		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES);
+		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		assert!(matches!(flags, FeatureFlags::Held { .. }));
 	}
 }
