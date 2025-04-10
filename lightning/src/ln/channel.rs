@@ -50,9 +50,9 @@ use crate::ln::channel_state::{
 	OutboundHTLCDetails, OutboundHTLCStateDetails,
 };
 use crate::ln::channelmanager::{
-	self, HTLCFailureMsg, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
-	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, BREAKDOWN_TIMEOUT,
-	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	self, FundingConfirmedMessage, HTLCFailureMsg, HTLCSource, OpenChannelMessage,
+	PaymentClaimDetails, PendingHTLCInfo, PendingHTLCStatus, RAACommitmentOrder, SentHTLCId,
+	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteResult,
@@ -5735,7 +5735,7 @@ impl FailHTLCMessageName for msgs::UpdateFailMalformedHTLC {
 }
 
 type BestBlockUpdatedRes = (
-	Option<msgs::ChannelReady>,
+	Option<FundingConfirmedMessage>,
 	Vec<(HTLCSource, PaymentHash)>,
 	Option<msgs::AnnouncementSignatures>,
 );
@@ -8858,7 +8858,7 @@ where
 	pub fn transactions_confirmed<NS: Deref, L: Deref>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -8919,7 +8919,7 @@ where
 					if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-						msgs = (Some(channel_ready), announcement_sigs);
+						msgs = (Some(FundingConfirmedMessage::Establishment(channel_ready)), announcement_sigs);
 					}
 				}
 				for inp in tx.input.iter() {
@@ -8964,7 +8964,7 @@ where
 	fn do_best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -8993,7 +8993,7 @@ where
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
-			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
+			return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs));
 		}
 
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||
