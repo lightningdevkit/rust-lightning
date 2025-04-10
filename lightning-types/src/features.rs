@@ -733,11 +733,13 @@ enum FeatureFlags {
 }
 
 impl FeatureFlags {
-	fn empty() -> Self {
+	/// Constructs an empty [`FeatureFlags`]
+	pub fn empty() -> Self {
 		Self::Held { bytes: [0; DIRECT_ALLOC_BYTES], len: 0 }
 	}
 
-	fn from(vec: Vec<u8>) -> Self {
+	/// Constructs a [`FeatureFlags`] from the given bytes
+	pub fn from(vec: Vec<u8>) -> Self {
 		if vec.len() <= DIRECT_ALLOC_BYTES {
 			let mut bytes = [0; DIRECT_ALLOC_BYTES];
 			bytes[..vec.len()].copy_from_slice(&vec);
@@ -747,7 +749,10 @@ impl FeatureFlags {
 		}
 	}
 
-	fn resize(&mut self, new_len: usize, default: u8) {
+	/// Resizes a [`FeatureFlags`] to the given length, padding with `default` if required.
+	///
+	/// See [`Vec::resize`] for more info.
+	pub fn resize(&mut self, new_len: usize, default: u8) {
 		match self {
 			Self::Held { bytes, len } => {
 				let start_len = *len as usize;
@@ -772,18 +777,21 @@ impl FeatureFlags {
 		}
 	}
 
-	fn len(&self) -> usize {
+	/// Fetches the length of the [`FeatureFlags`], in bytes.
+	pub fn len(&self) -> usize {
 		self.deref().len()
 	}
 
-	fn iter(
+	/// Fetches an iterator over the bytes of this [`FeatureFlags`]
+	pub fn iter(
 		&self,
 	) -> (impl Clone + ExactSizeIterator<Item = &u8> + DoubleEndedIterator<Item = &u8>) {
 		let slice = self.deref();
 		slice.iter()
 	}
 
-	fn iter_mut(
+	/// Fetches a mutable iterator over the bytes of this [`FeatureFlags`]
+	pub fn iter_mut(
 		&mut self,
 	) -> (impl ExactSizeIterator<Item = &mut u8> + DoubleEndedIterator<Item = &mut u8>) {
 		let slice = self.deref_mut();
