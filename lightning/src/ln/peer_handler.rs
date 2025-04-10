@@ -119,7 +119,6 @@ impl BaseMessageHandler for IgnoringMessageHandler {
 	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 		InitFeatures::empty()
 	}
-
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> { Vec::new() }
 }
 impl RoutingMessageHandler for IgnoringMessageHandler {
