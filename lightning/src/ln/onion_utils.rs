@@ -1674,8 +1674,8 @@ impl HTLCFailReason {
 				// failures here, but that would be insufficient as find_route
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					DecodedOnionFailure {
+				match htlc_source {
+					HTLCSource::OutboundRoute { ref path, .. } => DecodedOnionFailure {
 						network_update: None,
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
@@ -1685,9 +1685,19 @@ impl HTLCFailReason {
 						onion_error_code: Some(*failure_code),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
-					}
-				} else {
-					unreachable!();
+					},
+					HTLCSource::TrampolineForward { ref hops, .. } => DecodedOnionFailure {
+						network_update: None,
+						payment_failed_permanently: false,
+						short_channel_id: hops.first().map(|h| h.short_channel_id),
+						failed_within_blinded_path: false,
+						hold_times: Vec::new(),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_code: Some(*failure_code),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_data: Some(data.clone()),
+					},
+					_ => unreachable!(),
 				}
 			},
 		}

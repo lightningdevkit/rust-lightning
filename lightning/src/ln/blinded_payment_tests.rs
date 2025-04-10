@@ -2497,8 +2497,7 @@ fn test_trampoline_constraint_enforcement() {
 	}
 }
 
-#[test]
-fn test_unblinded_trampoline_forward() {
+fn do_test_unblinded_trampoline_forward(success: bool) {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2) -> D(Trampoline(receive)) (3)
 	// trampoline hops C -> T0 (4) -> D
 	// make it fail at B, then at C's outer onion, then at C's inner onion
@@ -2512,7 +2511,9 @@ fn test_unblinded_trampoline_forward() {
 
 	let (_, _, chan_id_alice_bob, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let (_, _, chan_id_bob_carol, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
-	let (_, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 1_000_000, 0);
+	if success {
+		let (_, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 1_000_000, 0);
+	}
 	let (_, _, _, _) = create_announced_chan_between_nodes_with_value(&nodes, 4, 3, 1_000_000, 0);
 
 	for i in 0..TOTAL_NODE_COUNT { // connect all nodes' blocks
@@ -2651,10 +2652,46 @@ fn test_unblinded_trampoline_forward() {
 		msg.onion_routing_packet = replacement_onion.clone();
 	});
 
-	let route: &[&Node] = &[&nodes[1], &nodes[2], &nodes[4], &nodes[3]];
-	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-		.with_payment_secret(payment_secret);
+	let success_route = [&nodes[1], &nodes[2], &nodes[4], &nodes[3]];
+	let failure_route = [&nodes[1], &nodes[2]];
+	let route: &[&Node] = if success { &success_route } else { &failure_route };
+	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event);
+	let args = if success {
+		args.with_payment_secret(payment_secret)
+	} else {
+		args.with_payment_preimage(payment_preimage)
+			.without_claimable_event()
+			.expect_failure(HTLCDestination::FailedTrampolineForward { requested_next_node_id: dave_node_id, forward_scid: None })
+	};
 	do_pass_along_path(args);
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[4], &nodes[3]], payment_preimage);
+	if success {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[4], &nodes[3]], payment_preimage);
+	} else {
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_update_fail_htlc(
+				nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+		}
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_update_fail_htlc(
+				nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+		}
+		{
+			let payment_failed_conditions = PaymentFailedConditions::new()
+				.expected_htlc_error_data(0x2000 | 25, &[0; 0]);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+		}
+	}
+}
+
+#[test]
+fn test_unblinded_trampoline_forward() {
+	do_test_unblinded_trampoline_forward(true);
+	do_test_unblinded_trampoline_forward(false);
 }
