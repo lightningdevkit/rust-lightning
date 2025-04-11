@@ -45,6 +45,7 @@ possiblyrandom = { version = "0.2", path = "../possiblyrandom", default-features
 
 regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
+rand = { version = "0.8", optional = false }
 
 libm = { version = "0.2", default-features = false }
 inventory = { version = "0.3", optional = true  }
