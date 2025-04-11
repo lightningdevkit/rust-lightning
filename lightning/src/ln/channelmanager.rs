@@ -4445,20 +4445,20 @@ where
 
 	fn htlc_failure_from_update_add_err(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, err_msg: &'static str,
-		err_code: LocalHTLCFailureReason, is_intro_node_blinded_forward: bool,
+		reason: LocalHTLCFailureReason, is_intro_node_blinded_forward: bool,
 		shared_secret: &[u8; 32]
 	) -> HTLCFailureMsg {
 		// at capacity, we write fields `htlc_msat` and `len`
 		let mut res = VecWriter(Vec::with_capacity(8 + 2));
-		if err_code.is_temporary() {
-			if err_code == LocalHTLCFailureReason::AmountBelowMinimum ||
-				err_code == LocalHTLCFailureReason::FeeInsufficient {
+		if reason.is_temporary() {
+			if reason == LocalHTLCFailureReason::AmountBelowMinimum ||
+				reason == LocalHTLCFailureReason::FeeInsufficient {
 				msg.amount_msat.write(&mut res).expect("Writes cannot fail");
 			}
-			else if err_code == LocalHTLCFailureReason::IncorrectCLTVExpiry {
+			else if reason == LocalHTLCFailureReason::IncorrectCLTVExpiry {
 				msg.cltv_expiry.write(&mut res).expect("Writes cannot fail");
 			}
-			else if err_code == LocalHTLCFailureReason::ChannelDisabled {
+			else if reason == LocalHTLCFailureReason::ChannelDisabled {
 				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
 				0u16.write(&mut res).expect("Writes cannot fail");
 			}
@@ -4483,7 +4483,7 @@ where
 		let (reason, err_data) = if is_intro_node_blinded_forward {
 			(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32][..])
 		} else {
-			(err_code, &res.0[..])
+			(reason, &res.0[..])
 		};
 		let failure = HTLCFailReason::reason(reason, err_data.to_vec())
 		.get_encrypted_failure_packet(shared_secret, &None);
@@ -5820,9 +5820,9 @@ where
 					)
 				}) {
 					Some(Ok(_)) => {},
-					Some(Err((err, code))) => {
+					Some(Err((err, reason))) => {
 						let htlc_fail = self.htlc_failure_from_update_add_err(
-							&update_add_htlc, &incoming_counterparty_node_id, err, code,
+							&update_add_htlc, &incoming_counterparty_node_id, err, reason,
 							is_intro_node_blinded_forward, &shared_secret,
 						);
 						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
@@ -5835,11 +5835,11 @@ where
 
 				// Now process the HTLC on the outgoing channel if it's a forward.
 				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
-					if let Err((err, code)) = self.can_forward_htlc(
+					if let Err((err, reason)) = self.can_forward_htlc(
 						&update_add_htlc, next_packet_details
 					) {
 						let htlc_fail = self.htlc_failure_from_update_add_err(
-							&update_add_htlc, &incoming_counterparty_node_id, err, code,
+							&update_add_htlc, &incoming_counterparty_node_id, err, reason,
 							is_intro_node_blinded_forward, &shared_secret,
 						);
 						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
