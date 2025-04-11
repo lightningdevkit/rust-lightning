@@ -1,23 +1,4 @@
-// This file is Copyright its original authors, visible in version control
-// history.
-//
-// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
-// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
-// You may not use this file except in accordance with one or both of these
-// licenses.
-
-//! Events are surfaced by the library to indicate some action must be taken
-//! by the end-user.
-//!
-//! Because we don't have a built-in runtime, it's up to the end-user to poll
-//! [`LiquidityManager::get_and_clear_pending_events`] to receive events.
-//!
-//! [`LiquidityManager::get_and_clear_pending_events`]: crate::LiquidityManager::get_and_clear_pending_events
-
-use crate::lsps0;
-use crate::lsps1;
-use crate::lsps2;
+use super::LiquidityEvent;
 use crate::sync::{Arc, Mutex};
 
 use alloc::collections::VecDeque;
@@ -33,37 +14,19 @@ pub(crate) struct EventQueue {
 	queue: Arc<Mutex<VecDeque<LiquidityEvent>>>,
 	waker: Arc<Mutex<Option<Waker>>>,
 	#[cfg(feature = "std")]
-	condvar: crate::sync::Condvar,
+	condvar: Arc<crate::sync::Condvar>,
 }
 
 impl EventQueue {
 	pub fn new() -> Self {
 		let queue = Arc::new(Mutex::new(VecDeque::new()));
 		let waker = Arc::new(Mutex::new(None));
-		#[cfg(feature = "std")]
-		{
-			let condvar = crate::sync::Condvar::new();
-			Self { queue, waker, condvar }
+		Self {
+			queue,
+			waker,
+			#[cfg(feature = "std")]
+			condvar: Arc::new(crate::sync::Condvar::new()),
 		}
-		#[cfg(not(feature = "std"))]
-		Self { queue, waker }
-	}
-
-	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
-		{
-			let mut queue = self.queue.lock().unwrap();
-			if queue.len() < MAX_EVENT_QUEUE_SIZE {
-				queue.push_back(event.into());
-			} else {
-				return;
-			}
-		}
-
-		if let Some(waker) = self.waker.lock().unwrap().take() {
-			waker.wake();
-		}
-		#[cfg(feature = "std")]
-		self.condvar.notify_one();
 	}
 
 	pub fn next_event(&self) -> Option<LiquidityEvent> {
@@ -102,52 +65,40 @@ impl EventQueue {
 	pub fn get_and_clear_pending_events(&self) -> Vec<LiquidityEvent> {
 		self.queue.lock().unwrap().split_off(0).into()
 	}
-}
 
-/// An event which you should probably take some action in response to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LiquidityEvent {
-	/// An LSPS0 client event.
-	LSPS0Client(lsps0::event::LSPS0ClientEvent),
-	/// An LSPS1 (Channel Request) client event.
-	LSPS1Client(lsps1::event::LSPS1ClientEvent),
-	/// An LSPS1 (Channel Request) server event.
-	#[cfg(lsps1_service)]
-	LSPS1Service(lsps1::event::LSPS1ServiceEvent),
-	/// An LSPS2 (JIT Channel) client event.
-	LSPS2Client(lsps2::event::LSPS2ClientEvent),
-	/// An LSPS2 (JIT Channel) server event.
-	LSPS2Service(lsps2::event::LSPS2ServiceEvent),
-}
-
-impl From<lsps0::event::LSPS0ClientEvent> for LiquidityEvent {
-	fn from(event: lsps0::event::LSPS0ClientEvent) -> Self {
-		Self::LSPS0Client(event)
+	// Returns an [`EventQueueNotifierGuard`] that will notify about new event when dropped.
+	pub fn notifier(&self) -> EventQueueNotifierGuard {
+		EventQueueNotifierGuard(self)
 	}
 }
 
-impl From<lsps1::event::LSPS1ClientEvent> for LiquidityEvent {
-	fn from(event: lsps1::event::LSPS1ClientEvent) -> Self {
-		Self::LSPS1Client(event)
+// A guard type that will notify about new events when dropped.
+#[must_use]
+pub(crate) struct EventQueueNotifierGuard<'a>(&'a EventQueue);
+
+impl<'a> EventQueueNotifierGuard<'a> {
+	pub fn enqueue<E: Into<LiquidityEvent>>(&self, event: E) {
+		let mut queue = self.0.queue.lock().unwrap();
+		if queue.len() < MAX_EVENT_QUEUE_SIZE {
+			queue.push_back(event.into());
+		} else {
+			return;
+		}
 	}
 }
 
-#[cfg(lsps1_service)]
-impl From<lsps1::event::LSPS1ServiceEvent> for LiquidityEvent {
-	fn from(event: lsps1::event::LSPS1ServiceEvent) -> Self {
-		Self::LSPS1Service(event)
-	}
-}
+impl<'a> Drop for EventQueueNotifierGuard<'a> {
+	fn drop(&mut self) {
+		let should_notify = !self.0.queue.lock().unwrap().is_empty();
 
-impl From<lsps2::event::LSPS2ClientEvent> for LiquidityEvent {
-	fn from(event: lsps2::event::LSPS2ClientEvent) -> Self {
-		Self::LSPS2Client(event)
-	}
-}
+		if should_notify {
+			if let Some(waker) = self.0.waker.lock().unwrap().take() {
+				waker.wake();
+			}
 
-impl From<lsps2::event::LSPS2ServiceEvent> for LiquidityEvent {
-	fn from(event: lsps2::event::LSPS2ServiceEvent) -> Self {
-		Self::LSPS2Service(event)
+			#[cfg(feature = "std")]
+			self.0.condvar.notify_one();
+		}
 	}
 }
 
@@ -195,7 +146,8 @@ mod tests {
 		});
 
 		for _ in 0..3 {
-			event_queue.enqueue(expected_event.clone());
+			let guard = event_queue.notifier();
+			guard.enqueue(expected_event.clone());
 		}
 
 		assert_eq!(event_queue.wait_next_event(), expected_event);
@@ -220,14 +172,16 @@ mod tests {
 		let mut delayed_enqueue = false;
 
 		for _ in 0..25 {
-			event_queue.enqueue(expected_event.clone());
+			let guard = event_queue.notifier();
+			guard.enqueue(expected_event.clone());
 			enqueued_events.fetch_add(1, Ordering::SeqCst);
 		}
 
 		loop {
 			tokio::select! {
 				_ = tokio::time::sleep(Duration::from_millis(10)), if !delayed_enqueue => {
-					event_queue.enqueue(expected_event.clone());
+					let guard = event_queue.notifier();
+					guard.enqueue(expected_event.clone());
 					enqueued_events.fetch_add(1, Ordering::SeqCst);
 					delayed_enqueue = true;
 				}
@@ -235,7 +189,8 @@ mod tests {
 					assert_eq!(e, expected_event);
 					received_events.fetch_add(1, Ordering::SeqCst);
 
-					event_queue.enqueue(expected_event.clone());
+					let guard = event_queue.notifier();
+					guard.enqueue(expected_event.clone());
 					enqueued_events.fetch_add(1, Ordering::SeqCst);
 				}
 				e = event_queue.next_event_async() => {
@@ -267,8 +222,9 @@ mod tests {
 		std::thread::spawn(move || {
 			// Sleep a bit before we enqueue the events everybody is waiting for.
 			std::thread::sleep(Duration::from_millis(20));
-			thread_queue.enqueue(thread_event.clone());
-			thread_queue.enqueue(thread_event.clone());
+			let guard = thread_queue.notifier();
+			guard.enqueue(thread_event.clone());
+			guard.enqueue(thread_event.clone());
 		});
 
 		let e = event_queue.next_event_async().await;
