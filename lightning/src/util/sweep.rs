@@ -416,40 +416,26 @@ where
 			return Ok(());
 		}
 
-		let spending_tx_opt;
-		{
-			let mut state_lock = self.sweeper_state.lock().unwrap();
-			for descriptor in relevant_descriptors {
-				let output_info = TrackedSpendableOutput {
-					descriptor,
-					channel_id,
-					status: OutputSpendStatus::PendingInitialBroadcast {
-						delayed_until_height: delay_until_height,
-					},
-				};
+		let mut state_lock = self.sweeper_state.lock().unwrap();
+		for descriptor in relevant_descriptors {
+			let output_info = TrackedSpendableOutput {
+				descriptor,
+				channel_id,
+				status: OutputSpendStatus::PendingInitialBroadcast {
+					delayed_until_height: delay_until_height,
+				},
+			};
 
-				if state_lock
-					.outputs
-					.iter()
-					.find(|o| o.descriptor == output_info.descriptor)
-					.is_some()
-				{
-					continue;
-				}
-
-				state_lock.outputs.push(output_info);
+			if state_lock.outputs.iter().find(|o| o.descriptor == output_info.descriptor).is_some()
+			{
+				continue;
 			}
-			spending_tx_opt = self.regenerate_spend_if_necessary(&mut *state_lock);
-			self.persist_state(&*state_lock).map_err(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-			})?;
-		}
 
-		if let Some(spending_tx) = spending_tx_opt {
-			self.broadcaster.broadcast_transactions(&[&spending_tx]);
+			state_lock.outputs.push(output_info);
 		}
-
-		Ok(())
+		self.persist_state(&*state_lock).map_err(|e| {
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		})
 	}
 
 	/// Returns a list of the currently tracked spendable outputs.
@@ -463,9 +449,10 @@ where
 		self.sweeper_state.lock().unwrap().best_block
 	}
 
-	fn regenerate_spend_if_necessary(
-		&self, sweeper_state: &mut SweeperState,
-	) -> Option<Transaction> {
+	/// Regenerates and broadcasts the spending transaction for any outputs that are pending
+	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
+		let mut sweeper_state = self.sweeper_state.lock().unwrap();
+
 		let cur_height = sweeper_state.best_block.height;
 		let cur_hash = sweeper_state.best_block.block_hash;
 		let filter_fn = |o: &TrackedSpendableOutput| {
@@ -492,7 +479,7 @@ where
 
 		if respend_descriptors.is_empty() {
 			// Nothing to do.
-			return None;
+			return Ok(());
 		}
 
 		let spending_tx = match self.spend_outputs(&*sweeper_state, respend_descriptors) {
@@ -506,7 +493,7 @@ where
 			},
 			Err(e) => {
 				log_error!(self.logger, "Error spending outputs: {:?}", e);
-				return None;
+				return Ok(());
 			},
 		};
 
@@ -522,7 +509,13 @@ where
 			output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
 		}
 
-		Some(spending_tx)
+		self.persist_state(&*sweeper_state).map_err(|e| {
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		})?;
+
+		self.broadcaster.broadcast_transactions(&[&spending_tx]);
+
+		Ok(())
 	}
 
 	fn prune_confirmed_outputs(&self, sweeper_state: &mut SweeperState) {
@@ -601,11 +594,9 @@ where
 
 	fn best_block_updated_internal(
 		&self, sweeper_state: &mut SweeperState, header: &Header, height: u32,
-	) -> Option<Transaction> {
+	) {
 		sweeper_state.best_block = BestBlock::new(header.block_hash(), height);
 		self.prune_confirmed_outputs(sweeper_state);
-		let spending_tx_opt = self.regenerate_spend_if_necessary(sweeper_state);
-		spending_tx_opt
 	}
 }
 
@@ -623,27 +614,18 @@ where
 	fn filtered_block_connected(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
 	) {
-		let mut spending_tx_opt;
-		{
-			let mut state_lock = self.sweeper_state.lock().unwrap();
-			assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
-				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-			assert_eq!(state_lock.best_block.height, height - 1,
-				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+		let mut state_lock = self.sweeper_state.lock().unwrap();
+		assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
+			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+		assert_eq!(state_lock.best_block.height, height - 1,
+			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
 
-			self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
-			spending_tx_opt = self.best_block_updated_internal(&mut *state_lock, header, height);
+		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
+		self.best_block_updated_internal(&mut *state_lock, header, height);
 
-			self.persist_state(&*state_lock).unwrap_or_else(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-				// Skip broadcasting if the persist failed.
-				spending_tx_opt = None;
-			});
-		}
-
-		if let Some(spending_tx) = spending_tx_opt {
-			self.broadcaster.broadcast_transactions(&[&spending_tx]);
-		}
+		let _ = self.persist_state(&*state_lock).map_err(|e| {
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		});
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
@@ -717,20 +699,11 @@ where
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
-		let mut spending_tx_opt;
-		{
-			let mut state_lock = self.sweeper_state.lock().unwrap();
-			spending_tx_opt = self.best_block_updated_internal(&mut *state_lock, header, height);
-			self.persist_state(&*state_lock).unwrap_or_else(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-				// Skip broadcasting if the persist failed.
-				spending_tx_opt = None;
-			});
-		}
-
-		if let Some(spending_tx) = spending_tx_opt {
-			self.broadcaster.broadcast_transactions(&[&spending_tx]);
-		}
+		let mut state_lock = self.sweeper_state.lock().unwrap();
+		self.best_block_updated_internal(&mut *state_lock, header, height);
+		let _ = self.persist_state(&*state_lock).map_err(|e| {
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		});
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
