@@ -367,8 +367,8 @@ pub(super) fn create_recv_pending_htlc_info(
 		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 		if hashed_preimage != payment_hash {
 			return Err(InboundHTLCErr {
-				err_code: 0x4000|22,
-				err_data: Vec::new(),
+				err_code: 0x4000 | 15,
+				err_data: invalid_payment_err_data(amt_msat, current_height),
 				msg: "Payment preimage didn't match payment hash",
 			});
 		}
