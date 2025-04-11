@@ -34,7 +34,7 @@ use lightning::blinded_path::message::{BlindedMessagePath, MessageContext};
 use lightning::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::chainmonitor;
+use lightning::chain::chainmonitor::{self, PeerStorageKey};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::events::Event;
@@ -242,6 +242,7 @@ type PeerMan<'a> = PeerManager<
 	Arc<dyn Logger>,
 	IgnoringMessageHandler,
 	Arc<KeyProvider>,
+	IgnoringMessageHandler,
 >;
 
 struct MoneyLossDetector<'a> {
@@ -419,6 +420,10 @@ impl NodeSigner for KeyProvider {
 		let msg_hash = Message::from_digest(Sha256dHash::hash(&msg.encode()[..]).to_byte_array());
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		PeerStorageKey::new([42; 32])
 	}
 }
 
@@ -608,13 +613,6 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	];
 
 	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()) });
-	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
-		None,
-		broadcast.clone(),
-		Arc::clone(&logger),
-		fee_est.clone(),
-		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
-	));
 
 	let keys_manager = Arc::new(KeyProvider {
 		node_secret: our_network_key.clone(),
@@ -622,6 +620,16 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		counter: AtomicU64::new(0),
 		signer_state: RefCell::new(new_hash_map()),
 	});
+
+	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
+		None,
+		broadcast.clone(),
+		Arc::clone(&logger),
+		fee_est.clone(),
+		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
+		keys_manager.get_peer_storage_key(),
+	));
+
 	let network = Network::Bitcoin;
 	let best_block_timestamp = genesis_block(network).header.time;
 	let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
@@ -653,6 +661,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: IgnoringMessageHandler {},
+		send_only_message_handler: IgnoringMessageHandler {},
 	};
 	let random_data = [
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
