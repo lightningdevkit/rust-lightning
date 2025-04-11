@@ -16,7 +16,7 @@ use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWA
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::{HTLCFailReason, ONION_DATA_LEN, LocalHTLCFailureReason};
+use crate::ln::onion_utils::{HTLCFailurePayload, ONION_DATA_LEN, LocalHTLCFailureReason};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
 
@@ -534,7 +534,7 @@ where
 		}
 
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", message);
-		let failure = HTLCFailReason::reason(reason, data.to_vec())
+		let failure = HTLCFailurePayload::reason(reason, data.to_vec())
 			.get_encrypted_failure_packet(&shared_secret, &trampoline_shared_secret);
 		return Err((HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,

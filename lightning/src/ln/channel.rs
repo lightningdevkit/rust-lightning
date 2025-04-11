@@ -50,7 +50,7 @@ use crate::ln::chan_utils::{
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
 use crate::ln::chan_utils;
-use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason, AttributionData};
+use crate::ln::onion_utils::{HTLCFailurePayload, LocalHTLCFailureReason, AttributionData};
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator, fee_for_weight};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
@@ -380,11 +380,11 @@ enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
 	Success(PaymentPreimage),
-	Failure(HTLCFailReason),
+	Failure(HTLCFailurePayload),
 }
 
-impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
-	fn into(self) -> Option<&'a HTLCFailReason> {
+impl<'a> Into<Option<&'a HTLCFailurePayload>> for &'a OutboundHTLCOutcome {
+	fn into(self) -> Option<&'a HTLCFailurePayload> {
 		match self {
 			OutboundHTLCOutcome::Success(_) => None,
 			OutboundHTLCOutcome::Failure(ref r) => Some(r)
@@ -1042,7 +1042,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub order: RAACommitmentOrder,
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
-	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailurePayload)>,
 	pub finalized_claimed_htlcs: Vec<HTLCSource>,
 	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
@@ -1971,7 +1971,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// completed or not. We currently ignore these fields entirely when force-closing a channel,
 	// but need to handle this somehow or we run the risk of losing HTLCs!
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
-	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailurePayload)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
@@ -5828,7 +5828,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Success(msg.payment_preimage)).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailurePayload) -> Result<(), ChannelError> {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fail HTLC message while quiescent".to_owned()));
 		}
@@ -5843,7 +5843,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(())
 	}
 
-	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
+	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailurePayload) -> Result<(), ChannelError> {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fail malformed HTLC message while quiescent".to_owned()));
 		}
@@ -6000,7 +6000,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailurePayload)`
 				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
 				mem::swap(outcome, &mut reason);
 				if let OutboundHTLCOutcome::Success(preimage) = reason {
@@ -6413,7 +6413,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
-					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailurePayload)`
 					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
 					mem::swap(outcome, &mut reason);
 					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
@@ -6768,7 +6768,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	fn monitor_updating_paused(&mut self, resend_raa: bool, resend_commitment: bool,
 		resend_channel_ready: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
-		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailurePayload)>,
 		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>
 	) {
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
@@ -8987,7 +8987,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
-				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
+				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailurePayload)`
 				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
 				mem::swap(outcome, &mut reason);
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
@@ -10644,7 +10644,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					if let OutboundHTLCOutcome::Success(preimage) = outcome {
 						preimages.push(Some(preimage));
 					}
-					let reason: Option<&HTLCFailReason> = outcome.into();
+					let reason: Option<&HTLCFailurePayload> = outcome.into();
 					reason.write(writer)?;
 				}
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) => {
@@ -10652,7 +10652,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					if let OutboundHTLCOutcome::Success(preimage) = outcome {
 						preimages.push(Some(preimage));
 					}
-					let reason: Option<&HTLCFailReason> = outcome.into();
+					let reason: Option<&HTLCFailurePayload> = outcome.into();
 					reason.write(writer)?;
 				}
 			}
@@ -10988,7 +10988,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 					0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
 					1 => OutboundHTLCState::Committed,
 					2 => {
-						let option: Option<HTLCFailReason> = Readable::read(reader)?;
+						let option: Option<HTLCFailurePayload> = Readable::read(reader)?;
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
@@ -10997,7 +10997,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 						OutboundHTLCState::RemoteRemoved(outcome)
 					},
 					3 => {
-						let option: Option<HTLCFailReason> = Readable::read(reader)?;
+						let option: Option<HTLCFailurePayload> = Readable::read(reader)?;
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
@@ -11006,7 +11006,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 						OutboundHTLCState::AwaitingRemoteRevokeToRemove(outcome)
 					},
 					4 => {
-						let option: Option<HTLCFailReason> = Readable::read(reader)?;
+						let option: Option<HTLCFailurePayload> = Readable::read(reader)?;
 						let outcome = match option {
 							Some(r) => OutboundHTLCOutcome::Failure(r),
 							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
