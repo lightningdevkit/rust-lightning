@@ -57,7 +57,7 @@ use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelType
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, RouteParametersConfig, Router, FixedRouter, Route};
-use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails};
+use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails, invalid_payment_err_data};
 use crate::ln::msgs;
 use crate::ln::onion_utils::{self};
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
@@ -87,6 +87,7 @@ use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
+
 #[cfg(async_payments)] use {
 	crate::offers::offer::Amount,
 	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
@@ -6262,10 +6263,7 @@ where
 								macro_rules! fail_htlc {
 									($htlc: expr, $payment_hash: expr) => {
 										debug_assert!(!committed_to_claimable);
-										let mut htlc_msat_height_data = $htlc.value.to_be_bytes().to_vec();
-										htlc_msat_height_data.extend_from_slice(
-											&self.best_block.read().unwrap().height.to_be_bytes(),
-										);
+										let err_data = invalid_payment_err_data($htlc.value, self.best_block.read().unwrap().height);
 										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: $htlc.prev_hop.short_channel_id,
 												user_channel_id: $htlc.prev_hop.user_channel_id,
@@ -6278,7 +6276,7 @@ where
 												blinded_failure,
 												cltv_expiry: Some(cltv_expiry),
 											}), payment_hash,
-											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
+											HTLCFailReason::reason(0x4000 | 15, err_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
 										));
 										continue 'next_forwardable_htlc;
@@ -7231,10 +7229,9 @@ where
 			}
 		} else {
 			for htlc in sources {
-				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
-				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height.to_be_bytes());
+				let err_data = invalid_payment_err_data(htlc.value, self.best_block.read().unwrap().height);
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
-				let reason = HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data);
+				let reason = HTLCFailReason::reason(0x4000 | 15, err_data);
 				let receiver = HTLCDestination::FailedPayment { payment_hash };
 				self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 			}
@@ -11822,11 +11819,8 @@ where
 					// number of blocks we generally consider it to take to do a commitment update,
 					// just give up on it and fail the HTLC.
 					if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
-						let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
-						htlc_msat_height_data.extend_from_slice(&height.to_be_bytes());
-
 						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(),
-							HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
+							HTLCFailReason::reason(0x4000 | 15, invalid_payment_err_data(htlc.value, height)),
 							HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }));
 						false
 					} else { true }
