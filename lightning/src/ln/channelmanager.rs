@@ -34,7 +34,7 @@ use bitcoin::{secp256k1, Sequence};
 #[cfg(splicing)]
 use bitcoin::{TxIn, Weight};
 
-use crate::events::FundingInfo;
+use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
@@ -666,6 +666,8 @@ mod fuzzy_channelmanager {
 			/// doing a double-pass on route when we get a failure back
 			first_hop_htlc_msat: u64,
 			payment_id: PaymentId,
+			// TODO(vincenzopalazzo): add the documentation for this field
+			bolt12_invoice: Option<PaidBolt12Invoice>,
 		},
 	}
 
@@ -703,7 +705,8 @@ impl core::hash::Hash for HTLCSource {
 				0u8.hash(hasher);
 				prev_hop_data.hash(hasher);
 			},
-			HTLCSource::OutboundRoute { path, session_priv, payment_id, first_hop_htlc_msat } => {
+			// FIXME(vincenzopalazzo): we can ignore the bolt12_invoice here?
+			HTLCSource::OutboundRoute { path, session_priv, payment_id, first_hop_htlc_msat, .. } => {
 				1u8.hash(hasher);
 				path.hash(hasher);
 				session_priv[..].hash(hasher);
@@ -721,6 +724,7 @@ impl HTLCSource {
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
+			bolt12_invoice: None,
 		}
 	}
 
@@ -4634,14 +4638,14 @@ where
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
 			path, payment_hash, recipient_onion: &recipient_onion, total_value,
-			cur_height, payment_id, keysend_preimage, invoice_request: None, session_priv_bytes
+			cur_height, payment_id, keysend_preimage, invoice_request: None, bolt12_invoice: None, session_priv_bytes
 		})
 	}
 
 	fn send_payment_along_path(&self, args: SendAlongPathArgs) -> Result<(), APIError> {
 		let SendAlongPathArgs {
 			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
-			invoice_request, session_priv_bytes
+			invoice_request, bolt12_invoice, session_priv_bytes
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -4691,6 +4695,7 @@ where
 								session_priv: session_priv.clone(),
 								first_hop_htlc_msat: htlc_msat,
 								payment_id,
+								bolt12_invoice: bolt12_invoice.cloned(),
 							}, onion_packet, None, &self.fee_estimator, &&logger);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
@@ -7459,7 +7464,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		next_channel_outpoint: OutPoint, next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 	) {
 		match source {
-			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
+			HTLCSource::OutboundRoute { session_priv, payment_id, path, bolt12_invoice, .. } => {
 				debug_assert!(self.background_events_processed_since_startup.load(Ordering::Acquire),
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
@@ -7467,7 +7472,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					channel_funding_outpoint: next_channel_outpoint, channel_id: next_channel_id,
 					counterparty_node_id: path.hops[0].pubkey,
 				};
-				self.pending_outbound_payments.claim_htlc(payment_id, payment_preimage,
+				self.pending_outbound_payments.claim_htlc(payment_id, payment_preimage, bolt12_invoice,
 					session_priv, path, from_onchain, ev_completion_action, &self.pending_events,
 					&self.logger);
 			},
@@ -8918,6 +8923,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
+		// TODO(vincenzopalazzo): pass down the paid bolt12invoice
 		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(),
 			Some(forwarded_htlc_value), skimmed_fee_msat, false, false, *counterparty_node_id,
 			funding_txo, msg.channel_id, Some(next_user_channel_id),
@@ -13144,6 +13150,7 @@ impl Readable for HTLCSource {
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
+				let mut bolt12_invoice: Option<PaidBolt12Invoice> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
@@ -13151,6 +13158,7 @@ impl Readable for HTLCSource {
 					(4, path_hops, required_vec),
 					(5, payment_params, (option: ReadableArgs, 0)),
 					(6, blinded_tail, option),
+					(8, bolt12_invoice, option),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
@@ -13173,6 +13181,7 @@ impl Readable for HTLCSource {
 					first_hop_htlc_msat,
 					path,
 					payment_id: payment_id.unwrap(),
+					bolt12_invoice,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -13184,7 +13193,7 @@ impl Readable for HTLCSource {
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id } => {
+			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, bolt12_invoice } => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
@@ -13195,6 +13204,7 @@ impl Writeable for HTLCSource {
 					(4, path.hops, required_vec),
 					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 					(6, path.blinded_tail, option),
+					(8, bolt12_invoice, option),
 				 });
 			}
 			HTLCSource::PreviousHopData(ref field) => {
@@ -14381,7 +14391,7 @@ where
 									} else { true }
 								});
 							},
-							HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } => {
+							HTLCSource::OutboundRoute { payment_id, session_priv, path, bolt12_invoice, .. } => {
 								if let Some(preimage) = preimage_opt {
 									let pending_events = Mutex::new(pending_events_read);
 									// Note that we set `from_onchain` to "false" here,
@@ -14398,7 +14408,7 @@ where
 											channel_id: monitor.channel_id(),
 											counterparty_node_id: path.hops[0].pubkey,
 										};
-									pending_outbounds.claim_htlc(payment_id, preimage, session_priv,
+									pending_outbounds.claim_htlc(payment_id, preimage, bolt12_invoice, session_priv,
 										path, false, compl_action, &pending_events, &&logger);
 									pending_events_read = pending_events.into_inner().unwrap();
 								}
