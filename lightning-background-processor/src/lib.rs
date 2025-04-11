@@ -36,8 +36,10 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
+use lightning::sign::{ChangeDestinationSource, OutputSpender};
 use lightning::util::logger::Logger;
-use lightning::util::persist::Persister;
+use lightning::util::persist::{KVStore, Persister};
+use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -129,6 +131,11 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 const REBROADCAST_TIMER: u64 = 30;
 #[cfg(test)]
 const REBROADCAST_TIMER: u64 = 1;
+
+#[cfg(not(test))]
+const SWEEPER_TIMER: u64 = 30;
+#[cfg(test)]
+const SWEEPER_TIMER: u64 = 1;
 
 #[cfg(feature = "futures")]
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
@@ -306,6 +313,7 @@ macro_rules! define_run_body {
 		$channel_manager: ident, $process_channel_manager_events: expr,
 		$onion_messenger: ident, $process_onion_message_handler_events: expr,
 		$peer_manager: ident, $gossip_sync: ident,
+		$sweeper: ident,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
 		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
 	) => { {
@@ -320,6 +328,7 @@ macro_rules! define_run_body {
 		let mut last_prune_call = $get_timer(FIRST_NETWORK_PRUNE_TIMER);
 		let mut last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
 		let mut last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
+		let mut last_sweeper_call = $get_timer(SWEEPER_TIMER);
 		let mut have_pruned = false;
 		let mut have_decayed_scorer = false;
 
@@ -460,6 +469,12 @@ macro_rules! define_run_body {
 				log_trace!($logger, "Rebroadcasting monitor's pending claims");
 				$chain_monitor.rebroadcast_pending_claims();
 				last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
+			}
+
+			if $timer_elapsed(&mut last_sweeper_call, SWEEPER_TIMER) {
+				log_trace!($logger, "Regenerate sweeper spends if necessary");
+				let _ = $sweeper.regenerate_and_broadcast_spend_if_necessary_locked();
+				last_sweeper_call = $get_timer(SWEEPER_TIMER);
 			}
 		}
 
@@ -922,14 +937,18 @@ impl BackgroundProcessor {
 		PM: 'static + Deref + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
+		D: 'static + Deref + Send + Sync,
+		O: 'static + Deref + Send + Sync,
+		K: 'static + Deref + Send + Sync,
+		OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>> + Send + Sync,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-		logger: L, scorer: Option<S>,
+		sweeper: OS, logger: L, scorer: Option<S>,
 	) -> Self
 	where
 		UL::Target: 'static + UtxoLookup,
-		CF::Target: 'static + chain::Filter,
+		CF::Target: 'static + chain::Filter + Sync + Send,
 		T::Target: 'static + BroadcasterInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
@@ -938,6 +957,9 @@ impl BackgroundProcessor {
 		CM::Target: AChannelManager + Send + Sync,
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
+		O::Target: 'static + OutputSpender + Send + Sync,
+		D::Target: 'static + ChangeDestinationSource + Send + Sync,
+		K::Target: 'static + KVStore + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -973,6 +995,7 @@ impl BackgroundProcessor {
 				},
 				peer_manager,
 				gossip_sync,
+				sweeper,
 				logger,
 				scorer,
 				stop_thread.load(Ordering::Acquire),
@@ -1069,7 +1092,7 @@ mod tests {
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::transaction::OutPoint;
-	use lightning::chain::{chainmonitor, BestBlock, Confirm, Filter};
+	use lightning::chain::{self, chainmonitor, BestBlock, Confirm, Filter};
 	use lightning::events::{Event, PathFailure, ReplayEvent};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{
@@ -1085,6 +1108,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
+	use lightning::routing::utxo::UtxoLookup;
 	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
@@ -1155,7 +1179,7 @@ mod tests {
 
 	type ChainMonitor = chainmonitor::ChainMonitor<
 		InMemorySigner,
-		Arc<test_utils::TestChainSource>,
+		Arc<dyn chain::Filter + Sync + Send>,
 		Arc<test_utils::TestBroadcaster>,
 		Arc<test_utils::TestFeeEstimator>,
 		Arc<test_utils::TestLogger>,
@@ -1558,12 +1582,13 @@ mod tests {
 				Arc::clone(&keys_manager),
 			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
+			let x: Arc<dyn Filter + Send + Sync> = chain_source.clone();
 			let kv_store =
 				Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
-				Some(chain_source.clone()),
+				Some(x.clone()),
 				tx_broadcaster.clone(),
 				logger.clone(),
 				fee_estimator.clone(),
@@ -1823,6 +1848,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
+
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
@@ -1831,6 +1857,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1924,6 +1951,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1966,6 +1994,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2034,6 +2063,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2063,6 +2093,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2109,6 +2140,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2171,6 +2203,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2322,6 +2355,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2351,6 +2385,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2446,6 +2481,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2640,6 +2676,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.clone(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
