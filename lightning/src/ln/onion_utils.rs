@@ -1069,11 +1069,6 @@ where
 	let mut is_from_final_non_blinded_node = false;
 	let mut hop_hold_times: Vec<u32> = Vec::new();
 
-	const BADONION: u16 = 0x8000;
-	const PERM: u16 = 0x4000;
-	const NODE: u16 = 0x2000;
-	const UPDATE: u16 = 0x1000;
-
 	enum ErrorHop<'a> {
 		RouteHop(&'a RouteHop),
 		TrampolineHop(&'a TrampolineHop),
@@ -1447,6 +1442,188 @@ where
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
+		}
+	}
+}
+
+const BADONION: u16 = 0x8000;
+const PERM: u16 = 0x4000;
+const NODE: u16 = 0x2000;
+const UPDATE: u16 = 0x1000;
+
+/// The reason that a HTLC was failed by the local node. These errors represent direct,
+/// human-readable mappings of BOLT04 error codes.
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub enum LocalHTLCFailureReason {
+	/// There has been a temporary processing failure on the node which may resolve on retry.
+	TemporaryNodeFailure,
+	/// These has been a permanent processing failure on the node which will not resolve on retry.
+	PermanentNodeFailure,
+	/// The HTLC does not implement a feature that is required by our node.
+	///
+	/// The sender may have outdated gossip, or a bug in its implementation.
+	RequiredNodeFeature,
+	/// The onion version specified by the HTLC packet is unknown to our node.
+	InvalidOnionVersion,
+	/// The integrity of the HTLC packet cannot be verified because it has an invalid HMAC.
+	InvalidOnionHMAC,
+	/// The onion packet has an invalid ephemeral key, so the HTLC cannot be processed.
+	InvalidOnionKey,
+	/// A temporary forwarding error has occurred which may resolve on retry.
+	TemporaryChannelFailure,
+	/// A permanent forwarding error has occurred which will not resolve on retry.
+	PermanentChannelFailure,
+	/// The HTLC does not implement a feature that is required by our channel for processing.
+	RequiredChannelFeature,
+	/// The HTLC's target outgoing channel that is not known to our node.
+	UnknownNextPeer,
+	/// The HTLC amount is below our advertised htlc_minimum_msat.
+	///
+	/// The sender may have outdated gossip, or a bug in its implementation.
+	AmountBelowMinimum,
+	/// The HTLC does not pay sufficient fees.
+	///
+	/// The sender may have outdated gossip, or a bug in its implementation.
+	FeeInsufficient,
+	/// The HTLC does not meet the cltv_expiry_delta advertised by our node, set by
+	/// [`ChannelConfig::cltv_expiry_delta`].
+	///
+	/// The sender may have outdated gossip, or a bug in its implementation.
+	///
+	/// [`ChannelConfig::cltv_expiry_delta`]: crate::util::config::ChannelConfig::cltv_expiry_delta
+	IncorrectCLTVExpiry,
+	/// The HTLC expires too close to the current block height to be safely processed.
+	CLTVExpiryTooSoon,
+	/// A payment was made to our node that either had incorrect payment information, or was
+	/// unknown to us.
+	IncorrectPaymentDetails,
+	/// The HTLC's expiry is less than the expiry height specified by the sender.
+	///
+	/// The forwarding node has either tampered with this value, or the sending node has an
+	/// old best block height.
+	FinalIncorrectCLTVExpiry,
+	/// The HTLC's amount is less than the amount specified by the sender.
+	///
+	/// The forwarding node has tampered with this value, or has a bug in its implementation.
+	FinalIncorrectHTLCAmount,
+	/// The channel has been marked as disabled because the channel peer is offline.
+	ChannelDisabled,
+	/// The HTLC expires too far in the future, so it is rejected to avoid the worst-case outcome
+	/// of funds being held for extended periods of time.
+	///
+	/// Limit set by ['crate::ln::channelmanager::CLTV_FAR_FAR_AWAY`].
+	CLTVExpiryTooFar,
+	/// The HTLC payload contained in the onion packet could not be understood by our node.
+	InvalidOnionPayload,
+	/// The total amount for a multi-part payment did not arrive in time, so the HTLCs partially
+	/// paying the amount were canceled.
+	MPPTimeout,
+	/// Our node was selected as part of a blinded path, but the packet we received was not
+	/// properly constructed, or had incorrect values for the blinded path.
+	///
+	/// This may happen if the forwarding node tamperd with the HTLC or the sender or recipient
+	/// implementations have a bug.
+	InvalidOnionBlinding,
+	/// UnknownFailureCode represents BOLT04 failure codes that we are not familiar with. We will
+	/// encounter this if:
+	/// - A peer sends us a new failure code that LDK has not yet been upgraded to understand.
+	/// - We read a deprecated failure code from disk that LDK no longer uses.
+	///
+	/// See <https://github.com/lightning/bolts/blob/master/04-onion-routing.md#returning-errors>
+	/// for latest defined error codes.
+	UnknownFailureCode {
+		/// The bolt 04 failure code.
+		code: u16,
+	},
+}
+
+impl LocalHTLCFailureReason {
+	pub(super) fn failure_code(&self) -> u16 {
+		match self {
+			Self::TemporaryNodeFailure => NODE | 2,
+			Self::PermanentNodeFailure => PERM | NODE | 2,
+			Self::RequiredNodeFeature => PERM | NODE | 3,
+			Self::InvalidOnionVersion => BADONION | PERM | 4,
+			Self::InvalidOnionHMAC => BADONION | PERM | 5,
+			Self::InvalidOnionKey => BADONION | PERM | 6,
+			Self::TemporaryChannelFailure => UPDATE | 7,
+			Self::PermanentChannelFailure => PERM | 8,
+			Self::RequiredChannelFeature => PERM | 9,
+			Self::UnknownNextPeer => PERM | 10,
+			Self::AmountBelowMinimum => UPDATE | 11,
+			Self::FeeInsufficient => UPDATE | 12,
+			Self::IncorrectCLTVExpiry => UPDATE | 13,
+			Self::CLTVExpiryTooSoon => UPDATE | 14,
+			Self::IncorrectPaymentDetails => PERM | 15,
+			Self::FinalIncorrectCLTVExpiry => 18,
+			Self::FinalIncorrectHTLCAmount => 19,
+			Self::ChannelDisabled => UPDATE | 20,
+			Self::CLTVExpiryTooFar => 21,
+			Self::InvalidOnionPayload => PERM | 22,
+			Self::MPPTimeout => 23,
+			Self::InvalidOnionBlinding => BADONION | PERM | 24,
+			Self::UnknownFailureCode { code } => *code,
+		}
+	}
+
+	pub(super) fn is_temporary(&self) -> bool {
+		self.failure_code() & UPDATE == UPDATE
+	}
+
+	#[cfg(test)]
+	pub(super) fn is_permanent(&self) -> bool {
+		self.failure_code() & PERM == PERM
+	}
+}
+
+impl From<u16> for LocalHTLCFailureReason {
+	fn from(value: u16) -> Self {
+		if value == (NODE | 2) {
+			LocalHTLCFailureReason::TemporaryNodeFailure
+		} else if value == (PERM | NODE | 2) {
+			LocalHTLCFailureReason::PermanentNodeFailure
+		} else if value == (PERM | NODE | 3) {
+			LocalHTLCFailureReason::RequiredNodeFeature
+		} else if value == (BADONION | PERM | 4) {
+			LocalHTLCFailureReason::InvalidOnionVersion
+		} else if value == (BADONION | PERM | 5) {
+			LocalHTLCFailureReason::InvalidOnionHMAC
+		} else if value == (BADONION | PERM | 6) {
+			LocalHTLCFailureReason::InvalidOnionKey
+		} else if value == (UPDATE | 7) {
+			LocalHTLCFailureReason::TemporaryChannelFailure
+		} else if value == (PERM | 8) {
+			LocalHTLCFailureReason::PermanentChannelFailure
+		} else if value == (PERM | 9) {
+			LocalHTLCFailureReason::RequiredChannelFeature
+		} else if value == (PERM | 10) {
+			LocalHTLCFailureReason::UnknownNextPeer
+		} else if value == (UPDATE | 11) {
+			LocalHTLCFailureReason::AmountBelowMinimum
+		} else if value == (UPDATE | 12) {
+			LocalHTLCFailureReason::FeeInsufficient
+		} else if value == (UPDATE | 13) {
+			LocalHTLCFailureReason::IncorrectCLTVExpiry
+		} else if value == (UPDATE | 14) {
+			LocalHTLCFailureReason::CLTVExpiryTooSoon
+		} else if value == (PERM | 15) {
+			LocalHTLCFailureReason::IncorrectPaymentDetails
+		} else if value == 18 {
+			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
+		} else if value == 19 {
+			LocalHTLCFailureReason::FinalIncorrectHTLCAmount
+		} else if value == (UPDATE | 20) {
+			LocalHTLCFailureReason::ChannelDisabled
+		} else if value == 21 {
+			LocalHTLCFailureReason::CLTVExpiryTooFar
+		} else if value == (PERM | 22) {
+			LocalHTLCFailureReason::InvalidOnionPayload
+		} else if value == 23 {
+			LocalHTLCFailureReason::MPPTimeout
+		} else if value == (BADONION | PERM | 24) {
+			LocalHTLCFailureReason::InvalidOnionBlinding
+		} else {
+			LocalHTLCFailureReason::UnknownFailureCode { code: value }
 		}
 	}
 }
