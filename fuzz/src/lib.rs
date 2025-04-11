@@ -27,6 +27,7 @@ pub mod bech32_parse;
 pub mod bolt11_deser;
 pub mod chanmon_consistency;
 pub mod chanmon_deser;
+pub mod feature_flags;
 pub mod fromstr_to_netaddress;
 pub mod full_stack;
 pub mod indexedmap;

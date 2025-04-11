@@ -90,14 +90,13 @@
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
 use core::{cmp, fmt};
 
 use alloc::vec::Vec;
 
 mod sealed {
-	use super::Features;
-
-	use alloc::vec::Vec;
+	use super::{FeatureFlags, Features};
 
 	/// The context in which [`Features`] are applicable. Defines which features are known to the
 	/// implementation, though specification of them as required or optional is up to the code
@@ -297,21 +296,21 @@ mod sealed {
 
 				/// Returns whether the feature is required by the given flags.
 				#[inline]
-				fn requires_feature(flags: &Vec<u8>) -> bool {
+				fn requires_feature(flags: &[u8]) -> bool {
 					flags.len() > Self::BYTE_OFFSET &&
 						(flags[Self::BYTE_OFFSET] & Self::REQUIRED_MASK) != 0
 				}
 
 				/// Returns whether the feature is supported by the given flags.
 				#[inline]
-				fn supports_feature(flags: &Vec<u8>) -> bool {
+				fn supports_feature(flags: &[u8]) -> bool {
 					flags.len() > Self::BYTE_OFFSET &&
 						(flags[Self::BYTE_OFFSET] & (Self::REQUIRED_MASK | Self::OPTIONAL_MASK)) != 0
 				}
 
 				/// Sets the feature's required (even) bit in the given flags.
 				#[inline]
-				fn set_required_bit(flags: &mut Vec<u8>) {
+				fn set_required_bit(flags: &mut FeatureFlags) {
 					if flags.len() <= Self::BYTE_OFFSET {
 						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
 					}
@@ -322,7 +321,7 @@ mod sealed {
 
 				/// Sets the feature's optional (odd) bit in the given flags.
 				#[inline]
-				fn set_optional_bit(flags: &mut Vec<u8>) {
+				fn set_optional_bit(flags: &mut FeatureFlags) {
 					if flags.len() <= Self::BYTE_OFFSET {
 						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
 					}
@@ -333,7 +332,7 @@ mod sealed {
 				/// Clears the feature's required (even) and optional (odd) bits from the given
 				/// flags.
 				#[inline]
-				fn clear_bits(flags: &mut Vec<u8>) {
+				fn clear_bits(flags: &mut FeatureFlags) {
 					if flags.len() > Self::BYTE_OFFSET {
 						flags[Self::BYTE_OFFSET] &= !Self::REQUIRED_MASK;
 						flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
@@ -661,6 +660,9 @@ mod sealed {
 		supports_trampoline_routing,
 		requires_trampoline_routing
 	);
+	// By default, allocate enough bytes to cover up to Trampoline. Update this as new features are
+	// added which we expect to appear commonly across contexts.
+	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (57 + 7) / 8;
 	define_feature!(
 		259,
 		DnsResolver,
@@ -700,6 +702,133 @@ mod sealed {
 const ANY_REQUIRED_FEATURES_MASK: u8 = 0b01_01_01_01;
 const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
 
+// Vecs are always 3 pointers long, so `FeatureFlags` is never shorter than 24 bytes on 64-bit
+// platforms no matter what we do.
+//
+// Luckily, because `Vec` uses a `NonNull` pointer to its buffer, the two-variant enum is free
+// space-wise, but we only get the remaining 2 usizes in length available for our own stuff (as any
+// other value is interpreted as the `Heap` variant).
+//
+// Thus, as long as we never use more than 15 bytes for our Held variant `FeatureFlags` is the same
+// length as a `Vec` in memory.
+const DIRECT_ALLOC_BYTES: usize = if sealed::MIN_FEATURES_ALLOCATION_BYTES > 8 * 2 - 1 {
+	sealed::MIN_FEATURES_ALLOCATION_BYTES
+} else {
+	8 * 2 - 1
+};
+const _ASSERT: () = assert!(DIRECT_ALLOC_BYTES <= u8::MAX as usize);
+
+/// The internal storage for feature flags. Public only for the [`sealed`] feature flag traits but
+/// generally should never be used directly.
+#[derive(Clone, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum FeatureFlags {
+	Held { bytes: [u8; DIRECT_ALLOC_BYTES], len: u8 },
+	Heap(Vec<u8>),
+}
+
+impl FeatureFlags {
+	/// Constructs an empty [`FeatureFlags`]
+	pub fn empty() -> Self {
+		Self::Held { bytes: [0; DIRECT_ALLOC_BYTES], len: 0 }
+	}
+
+	/// Constructs a [`FeatureFlags`] from the given bytes
+	pub fn from(vec: Vec<u8>) -> Self {
+		if vec.len() <= DIRECT_ALLOC_BYTES {
+			let mut bytes = [0; DIRECT_ALLOC_BYTES];
+			bytes[..vec.len()].copy_from_slice(&vec);
+			Self::Held { bytes, len: vec.len() as u8 }
+		} else {
+			Self::Heap(vec)
+		}
+	}
+
+	/// Resizes a [`FeatureFlags`] to the given length, padding with `default` if required.
+	///
+	/// See [`Vec::resize`] for more info.
+	pub fn resize(&mut self, new_len: usize, default: u8) {
+		match self {
+			Self::Held { bytes, len } => {
+				let start_len = *len as usize;
+				if new_len <= DIRECT_ALLOC_BYTES {
+					bytes[start_len..].copy_from_slice(&[default; DIRECT_ALLOC_BYTES][start_len..]);
+					*len = new_len as u8;
+				} else {
+					let mut vec = Vec::new();
+					vec.resize(new_len, default);
+					vec[..start_len].copy_from_slice(&bytes[..start_len]);
+					*self = Self::Heap(vec);
+				}
+			},
+			Self::Heap(vec) => {
+				vec.resize(new_len, default);
+				if new_len <= DIRECT_ALLOC_BYTES {
+					let mut bytes = [0; DIRECT_ALLOC_BYTES];
+					bytes[..new_len].copy_from_slice(&vec[..new_len]);
+					*self = Self::Held { bytes, len: new_len as u8 };
+				}
+			},
+		}
+	}
+
+	/// Fetches the length of the [`FeatureFlags`], in bytes.
+	pub fn len(&self) -> usize {
+		self.deref().len()
+	}
+
+	/// Fetches an iterator over the bytes of this [`FeatureFlags`]
+	pub fn iter(
+		&self,
+	) -> (impl Clone + ExactSizeIterator<Item = &u8> + DoubleEndedIterator<Item = &u8>) {
+		let slice = self.deref();
+		slice.iter()
+	}
+
+	/// Fetches a mutable iterator over the bytes of this [`FeatureFlags`]
+	pub fn iter_mut(
+		&mut self,
+	) -> (impl ExactSizeIterator<Item = &mut u8> + DoubleEndedIterator<Item = &mut u8>) {
+		let slice = self.deref_mut();
+		slice.iter_mut()
+	}
+}
+
+impl Deref for FeatureFlags {
+	type Target = [u8];
+	fn deref(&self) -> &[u8] {
+		match self {
+			FeatureFlags::Held { bytes, len } => &bytes[..*len as usize],
+			FeatureFlags::Heap(vec) => &vec,
+		}
+	}
+}
+
+impl DerefMut for FeatureFlags {
+	fn deref_mut(&mut self) -> &mut [u8] {
+		match self {
+			FeatureFlags::Held { bytes, len } => &mut bytes[..*len as usize],
+			FeatureFlags::Heap(vec) => &mut vec[..],
+		}
+	}
+}
+
+impl PartialOrd for FeatureFlags {
+	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+		self.deref().partial_cmp(other.deref())
+	}
+}
+impl Ord for FeatureFlags {
+	fn cmp(&self, other: &Self) -> cmp::Ordering {
+		self.deref().cmp(other.deref())
+	}
+}
+impl fmt::Debug for FeatureFlags {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		self.deref().fmt(fmt)
+	}
+}
+
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
 ///
@@ -707,7 +836,7 @@ const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
 #[derive(Eq)]
 pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
-	flags: Vec<u8>,
+	flags: FeatureFlags,
 	mark: PhantomData<T>,
 }
 
@@ -897,21 +1026,23 @@ impl ChannelTypeFeatures {
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
 	pub fn empty() -> Self {
-		Features { flags: Vec::new(), mark: PhantomData }
+		Features { flags: FeatureFlags::empty(), mark: PhantomData }
 	}
 
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
 	/// included in the result.
 	fn to_context_internal<C: sealed::Context>(&self) -> Features<C> {
-		let from_byte_count = T::KNOWN_FEATURE_MASK.len();
-		let to_byte_count = C::KNOWN_FEATURE_MASK.len();
-		let mut flags = Vec::new();
-		for (i, byte) in self.flags.iter().enumerate() {
-			if i < from_byte_count && i < to_byte_count {
-				let from_known_features = T::KNOWN_FEATURE_MASK[i];
-				let to_known_features = C::KNOWN_FEATURE_MASK[i];
-				flags.push(byte & from_known_features & to_known_features);
+		let flag_iter = self.flags.iter().enumerate().filter_map(|(i, byte)| {
+			if i < T::KNOWN_FEATURE_MASK.len() && i < C::KNOWN_FEATURE_MASK.len() {
+				Some((i, *byte & T::KNOWN_FEATURE_MASK[i] & C::KNOWN_FEATURE_MASK[i]))
+			} else {
+				None
 			}
+		});
+		let mut flags = FeatureFlags::empty();
+		flags.resize(flag_iter.clone().count(), 0);
+		for (i, byte) in flag_iter {
+			flags[i] = byte;
 		}
 		Features::<C> { flags, mark: PhantomData }
 	}
@@ -921,7 +1052,7 @@ impl<T: sealed::Context> Features<T> {
 	///
 	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
-		Features { flags, mark: PhantomData }
+		Features { flags: FeatureFlags::from(flags), mark: PhantomData }
 	}
 
 	/// Returns the feature set as a list of bytes, in little-endian. This is in reverse byte order
@@ -936,7 +1067,7 @@ impl<T: sealed::Context> Features<T> {
 	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_be_bytes(mut flags: Vec<u8>) -> Features<T> {
 		flags.reverse(); // Swap to little-endian
-		Self { flags, mark: PhantomData }
+		Self { flags: FeatureFlags::from(flags), mark: PhantomData }
 	}
 
 	/// Returns true if this `Features` has any optional flags set
@@ -1329,7 +1460,7 @@ mod tests {
 		use std::hash::{Hash, Hasher};
 
 		let mut zerod_features = InitFeatures::empty();
-		zerod_features.flags = vec![0];
+		zerod_features.flags = FeatureFlags::Heap(vec![0]);
 		let empty_features = InitFeatures::empty();
 		assert!(empty_features.flags.is_empty());
 
