@@ -14,7 +14,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATEN
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
-use crate::events::{Event, ClosureReason, HTLCDestination};
+use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
@@ -86,7 +86,7 @@ fn chanmon_fail_from_stale_commitment() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);
 	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
@@ -1217,7 +1217,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(as_htlc_timeout_claim.len(), 1);
 	check_spends!(as_htlc_timeout_claim[0], as_txn[0]);
 	expect_pending_htlcs_forwardable_conditions!(nodes[0],
-		[HTLCDestination::FailedPayment { payment_hash: to_a_failed_payment_hash }]);
+		[HTLCHandlingFailureType::FailedPayment { payment_hash: to_a_failed_payment_hash }]);
 
 	assert_eq!(as_pre_spend_claims,
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
@@ -1235,7 +1235,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1));
 	expect_pending_htlcs_forwardable_conditions!(nodes[1],
-		[HTLCDestination::FailedPayment { payment_hash: to_b_failed_payment_hash }]);
+		[HTLCHandlingFailureType::FailedPayment { payment_hash: to_b_failed_payment_hash }]);
 	let bs_htlc_timeout_claim = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_htlc_timeout_claim.len(), 1);
 	check_spends!(bs_htlc_timeout_claim[0], as_txn[0]);
@@ -1417,12 +1417,12 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 		.iter().map(|a| *a).collect();
 	events.retain(|ev| {
 		match ev {
-			Event::HTLCHandlingFailed { failed_next_destination: HTLCDestination::NextHopChannel { node_id, channel_id }, .. } => {
+			Event::HTLCHandlingFailed { failure_type: HTLCHandlingFailureType::NextHopChannel { node_id, channel_id }, .. } => {
 				assert_eq!(*channel_id, chan_id);
 				assert_eq!(*node_id, Some(nodes[1].node.get_our_node_id()));
 				false
 			},
-			Event::HTLCHandlingFailed { failed_next_destination: HTLCDestination::FailedPayment { payment_hash }, .. } => {
+			Event::HTLCHandlingFailed { failure_type: HTLCHandlingFailureType::FailedPayment { payment_hash }, .. } => {
 				assert!(failed_payments.remove(payment_hash));
 				false
 			},
@@ -1737,7 +1737,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// pinnable claims, which the remainder of the test assumes.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
-		[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
+		[HTLCHandlingFailureType::FailedPayment { payment_hash: failed_payment_hash }]);
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);

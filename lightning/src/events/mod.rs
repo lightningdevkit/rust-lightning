@@ -466,9 +466,9 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	},
 );
 
-/// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
+/// The type of HTLC handling performed in [`Event::HTLCHandlingFailed`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HTLCDestination {
+pub enum HTLCHandlingFailureType {
 	/// We tried forwarding to a channel but failed to do so. An example of such an instance is when
 	/// there is insufficient capacity in our outbound channel.
 	NextHopChannel {
@@ -508,7 +508,7 @@ pub enum HTLCDestination {
 	},
 }
 
-impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
+impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
 	(0, NextHopChannel) => {
 		(0, node_id, required),
 		(2, channel_id, required),
@@ -1460,8 +1460,8 @@ pub enum Event {
 	HTLCHandlingFailed {
 		/// The channel over which the HTLC was received.
 		prev_channel_id: ChannelId,
-		/// Destination of the HTLC that failed to be processed.
-		failed_next_destination: HTLCDestination,
+		/// The type of HTLC handling that failed.
+		failure_type: HTLCHandlingFailureType,
 	},
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
@@ -1766,11 +1766,11 @@ impl Writeable for Event {
 					(8, path.blinded_tail, option),
 				})
 			},
-			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
+			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failure_type } => {
 				25u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, prev_channel_id, required),
-					(2, failed_next_destination, required),
+					(2, failure_type, required),
 				})
 			},
 			&Event::BumpTransaction(ref event)=> {
@@ -2218,14 +2218,14 @@ impl MaybeReadable for Event {
 			25u8 => {
 				let mut f = || {
 					let mut prev_channel_id = ChannelId::new_zero();
-					let mut failed_next_destination_opt = UpgradableRequired(None);
+					let mut failure_type_opt = UpgradableRequired(None);
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
-						(2, failed_next_destination_opt, upgradable_required),
+						(2, failure_type_opt, upgradable_required),
 					});
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_id,
-						failed_next_destination: _init_tlv_based_struct_field!(failed_next_destination_opt, upgradable_required),
+						failure_type: _init_tlv_based_struct_field!(failure_type_opt, upgradable_required),
 					}))
 				};
 				f()

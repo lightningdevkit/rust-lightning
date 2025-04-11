@@ -47,7 +47,7 @@ use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::OffersContext;
-use crate::events::{ClosureReason, Event, HTLCDestination, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
@@ -2308,7 +2308,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(payment_preimage)
-		.expect_failure(HTLCDestination::FailedPayment { payment_hash });
+		.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
 	do_pass_along_path(args);
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
