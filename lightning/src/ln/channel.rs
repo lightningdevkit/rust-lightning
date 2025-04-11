@@ -6142,22 +6142,14 @@ impl<SP: Deref> FundedChannel<SP> where
 								);
 								update_add_count += 1;
 							},
-							Err(e) => {
-								match e {
-									ChannelError::Ignore(ref msg) => {
-										log_info!(logger, "Failed to send HTLC with payment_hash {} due to {} in channel {}", &payment_hash, msg, &self.context.channel_id());
-										// If we fail to send here, then this HTLC should
-										// be failed backwards. Failing to send here
-										// indicates that this HTLC may keep being put back
-										// into the holding cell without ever being
-										// successfully forwarded/failed/fulfilled, causing
-										// our counterparty to eventually close on us.
-										htlcs_to_fail.push((source.clone(), *payment_hash));
-									},
-									_ => {
-										panic!("Got a non-IgnoreError action trying to send holding cell HTLC");
-									},
-								}
+							Err((_, msg)) => {
+								log_info!(logger, "Failed to send HTLC with payment_hash {} due to {} in channel {}", &payment_hash, msg, &self.context.channel_id());
+								// If we fail to send here, then this HTLC should be failed
+								// backwards. Failing to send here indicates that this HTLC may
+								// keep being put back into the holding cell without ever being
+								// successfully forwarded/failed/fulfilled, causing our
+								// counterparty to eventually close on us.
+								htlcs_to_fail.push((source.clone(), *payment_hash));
 							}
 						}
 						None
@@ -8819,13 +8811,11 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.
-	///
-	/// `Err`s will only be [`ChannelError::Ignore`].
 	pub fn queue_add_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-	) -> Result<(), ChannelError>
+	) -> Result<(), (LocalHTLCFailureReason, String)>
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
 		self
@@ -8833,8 +8823,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				skimmed_fee_msat, blinding_point, fee_estimator, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 			.map_err(|err| {
-				if let ChannelError::Ignore(_) = err { /* fine */ }
-				else { debug_assert!(false, "Queueing cannot trigger channel failure"); }
+				debug_assert!(err.0.is_temporary(), "Queuing HTLC should return temporary error");
 				err
 			})
 	}
@@ -8854,38 +8843,40 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// You MUST call [`Self::send_commitment_no_state_update`] prior to calling any other methods
 	/// on this [`FundedChannel`] if `force_holding_cell` is false.
 	///
-	/// `Err`s will only be [`ChannelError::Ignore`].
+	/// `Err`'s will always be temporary channel failures.
 	fn send_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
 		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
-	) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError>
+	) -> Result<Option<msgs::UpdateAddHTLC>, (LocalHTLCFailureReason, String)>
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||
 			self.context.channel_state.is_local_shutdown_sent() ||
 			self.context.channel_state.is_remote_shutdown_sent()
 		{
-			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
+			return Err((LocalHTLCFailureReason::ChannelNotReady,
+				"Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
 		let channel_total_msat = self.funding.get_value_satoshis() * 1000;
 		if amount_msat > channel_total_msat {
-			return Err(ChannelError::Ignore(format!("Cannot send amount {}, because it is more than the total value of the channel {}", amount_msat, channel_total_msat)));
+			return Err((LocalHTLCFailureReason::AmountExceedsCapacity,
+				format!("Cannot send amount {}, because it is more than the total value of the channel {}", amount_msat, channel_total_msat)));
 		}
 
 		if amount_msat == 0 {
-			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC".to_owned()));
+			return Err((LocalHTLCFailureReason::ZeroAmount, "Cannot send 0-msat HTLC".to_owned()));
 		}
 
 		let available_balances = self.get_available_balances(fee_estimator);
 		if amount_msat < available_balances.next_outbound_htlc_minimum_msat {
-			return Err(ChannelError::Ignore(format!("Cannot send less than our next-HTLC minimum - {} msat",
+			return Err((LocalHTLCFailureReason::HTLCMinimum, format!("Cannot send less than our next-HTLC minimum - {} msat",
 				available_balances.next_outbound_htlc_minimum_msat)));
 		}
 
 		if amount_msat > available_balances.next_outbound_htlc_limit_msat {
-			return Err(ChannelError::Ignore(format!("Cannot send more than our next-HTLC maximum - {} msat",
+			return Err((LocalHTLCFailureReason::HTLCMaximum, format!("Cannot send more than our next-HTLC maximum - {} msat",
 				available_balances.next_outbound_htlc_limit_msat)));
 		}
 
@@ -8896,7 +8887,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			// disconnected during the time the previous hop was doing the commitment dance we may
 			// end up getting here after the forwarding delay. In any case, returning an
 			// IgnoreError will get ChannelManager to do the right thing and fail backwards now.
-			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
+			return Err((LocalHTLCFailureReason::PeerOffline,
+				"Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
 		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
@@ -9185,8 +9177,8 @@ impl<SP: Deref> FundedChannel<SP> where
 	{
 		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
 			onion_routing_packet, false, skimmed_fee_msat, None, fee_estimator, logger);
-		if let Err(e) = &send_res { if let ChannelError::Ignore(_) = e {} else { debug_assert!(false, "Sending cannot trigger channel failure"); } }
-		match send_res? {
+		// All [`LocalHTLCFailureReason`] errors are temporary, so they are [`ChannelError::Ignore`].
+		match send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))? {
 			Some(_) => {
 				let monitor_update = self.build_commitment_no_status_check(logger);
 				self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());

@@ -1587,6 +1587,25 @@ pub enum LocalHTLCFailureReason {
 	/// The HTLC was failed back because its expiry height was reached and funds were timed out
 	/// on chain.
 	OnChainTimeout,
+	/// The HTLC was failed because its amount is greater than the capacity of the channel.
+	AmountExceedsCapacity,
+	/// The HTLC was failed because zero amount HTLCs are not allowed.
+	ZeroAmount,
+	/// The HTLC was failed because its amount is less than the smallest HTLC that the channel
+	/// can currently accept.
+	///
+	/// This may occur because the HTLC is smaller than the counterparty's advertised minimum
+	/// accepted HTLC size, or if we have reached our maximum total dust HTLC exposure.
+	HTLCMinimum,
+	/// The HTLC was failed because its amount is more than then largest HTLC that the channel
+	/// can currently accept.
+	///
+	/// This may occur because the outbound channel has insufficient liquidity to forward the HTLC,
+	/// we have reached the counterparty's in-flight limits, or the HTLC exceeds our advertised
+	/// maximum accepted HTLC size.
+	HTLCMaximum,
+	/// The HTLC was failed because our remote peer is offline.
+	PeerOffline,
 }
 
 impl LocalHTLCFailureReason {
@@ -1602,8 +1621,13 @@ impl LocalHTLCFailureReason {
 			| Self::DustLimitHolder
 			| Self::DustLimitCounterparty
 			| Self::FeeSpikeBuffer
-			| Self::ChannelNotReady => UPDATE | 7,
-			Self::PermanentChannelFailure | Self::OnChainTimeout | Self::ChannelClosed => PERM | 8,
+			| Self::ChannelNotReady
+			| Self::AmountExceedsCapacity
+			| Self::ZeroAmount
+			| Self::HTLCMinimum
+			| Self::HTLCMaximum
+			| Self::PeerOffline => UPDATE | 7,
+			Self::PermanentChannelFailure | Self::ChannelClosed | Self::OnChainTimeout => PERM | 8,
 			Self::RequiredChannelFeature => PERM | 9,
 			Self::UnknownNextPeer
 			| Self::PrivateChannelForward
@@ -1730,6 +1754,11 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(71, OutgoingCLTVTooSoon) => {},
 	(73, ChannelClosed) => {},
 	(75, OnChainTimeout) => {},
+	(77, AmountExceedsCapacity) => {},
+	(79, ZeroAmount) => {},
+	(81, HTLCMinimum) => {},
+	(83, HTLCMaximum) => {},
+	(85, PeerOffline) => {},
 );
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -1830,7 +1859,12 @@ impl HTLCFailReason {
 			| LocalHTLCFailureReason::DustLimitHolder
 			| LocalHTLCFailureReason::DustLimitCounterparty
 			| LocalHTLCFailureReason::FeeSpikeBuffer
-			| LocalHTLCFailureReason::ChannelNotReady => {
+			| LocalHTLCFailureReason::ChannelNotReady
+			| LocalHTLCFailureReason::AmountExceedsCapacity
+			| LocalHTLCFailureReason::ZeroAmount
+			| LocalHTLCFailureReason::HTLCMinimum
+			| LocalHTLCFailureReason::HTLCMaximum
+			| LocalHTLCFailureReason::PeerOffline => {
 				debug_assert_eq!(
 					data.len() - 2,
 					u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize

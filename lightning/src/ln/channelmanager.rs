@@ -6102,22 +6102,17 @@ where
 								};
 								log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
 									prev_short_channel_id, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
-								if let Err(e) = optimal_channel.queue_add_htlc(outgoing_amt_msat,
+								if let Err((reason, msg)) = optimal_channel.queue_add_htlc(outgoing_amt_msat,
 										payment_hash, outgoing_cltv_value, htlc_source.clone(),
 										onion_packet.clone(), skimmed_fee_msat, next_blinding_point, &self.fee_estimator,
 										&&logger)
 								{
-									if let ChannelError::Ignore(msg) = e {
-										log_trace!(logger, "Failed to forward HTLC with payment_hash {} to peer {}: {}", &payment_hash, &counterparty_node_id, msg);
-									} else {
-										panic!("Stated return value requirements in send_htlc() were not met");
-									}
+									log_trace!(logger, "Failed to forward HTLC with payment_hash {} to peer {}: {}", &payment_hash, &counterparty_node_id, msg);
 
 									if let Some(chan) = peer_state.channel_by_id
 										.get_mut(&forward_chan_id)
 										.and_then(Channel::as_funded_mut)
 									{
-										let reason = LocalHTLCFailureReason::TemporaryChannelFailure;
 										let data = self.get_htlc_inbound_temp_fail_data(reason);
 										failed_forwards.push((htlc_source, payment_hash,
 											HTLCFailReason::reason(reason, data),
