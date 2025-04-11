@@ -9013,31 +9013,32 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 		self.context.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let mut updates = Vec::with_capacity(self.pending_funding.len() + 1);
-		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+		// Even in the pending splices case, we will send a single update for each commitment number.
+		// In that case, the update will contain multiple commitment transactions.
+		let mut updates = vec![];
+		if self.pending_funding.is_empty() {
 			let (htlcs_ref, counterparty_commitment_tx) =
-				self.build_commitment_no_state_update(funding, logger);
+				self.build_commitment_no_state_update(&self.funding, logger);
 			let htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
 				htlcs_ref.into_iter().map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
 
-			if self.pending_funding.is_empty() {
-				// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
-				// and provide the full commit tx instead of the information needed to rebuild it.
-				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
-					commitment_txid: counterparty_commitment_tx.trust().txid(),
-					htlc_outputs,
-					commitment_number: self.context.cur_counterparty_commitment_transaction_number,
-					their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
-					feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
-					to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
-					to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
-				});
-			} else {
-				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX {
-					htlc_outputs,
-					commitment_tx: counterparty_commitment_tx,
-				});
-			}
+			// Soon, we will switch this to `LatestCounterpartyCommitmentTXs`,
+			// and provide the full commit tx instead of the information needed to rebuild it.
+			updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+				commitment_txid: counterparty_commitment_tx.trust().txid(),
+				htlc_outputs,
+				commitment_number: self.context.cur_counterparty_commitment_transaction_number,
+				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
+				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
+				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
+			});
+		} else {
+			// TODO(splicing): Build the HTLC-source table once per commitment number, and then
+			// build all the commitment transactions for that commitment number against that same
+			// table. Use `LatestCounterpartyCommitmentTXs` and `LatestHolderCommitmentTXs` to
+			// communicate these to `ChannelMonitor`.
+			todo!();
 		}
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent {

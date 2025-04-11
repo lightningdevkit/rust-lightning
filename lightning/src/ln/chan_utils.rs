@@ -586,6 +586,25 @@ pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatur
 	}
 }
 
+/// The subset of the fields in `HTLCOutputInCommitment` that is constant across multiple
+/// commitment transactions for a commitment number (ie. splices). Therefore, this struct does not
+/// store information on whether the HTLC is dust or non-dust, and if non-dust, which index in the
+/// commitment transaction the HTLC got assigned to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HTLCOutputData {
+	pub(crate) offered: bool,
+	pub(crate) amount_msat: u64,
+	pub(crate) cltv_expiry: u32,
+	pub(crate) payment_hash: PaymentHash,
+}
+
+impl_writeable_tlv_based!(HTLCOutputData, {
+	(1, offered, required),
+	(3, amount_msat, required),
+	(5, cltv_expiry, required),
+	(7, payment_hash, required),
+});
+
 /// Information about an HTLC as it appears in a commitment transaction
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCOutputInCommitment {

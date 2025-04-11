@@ -38,7 +38,7 @@ use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
-use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
+use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, HTLCOutputData};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId, PaymentClaimDetails};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
@@ -591,11 +591,18 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		to_broadcaster_value_sat: Option<u64>,
 		to_countersignatory_value_sat: Option<u64>,
 	},
-	LatestCounterpartyCommitmentTX {
+	LatestHolderCommitmentTXs {
 		// The dust and non-dust htlcs for that commitment
-		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
+		htlc_data: Vec<(HTLCOutputData, Option<Box<HTLCSource>>)>,
 		// Contains only the non-dust htlcs
-		commitment_tx: CommitmentTransaction,
+		commitment_txs: Vec<HolderCommitmentTransaction>,
+		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
+	},
+	LatestCounterpartyCommitmentTXs {
+		// The dust and non-dust htlcs for that commitment
+		htlc_data: Vec<(HTLCOutputData, Option<Box<HTLCSource>>)>,
+		// Contains only the non-dust htlcs
+		commitment_txs: Vec<CommitmentTransaction>,
 	},
 	PaymentPreimage {
 		payment_preimage: PaymentPreimage,
@@ -624,7 +631,8 @@ impl ChannelMonitorUpdateStep {
 		match self {
 			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. } => "LatestHolderCommitmentTXInfo",
 			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } => "LatestCounterpartyCommitmentTXInfo",
-			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { .. } => "LatestCounterpartyCommitmentTX",
+			ChannelMonitorUpdateStep::LatestHolderCommitmentTXs { .. } => "LatestHolderCommitmentTXs",
+			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXs { .. } => "LatestCounterpartyCommitmentTXs",
 			ChannelMonitorUpdateStep::PaymentPreimage { .. } => "PaymentPreimage",
 			ChannelMonitorUpdateStep::CommitmentSecret { .. } => "CommitmentSecret",
 			ChannelMonitorUpdateStep::ChannelForceClosed { .. } => "ChannelForceClosed",
@@ -663,9 +671,14 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(5, ShutdownScript) => {
 		(0, scriptpubkey, required),
 	},
-	(6, LatestCounterpartyCommitmentTX) => {
-		(0, htlc_outputs, required_vec),
-		(2, commitment_tx, required),
+	(6, LatestHolderCommitmentTXs) => { // Added in 0.2
+		(1, htlc_data, required_vec),
+		(3, commitment_txs, required_vec),
+		(5, claimed_htlcs, required_vec),
+	},
+	(8, LatestCounterpartyCommitmentTXs) => { // Added in 0.2
+		(1, htlc_data, required_vec),
+		(3, commitment_txs, required_vec),
 	},
 );
 
@@ -3084,6 +3097,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
+	// This is the sibling of `provide_latest_counterparty_commitment_tx`, but updated for a world
+	// in which the HTLC-source table passed from channel does NOT store dust-vs-nondust and
+	// index HTLC data.
+	fn provide_latest_counterparty_commitment_data<L: Deref>(
+		&mut self,
+		_htlc_data: Vec<(HTLCOutputData, Option<Box<HTLCSource>>)>,
+		_txs: &Vec<CommitmentTransaction>,
+		_logger: &WithChannelMonitor<L>,
+	) where L::Target: Logger {
+		// TODO(splicing, 0.2): Populate this monitor's data structures
+		todo!();
+	}
+
 	/// Informs this monitor of the latest holder (ie broadcastable) commitment transaction. The
 	/// monitor watches for timeouts and may broadcast it if we approach such a timeout. Thus, it
 	/// is important that any clones of this channel monitor (including remote clones) by kept
@@ -3173,6 +3199,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
+	}
+
+	// This is the sibling of `provide_latest_holder_commitment_tx`, but updated for a world
+	// in which the HTLC-source table passed from channel does NOT store dust-vs-nondust and
+	// index HTLC data.
+	fn provide_latest_holder_commitment_data(
+		&mut self,
+		_htlc_data: Vec<(HTLCOutputData, Option<Box<HTLCSource>>)>,
+		_holder_commitment_txs: Vec<HolderCommitmentTransaction>,
+		_claimed_htlcs: &[(SentHTLCId, PaymentPreimage)],
+	) {
+		// TODO(splicing, 0.2): Populate this monitor's data structures
+		todo!();
 	}
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
@@ -3392,16 +3431,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if self.lockdown_from_offchain { panic!(); }
 					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs, nondust_htlc_sources.clone());
 				}
-				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitmentTX`.
+				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitmentTXs`.
 				// For now we just add the code to handle the new updates.
-				// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTX` variant.
+				// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTXs` variant.
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
 					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point, logger)
 				},
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { htlc_outputs, commitment_tx } => {
-					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
-					self.provide_latest_counterparty_commitment_tx(commitment_tx.trust().txid(), htlc_outputs.clone(), commitment_tx.commitment_number(), commitment_tx.per_commitment_point(), logger)
+				ChannelMonitorUpdateStep::LatestHolderCommitmentTXs { htlc_data, commitment_txs, claimed_htlcs } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction(s)");
+					if self.lockdown_from_offchain { panic!(); }
+					self.provide_latest_holder_commitment_data(htlc_data.clone(), commitment_txs.clone(), claimed_htlcs)
+				}
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXs { htlc_data, commitment_txs } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction(s)");
+					self.provide_latest_counterparty_commitment_data(htlc_data.clone(), commitment_txs, logger)
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage, payment_info } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
@@ -3465,7 +3509,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. }
 					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }
-					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { .. }
+					|ChannelMonitorUpdateStep::LatestHolderCommitmentTXs { .. }
+					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXs { .. }
 					|ChannelMonitorUpdateStep::ShutdownScript { .. }
 					|ChannelMonitorUpdateStep::CommitmentSecret { .. } =>
 						is_pre_close_update = true,
@@ -3620,7 +3665,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		update.updates.iter().filter_map(|update| {
 			// Soon we will drop the first branch here in favor of the second.
 			// In preparation, we just add the second branch without deleting the first.
-			// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTX` variant.
+			// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTXs` variant.
 			match update {
 				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid,
 					ref htlc_outputs, commitment_number, their_per_commitment_point,
@@ -3638,16 +3683,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 					debug_assert_eq!(commitment_tx.trust().txid(), commitment_txid);
 
-					Some(commitment_tx)
+					Some(vec![commitment_tx])
 				},
-				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX {
-					htlc_outputs: _, ref commitment_tx,
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXs {
+					htlc_data: _, ref commitment_txs,
 				} => {
-					Some(commitment_tx.clone())
+					Some(commitment_txs.clone())
 				},
 				_ => None,
 			}
-		}).collect()
+		}).flatten().collect()
 	}
 
 	fn sign_to_local_justice_tx(
