@@ -1004,8 +1004,13 @@ pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 where
 	L::Target: Logger,
 {
+	let mut trampoline_forward_path_option = None;
 	let (path, primary_session_priv) = match htlc_source {
 		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+		HTLCSource::TrampolineForward { ref hops, ref session_priv, .. } => {
+			trampoline_forward_path_option.replace(Path { hops: hops.clone(), blinded_tail: None });
+			(trampoline_forward_path_option.as_ref().unwrap(), session_priv)
+		},
 		_ => unreachable!(),
 	};
 
@@ -1580,6 +1585,8 @@ impl HTLCFailReason {
 		else if failure_code == 21 { debug_assert!(data.is_empty()) }
 		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
 		else if failure_code == 23 { debug_assert!(data.is_empty()) }
+		else if failure_code == 25 | NODE { debug_assert!(data.is_empty()) }
+		else if failure_code == 26 | NODE { debug_assert!(data.is_empty()) }
 		else if failure_code == INVALID_ONION_BLINDING { debug_assert_eq!(data.len(), 32) }
 		else if failure_code & BADONION != 0 {
 			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
@@ -1667,8 +1674,8 @@ impl HTLCFailReason {
 				// failures here, but that would be insufficient as find_route
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					DecodedOnionFailure {
+				match htlc_source {
+					HTLCSource::OutboundRoute { ref path, .. } => DecodedOnionFailure {
 						network_update: None,
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
@@ -1678,9 +1685,19 @@ impl HTLCFailReason {
 						onion_error_code: Some(*failure_code),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
-					}
-				} else {
-					unreachable!();
+					},
+					HTLCSource::TrampolineForward { ref hops, .. } => DecodedOnionFailure {
+						network_update: None,
+						payment_failed_permanently: false,
+						short_channel_id: hops.first().map(|h| h.short_channel_id),
+						failed_within_blinded_path: false,
+						hold_times: Vec::new(),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_code: Some(*failure_code),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_data: Some(data.clone()),
+					},
+					_ => unreachable!(),
 				}
 			},
 		}
@@ -1925,7 +1942,7 @@ where
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, node_signer),
+					(hop_data.current_path_key, node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((
