@@ -1184,7 +1184,14 @@ fn pays_bolt12_invoice_asynchronously() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
-	let (invoice, context) = match get_event!(bob, Event::InvoiceReceived) {
+	// Re-process the same onion message to ensure idempotency — 
+	// we should not generate a duplicate `InvoiceReceived` event.
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let mut events = bob.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+
+	let (invoice, context) = match events.pop().unwrap() {
 		Event::InvoiceReceived { payment_id: actual_payment_id, invoice, context, .. } => {
 			assert_eq!(actual_payment_id, payment_id);
 			(invoice, context)
