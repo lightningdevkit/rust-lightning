@@ -549,11 +549,11 @@ where
 		msg.payment_hash, msg.blinding_point, node_signer
 	) {
 		Ok(res) => res,
-		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-			return encode_malformed_error(err_msg, err_code);
+		Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
+			return encode_malformed_error(err_msg, reason);
 		},
-		Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, trampoline_shared_secret }) => {
-			return encode_relay_error(err_msg, err_code, shared_secret.secret_bytes(), trampoline_shared_secret.map(|tss| tss.secret_bytes()), &[0; 0]);
+		Err(onion_utils::OnionDecodeErr::Relay { err_msg, reason, shared_secret, trampoline_shared_secret }) => {
+			return encode_relay_error(err_msg, reason, shared_secret.secret_bytes(), trampoline_shared_secret.map(|tss| tss.secret_bytes()), &[0; 0]);
 		},
 	};
 

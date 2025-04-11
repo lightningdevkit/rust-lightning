@@ -1986,14 +1986,14 @@ impl Hop {
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
-	Malformed { err_msg: &'static str, err_code: LocalHTLCFailureReason },
+	Malformed { err_msg: &'static str, reason: LocalHTLCFailureReason },
 	/// We failed to decode the onion payload.
 	///
 	/// If the payload we failed to decode belonged to a Trampoline onion, following the successful
 	/// decoding of the outer onion, the trampoline_shared_secret field should be set.
 	Relay {
 		err_msg: &'static str,
-		err_code: LocalHTLCFailureReason,
+		reason: LocalHTLCFailureReason,
 		shared_secret: SharedSecret,
 		trampoline_shared_secret: Option<SharedSecret>,
 	},
@@ -2044,12 +2044,12 @@ where
 						return Err(OnionDecodeErr::Malformed {
 							err_msg:
 								"Final Node OnionHopData provided for us as an intermediary node",
-							err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
+							reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 						});
 					}
 					Err(OnionDecodeErr::Relay {
 						err_msg: "Final Node OnionHopData provided for us as an intermediary node",
-						err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+						reason: LocalHTLCFailureReason::InvalidOnionPayload,
 						shared_secret,
 						trampoline_shared_secret: None,
 					})
@@ -2144,7 +2144,7 @@ where
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Non-final intro node Trampoline onion data provided to us as last hop",
-								err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+								reason: LocalHTLCFailureReason::InvalidOnionPayload,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
@@ -2153,14 +2153,14 @@ where
 						}
 						Err(OnionDecodeErr::Malformed {
 							err_msg: "Non-final Trampoline onion data provided to us as last hop",
-							err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
+							reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 						})
 					},
 					Ok((msgs::InboundTrampolinePayload::BlindedReceive(hop_data), Some(_))) => {
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Final Trampoline intro node onion data provided to us as intermediate hop",
-								err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+								reason: LocalHTLCFailureReason::InvalidOnionPayload,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
@@ -2170,13 +2170,13 @@ where
 						Err(OnionDecodeErr::Malformed {
 							err_msg:
 								"Final Trampoline onion data provided to us as intermediate hop",
-							err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
+							reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 						})
 					},
 					Ok((msgs::InboundTrampolinePayload::Forward(_), None)) => {
 						Err(OnionDecodeErr::Relay {
 							err_msg: "Non-final Trampoline onion data provided to us as last hop",
-							err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+							reason: LocalHTLCFailureReason::InvalidOnionPayload,
 							shared_secret,
 							trampoline_shared_secret: Some(SharedSecret::from_bytes(
 								trampoline_shared_secret,
@@ -2187,7 +2187,7 @@ where
 						Err(OnionDecodeErr::Relay {
 							err_msg:
 								"Final Trampoline onion data provided to us as intermediate hop",
-							err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+							reason: LocalHTLCFailureReason::InvalidOnionPayload,
 							shared_secret,
 							trampoline_shared_secret: Some(SharedSecret::from_bytes(
 								trampoline_shared_secret,
@@ -2201,12 +2201,12 @@ where
 				if blinding_point.is_some() {
 					return Err(OnionDecodeErr::Malformed {
 						err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-						err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
+						reason: LocalHTLCFailureReason::InvalidOnionBlinding,
 					});
 				}
 				Err(OnionDecodeErr::Relay {
 					err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-					err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
 					shared_secret,
 					trampoline_shared_secret: None,
 				})
@@ -2329,7 +2329,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &hmac_bytes) {
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
-			err_code: LocalHTLCFailureReason::InvalidOnionHMAC,
+			reason: LocalHTLCFailureReason::InvalidOnionHMAC,
 		});
 	}
 
@@ -2349,7 +2349,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 			};
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data",
-				err_code: error_code,
+				reason: error_code,
 				shared_secret: SharedSecret::from_bytes(shared_secret),
 				trampoline_shared_secret: None,
 			});
@@ -2359,7 +2359,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
-					err_code: LocalHTLCFailureReason::InvalidOnionPayload,
+					reason: LocalHTLCFailureReason::InvalidOnionPayload,
 					shared_secret: SharedSecret::from_bytes(shared_secret),
 					trampoline_shared_secret: None,
 				});

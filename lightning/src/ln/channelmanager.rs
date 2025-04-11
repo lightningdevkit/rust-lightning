@@ -5974,17 +5974,17 @@ where
 													onion_packet.hmac, payment_hash, None, &*self.node_signer
 												) {
 													Ok(res) => res,
-													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
 														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).to_byte_array();
 														// In this scenario, the phantom would have sent us an
 														// `update_fail_malformed_htlc`, meaning here we encrypt the error as
 														// if it came from us (the second-to-last hop) but contains the sha256
 														// of the onion.
-														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
+														failed_payment!(err_msg, reason, sha256_of_onion.to_vec(), None);
 													},
-													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code, shared_secret, .. }) => {
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, reason, shared_secret, .. }) => {
 														let phantom_shared_secret = shared_secret.secret_bytes();
-														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
+														failed_payment!(err_msg, reason, Vec::new(), Some(phantom_shared_secret));
 													},
 												};
 												let phantom_shared_secret = next_hop.shared_secret().secret_bytes();
