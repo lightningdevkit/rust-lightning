@@ -120,6 +120,26 @@ const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 60 * 60;
 
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
+	/// Retrieve our cached [`Offer`]s for receiving async payments as an often-offline recipient.
+	pub fn offers(&self, duration_since_epoch: Duration) -> Vec<Offer> {
+		const NEVER_EXPIRES: Duration = Duration::from_secs(u64::MAX);
+
+		self.offers
+			.iter()
+			.filter_map(|offer| {
+				if offer.static_invoice_absolute_expiry < duration_since_epoch {
+					None
+				} else if offer.offer.absolute_expiry().unwrap_or(NEVER_EXPIRES)
+					< duration_since_epoch
+				{
+					None
+				} else {
+					Some(offer.offer.clone())
+				}
+			})
+			.collect()
+	}
+
 	/// Remove expired offers from the cache, returning whether new offers are needed.
 	pub(super) fn prune_expired_offers(&mut self, duration_since_epoch: Duration) -> bool {
 		// Remove expired offers from the cache.
