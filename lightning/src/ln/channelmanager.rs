@@ -4501,7 +4501,7 @@ where
 		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>,
 	) -> PendingHTLCStatus {
 		macro_rules! return_err {
-			($msg: expr, $err_code: expr, $data: expr) => {
+			($msg: expr, $reason: expr, $data: expr) => {
 				{
 					let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash));
 					log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
@@ -4515,7 +4515,7 @@ where
 							}
 						))
 					}
-					let failure = HTLCFailReason::reason($err_code, $data.to_vec())
+					let failure = HTLCFailReason::reason($reason, $data.to_vec())
 						.get_encrypted_failure_packet(&shared_secret, &None);
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
@@ -4542,19 +4542,19 @@ where
 						// delay) once they've sent us a commitment_signed!
 						PendingHTLCStatus::Forward(info)
 					},
-					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+					Err(InboundHTLCErr { reason, err_data, msg }) => return_err!(msg, reason , &err_data)
 				}
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
 				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
-					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+					Err(InboundHTLCErr { reason, err_data, msg }) => return_err!(msg, reason, &err_data)
 				}
 			},
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
 				match create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt) {
 					Ok(info) => PendingHTLCStatus::Forward(info),
-					Err(InboundHTLCErr { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+					Err(InboundHTLCErr { reason, err_data, msg }) => return_err!(msg, reason, &err_data)
 				}
 			}
 		}
@@ -5922,7 +5922,7 @@ where
 									}) => {
 										let cltv_expiry = routing.incoming_cltv_expiry();
 										macro_rules! failure_handler {
-											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
+											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
 												let logger = WithContext::from(&self.logger, forwarding_counterparty, Some(prev_channel_id), Some(payment_hash));
 												log_info!(logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 
@@ -5946,23 +5946,23 @@ where
 												};
 
 												failed_forwards.push((htlc_source, payment_hash,
-													HTLCFailReason::reason($err_code, $err_data),
+													HTLCFailReason::reason($reason, $err_data),
 													reason
 												));
 												continue;
 											}
 										}
 										macro_rules! fail_forward {
-											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
 												{
-													failure_handler!($msg, $err_code, $err_data, $phantom_ss, true);
+													failure_handler!($msg, $reason, $err_data, $phantom_ss, true);
 												}
 											}
 										}
 										macro_rules! failed_payment {
-											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
 												{
-													failure_handler!($msg, $err_code, $err_data, $phantom_ss, false);
+													failure_handler!($msg, $reason, $err_data, $phantom_ss, false);
 												}
 											}
 										}
@@ -5998,7 +5998,7 @@ where
 														prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
 														prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
 													)),
-													Err(InboundHTLCErr { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
+													Err(InboundHTLCErr { reason, err_data, msg }) => failed_payment!(msg, reason, err_data, Some(phantom_shared_secret))
 												}
 											} else {
 												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id),
@@ -15971,12 +15971,12 @@ mod tests {
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
-		if let Err(crate::ln::channelmanager::InboundHTLCErr { err_code, .. }) =
+		if let Err(crate::ln::channelmanager::InboundHTLCErr { reason, .. }) =
 			create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat),
 				current_height)
 		{
-			assert_eq!(err_code, LocalHTLCFailureReason::FinalIncorrectHTLCAmount);
+			assert_eq!(reason, LocalHTLCFailureReason::FinalIncorrectHTLCAmount);
 		} else { panic!(); }
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
