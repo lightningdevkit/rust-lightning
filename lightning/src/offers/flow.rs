@@ -1116,6 +1116,14 @@ where
 		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
 	}
 
+	/// Retrieve our cached [`Offer`]s for receiving async payments as an often-offline recipient.
+	/// Will only be set if [`UserConfig::paths_to_static_invoice_server`] is set and we succeeded in
+	/// interactively building a [`StaticInvoice`] with the static invoice server.
+	#[cfg(async_payments)]
+	pub(crate) fn get_cached_async_receive_offers(&self) -> Vec<Offer> {
+		self.async_receive_offer_cache.lock().unwrap().offers(self.duration_since_epoch())
+	}
+
 	/// Sends out [`OfferPathsRequest`] and [`ServeStaticInvoice`] onion messages if we are an
 	/// often-offline recipient and are configured to interactively build offers and static invoices
 	/// with a static invoice server.
