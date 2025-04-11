@@ -18,8 +18,8 @@
 use crate::lsps0;
 use crate::lsps1;
 use crate::lsps2;
+use crate::lsps5;
 use crate::sync::{Arc, Mutex};
-
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
@@ -118,6 +118,10 @@ pub enum LiquidityEvent {
 	LSPS2Client(lsps2::event::LSPS2ClientEvent),
 	/// An LSPS2 (JIT Channel) server event.
 	LSPS2Service(lsps2::event::LSPS2ServiceEvent),
+	/// An LSPS5 (Webhook) client event.
+	LSPS5Client(lsps5::event::LSPS5ClientEvent),
+	/// An LSPS5 (Webhook) server event.
+	LSPS5Service(lsps5::event::LSPS5ServiceEvent),
 }
 
 impl From<lsps0::event::LSPS0ClientEvent> for LiquidityEvent {
@@ -148,6 +152,18 @@ impl From<lsps2::event::LSPS2ClientEvent> for LiquidityEvent {
 impl From<lsps2::event::LSPS2ServiceEvent> for LiquidityEvent {
 	fn from(event: lsps2::event::LSPS2ServiceEvent) -> Self {
 		Self::LSPS2Service(event)
+	}
+}
+
+impl From<lsps5::event::LSPS5ClientEvent> for LiquidityEvent {
+	fn from(event: lsps5::event::LSPS5ClientEvent) -> Self {
+		Self::LSPS5Client(event)
+	}
+}
+
+impl From<lsps5::event::LSPS5ServiceEvent> for LiquidityEvent {
+	fn from(event: lsps5::event::LSPS5ServiceEvent) -> Self {
+		Self::LSPS5Service(event)
 	}
 }
 
