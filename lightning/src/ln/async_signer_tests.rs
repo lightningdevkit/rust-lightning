@@ -21,6 +21,7 @@ use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::bump_transaction::WalletSource;
 use crate::events::{ClosureReason, Event};
 use crate::ln::chan_utils::ClosingTransaction;
+use crate::ln::channel::DISCONNECT_PEER_AWAITING_RESPONSE_TICKS;
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -1090,4 +1091,131 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+}
+
+#[test]
+fn test_no_disconnect_while_async_revoke_and_ack_expecting_remote_commitment_signed() {
+	// Nodes with async signers may be expecting to receive a `commitment_signed` from the
+	// counterparty even if a `revoke_and_ack` has yet to be sent due to an async signer. Test that
+	// we don't disconnect the async signer node due to not receiving the `commitment_signed` within
+	// the timeout while the `revoke_and_ack` is not ready.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let payment_amount = 1_000_000;
+	send_payment(&nodes[0], &[&nodes[1]], payment_amount * 4);
+
+	nodes[1].disable_channel_signer_op(&node_id_0, &chan_id, SignerOp::ReleaseCommitmentSecret);
+
+	// We'll send a payment from both nodes to each other.
+	let (route1, payment_hash1, _, payment_secret1) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
+	let onion1 = RecipientOnionFields::secret_only(payment_secret1);
+	let payment_id1 = PaymentId(payment_hash1.0);
+	nodes[0].node.send_payment_with_route(route1, payment_hash1, onion1, payment_id1).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let (route2, payment_hash2, _, payment_secret2) =
+		get_route_and_payment_hash!(&nodes[1], &nodes[0], payment_amount);
+	let onion2 = RecipientOnionFields::secret_only(payment_secret2);
+	let payment_id2 = PaymentId(payment_hash2.0);
+	nodes[1].node.send_payment_with_route(route2, payment_hash2, onion2, payment_id2).unwrap();
+	check_added_monitors(&nodes[1], 1);
+
+	let update = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+
+	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	nodes[0].node.handle_update_add_htlc(node_id_1, &update.update_add_htlcs[0]);
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+
+	// nodes[0] can only respond with a `revoke_and_ack`. The `commitment_signed` that would follow
+	// is blocked on receiving a counterparty `revoke_and_ack`, which nodes[1] is still pending on.
+	let revoke_and_ack = get_event_msg!(&nodes[0], MessageSendEvent::SendRevokeAndACK, node_id_1);
+	nodes[1].node.handle_revoke_and_ack(node_id_0, &revoke_and_ack);
+	check_added_monitors(&nodes[1], 1);
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// nodes[0] will disconnect the counterparty as it's waiting on a `revoke_and_ack`.
+	// nodes[1] is waiting on a `commitment_signed`, but since it hasn't yet sent its own
+	// `revoke_and_ack`, it shouldn't disconnect yet.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+	let has_disconnect_event = |event| {
+		matches!(
+			event, MessageSendEvent::HandleError { action , .. }
+			if matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. })
+		)
+	};
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().into_iter().any(has_disconnect_event));
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
+fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_ack() {
+	// Nodes with async signers may be expecting to receive a `revoke_and_ack` from the
+	// counterparty even if a `commitment_signed` has yet to be sent due to an async signer. Test
+	// that we don't disconnect the async signer node due to not receiving the `revoke_and_ack`
+	// within the timeout while the `commitment_signed` is not ready.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	// Route a payment and attempt to claim it.
+	let payment_amount = 1_000_000;
+	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
+	nodes[1].node.claim_funds(preimage);
+	check_added_monitors(&nodes[1], 1);
+
+	// We'll disable signing counterparty commitments on the payment sender.
+	nodes[0].disable_channel_signer_op(&node_id_1, &chan_id, SignerOp::SignCounterpartyCommitment);
+
+	// After processing the `update_fulfill`, they'll only be able to send `revoke_and_ack` until
+	// the `commitment_signed` is no longer pending.
+	let update = get_htlc_update_msgs!(&nodes[1], node_id_0);
+	nodes[0].node.handle_update_fulfill_htlc(node_id_1, &update.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &update.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+
+	let revoke_and_ack = get_event_msg!(&nodes[0], MessageSendEvent::SendRevokeAndACK, node_id_1);
+	nodes[1].node.handle_revoke_and_ack(node_id_0, &revoke_and_ack);
+	check_added_monitors(&nodes[1], 1);
+
+	// The payment sender shouldn't disconnect the counterparty due to a missing `revoke_and_ack`
+	// because the `commitment_signed` isn't ready yet. The payment recipient may disconnect the
+	// sender because it doesn't have an async signer and it's expecting a timely
+	// `commitment_signed` response.
+	for _ in 0..DISCONNECT_PEER_AWAITING_RESPONSE_TICKS {
+		nodes[0].node.timer_tick_occurred();
+		nodes[1].node.timer_tick_occurred();
+	}
+	let has_disconnect_event = |event| {
+		matches!(
+			event, MessageSendEvent::HandleError { action , .. }
+			if matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. })
+		)
+	};
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().into_iter().any(has_disconnect_event));
+
+	expect_payment_sent(&nodes[0], preimage, None, false, false);
+	expect_payment_claimed!(nodes[1], payment_hash, payment_amount);
 }
