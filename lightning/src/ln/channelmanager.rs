@@ -11028,9 +11028,29 @@ where
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
 
+	/// Retrieve an [`Offer`] for receiving async payments as an often-offline recipient. Will only
+	/// return an offer if [`Self::set_paths_to_static_invoice_server`] was called and we succeeded in
+	/// interactively building a [`StaticInvoice`] with the static invoice server.
+	///
+	/// Useful for posting offers to receive payments later, such as posting an offer on a website.
+	#[cfg(async_payments)]
+	pub fn get_async_receive_offer(&self) -> Result<Offer, ()> {
+		let (offer, needs_persist) = self.flow.get_async_receive_offer()?;
+		if needs_persist {
+			// We need to re-persist the cache if a fresh offer was just marked as used to ensure we
+			// continue to keep this offer's invoice updated and don't replace it with the server.
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		}
+		Ok(offer)
+	}
+
 	/// Create an offer for receiving async payments as an often-offline recipient.
 	///
-	/// Because we may be offline when the payer attempts to request an invoice, you MUST:
+	/// Instead of using this method, it is preferable to call
+	/// [`Self::set_paths_to_static_invoice_server`] and retrieve the automatically built offer via
+	/// [`Self::get_async_receive_offer`].
+	///
+	/// If you want to build the [`StaticInvoice`] manually using this method instead, you MUST:
 	/// 1. Provide at least 1 [`BlindedMessagePath`] terminating at an always-online node that will
 	///    serve the [`StaticInvoice`] created from this offer on our behalf.
 	/// 2. Use [`Self::create_static_invoice_builder`] to create a [`StaticInvoice`] from this
@@ -11047,6 +11067,10 @@ where
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
 	/// created via [`Self::create_async_receive_offer_builder`]. If `relative_expiry` is unset, the
 	/// invoice's expiry will default to [`STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY`].
+	///
+	/// Instead of using this method to manually build the invoice, it is preferable to set
+	/// [`Self::set_paths_to_static_invoice_server`] and retrieve the automatically built offer via
+	/// [`Self::get_async_receive_offer`].
 	#[cfg(async_payments)]
 	pub fn create_static_invoice_builder<'a>(
 		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
