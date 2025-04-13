@@ -80,7 +80,6 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use lightning::io::Cursor;
 use lightning::util::dyn_signer::DynSigner;
 
 use std::cell::RefCell;
@@ -253,7 +252,7 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 			.unwrap_or(&map_entry.persisted_monitor);
 		let deserialized_monitor =
 			<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-				&mut Cursor::new(&latest_monitor_data),
+				&mut &latest_monitor_data[..],
 				(&*self.keys, &*self.keys),
 			)
 			.unwrap()
@@ -680,8 +679,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let mon_style = [default_mon_style.clone(), default_mon_style.clone(), default_mon_style];
 
 	macro_rules! reload_node {
-		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr, $fee_estimator: expr) => {{
-			let keys_manager = Arc::clone(&$keys_manager);
+		($ser: expr, $node_id: expr, $old_monitors: expr, $use_old_mons: expr, $keys: expr, $fee_estimator: expr) => {{
+			let keys_manager = Arc::clone(&$keys);
 			let logger: Arc<dyn Logger> =
 				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let chain_monitor = Arc::new(TestChainMonitor::new(
@@ -691,7 +690,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				Arc::new(TestPersister {
 					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed),
 				}),
-				Arc::clone(&$keys_manager),
+				Arc::clone(&$keys),
 			));
 
 			let mut config = UserConfig::default();
@@ -704,16 +703,31 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			let mut monitors = new_hash_map();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
+			let mut use_old_mons = $use_old_mons;
 			for (channel_id, mut prev_state) in old_monitors.drain() {
-				monitors.insert(
-					channel_id,
-					<(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
-						&mut Cursor::new(&prev_state.persisted_monitor),
-						(&*$keys_manager, &*$keys_manager),
-					)
-					.expect("Failed to read monitor")
-					.1,
-				);
+				let serialized_mon = if use_old_mons % 3 == 0 {
+					// Reload with the oldest `ChannelMonitor` (the one that we already told
+					// `ChannelManager` we finished persisting).
+					prev_state.persisted_monitor
+				} else if use_old_mons % 3 == 1 {
+					// Reload with the second-oldest `ChannelMonitor`
+					let old_mon = prev_state.persisted_monitor;
+					prev_state.pending_monitors.drain(..).next().map(|(_, v)| v).unwrap_or(old_mon)
+				} else {
+					// Reload with the newest `ChannelMonitor`
+					let old_mon = prev_state.persisted_monitor;
+					prev_state.pending_monitors.pop().map(|(_, v)| v).unwrap_or(old_mon)
+				};
+				// Use a different value of `use_old_mons` if we have another monitor (only node B)
+				use_old_mons /= 3;
+				let mon = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+					&mut &serialized_mon[..],
+					(&*$keys, &*$keys),
+				)
+				.expect("Failed to read monitor");
+				monitors.insert(channel_id, mon.1);
+				// Update the latest `ChannelMonitor` state to match what we just told LDK.
+				prev_state.persisted_monitor = serialized_mon;
 				// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
 				// considering them discarded. LDK should replay these for us as they're stored in
 				// the `ChannelManager`.
@@ -726,9 +740,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			}
 
 			let read_args = ChannelManagerReadArgs {
-				entropy_source: keys_manager.clone(),
-				node_signer: keys_manager.clone(),
-				signer_provider: keys_manager.clone(),
+				entropy_source: Arc::clone(&keys_manager),
+				node_signer: Arc::clone(&keys_manager),
+				signer_provider: keys_manager,
 				fee_estimator: $fee_estimator.clone(),
 				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
@@ -739,12 +753,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				channel_monitors: monitor_refs,
 			};
 
-			let res = (
-				<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args)
-					.expect("Failed to read manager")
-					.1,
-				chain_monitor.clone(),
-			);
+			let manager = <(BlockHash, ChanMan)>::read(&mut &$ser.0[..], read_args)
+				.expect("Failed to read manager");
+			let res = (manager.1, chain_monitor.clone());
 			for (channel_id, mon) in monitors.drain() {
 				assert_eq!(
 					chain_monitor.chain_monitor.watch_channel(channel_id, mon),
@@ -1503,7 +1514,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x26 => process_ev_noret!(2, true),
 			0x27 => process_ev_noret!(2, false),
 
-			0x2c => {
+			0xb0 | 0xb1 | 0xb2 => {
+				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
 				if !chan_a_disconnected {
 					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
@@ -1515,11 +1528,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					ba_events.clear();
 				}
 				let (new_node_a, new_monitor_a) =
-					reload_node!(node_a_ser, 0, monitor_a, keys_manager_a, fee_est_a);
+					reload_node!(node_a_ser, 0, monitor_a, v, keys_manager_a, fee_est_a);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
-			0x2d => {
+			0xb3..=0xbb => {
+				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
 					chan_a_disconnected = true;
@@ -1535,11 +1550,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					cb_events.clear();
 				}
 				let (new_node_b, new_monitor_b) =
-					reload_node!(node_b_ser, 1, monitor_b, keys_manager_b, fee_est_b);
+					reload_node!(node_b_ser, 1, monitor_b, v, keys_manager_b, fee_est_b);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
-			0x2e => {
+			0xbc | 0xbd | 0xbe => {
+				// Restart node C, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
 					chan_b_disconnected = true;
@@ -1551,7 +1568,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					cb_events.clear();
 				}
 				let (new_node_c, new_monitor_c) =
-					reload_node!(node_c_ser, 2, monitor_c, keys_manager_c, fee_est_c);
+					reload_node!(node_c_ser, 2, monitor_c, v, keys_manager_c, fee_est_c);
 				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
 			},
