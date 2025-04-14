@@ -987,12 +987,12 @@ where C::Target: chain::Filter,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-	      P::Target: Persist<ChannelSigner>,
-		  ES::Target: EntropySource,
+where C::Target: chain::Filter,
+	  T::Target: BroadcasterInterface,
+	  F::Target: FeeEstimator,
+	  L::Target: Logger,
+	  P::Target: Persist<ChannelSigner>,
+	  ES::Target: EntropySource,
 {
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
