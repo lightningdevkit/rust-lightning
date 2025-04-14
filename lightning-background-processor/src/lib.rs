@@ -51,6 +51,8 @@ use lightning_liquidity::ALiquidityManager;
 
 use core::ops::Deref;
 use core::time::Duration;
+#[cfg(feature = "std")]
+use std::marker::PhantomData;
 
 #[cfg(feature = "std")]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -63,9 +65,6 @@ use std::time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
-
-#[cfg(feature = "std")]
-use std::marker::PhantomData;
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -1133,7 +1132,7 @@ impl BackgroundProcessor {
 		K: 'static + Deref,
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
 	>(
-		config: BackgroundProcessorConfig<
+		#[rustfmt::skip] config: BackgroundProcessorConfig<
 			'a,
 			UL,
 			CF,
@@ -1238,7 +1237,7 @@ impl BackgroundProcessor {
 /// including required components (like the channel manager and peer manager) and optional
 /// components (like the liquidity_manager, sweeper, onion messenger and scorer).
 ///
-/// The configuration can be constructed using [`BackgroundProcessorBuilder`], which provides
+/// The configuration can be constructed using [`BackgroundProcessorConfigBuilder`], which provides
 /// a convenient builder pattern for setting up both required and optional components.
 ///
 /// This same configuration can be used for Creating a [`BackgroundProcessor`] via [`BackgroundProcessor::from_config`]
@@ -1300,13 +1299,13 @@ pub struct BackgroundProcessorConfig<
 	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
 }
 
-/// A builder for constructing a [`BackgroundProcessor`] with optional components.
+/// A builder for constructing a [`BackgroundProcessorConfig`] with optional components.
 ///
-/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessor`]
+/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessorConfig`]
 /// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
 /// concrete types for components that aren't being used.
 #[cfg(feature = "std")]
-pub struct BackgroundProcessorBuilder<
+pub struct BackgroundProcessorConfigBuilder<
 	'a,
 	UL: 'static + Deref,
 	CF: 'static + Deref,
@@ -1392,7 +1391,7 @@ impl<
 		K: 'static + Deref,
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
 	>
-	BackgroundProcessorBuilder<
+	BackgroundProcessorConfigBuilder<
 		'a,
 		UL,
 		CF,
@@ -1531,7 +1530,9 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use super::{BackgroundProcessor, BackgroundProcessorBuilder, GossipSync, FRESHNESS_TIMER};
+	use super::{
+		BackgroundProcessor, BackgroundProcessorConfigBuilder, GossipSync, FRESHNESS_TIMER,
+	};
 	use bitcoin::constants::{genesis_block, ChainHash};
 	use bitcoin::hashes::Hash;
 	use bitcoin::locktime::absolute::LockTime;
@@ -3248,11 +3249,11 @@ mod tests {
 	}
 
 	#[test]
-	fn test_background_processor_builder() {
+	fn test_background_processor_config_builder() {
 		// Test that when a new channel is created, the ChannelManager needs to be re-persisted with
 		// updates. Also test that when new updates are available, the manager signals that it needs
 		// re-persistence and is successfully re-persisted.
-		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_builder");
+		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_config_builder");
 
 		// Go through the channel creation process so that each node has something to persist. Since
 		// open_channel consumes events, it must complete before starting BackgroundProcessor to
@@ -3263,7 +3264,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let mut builder = BackgroundProcessorBuilder::new(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
