@@ -16,7 +16,7 @@ use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
 use bitcoin::absolute::LockTime;
-use bitcoin::Weight;
+use bitcoin::{Weight, Witness};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -2637,7 +2637,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			},
 		};
 
-		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
+		let funding_ready_for_sig_event_opt = if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
 			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
 				debug_assert!(
@@ -2651,28 +2651,12 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			}
 			None
 		} else {
-			// TODO(dual_funding): Send event for signing if we've contributed funds.
-			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
-			// inputs/signatures.
-			// Also warn the user that we don't do anything to prevent the counterparty from
-			// providing non-standard witnesses which will prevent the funding transaction from
-			// confirming. This warning must appear in doc comments wherever the user is contributing
-			// funds, whether they are initiator or acceptor.
-			//
-			// The following warning can be used when the APIs allowing contributing inputs become available:
-			// <div class="warning">
-			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
-			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
-			// confirmed.
-			// </div>
-			debug_assert!(
-				false,
-				"We don't support users providing inputs but somehow we had more than zero inputs",
-			);
-			return Err(ChannelError::Close((
-				"V2 channel rejected due to sender error".into(),
-				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
-			)));
+			Some(Event::FundingTransactionReadyForSigning {
+				channel_id: self.context.channel_id,
+				counterparty_node_id: self.context.counterparty_node_id,
+				user_channel_id: self.context.user_id,
+				unsigned_transaction: signing_session.unsigned_tx().build_unsigned_tx(),
+			})
 		};
 
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
@@ -2683,7 +2667,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		self.interactive_tx_constructor.take();
 		self.interactive_tx_signing_session = Some(signing_session);
 
-		Ok((commitment_signed, funding_ready_for_sig_event))
+		Ok((commitment_signed, funding_ready_for_sig_event_opt))
 	}
 }
 
@@ -6800,6 +6784,36 @@ impl<SP: Deref> FundedChannel<SP> where
 					return_with_htlcs_to_fail!(htlcs_to_fail);
 				}
 			}
+		}
+	}
+
+	fn verify_interactive_tx_signatures(&mut self, _witnesses: &Vec<Witness>) {
+		if let Some(ref mut _signing_session) = self.interactive_tx_signing_session {
+			// Check that sighash_all was used:
+			// TODO(dual_funding): Check sig for sighash
+		}
+	}
+
+	pub fn funding_transaction_signed<L: Deref>(&mut self, witnesses: Vec<Witness>, logger: &L) -> Result<Option<msgs::TxSignatures>, APIError>
+		where L::Target: Logger
+	{
+		self.verify_interactive_tx_signatures(&witnesses);
+		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+			let logger = WithChannelContext::from(logger, &self.context, None);
+			if let Some(holder_tx_signatures) = signing_session
+				.provide_holder_witnesses(self.context.channel_id, witnesses)
+				.map_err(|err| APIError::APIMisuseError { err })?
+			{
+				if self.is_awaiting_initial_mon_persist() {
+					log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
+					self.context.monitor_pending_tx_signatures = Some(holder_tx_signatures);
+					return Ok(None);
+				}
+				return Ok(Some(holder_tx_signatures));
+			} else { return Ok(None) }
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: format!("Channel with id {} not expecting funding signatures", self.context.channel_id)});
 		}
 	}
 
