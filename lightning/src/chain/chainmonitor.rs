@@ -258,6 +258,8 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	/// A [`Notifier`] used to wake up the background processor in case we have any [`Event`]s for
 	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
 	event_notifier: Notifier,
+
+	/// Messages to send to the peer. This is currently used to distribute PeerStorage to channel partners.
 	pending_send_only_events: Mutex<Vec<MessageSendEvent>>,
 
 	our_peerstorage_encryption_key: PeerStorageKey,
@@ -397,12 +399,16 @@ where C::Target: chain::Filter,
 	/// transactions relevant to the watched channels.
 	///
 	/// # Note
-	/// `our_peerstorage_encryption_key` must be obtained from [`crate::sign::NodeSigner::get_peer_storage_key()`].
+	/// `our_peerstorage_encryption_key` must be obtained from [`NodeSigner::get_peer_storage_key`].
 	/// This key is used to encrypt peer storage backups.
 	///
 	/// **Important**: This key should not be set arbitrarily or changed after initialization. The same key
-	/// is obtained by the `ChannelManager` through `KeyMananger` to decrypt peer backups.
+	/// is obtained by the [`ChannelManager`] through [`KeysManager`] to decrypt peer backups.
 	/// Using an inconsistent or incorrect key will result in the inability to decrypt previously encrypted backups.
+	///
+	/// [`NodeSigner::get_peer_storage_key`]: crate::sign::NodeSigner::get_peer_storage_key
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`KeysManager`]: crate::sign::KeysManager
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P, entropy_source: ES, our_peerstorage_encryption_key: PeerStorageKey) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
