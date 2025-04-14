@@ -447,9 +447,14 @@ impl InteractiveTxSigningSession {
 	/// unsigned transaction.
 	pub fn provide_holder_witnesses(
 		&mut self, channel_id: ChannelId, witnesses: Vec<Witness>,
-	) -> Result<(), ()> {
-		if self.local_inputs_count() != witnesses.len() {
-			return Err(());
+	) -> Result<Option<TxSignatures>, String> {
+		let local_inputs_count = self.local_inputs_count();
+		if local_inputs_count != witnesses.len() {
+			return Err(format!(
+				"Provided witness count of {} does not match required count for {} inputs",
+				witnesses.len(),
+				local_inputs_count
+			));
 		}
 
 		self.unsigned_tx.add_local_witnesses(witnesses.clone());
@@ -460,7 +465,11 @@ impl InteractiveTxSigningSession {
 			shared_input_signature: None,
 		});
 
-		Ok(())
+		if self.holder_sends_tx_signatures_first && self.has_received_commitment_signed {
+			Ok(self.holder_tx_signatures.clone())
+		} else {
+			Ok(None)
+		}
 	}
 
 	pub fn remote_inputs_count(&self) -> usize {
