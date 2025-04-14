@@ -8327,33 +8327,26 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// TODO: Check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
 
-		// `MIN_CYPHERTEXT_LEN` is 16 bytes because the mandatory authentication tag length is 16 bytes.
-		const MIN_CYPHERTEXT_LEN: usize = 16;
-
-		if msg.data.len() < MIN_CYPHERTEXT_LEN {
-			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
-			return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-				"Invalid peer_storage_retrieval message received.".into(),
-			), ChannelId([0; 32])));
-		}
-
 		let our_peerstorage_encryption_key = self.node_signer.get_peer_storage_key();
-		let our_peer_storage = OurPeerStorage::new(msg.data).unwrap();
 
-		match our_peer_storage.decrypt_our_peer_storage(our_peerstorage_encryption_key) {
-			Ok(decrypted_data) => {
-				// Decryption successful.
-				if decrypted_data.len() == 0 {
-					log_trace!(logger, "Received a peer storage from peer {} with 0 channels.", log_pubkey!(counterparty_node_id));
-				}
-			}
+		let decrypted_data = match OurPeerStorage::new(msg.data)
+			.and_then(|storage| storage.decrypt_our_peer_storage(our_peerstorage_encryption_key)) {
+			Ok(data) => data,
 			Err(_) => {
-				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
-
-				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(
-					"Invalid peer_storage_retrieval message received.".into(),
-				), ChannelId([0; 32])));
+				log_debug!(
+					logger,
+					"Invalid PeerStorage received from {}",
+					log_pubkey!(counterparty_node_id)
+				);
+				return Err(MsgHandleErrInternal::from_chan_no_close(
+					ChannelError::Ignore("Invalid PeerStorageRetrieval message received.".into()),
+					ChannelId([0; 32]),
+				));
 			}
+		};
+
+		if decrypted_data.is_empty() {
+			log_debug!(logger, "Received a peer storage from peer {} with 0 channels.", log_pubkey!(counterparty_node_id));
 		}
 
 		Ok(())
