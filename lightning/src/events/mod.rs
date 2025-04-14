@@ -1619,7 +1619,17 @@ pub enum Event {
 		///
 		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 		counterparty_node_id: PublicKey,
-		/// The `user_channel_id` value for the channel.
+		// TODO(dual_funding): Enable links when methods are implemented
+		/// The `user_channel_id` value passed in to `ChannelManager::create_dual_funded_channel` for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] or `ChannelManager::accept_inbound_channel_with_contribution`
+		/// for inbound channels if [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
+		/// Otherwise `user_channel_id` will be randomized for an inbound channel.
+		/// This may be zero for objects serialized with LDK versions prior to 0.0.113.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		// [`ChannelManager::create_dual_funded_channel`]: crate::ln::channelmanager::ChannelManager::create_dual_funded_channel
+		// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
 		user_channel_id: u128,
 		/// The unsigned transaction to be signed and passed back to
 		/// [`ChannelManager::funding_transaction_signed`].
