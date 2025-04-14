@@ -1036,7 +1036,7 @@ impl BackgroundProcessor {
 	/// # Example
 	/// ```
 	/// # use lightning_background_processor::*;
-	/// let config = BackgroundProcessorBuilder::new(
+	/// let config = BackgroundProcessorConfigBuilder::new(
 	///     persister,
 	///     event_handler,
 	///     chain_monitor,
@@ -1168,7 +1168,7 @@ impl BackgroundProcessor {
 /// including required components (like the channel manager and peer manager) and optional
 /// components (like the onion messenger and scorer).
 ///
-/// The configuration can be constructed using [`BackgroundProcessorBuilder`], which provides
+/// The configuration can be constructed using [`BackgroundProcessorConfigBuilder`], which provides
 /// a convenient builder pattern for setting up both required and optional components.
 ///
 /// This same configuration can be used for
@@ -1186,7 +1186,7 @@ impl BackgroundProcessor {
 /// # Example
 /// ```
 /// # use lightning_background_processor::*;
-/// let config = BackgroundProcessorBuilder::new(
+/// let config = BackgroundProcessorConfigBuilder::new(
 ///     persister,
 ///     event_handler,
 ///     chain_monitor,
@@ -1256,13 +1256,13 @@ pub struct BackgroundProcessorConfig<
 	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
 }
 
-/// A builder for constructing a [`BackgroundProcessor`] with optional components.
+/// A builder for constructing a [`BackgroundProcessorConfig`] with optional components.
 ///
-/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessor`]
+/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessorConfig`]
 /// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
 /// concrete types for components that aren't being used.
 #[cfg(feature = "std")]
-pub struct BackgroundProcessorBuilder<
+pub struct BackgroundProcessorConfigBuilder<
 	'a,
 	UL: 'static + Deref + Send + Sync,
 	CF: 'static + Deref + Send + Sync,
@@ -1331,7 +1331,8 @@ impl<
 		PM: 'static + Deref + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
-	> BackgroundProcessorBuilder<'a, UL, CF, T, F, G, L, P, EH, PS, M, CM, OM, PGS, RGS, PM, S, SC>
+	>
+	BackgroundProcessorConfigBuilder<'a, UL, CF, T, F, G, L, P, EH, PS, M, CM, OM, PGS, RGS, PM, S, SC>
 where
 	UL::Target: 'static + UtxoLookup,
 	CF::Target: 'static + chain::Filter,
@@ -2337,7 +2338,7 @@ mod tests {
 			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 
-		let config = BackgroundProcessorBuilder::new(
+		let config = BackgroundProcessorConfigBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			nodes[0].chain_monitor.clone(),
@@ -2821,7 +2822,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
-		let config = BackgroundProcessorBuilder::new(
+		let config = BackgroundProcessorConfigBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			nodes[0].chain_monitor.clone(),
@@ -3039,7 +3040,7 @@ mod tests {
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
-		let config = BackgroundProcessorBuilder::new(
+		let config = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
@@ -3100,7 +3101,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let config = BackgroundProcessorBuilder::new(
+		let config = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
