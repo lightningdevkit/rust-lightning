@@ -726,17 +726,6 @@ impl HTLCSource {
 		}
 	}
 
-	/// Checks whether this HTLCSource could possibly match the given HTLC output in a commitment
-	/// transaction. Useful to ensure different datastructures match up.
-	pub(crate) fn possibly_matches_output(&self, htlc: &super::chan_utils::HTLCOutputInCommitment) -> bool {
-		if let HTLCSource::OutboundRoute { first_hop_htlc_msat, .. } = self {
-			*first_hop_htlc_msat == htlc.amount_msat
-		} else {
-			// There's nothing we can check for forwarded HTLCs
-			true
-		}
-	}
-
 	/// Returns the CLTV expiry of the inbound HTLC (i.e. the source referred to by this object),
 	/// if the source was a forwarded HTLC and the HTLC was first forwarded on LDK 0.1.1 or later.
 	pub(crate) fn inbound_htlc_expiry(&self) -> Option<u32> {
