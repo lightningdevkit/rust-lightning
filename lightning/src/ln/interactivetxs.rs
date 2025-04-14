@@ -375,6 +375,7 @@ pub(crate) struct InteractiveTxSigningSession {
 	unsigned_tx: ConstructedTransaction,
 	holder_sends_tx_signatures_first: bool,
 	has_received_commitment_signed: bool,
+	has_received_tx_signatures: bool,
 	holder_tx_signatures: Option<TxSignatures>,
 }
 
@@ -395,13 +396,8 @@ impl InteractiveTxSigningSession {
 		&self.holder_tx_signatures
 	}
 
-	pub fn received_commitment_signed(&mut self) -> Option<TxSignatures> {
+	pub fn received_commitment_signed(&mut self) {
 		self.has_received_commitment_signed = true;
-		if self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
 	}
 
 	/// Handles a `tx_signatures` message received from the counterparty.
@@ -422,6 +418,7 @@ impl InteractiveTxSigningSession {
 			return Err(());
 		}
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
+		self.has_received_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
 			self.holder_tx_signatures.clone()
@@ -447,20 +444,34 @@ impl InteractiveTxSigningSession {
 	/// unsigned transaction.
 	pub fn provide_holder_witnesses(
 		&mut self, channel_id: ChannelId, witnesses: Vec<Witness>,
-	) -> Result<(), ()> {
-		if self.local_inputs_count() != witnesses.len() {
-			return Err(());
+	) -> Result<Option<TxSignatures>, String> {
+		let local_inputs_count = self.local_inputs_count();
+		if local_inputs_count != witnesses.len() {
+			return Err(format!(
+				"Provided witness count of {} does not match required count for {} inputs",
+				witnesses.len(),
+				local_inputs_count
+			));
+		}
+		if self.holder_tx_signatures.is_some() {
+			return Err("Holder witnesses were already provided".to_string());
 		}
 
 		self.unsigned_tx.add_local_witnesses(witnesses.clone());
 		self.holder_tx_signatures = Some(TxSignatures {
 			channel_id,
+			witnesses,
 			tx_hash: self.unsigned_tx.compute_txid(),
-			witnesses: witnesses.into_iter().collect(),
 			shared_input_signature: None,
 		});
 
-		Ok(())
+		if (self.holder_sends_tx_signatures_first || self.has_received_tx_signatures)
+			&& self.has_received_commitment_signed
+		{
+			Ok(self.holder_tx_signatures.clone())
+		} else {
+			Ok(None)
+		}
 	}
 
 	pub fn remote_inputs_count(&self) -> usize {
@@ -507,6 +518,7 @@ impl_writeable_tlv_based!(InteractiveTxSigningSession, {
 	(3, holder_sends_tx_signatures_first, required),
 	(5, has_received_commitment_signed, required),
 	(7, holder_tx_signatures, required),
+	(9, has_received_tx_signatures, required),
 });
 
 #[derive(Debug)]
@@ -1090,6 +1102,7 @@ macro_rules! define_state_transitions {
 					holder_sends_tx_signatures_first: tx.holder_sends_tx_signatures_first,
 					unsigned_tx: tx,
 					has_received_commitment_signed: false,
+					has_received_tx_signatures: false,
 					holder_tx_signatures: None,
 				};
 				Ok(NegotiationComplete(signing_session))

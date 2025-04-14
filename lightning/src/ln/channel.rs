@@ -14,7 +14,7 @@ use bitcoin::constants::ChainHash;
 use bitcoin::script::{Builder, Script, ScriptBuf, WScriptHash};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::{Transaction, TxIn, TxOut};
-use bitcoin::Weight;
+use bitcoin::{Weight, Witness};
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -36,7 +36,7 @@ use crate::chain::channelmonitor::{
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BestBlock;
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
-use crate::events::{ClosureReason, Event};
+use crate::events::ClosureReason;
 use crate::ln::chan_utils;
 #[cfg(splicing)]
 use crate::ln::chan_utils::FUNDING_TRANSACTION_WITNESS_WEIGHT;
@@ -1761,7 +1761,7 @@ where
 
 	pub fn funding_tx_constructed<L: Deref>(
 		&mut self, signing_session: InteractiveTxSigningSession, logger: &L,
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+	) -> Result<msgs::CommitmentSigned, ChannelError>
 	where
 		L::Target: Logger,
 	{
@@ -2310,7 +2310,6 @@ where
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
-	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
 
 	/// If we went to send a revoke_and_ack but our signer was unable to give us a signature,
 	/// we should retry at some point in the future when the signer indicates it may have a
@@ -2910,12 +2909,11 @@ where
 
 	#[rustfmt::skip]
 	pub fn funding_tx_constructed<L: Deref>(
-		&mut self, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+		&mut self, signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<msgs::CommitmentSigned, ChannelError>
 	where
 		L::Target: Logger
 	{
-		let our_funding_satoshis = self.dual_funding_context.our_funding_satoshis;
 		let transaction_number = self.unfunded_context.transaction_number();
 
 		let mut output_index = None;
@@ -2949,42 +2947,6 @@ where
 			},
 		};
 
-		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
-			debug_assert_eq!(our_funding_satoshis, 0);
-			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
-				debug_assert!(
-					false,
-					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
-				);
-				let msg = "V2 channel rejected due to sender error";
-				let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-				return Err(ChannelError::Close((msg.to_owned(), reason)));
-			}
-			None
-		} else {
-			// TODO(dual_funding): Send event for signing if we've contributed funds.
-			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
-			// inputs/signatures.
-			// Also warn the user that we don't do anything to prevent the counterparty from
-			// providing non-standard witnesses which will prevent the funding transaction from
-			// confirming. This warning must appear in doc comments wherever the user is contributing
-			// funds, whether they are initiator or acceptor.
-			//
-			// The following warning can be used when the APIs allowing contributing inputs become available:
-			// <div class="warning">
-			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
-			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
-			// confirmed.
-			// </div>
-			debug_assert!(
-				false,
-				"We don't support users providing inputs but somehow we had more than zero inputs",
-			);
-			let msg = "V2 channel rejected due to sender error";
-			let reason = ClosureReason::ProcessingError { err: msg.to_owned() };
-			return Err(ChannelError::Close((msg.to_owned(), reason)));
-		};
-
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		channel_state.set_interactive_signing();
 		self.context.channel_state = channel_state;
@@ -2993,7 +2955,7 @@ where
 		self.interactive_tx_constructor.take();
 		self.interactive_tx_signing_session = Some(signing_session);
 
-		Ok((commitment_signed, funding_ready_for_sig_event))
+		Ok(commitment_signed)
 	}
 }
 
@@ -3275,7 +3237,6 @@ where
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
-			monitor_pending_tx_signatures: None,
 
 			signer_pending_revoke_and_ack: false,
 			signer_pending_commitment_update: false,
@@ -3514,7 +3475,6 @@ where
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
-			monitor_pending_tx_signatures: None,
 
 			signer_pending_revoke_and_ack: false,
 			signer_pending_commitment_update: false,
@@ -6767,13 +6727,7 @@ where
 
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 
-		if let Some(tx_signatures) = self.interactive_tx_signing_session.as_mut().and_then(
-			|session| session.received_commitment_signed()
-		) {
-			// We're up first for submitting our tx_signatures, but our monitor has not persisted yet
-			// so they'll be sent as soon as that's done.
-			self.context.monitor_pending_tx_signatures = Some(tx_signatures);
-		}
+		self.interactive_tx_signing_session.as_mut().map(|session| session.received_commitment_signed());
 
 		Ok(channel_monitor)
 	}
@@ -6856,13 +6810,12 @@ where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		let tx_signatures = self
+		let _ = self
 			.interactive_tx_signing_session
 			.as_mut()
 			.expect("Signing session must exist for negotiated pending splice")
 			.received_commitment_signed();
 		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
-		self.context.monitor_pending_tx_signatures = tx_signatures;
 
 		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
@@ -7772,10 +7725,26 @@ where
 		}
 	}
 
+	pub fn funding_transaction_signed(
+		&mut self, witnesses: Vec<Witness>,
+	) -> Result<Option<msgs::TxSignatures>, APIError> {
+		self.interactive_tx_signing_session
+			.as_mut()
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!(
+					"Channel with id {} not expecting funding signatures",
+					self.context.channel_id
+				),
+			})
+			.and_then(|signing_session| {
+				signing_session
+					.provide_holder_witnesses(self.context.channel_id, witnesses)
+					.map_err(|err| APIError::APIMisuseError { err })
+			})
+	}
+
 	#[rustfmt::skip]
-	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<(Option<Transaction>, Option<msgs::TxSignatures>), ChannelError>
-		where L::Target: Logger
-	{
+	pub fn tx_signatures(&mut self, msg: &msgs::TxSignatures) -> Result<(Option<Transaction>, Option<msgs::TxSignatures>), ChannelError> {
 		if !self.context.channel_state.is_interactive_signing()
 			|| self.context.channel_state.is_their_tx_signatures_sent()
 		{
@@ -7828,15 +7797,8 @@ where
 				self.funding.funding_transaction = funding_tx_opt.clone();
 			}
 
-			// Note that `holder_tx_signatures_opt` will be `None` if we sent `tx_signatures` first, so this
-			// case checks if there is a monitor persist in progress when we need to respond with our `tx_signatures`
-			// and sets it as pending.
-			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
-				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-				self.context.monitor_pending_tx_signatures = holder_tx_signatures_opt;
-				return Ok((None, None));
-			}
-
+			// Note that `holder_tx_signatures_opt` will be `None` if we sent `tx_signatures` first or if the
+			// user still needs to provide tx_signatures and we are sending second.
 			if holder_tx_signatures_opt.is_some() {
 				self.context.channel_state.set_our_tx_signatures_ready();
 			}
@@ -8093,17 +8055,6 @@ where
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
 		let mut pending_update_adds = Vec::new();
 		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
-		// For channels established with V2 establishment we won't send a `tx_signatures` when we're in
-		// MonitorUpdateInProgress (and we assume the user will never directly broadcast the funding
-		// transaction and waits for us to do it).
-		let tx_signatures = self.context.monitor_pending_tx_signatures.take();
-		if tx_signatures.is_some() {
-			if self.context.channel_state.is_their_tx_signatures_sent() {
-				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
-			} else {
-				self.context.channel_state.set_our_tx_signatures_ready();
-			}
-		}
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
@@ -8111,7 +8062,7 @@ where
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
 				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
-				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures
+				funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None
 			};
 		}
 
@@ -8141,7 +8092,7 @@ where
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
 			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
-			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures
+			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, tx_signatures: None
 		}
 	}
 
@@ -8416,23 +8367,25 @@ where
 		log_trace!(logger, "Regenerating latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
-		let commitment_signed =
-			if let Ok(update) = self.send_commitment_no_state_update(logger) {
-				if self.context.signer_pending_commitment_update {
-					log_trace!(
-						logger,
-						"Commitment update generated: clearing signer_pending_commitment_update"
-					);
-					self.context.signer_pending_commitment_update = false;
-				}
-				update
-			} else {
-				if !self.context.signer_pending_commitment_update {
-					log_trace!(logger, "Commitment update awaiting signer: setting signer_pending_commitment_update");
-					self.context.signer_pending_commitment_update = true;
-				}
-				return Err(());
-			};
+		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger) {
+			if self.context.signer_pending_commitment_update {
+				log_trace!(
+					logger,
+					"Commitment update generated: clearing signer_pending_commitment_update"
+				);
+				self.context.signer_pending_commitment_update = false;
+			}
+			update
+		} else {
+			if !self.context.signer_pending_commitment_update {
+				log_trace!(
+					logger,
+					"Commitment update awaiting signer: setting signer_pending_commitment_update"
+				);
+				self.context.signer_pending_commitment_update = true;
+			}
+			return Err(());
+		};
 		Ok(msgs::CommitmentUpdate {
 			update_add_htlcs,
 			update_fulfill_htlcs,
@@ -8618,7 +8571,6 @@ where
 								update_fee: None,
 							})
 						} else { None };
-						// TODO(dual_funding): For async signing support we need to hold back `tx_signatures` until the `commitment_signed` is ready.
 						let tx_signatures = if (
 							// if it has not received tx_signatures for that funding transaction AND
 							// if it has already received commitment_signed AND it should sign first, as specified in the tx_signatures requirements:
@@ -8627,14 +8579,9 @@ where
 							// else if it has already received tx_signatures for that funding transaction:
 							//   MUST send its tx_signatures for that funding transaction.
 						) || self.context.channel_state.is_their_tx_signatures_sent() {
-							if self.context.channel_state.is_monitor_update_in_progress() {
-								// The `monitor_pending_tx_signatures` field should have already been set in `commitment_signed_initial_v2`
-								// if we were up first for signing and had a monitor update in progress, but check again just in case.
-								debug_assert!(self.context.monitor_pending_tx_signatures.is_some(), "monitor_pending_tx_signatures should already be set");
-								log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-								if self.context.monitor_pending_tx_signatures.is_none() {
-									self.context.monitor_pending_tx_signatures = session.holder_tx_signatures().clone();
-								}
+							if session.holder_tx_signatures().is_none() {
+								debug_assert!(self.context.channel_state.is_monitor_update_in_progress());
+								log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress.");
 								None
 							} else {
 								// If `holder_tx_signatures` is `None` here, the `tx_signatures` message will be sent
@@ -13559,7 +13506,6 @@ where
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or_default(),
-				monitor_pending_tx_signatures: None,
 
 				signer_pending_revoke_and_ack: false,
 				signer_pending_commitment_update: false,
