@@ -1582,6 +1582,48 @@ pub enum Event {
 		/// onion messages.
 		peer_node_id: PublicKey,
 	},
+	/// Indicates that a channel funding transaction constructed interactively is ready to be
+	/// signed. This event will only be triggered if at least one input was contributed.
+	///
+	/// The transaction contains all inputs provided by both parties along with the channel's funding
+	/// output and a change output if applicable.
+	///
+	/// No part of the transaction should be changed before signing as the content of the transaction
+	/// has already been negotiated with the counterparty.
+	///
+	/// Each signature MUST use the `SIGHASH_ALL` flag to avoid invalidation of the initial commitment and
+	/// hence possible loss of funds.
+	///
+	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially) signed
+	/// funding transaction.
+	///
+	/// Generated in [`ChannelManager`] message handling.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+	FundingTransactionReadyForSigning {
+		/// The channel_id of the channel which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		channel_id: ChannelId,
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		counterparty_node_id: PublicKey,
+		/// The `user_channel_id` value passed in for outbound channels, or for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for inbound channels.
+		///
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The unsigned transaction to be signed and passed back to
+		/// [`ChannelManager::funding_transaction_signed`].
+		///
+		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
+		unsigned_transaction: Transaction,
+	},
 }
 
 impl Writeable for Event {
@@ -2011,6 +2053,13 @@ impl Writeable for Event {
 					(6, counterparty_node_id, required),
 					(8, former_temporary_channel_id, required),
 				});
+			},
+			&Event::FundingTransactionReadyForSigning { .. } => {
+				45u8.write(writer)?;
+				// We never write out FundingTransactionReadyForSigning events as, upon disconnection, peers
+				// drop any V2-established/spliced channels which have not yet exchanged the initial `commitment_signed`.
+				// We only exhange the initial `commitment_signed` after the client calls
+				// `ChannelManager::funding_transaction_signed` and ALWAYS before we send a `tx_signatures`
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -2582,6 +2631,10 @@ impl MaybeReadable for Event {
 					counterparty_node_id: counterparty_node_id.0.unwrap(),
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
+			},
+			45u8 => {
+				// Value 45 is used for `Event::FundingTransactionReadyForSigning`.
+				Ok(None)
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
