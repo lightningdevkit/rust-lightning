@@ -710,10 +710,16 @@ where C::Target: chain::Filter,
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
 		let peer_storage_key = self.our_peerstorage_encryption_key;
 		let serialised_channels = Vec::new();
-		let our_peer_storage = OurPeerStorage::create_from_data(peer_storage_key, serialised_channels, random_bytes);
-		log_debug!(self.logger, "Sending Peer Storage from chainmonitor");
-		self.pending_send_only_events.lock().unwrap().push(MessageSendEvent::SendPeerStorage { node_id: their_node_id,
-			msg: msgs::PeerStorage { data: our_peer_storage.into_vec() } })
+		let our_peer_storage = OurPeerStorage::create_from_data(
+			peer_storage_key, serialised_channels, random_bytes
+		);
+
+		log_debug!(self.logger, "Sending Peer Storage to {}", log_pubkey!(their_node_id));
+		let send_peer_storage_event = MessageSendEvent::SendPeerStorage {
+			node_id: their_node_id, msg: msgs::PeerStorage { data: our_peer_storage.into_vec() }
+		};
+
+		self.pending_send_only_events.lock().unwrap().push(send_peer_storage_event)
 	}
 }
 
