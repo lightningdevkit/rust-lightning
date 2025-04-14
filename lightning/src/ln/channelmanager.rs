@@ -2827,7 +2827,7 @@ pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*8;
 // scale them up to suit its security policy. At the network-level, we shouldn't constrain them too much,
 // while avoiding to introduce a DoS vector. Further, a low CTLV_FAR_FAR_AWAY could be a source of
 // routing failure for any HTLC sender picking up an LDK node among the first hops.
-pub(super) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
+pub(crate) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 
 /// Minimum CLTV difference between the current block height and received inbound payments.
 /// Invoices generated for payment to us must set their `min_final_cltv_expiry_delta` field to at least
