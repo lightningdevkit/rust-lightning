@@ -763,7 +763,7 @@ pub async fn process_events_async<
 		G,
 		L,
 		P,
-		EH,
+		EventHandler,
 		PS,
 		M,
 		CM,
@@ -818,31 +818,41 @@ where
 			event_handler(event).await
 		})
 	};
+	// We should extract these out of config because the macro expects individual arguments
+	let persister = config.persister;
+	let chain_monitor = config.chain_monitor;
+	let channel_manager = config.channel_manager;
+	let onion_messenger = config.onion_messenger;
+	let peer_manager = config.peer_manager;
+	let gossip_sync = config.gossip_sync;
+	let logger = config.logger;
+	let scorer = config.scorer;
+
 	define_run_body!(
-		config.persister,
-		config.chain_monitor,
-		config.chain_monitor.process_pending_events_async(async_event_handler).await,
-		config.channel_manager,
-		config.channel_manager.get_cm().process_pending_events_async(async_event_handler).await,
-		config.onion_messenger,
-		if let Some(om) = &config.onion_messenger {
+		persister,
+		chain_monitor,
+		chain_monitor.process_pending_events_async(async_event_handler).await,
+		channel_manager,
+		channel_manager.get_cm().process_pending_events_async(async_event_handler).await,
+		onion_messenger,
+		if let Some(om) = &onion_messenger {
 			om.get_om().process_pending_events_async(async_event_handler).await
 		},
-		config.peer_manager,
-		config.gossip_sync,
-		config.logger,
-		config.scorer,
+		peer_manager,
+		gossip_sync,
+		logger,
+		scorer,
 		should_break,
 		{
-			let om_fut = if let Some(om) = config.onion_messenger.as_ref() {
+			let om_fut = if let Some(om) = onion_messenger.as_ref() {
 				let fut = om.get_om().get_update_future();
 				OptionalSelector { optional_future: Some(fut) }
 			} else {
 				OptionalSelector { optional_future: None }
 			};
 			let fut = Selector {
-				a: config.channel_manager.get_cm().get_event_or_persistence_needed_future(),
-				b: config.chain_monitor.get_update_future(),
+				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
+				b: chain_monitor.get_update_future(),
 				c: om_fut,
 				d: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
@@ -1036,7 +1046,7 @@ impl BackgroundProcessor {
 	/// # Example
 	/// ```
 	/// # use lightning_background_processor::*;
-	/// let config = BackgroundProcessorConfigBuilder::new(
+	/// let mut builder = BackgroundProcessorConfigBuilder::new(
 	///     persister,
 	///     event_handler,
 	///     chain_monitor,
@@ -1044,10 +1054,10 @@ impl BackgroundProcessor {
 	///     gossip_sync,
 	///     peer_manager,
 	///     logger
-	/// )
-	/// .with_onion_messenger(messenger)
-	/// .with_scorer(scorer)
-	/// .build();
+	/// );
+	/// builder.with_onion_messenger(messenger);
+	/// 		.with_scorer(scorer);
+	/// let config = builder.build();
 	/// let bg_processor = BackgroundProcessor::from_config(config);
 	/// ```
 	pub fn from_config<
@@ -1186,7 +1196,7 @@ impl BackgroundProcessor {
 /// # Example
 /// ```
 /// # use lightning_background_processor::*;
-/// let config = BackgroundProcessorConfigBuilder::new(
+/// let mut builder = BackgroundProcessorConfigBuilder::new(
 ///     persister,
 ///     event_handler,
 ///     chain_monitor,
@@ -1194,10 +1204,10 @@ impl BackgroundProcessor {
 ///     gossip_sync,
 ///     peer_manager,
 ///     logger
-/// )
-/// .with_onion_messenger(messenger)  // Optional
-/// .with_scorer(scorer)              // Optional
-/// .build();
+/// );
+/// builder.with_onion_messenger(messenger);  // Optional
+/// 		.with_scorer(scorer);              // Optional
+/// let config = builder.build();
 ///
 /// // Use with BackgroundProcessor
 /// let processor = BackgroundProcessor::from_config(config);
@@ -1209,7 +1219,7 @@ impl BackgroundProcessor {
 /// process_events_async(config, sleeper, mobile_interruptable_platform, fetch_time).await?;"
 )]
 /// ```
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "futures"))]
 pub struct BackgroundProcessorConfig<
 	'a,
 	UL: 'static + Deref + Send + Sync,
@@ -1219,7 +1229,8 @@ pub struct BackgroundProcessorConfig<
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
-	EH: 'static + EventHandler + Send,
+	#[cfg(feature = "std")] EH: 'static + EventHandler + Send,
+	#[cfg(feature = "futures")] EH: 'static + Fn(Event) -> core::future::Future<Output = Result<(), ReplayEvent>>,
 	PS: 'static + Deref + Send,
 	M: 'static
 		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
@@ -1346,7 +1357,7 @@ where
 	PM::Target: APeerManager + Send + Sync,
 {
 	/// Creates a new builder instance.
-	pub(crate) fn new(
+	pub fn new(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L,
 	) -> Self {
@@ -1405,7 +1416,9 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
+	use super::{
+		BackgroundProcessor, BackgroundProcessorConfigBuilder, GossipSync, FRESHNESS_TIMER,
+	};
 	use bitcoin::constants::{genesis_block, ChainHash};
 	use bitcoin::hashes::Hash;
 	use bitcoin::locktime::absolute::LockTime;
@@ -2338,7 +2351,7 @@ mod tests {
 			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 
-		let config = BackgroundProcessorConfigBuilder::new(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			nodes[0].chain_monitor.clone(),
@@ -2346,10 +2359,11 @@ mod tests {
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-		)
-		.with_onion_messenger(nodes[0].messenger.clone())
-		.with_scorer(nodes[0].scorer.clone())
-		.build();
+		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone());
+		let config = builder.build();
 
 		let bp_future = super::process_events_async(
 			config,
@@ -2822,7 +2836,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
-		let config = BackgroundProcessorConfigBuilder::new(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			nodes[0].chain_monitor.clone(),
@@ -2830,10 +2844,11 @@ mod tests {
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-		)
-		.with_onion_messenger(nodes[0].messenger.clone())
-		.with_scorer(nodes[0].scorer.clone())
-		.build();
+		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone());
+		let config = builder.build();
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 		let bp_future = super::process_events_async(
@@ -3040,7 +3055,7 @@ mod tests {
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
-		let config = BackgroundProcessorConfigBuilder::new(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
@@ -3048,10 +3063,11 @@ mod tests {
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-		)
-		.with_onion_messenger(nodes[0].messenger.clone())
-		.with_scorer(nodes[0].scorer.clone())
-		.build();
+		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone());
+		let config = builder.build();
 
 		let bp_future = super::process_events_async(
 			config,
@@ -3086,11 +3102,11 @@ mod tests {
 	}
 
 	#[test]
-	fn test_background_processor_builder() {
+	fn test_background_processor_config_builder() {
 		// Test that when a new channel is created, the ChannelManager needs to be re-persisted with
 		// updates. Also test that when new updates are available, the manager signals that it needs
 		// re-persistence and is successfully re-persisted.
-		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_builder");
+		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_config_builder");
 
 		// Go through the channel creation process so that each node has something to persist. Since
 		// open_channel consumes events, it must complete before starting BackgroundProcessor to
@@ -3101,7 +3117,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let config = BackgroundProcessorConfigBuilder::new(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
@@ -3109,10 +3125,11 @@ mod tests {
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			nodes[0].logger.clone(),
-		)
-		.with_onion_messenger(nodes[0].messenger.clone())
-		.with_scorer(nodes[0].scorer.clone())
-		.build();
+		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone());
+		let config = builder.build();
 
 		let bg_processor = BackgroundProcessor::from_config(config);
 
@@ -3164,7 +3181,7 @@ mod tests {
 			.unwrap();
 
 		// Check that the force-close updates are persisted
-		check_persisted_data!(nodes[0].node, manager_path.clone());
+		check_persisted_data!(nodes[0].node, filepath.clone());
 		loop {
 			if !nodes[0].node.get_event_or_persist_condvar_value() {
 				break;
@@ -3174,7 +3191,7 @@ mod tests {
 		// Check network graph is persisted
 		let filepath =
 			get_full_filepath(format!("{}_persister_0", &persist_dir), "network_graph".to_string());
-		check_persisted_data!(nodes[0].network_graph, filepath);
+		check_persisted_data!(nodes[0].network_graph, filepath.clone());
 
 		// Check scorer is persisted
 		let filepath =
