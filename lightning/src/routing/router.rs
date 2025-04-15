@@ -8988,14 +8988,16 @@ pub mod benches {
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScoringFeeParameters};
 	use crate::util::config::UserConfig;
-	use crate::util::logger::{Logger, Record};
+	use crate::util::logger::{Logger, Record, Span};
 	use crate::util::test_utils::TestLogger;
 
 	use criterion::Criterion;
 
 	struct DummyLogger {}
 	impl Logger for DummyLogger {
+		type UserSpan = ();
 		fn log(&self, _record: Record) {}
+		fn start(&self, _span: Span, _parent: Option<&()>) -> () {}
 	}
 
 	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {

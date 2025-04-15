@@ -15,13 +15,14 @@
 
 use bitcoin::secp256k1::PublicKey;
 
+use core::any::Any;
 use core::cmp;
 use core::fmt;
 use core::ops::Deref;
 
+use crate::ln::channel_state::{InboundHTLCStateDetails, OutboundHTLCStateDetails};
 use crate::ln::types::ChannelId;
-#[cfg(c_bindings)]
-use crate::prelude::*; // Needed for String
+use crate::prelude::*;
 use crate::types::payment::PaymentHash;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
@@ -160,8 +161,101 @@ impl_record!(, 'a);
 
 /// A trait encapsulating the operations required of a logger.
 pub trait Logger {
+	/// The user-defined type returned to capture a span with its lifetime.
+	#[cfg(feature = "std")]
+	type UserSpan: 'static + Send;
+	/// The user-defined type returned to capture a span with its lifetime.
+	#[cfg(not(feature = "std"))]
+	type UserSpan: 'static;
+
 	/// Logs the [`Record`].
 	fn log(&self, record: Record);
+	/// Indicates the start of a span of computation.
+	/// The returned object will be dropped when the span ends.
+	fn start(&self, span: Span, parent: Option<&Self::UserSpan>) -> Self::UserSpan;
+}
+
+/// A span of computation in time.
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub enum Span {
+	/// Span representing the lifetime of an inbound HTLC.
+	InboundHTLC {
+		/// Channel ID.
+		channel_id: ChannelId,
+		/// HTLC ID.
+		htlc_id: u64,
+	},
+	/// Span representing the lifetime of an outbound HTLC.
+	OutboundHTLC {
+		/// Channel ID.
+		channel_id: ChannelId,
+		/// HTLC ID.
+		htlc_id: u64,
+	},
+	/// Span representing the downstream forward of an incoming HTLC.
+	Forward,
+	/// Span representing an inbound HTLC state in the commitment state machine.
+	InboundHTLCState {
+		/// The state.
+		state: Option<InboundHTLCStateDetails>,
+	},
+	/// Span representing an outbound HTLC state in the commitment state machine.
+	OutboundHTLCState {
+		/// The state.
+		state: OutboundHTLCStateDetails,
+	},
+	/// Span representing sending an outbound Ping and receiving an inbound Pong.
+	PingPong {
+		/// The node id of the counterparty.
+		node_id: PublicKey,
+	},
+}
+
+#[cfg(feature = "std")]
+pub(crate) struct BoxedSpan(Box<dyn Any + 'static + Send>);
+#[cfg(not(feature = "std"))]
+pub(crate) struct BoxedSpan(Box<dyn Any + 'static>);
+
+impl BoxedSpan {
+	#[cfg(feature = "std")]
+	pub fn new<S: Any + 'static + Send>(s: S) -> Self {
+		BoxedSpan(Box::new(s))
+	}
+	#[cfg(not(feature = "std"))]
+	pub fn new<S: Any + 'static>(s: S) -> Self {
+		BoxedSpan(Box::new(s))
+	}
+
+	pub fn as_user_span_ref<L: Deref>(&self) -> Option<&<<L as Deref>::Target as Logger>::UserSpan>
+	where
+		L::Target: Logger,
+	{
+		self.0.downcast_ref()
+	}
+}
+
+// A set of implementations for tests ignoring spans.
+// Note that cloning just creates a dummy span.
+
+#[cfg(test)]
+impl core::fmt::Debug for BoxedSpan {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "boxed span")
+	}
+}
+
+#[cfg(test)]
+impl PartialEq for BoxedSpan {
+	fn eq(&self, _other: &Self) -> bool {
+		true
+	}
+}
+
+#[cfg(test)]
+impl Clone for BoxedSpan {
+	fn clone(&self) -> Self {
+		BoxedSpan::new(())
+	}
 }
 
 /// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
@@ -186,6 +280,8 @@ impl<'a, L: Deref> Logger for WithContext<'a, L>
 where
 	L::Target: Logger,
 {
+	type UserSpan = <<L as Deref>::Target as Logger>::UserSpan;
+
 	fn log(&self, mut record: Record) {
 		if self.peer_id.is_some() {
 			record.peer_id = self.peer_id
@@ -197,6 +293,10 @@ where
 			record.payment_hash = self.payment_hash;
 		}
 		self.logger.log(record)
+	}
+
+	fn start(&self, span: Span, parent: Option<&Self::UserSpan>) -> Self::UserSpan {
+		self.logger.start(span, parent)
 	}
 }
 
@@ -278,11 +378,11 @@ mod tests {
 	}
 
 	struct WrapperLog {
-		logger: Arc<dyn Logger>,
+		logger: Arc<dyn Logger<UserSpan = <TestLogger as Logger>::UserSpan>>,
 	}
 
 	impl WrapperLog {
-		fn new(logger: Arc<dyn Logger>) -> WrapperLog {
+		fn new(logger: Arc<dyn Logger<UserSpan = <TestLogger as Logger>::UserSpan>>) -> WrapperLog {
 			WrapperLog { logger }
 		}
 
@@ -299,7 +399,7 @@ mod tests {
 	#[test]
 	fn test_logging_macros() {
 		let logger = TestLogger::new();
-		let logger: Arc<dyn Logger> = Arc::new(logger);
+		let logger: Arc<dyn Logger<UserSpan = <TestLogger as Logger>::UserSpan>> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();
 	}

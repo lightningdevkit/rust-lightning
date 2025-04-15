@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::util::logger::{Logger, Record};
+use lightning::util::logger::{Logger, Record, Span};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +58,8 @@ impl<'a, Out: Output> Write for LockedWriteAdapter<'a, Out> {
 }
 
 impl<Out: Output> Logger for TestLogger<Out> {
+	type UserSpan = ();
+
 	fn log(&self, record: Record) {
 		write!(
 			LockedWriteAdapter(&self.out),
@@ -70,4 +72,6 @@ impl<Out: Output> Logger for TestLogger<Out> {
 		)
 		.unwrap();
 	}
+
+	fn start(&self, _span: Span, _parent: Option<&()>) -> () {}
 }
