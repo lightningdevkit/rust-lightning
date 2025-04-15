@@ -678,95 +678,97 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let default_mon_style = RefCell::new(ChannelMonitorUpdateStatus::Completed);
 	let mon_style = [default_mon_style.clone(), default_mon_style.clone(), default_mon_style];
 
-	macro_rules! reload_node {
-		($ser: expr, $node_id: expr, $old_monitors: expr, $use_old_mons: expr, $keys: expr, $fee_estimator: expr) => {{
-			let keys_manager = Arc::clone(&$keys);
-			let logger: Arc<dyn Logger> =
-				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let chain_monitor = Arc::new(TestChainMonitor::new(
-				broadcast.clone(),
-				logger.clone(),
-				$fee_estimator.clone(),
-				Arc::new(TestPersister {
-					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed),
-				}),
-				Arc::clone(&$keys),
-			));
+	let reload_node = |ser: &Vec<u8>,
+	                   node_id: u8,
+	                   old_monitors: &TestChainMonitor,
+	                   mut use_old_mons,
+	                   keys,
+	                   fee_estimator| {
+		let keys_manager = Arc::clone(keys);
+		let logger: Arc<dyn Logger> =
+			Arc::new(test_logger::TestLogger::new(node_id.to_string(), out.clone()));
+		let chain_monitor = Arc::new(TestChainMonitor::new(
+			broadcast.clone(),
+			logger.clone(),
+			Arc::clone(fee_estimator),
+			Arc::new(TestPersister {
+				update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed),
+			}),
+			Arc::clone(keys),
+		));
 
-			let mut config = UserConfig::default();
-			config.channel_config.forwarding_fee_proportional_millionths = 0;
-			config.channel_handshake_config.announce_for_forwarding = true;
-			if anchors {
-				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-				config.manually_accept_inbound_channels = true;
-			}
+		let mut config = UserConfig::default();
+		config.channel_config.forwarding_fee_proportional_millionths = 0;
+		config.channel_handshake_config.announce_for_forwarding = true;
+		if anchors {
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+			config.manually_accept_inbound_channels = true;
+		}
 
-			let mut monitors = new_hash_map();
-			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
-			let mut use_old_mons = $use_old_mons;
-			for (channel_id, mut prev_state) in old_monitors.drain() {
-				let serialized_mon = if use_old_mons % 3 == 0 {
-					// Reload with the oldest `ChannelMonitor` (the one that we already told
-					// `ChannelManager` we finished persisting).
-					prev_state.persisted_monitor
-				} else if use_old_mons % 3 == 1 {
-					// Reload with the second-oldest `ChannelMonitor`
-					let old_mon = prev_state.persisted_monitor;
-					prev_state.pending_monitors.drain(..).next().map(|(_, v)| v).unwrap_or(old_mon)
-				} else {
-					// Reload with the newest `ChannelMonitor`
-					let old_mon = prev_state.persisted_monitor;
-					prev_state.pending_monitors.pop().map(|(_, v)| v).unwrap_or(old_mon)
-				};
-				// Use a different value of `use_old_mons` if we have another monitor (only for
-				// node B) by shifting `use_old_mons` one in base-3.
-				use_old_mons /= 3;
-				let mon = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
-					&mut &serialized_mon[..],
-					(&*$keys, &*$keys),
-				)
-				.expect("Failed to read monitor");
-				monitors.insert(channel_id, mon.1);
-				// Update the latest `ChannelMonitor` state to match what we just told LDK.
-				prev_state.persisted_monitor = serialized_mon;
-				// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
-				// considering them discarded. LDK should replay these for us as they're stored in
-				// the `ChannelManager`.
-				prev_state.pending_monitors.clear();
-				chain_monitor.latest_monitors.lock().unwrap().insert(channel_id, prev_state);
-			}
-			let mut monitor_refs = new_hash_map();
-			for (channel_id, monitor) in monitors.iter() {
-				monitor_refs.insert(*channel_id, monitor);
-			}
-
-			let read_args = ChannelManagerReadArgs {
-				entropy_source: Arc::clone(&keys_manager),
-				node_signer: Arc::clone(&keys_manager),
-				signer_provider: keys_manager,
-				fee_estimator: $fee_estimator.clone(),
-				chain_monitor: chain_monitor.clone(),
-				tx_broadcaster: broadcast.clone(),
-				router: &router,
-				message_router: &router,
-				logger,
-				default_config: config,
-				channel_monitors: monitor_refs,
+		let mut monitors = new_hash_map();
+		let mut old_monitors = old_monitors.latest_monitors.lock().unwrap();
+		for (channel_id, mut prev_state) in old_monitors.drain() {
+			let serialized_mon = if use_old_mons % 3 == 0 {
+				// Reload with the oldest `ChannelMonitor` (the one that we already told
+				// `ChannelManager` we finished persisting).
+				prev_state.persisted_monitor
+			} else if use_old_mons % 3 == 1 {
+				// Reload with the second-oldest `ChannelMonitor`
+				let old_mon = prev_state.persisted_monitor;
+				prev_state.pending_monitors.drain(..).next().map(|(_, v)| v).unwrap_or(old_mon)
+			} else {
+				// Reload with the newest `ChannelMonitor`
+				let old_mon = prev_state.persisted_monitor;
+				prev_state.pending_monitors.pop().map(|(_, v)| v).unwrap_or(old_mon)
 			};
+			// Use a different value of `use_old_mons` if we have another monitor (only for node B)
+			// by shifting `use_old_mons` one in base-3.
+			use_old_mons /= 3;
+			let mon = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+				&mut &serialized_mon[..],
+				(&**keys, &**keys),
+			)
+			.expect("Failed to read monitor");
+			monitors.insert(channel_id, mon.1);
+			// Update the latest `ChannelMonitor` state to match what we just told LDK.
+			prev_state.persisted_monitor = serialized_mon;
+			// Wipe any `ChannelMonitor`s which we never told LDK we finished persisting,
+			// considering them discarded. LDK should replay these for us as they're stored in
+			// the `ChannelManager`.
+			prev_state.pending_monitors.clear();
+			chain_monitor.latest_monitors.lock().unwrap().insert(channel_id, prev_state);
+		}
+		let mut monitor_refs = new_hash_map();
+		for (channel_id, monitor) in monitors.iter() {
+			monitor_refs.insert(*channel_id, monitor);
+		}
 
-			let manager = <(BlockHash, ChanMan)>::read(&mut &$ser.0[..], read_args)
-				.expect("Failed to read manager");
-			let res = (manager.1, chain_monitor.clone());
-			for (channel_id, mon) in monitors.drain() {
-				assert_eq!(
-					chain_monitor.chain_monitor.watch_channel(channel_id, mon),
-					Ok(ChannelMonitorUpdateStatus::Completed)
-				);
-			}
-			*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[$node_id].borrow();
-			res
-		}};
-	}
+		let read_args = ChannelManagerReadArgs {
+			entropy_source: Arc::clone(&keys_manager),
+			node_signer: Arc::clone(&keys_manager),
+			signer_provider: keys_manager,
+			fee_estimator: Arc::clone(fee_estimator),
+			chain_monitor: chain_monitor.clone(),
+			tx_broadcaster: broadcast.clone(),
+			router: &router,
+			message_router: &router,
+			logger,
+			default_config: config,
+			channel_monitors: monitor_refs,
+		};
+
+		let manager =
+			<(BlockHash, ChanMan)>::read(&mut &ser[..], read_args).expect("Failed to read manager");
+		let res = (manager.1, chain_monitor.clone());
+		for (channel_id, mon) in monitors.drain() {
+			assert_eq!(
+				chain_monitor.chain_monitor.watch_channel(channel_id, mon),
+				Ok(ChannelMonitorUpdateStatus::Completed)
+			);
+		}
+		*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[node_id as usize].borrow();
+		res
+	};
 
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
@@ -996,12 +998,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let mut bc_events = Vec::new();
 	let mut cb_events = Vec::new();
 
-	let mut node_a_ser = VecWriter(Vec::new());
-	nodes[0].write(&mut node_a_ser).unwrap();
-	let mut node_b_ser = VecWriter(Vec::new());
-	nodes[1].write(&mut node_b_ser).unwrap();
-	let mut node_c_ser = VecWriter(Vec::new());
-	nodes[2].write(&mut node_c_ser).unwrap();
+	let mut node_a_ser = nodes[0].encode();
+	let mut node_b_ser = nodes[1].encode();
+	let mut node_c_ser = nodes[2].encode();
 
 	macro_rules! test_return {
 		() => {{
@@ -1676,7 +1675,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					ba_events.clear();
 				}
 				let (new_node_a, new_monitor_a) =
-					reload_node!(node_a_ser, 0, monitor_a, v, keys_manager_a, fee_est_a);
+					reload_node(&node_a_ser, 0, &monitor_a, v, &keys_manager_a, &fee_est_a);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
@@ -1698,7 +1697,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					cb_events.clear();
 				}
 				let (new_node_b, new_monitor_b) =
-					reload_node!(node_b_ser, 1, monitor_b, v, keys_manager_b, fee_est_b);
+					reload_node(&node_b_ser, 1, &monitor_b, v, &keys_manager_b, &fee_est_b);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
@@ -1716,7 +1715,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					cb_events.clear();
 				}
 				let (new_node_c, new_monitor_c) =
-					reload_node!(node_c_ser, 2, monitor_c, v, keys_manager_c, fee_est_c);
+					reload_node(&node_c_ser, 2, &monitor_c, v, &keys_manager_c, &fee_est_c);
 				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
 			},
@@ -1861,16 +1860,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		}
 
 		if nodes[0].get_and_clear_needs_persistence() == true {
-			node_a_ser.0.clear();
-			nodes[0].write(&mut node_a_ser).unwrap();
+			node_a_ser = nodes[0].encode();
 		}
 		if nodes[1].get_and_clear_needs_persistence() == true {
-			node_b_ser.0.clear();
-			nodes[1].write(&mut node_b_ser).unwrap();
+			node_b_ser = nodes[1].encode();
 		}
 		if nodes[2].get_and_clear_needs_persistence() == true {
-			node_c_ser.0.clear();
-			nodes[2].write(&mut node_c_ser).unwrap();
+			node_c_ser = nodes[2].encode();
 		}
 	}
 }
