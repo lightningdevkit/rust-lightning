@@ -3922,7 +3922,7 @@ where
 		}
 
 		for htlc_source in failed_htlcs.drain(..) {
-			let failure_reason = LocalHTLCFailureReason::PermanentChannelFailure;
+			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: *channel_id };
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
@@ -4046,7 +4046,7 @@ where
 			shutdown_res.closure_reason, shutdown_res.dropped_outbound_htlcs.len());
 		for htlc_source in shutdown_res.dropped_outbound_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
-			let failure_reason = LocalHTLCFailureReason::PermanentChannelFailure;
+			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
@@ -4349,7 +4349,7 @@ where
 			// should NOT reveal the existence or non-existence of a private channel if
 			// we don't allow forwards outbound over them.
 			return Err(("Refusing to forward to a private channel based on our config.",
-				LocalHTLCFailureReason::UnknownNextPeer));
+				LocalHTLCFailureReason::PrivateChannelForward));
 		}
 		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
 			if chan.funding.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
@@ -4357,11 +4357,11 @@ where
 				// "refuse to forward unless the SCID alias was used", so we pretend
 				// we don't have the channel here.
 				return Err(("Refusing to forward over real channel SCID as our counterparty requested.",
-					LocalHTLCFailureReason::UnknownNextPeer));
+					LocalHTLCFailureReason::RealSCIDForward));
 			}
 		} else {
 			return Err(("Cannot forward by Node ID without SCID.",
-				LocalHTLCFailureReason::UnknownNextPeer));
+				LocalHTLCFailureReason::InvalidTrampolineForward));
 		}
 
 		// Note that we could technically not return an error yet here and just hope
@@ -4375,7 +4375,7 @@ where
 					LocalHTLCFailureReason::ChannelDisabled));
 			} else {
 				return Err(("Forwarding channel is not in a ready state.",
-					LocalHTLCFailureReason::TemporaryChannelFailure));
+					LocalHTLCFailureReason::ChannelNotReady));
 			}
 		}
 		if next_packet.outgoing_amt_msat < chan.context.get_counterparty_htlc_minimum_msat() {
@@ -4416,7 +4416,7 @@ where
 			HopConnector::ShortChannelId(scid) => scid,
 			HopConnector::Trampoline(_) => {
 				return Err(("Cannot forward by Node ID without SCID.",
-				LocalHTLCFailureReason::UnknownNextPeer));
+				LocalHTLCFailureReason::InvalidTrampolineForward));
 			}
 		};
 		match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
@@ -8772,7 +8772,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		for htlc_source in dropped_htlcs.drain(..) {
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id: msg.channel_id };
-			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::PermanentChannelFailure);
+			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 		if let Some(shutdown_res) = finish_shutdown {
@@ -9628,7 +9628,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							);
 						} else {
 							log_trace!(logger, "Failing HTLC with hash {} from our monitor", &htlc_update.payment_hash);
-							let failure_reason = LocalHTLCFailureReason::PermanentChannelFailure;
+							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
 							let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 							let reason = HTLCFailReason::from_failure_code(failure_reason);
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
@@ -11827,7 +11827,7 @@ where
 					// number of blocks we generally consider it to take to do a commitment update,
 					// just give up on it and fail the HTLC.
 					if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
-						let reason = LocalHTLCFailureReason::IncorrectPaymentDetails;
+						let reason = LocalHTLCFailureReason::PaymentClaimBuffer;
 						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(),
 							HTLCFailReason::reason(reason, invalid_payment_err_data(htlc.value, height)),
 							HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }));
@@ -11858,7 +11858,7 @@ where
 						_ => unreachable!(),
 					};
 					timed_out_htlcs.push((prev_hop_data, htlc.forward_info.payment_hash,
-							HTLCFailReason::from_failure_code(LocalHTLCFailureReason::TemporaryNodeFailure),
+							HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ForwardExpiryBuffer),
 							HTLCDestination::InvalidForward { requested_forward_scid }));
 					let logger = WithContext::from(
 						&self.logger, None, Some(htlc.prev_channel_id), Some(htlc.forward_info.payment_hash)
@@ -14947,7 +14947,7 @@ where
 
 		for htlc_source in failed_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
-			let failure_reason = LocalHTLCFailureReason::PermanentChannelFailure;
+			let failure_reason = LocalHTLCFailureReason::ChannelClosed;
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			let reason = HTLCFailReason::from_failure_code(failure_reason);
 			channel_manager.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);

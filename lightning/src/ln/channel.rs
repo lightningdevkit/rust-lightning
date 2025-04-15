@@ -7887,7 +7887,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		L::Target: Logger
 	{
 		if self.context.channel_state.is_local_shutdown_sent() {
-			return Err(("Shutdown was already sent", LocalHTLCFailureReason::PermanentChannelFailure))
+			return Err(("Shutdown was already sent", LocalHTLCFailureReason::ChannelClosed))
 		}
 
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
@@ -7899,7 +7899,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			log_info!(logger, "Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
 				on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 			return Err(("Exceeded our total dust exposure limit on counterparty commitment tx",
-				LocalHTLCFailureReason::TemporaryChannelFailure))
+				LocalHTLCFailureReason::DustLimitCounterparty))
 		}
 		let htlc_success_dust_limit = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			0
@@ -7914,7 +7914,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
 					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 				return Err(("Exceeded our dust exposure limit on holder commitment tx",
-					LocalHTLCFailureReason::TemporaryChannelFailure))
+					LocalHTLCFailureReason::DustLimitHolder))
 			}
 		}
 
@@ -7952,7 +7952,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 			if pending_remote_value_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
-				return Err(("Fee spike buffer violation", LocalHTLCFailureReason::TemporaryChannelFailure));
+				return Err(("Fee spike buffer violation", LocalHTLCFailureReason::FeeSpikeBuffer));
 			}
 		}
 

@@ -199,7 +199,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 				Some(Ok(pubkey)) => pubkey,
 				_ => return Err(InboundHTLCErr {
 					msg: "Missing next Trampoline hop pubkey from intermediate Trampoline forwarding data",
-					reason: LocalHTLCFailureReason::InvalidOnionPayload,
+					reason: LocalHTLCFailureReason::InvalidTrampolinePayload,
 					err_data: Vec::new(),
 				}),
 			};
@@ -342,7 +342,7 @@ pub(super) fn create_recv_pending_htlc_info(
 	// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
 	if cltv_expiry <= current_height + HTLC_FAIL_BACK_BUFFER + 1 {
 		return Err(InboundHTLCErr {
-			reason: LocalHTLCFailureReason::IncorrectPaymentDetails,
+			reason: LocalHTLCFailureReason::PaymentClaimBuffer,
 			err_data: invalid_payment_err_data(amt_msat, current_height),
 			msg: "The final CLTV expiry is too soon to handle",
 		});
@@ -367,7 +367,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 		if hashed_preimage != payment_hash {
 			return Err(InboundHTLCErr {
-				reason: LocalHTLCFailureReason::IncorrectPaymentDetails,
+				reason: LocalHTLCFailureReason::InvalidKeysendPreimage,
 				err_data: invalid_payment_err_data(amt_msat, current_height),
 				msg: "Payment preimage didn't match payment hash",
 			});
@@ -395,7 +395,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		}
 	} else {
 		return Err(InboundHTLCErr {
-			reason: LocalHTLCFailureReason::RequiredNodeFeature,
+			reason: LocalHTLCFailureReason::PaymentSecretRequired,
 			err_data: Vec::new(),
 			msg: "We require payment_secrets",
 		});
@@ -624,7 +624,7 @@ pub(super) fn check_incoming_htlc_cltv(
 	// but there is no need to do that, and since we're a bit conservative with our
 	// risk threshold it just results in failing to forward payments.
 	if (outgoing_cltv_value) as u64 <= (cur_height + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
-		return Err(("Outgoing CLTV value is too soon", LocalHTLCFailureReason::CLTVExpiryTooSoon));
+		return Err(("Outgoing CLTV value is too soon", LocalHTLCFailureReason::OutgoingCLTVTooSoon));
 	}
 
 	Ok(())

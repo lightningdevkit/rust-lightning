@@ -1450,8 +1450,14 @@ const PERM: u16 = 0x4000;
 const NODE: u16 = 0x2000;
 const UPDATE: u16 = 0x1000;
 
-/// The reason that a HTLC was failed by the local node. These errors represent direct,
-/// human-readable mappings of BOLT04 error codes.
+/// The reason that a HTLC was failed by the local node. These errors either represent direct,
+/// human-readable mappings of BOLT04 error codes or provide additional information that would
+/// otherwise be erased by the BOLT04 error code.
+///
+/// For example:
+/// [`Self::FeeInsufficient`] is a direct representation of its underlying BOLT04 error code.
+/// [`Self::PrivateChannelForward`] provides additional information that is not provided by its
+///  BOLT04 error code.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub enum LocalHTLCFailureReason {
 	/// There has been a temporary processing failure on the node which may resolve on retry.
@@ -1534,31 +1540,87 @@ pub enum LocalHTLCFailureReason {
 		/// The bolt 04 failure code.
 		code: u16,
 	},
+	/// A HTLC forward was failed back rather than forwarded on the proposed outgoing channel
+	/// because its expiry is too close to the current block height to leave time to safely claim
+	/// it on chain if the channel force closes.
+	ForwardExpiryBuffer,
+	/// The HTLC was failed because it has invalid trampoline forwarding information.
+	InvalidTrampolineForward,
+	/// A HTLC receive was failed back rather than claimed because its expiry is too close to
+	/// the current block height to leave time to safely claim it on chain if the channel force
+	/// closes.
+	PaymentClaimBuffer,
+	/// The HTLC was failed because accepting it would push our commitment's total amount of dust
+	/// HTLCs over the limit that we allow to be burned to miner fees if the channel closed while
+	/// they are unresolved.
+	DustLimitHolder,
+	/// The HTLC was failed because accepting it would push our counterparty's total amount of
+	/// dust (small) HTLCs over the limit that we allow to be burned to miner fees if the channel
+	/// closes while they are unresolved.
+	DustLimitCounterparty,
+	/// The HTLC was failed because it would drop the remote party's channel balance such that it
+	/// cannot cover the fees it is required to pay at various fee rates. This buffer is maintained
+	/// so that channels can always maintain reasonable fee rates.
+	FeeSpikeBuffer,
+	/// The HTLC that requested to be forwarded over a private channel was rejected to prevent
+	/// revealing the existence of the channel.
+	PrivateChannelForward,
+	/// The HTLC was failed because it made a request to forward over the real channel ID of a
+	/// channel that implements `option_scid_alias` which is a privacy feature to prevent the
+	/// real channel ID from being known.
+	RealSCIDForward,
+	/// The HTLC was rejected because our channel has not yet reached sufficient depth to be used.
+	ChannelNotReady,
+	/// A keysend payment with a preimage that did not match the HTLC has was rejected.
+	InvalidKeysendPreimage,
+	/// The HTLC was failed because it had an invalid trampoline payload.
+	InvalidTrampolinePayload,
+	/// A payment was rejected because it did not include the correct payment secret from an
+	/// invoice.
+	PaymentSecretRequired,
+	/// The HTLC was failed because its expiry is too close to the current block height, and we
+	/// expect that it will immediately be failed back by our downstream peer.
+	OutgoingCLTVTooSoon,
+	/// The HTLC was failed because it was pending on a channel which is now in the process of
+	/// being closed.
+	ChannelClosed,
+	/// The HTLC was failed back because its expiry height was reached and funds were timed out
+	/// on chain.
+	OnChainTimeout,
 }
 
 impl LocalHTLCFailureReason {
 	pub(super) fn failure_code(&self) -> u16 {
 		match self {
-			Self::TemporaryNodeFailure => NODE | 2,
+			Self::TemporaryNodeFailure | Self::ForwardExpiryBuffer => NODE | 2,
 			Self::PermanentNodeFailure => PERM | NODE | 2,
-			Self::RequiredNodeFeature => PERM | NODE | 3,
+			Self::RequiredNodeFeature | Self::PaymentSecretRequired => PERM | NODE | 3,
 			Self::InvalidOnionVersion => BADONION | PERM | 4,
 			Self::InvalidOnionHMAC => BADONION | PERM | 5,
 			Self::InvalidOnionKey => BADONION | PERM | 6,
-			Self::TemporaryChannelFailure => UPDATE | 7,
-			Self::PermanentChannelFailure => PERM | 8,
+			Self::TemporaryChannelFailure
+			| Self::DustLimitHolder
+			| Self::DustLimitCounterparty
+			| Self::FeeSpikeBuffer
+			| Self::ChannelNotReady => UPDATE | 7,
+			Self::PermanentChannelFailure | Self::OnChainTimeout | Self::ChannelClosed => PERM | 8,
 			Self::RequiredChannelFeature => PERM | 9,
-			Self::UnknownNextPeer => PERM | 10,
+			Self::UnknownNextPeer
+			| Self::PrivateChannelForward
+			| Self::RealSCIDForward
+			| Self::InvalidTrampolineForward => PERM | 10,
 			Self::AmountBelowMinimum => UPDATE | 11,
 			Self::FeeInsufficient => UPDATE | 12,
 			Self::IncorrectCLTVExpiry => UPDATE | 13,
-			Self::CLTVExpiryTooSoon => UPDATE | 14,
-			Self::IncorrectPaymentDetails => PERM | 15,
+			Self::CLTVExpiryTooSoon | Self::OutgoingCLTVTooSoon => UPDATE | 14,
+			Self::IncorrectPaymentDetails
+			| Self::PaymentClaimBuffer
+			| Self::InvalidKeysendPreimage => PERM | 15,
 			Self::FinalIncorrectCLTVExpiry => 18,
 			Self::FinalIncorrectHTLCAmount => 19,
 			Self::ChannelDisabled => UPDATE | 20,
 			Self::CLTVExpiryTooFar => 21,
-			Self::InvalidOnionPayload => PERM | 22,
+			Self::InvalidOnionPayload | Self::InvalidTrampolinePayload => PERM | 22,
 			Self::MPPTimeout => 23,
 			Self::InvalidOnionBlinding => BADONION | PERM | 24,
 			Self::UnknownFailureCode { code } => *code,
@@ -1653,6 +1715,21 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(45, UnknownFailureCode) => {
 		(0, code, required),
 	},
+	(47, ForwardExpiryBuffer) => {},
+	(49, InvalidTrampolineForward) => {},
+	(51, PaymentClaimBuffer) => {},
+	(53, DustLimitHolder) => {},
+	(55, DustLimitCounterparty) => {},
+	(57, FeeSpikeBuffer) => {},
+	(59, PrivateChannelForward) => {},
+	(61, RealSCIDForward) => {},
+	(63, ChannelNotReady) => {},
+	(65, InvalidKeysendPreimage) => {},
+	(67, InvalidTrampolinePayload) => {},
+	(69, PaymentSecretRequired) => {},
+	(71, OutgoingCLTVTooSoon) => {},
+	(73, ChannelClosed) => {},
+	(75, OnChainTimeout) => {},
 );
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -1741,19 +1818,32 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 impl HTLCFailReason {
 	pub(super) fn reason(failure_reason: LocalHTLCFailureReason, data: Vec<u8>) -> Self {
 		match failure_reason {
-			LocalHTLCFailureReason::TemporaryNodeFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::TemporaryNodeFailure
+			| LocalHTLCFailureReason::ForwardExpiryBuffer => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::PermanentNodeFailure => debug_assert!(data.is_empty()),
-			LocalHTLCFailureReason::RequiredNodeFeature => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::RequiredNodeFeature
+			| LocalHTLCFailureReason::PaymentSecretRequired => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::InvalidOnionVersion => debug_assert_eq!(data.len(), 32),
 			LocalHTLCFailureReason::InvalidOnionHMAC => debug_assert_eq!(data.len(), 32),
 			LocalHTLCFailureReason::InvalidOnionKey => debug_assert_eq!(data.len(), 32),
-			LocalHTLCFailureReason::TemporaryChannelFailure => debug_assert_eq!(
-				data.len() - 2,
-				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
-			),
-			LocalHTLCFailureReason::PermanentChannelFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::TemporaryChannelFailure
+			| LocalHTLCFailureReason::DustLimitHolder
+			| LocalHTLCFailureReason::DustLimitCounterparty
+			| LocalHTLCFailureReason::FeeSpikeBuffer
+			| LocalHTLCFailureReason::ChannelNotReady => {
+				debug_assert_eq!(
+					data.len() - 2,
+					u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+				)
+			},
+			LocalHTLCFailureReason::PermanentChannelFailure
+			| LocalHTLCFailureReason::OnChainTimeout
+			| LocalHTLCFailureReason::ChannelClosed => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::RequiredChannelFeature => debug_assert!(data.is_empty()),
-			LocalHTLCFailureReason::UnknownNextPeer => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::UnknownNextPeer
+			| LocalHTLCFailureReason::PrivateChannelForward
+			| LocalHTLCFailureReason::RealSCIDForward
+			| LocalHTLCFailureReason::InvalidTrampolineForward => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::AmountBelowMinimum => debug_assert_eq!(
 				data.len() - 2 - 8,
 				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
@@ -1766,11 +1856,14 @@ impl HTLCFailReason {
 				data.len() - 2 - 4,
 				u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize
 			),
-			LocalHTLCFailureReason::CLTVExpiryTooSoon => debug_assert_eq!(
+			LocalHTLCFailureReason::CLTVExpiryTooSoon
+			| LocalHTLCFailureReason::OutgoingCLTVTooSoon => debug_assert_eq!(
 				data.len() - 2,
 				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
 			),
-			LocalHTLCFailureReason::IncorrectPaymentDetails => debug_assert_eq!(data.len(), 12),
+			LocalHTLCFailureReason::IncorrectPaymentDetails
+			| LocalHTLCFailureReason::PaymentClaimBuffer
+			| LocalHTLCFailureReason::InvalidKeysendPreimage => debug_assert_eq!(data.len(), 12),
 			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry => debug_assert_eq!(data.len(), 4),
 			LocalHTLCFailureReason::FinalIncorrectHTLCAmount => debug_assert_eq!(data.len(), 8),
 			LocalHTLCFailureReason::ChannelDisabled => debug_assert_eq!(
@@ -1778,7 +1871,8 @@ impl HTLCFailReason {
 				u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize
 			),
 			LocalHTLCFailureReason::CLTVExpiryTooFar => debug_assert!(data.is_empty()),
-			LocalHTLCFailureReason::InvalidOnionPayload => debug_assert!(data.len() <= 11),
+			LocalHTLCFailureReason::InvalidOnionPayload
+			| LocalHTLCFailureReason::InvalidTrampolinePayload => debug_assert!(data.len() <= 11),
 			LocalHTLCFailureReason::MPPTimeout => debug_assert!(data.is_empty()),
 			LocalHTLCFailureReason::InvalidOnionBlinding => debug_assert_eq!(data.len(), 32),
 			LocalHTLCFailureReason::UnknownFailureCode { code } => {
@@ -2200,7 +2294,7 @@ where
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Final Trampoline intro node onion data provided to us as intermediate hop",
-								reason: LocalHTLCFailureReason::InvalidOnionPayload,
+								reason: LocalHTLCFailureReason::InvalidTrampolinePayload,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
@@ -2216,7 +2310,7 @@ where
 					Ok((msgs::InboundTrampolinePayload::Forward(_), None)) => {
 						Err(OnionDecodeErr::Relay {
 							err_msg: "Non-final Trampoline onion data provided to us as last hop",
-							reason: LocalHTLCFailureReason::InvalidOnionPayload,
+							reason: LocalHTLCFailureReason::InvalidTrampolinePayload,
 							shared_secret,
 							trampoline_shared_secret: Some(SharedSecret::from_bytes(
 								trampoline_shared_secret,
@@ -2227,7 +2321,7 @@ where
 						Err(OnionDecodeErr::Relay {
 							err_msg:
 								"Final Trampoline onion data provided to us as intermediate hop",
-							reason: LocalHTLCFailureReason::InvalidOnionPayload,
+							reason: LocalHTLCFailureReason::InvalidTrampolinePayload,
 							shared_secret,
 							trampoline_shared_secret: Some(SharedSecret::from_bytes(
 								trampoline_shared_secret,
@@ -2377,7 +2471,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
 	match R::read(&mut chacha_stream, read_args) {
 		Err(err) => {
-			let error_code = match err {
+			let reason = match err {
 				// Unknown version
 				msgs::DecodeError::UnknownVersion => LocalHTLCFailureReason::InvalidOnionVersion,
 				// invalid_onion_payload
@@ -2389,7 +2483,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 			};
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data",
-				reason: error_code,
+				reason,
 				shared_secret: SharedSecret::from_bytes(shared_secret),
 				trampoline_shared_secret: None,
 			});
