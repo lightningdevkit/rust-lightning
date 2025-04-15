@@ -13,6 +13,8 @@ use crate::utils::test_logger;
 
 use std::ops::{Deref, DerefMut};
 
+/// Check various methods on [`FeatureFlags`] given `v` which should be equal to `feat` and an
+/// `old_v` which should be equal to `old_feat`.
 fn check_eq(v: &Vec<u8>, feat: &FeatureFlags, old_v: &mut Vec<u8>, old_feat: &mut FeatureFlags) {
 	assert_eq!(v.len(), feat.len());
 	assert_eq!(v.deref(), feat.deref());
@@ -51,6 +53,8 @@ pub fn do_test(data: &[u8]) {
 	let mut vec = Vec::new();
 	let mut features = FeatureFlags::empty();
 
+	// For each 3-tuple in the input, interpret the first byte as a "command", the second byte as
+	// an index within `vec`/`features` to mutate, and the third byte as a value.
 	for step in data.windows(3) {
 		let mut old_vec = vec.clone();
 		let mut old_features = features.clone();
@@ -73,6 +77,8 @@ pub fn do_test(data: &[u8]) {
 			},
 			_ => {},
 		}
+		// After each mutation, check that `vec` and `features` remain the same, and pass the
+		// previous state for testing comparisons.
 		check_eq(&vec, &features, &mut old_vec, &mut old_features);
 	}
 
