@@ -30,7 +30,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{secp256k1, Sequence};
+use bitcoin::{secp256k1, Sequence, TxIn};
 #[cfg(splicing)]
 use bitcoin::{TxIn, Weight};
 
@@ -84,7 +84,7 @@ use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverr
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
-use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
+use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, TransactionU16LenLimited, VecWriter, Writeable, Writer};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
@@ -7875,7 +7875,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id, config_overrides)
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id, config_overrides, vec![])
 	}
 
 	/// Accepts a request to open a channel after a [`events::Event::OpenChannelRequest`], treating
@@ -7897,13 +7897,61 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id, config_overrides)
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id, config_overrides, vec![])
+	}
+
+	/// Accepts a request to open a dual-funded channel with a contribution provided by us after an
+	/// [`Event::OpenChannelRequest`].
+	///
+	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted,
+	/// and the `counterparty_node_id` parameter is the id of the peer which has requested to open
+	/// the channel.
+	///
+	/// The `user_channel_id` parameter will be provided back in
+	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
+	/// with which `accept_inbound_channel_*` call.
+	///
+	/// The `funding_inputs` parameter provides the `txin`s along with their previous transactions, and
+	/// a corresponding witness weight for each input that will be used to contribute towards our
+	/// portion of the channel value. Our contribution will be calculated as the total value of these
+	/// inputs minus the fees we need to cover for the interactive funding transaction. The witness
+	/// weights must correspond to the witnesses you will provide through [`ChannelManager::funding_transaction_signed`]
+	/// after receiving [`Event::FundingTransactionReadyForSigning`].
+	///
+	/// Note that this method will return an error and reject the channel if it requires support for
+	/// zero confirmations.
+	// TODO(dual_funding): Discussion on complications with 0conf dual-funded channels where "locking"
+	// of UTXOs used for funding would be required and other issues.
+	// See https://diyhpl.us/~bryan/irc/bitcoin/bitcoin-dev/linuxfoundation-pipermail/lightning-dev/2023-May/003922.txt
+	///
+	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
+	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`ChannelManager::funding_transaction_signed`]: ChannelManager::funding_transaction_signed
+	pub fn accept_inbound_channel_with_contribution(
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128,
+		config_overrides: Option<ChannelConfigOverrides>, funding_inputs: Vec<(TxIn, Transaction, usize)>
+	) -> Result<(), APIError> {
+		let funding_inputs = Self::length_limit_holder_input_prev_txs(funding_inputs)?;
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id,
+			config_overrides, funding_inputs)
+	}
+
+	fn length_limit_holder_input_prev_txs(funding_inputs: Vec<(TxIn, Transaction, usize)>) -> Result<Vec<(TxIn, TransactionU16LenLimited, usize)>, APIError> {
+		funding_inputs.into_iter().map(|(txin, tx, witness_weight)| {
+			match TransactionU16LenLimited::new(tx) {
+				Ok(tx) => Ok((txin, tx, witness_weight)),
+				Err(err) => Err(err)
+			}
+		}).collect::<Result<Vec<(TxIn, TransactionU16LenLimited, usize)>, ()>>()
+		.map_err(|_| APIError::APIMisuseError { err: "One or more transactions had a serialized length exceeding 65535 bytes".into() })
 	}
 
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
+		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited, usize)>
 	) -> Result<(), APIError> {
 
 		let mut config = self.default_configuration.clone();
@@ -7962,7 +8010,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg,
 							user_channel_id, &config, best_block_height,
-							&self.logger,
+							&self.logger, funding_inputs,
 						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
 							ChannelError::Close(
 								(

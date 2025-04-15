@@ -4997,6 +4997,41 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
 }
 
+fn calculate_our_funding_satoshis(
+	is_initiator: bool, funding_inputs: &[(TxIn, TransactionU16LenLimited)], funding_outputs: &[TxOut],
+	funding_feerate_sat_per_1000_weight: u32, holder_dust_limit_satoshis: u64,
+) -> Result<u64, APIError> {
+	let mut total_input_satoshis = 0u64;
+	let mut our_contributed_weight = 0u64;
+
+	for (idx, input) in funding_inputs.iter().enumerate() {
+		if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
+			total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
+			our_contributed_weight = our_contributed_weight.saturating_add(estimate_input_weight(output).to_wu());
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+					input.1.as_transaction().txid(), input.0.previous_output.vout, idx) });
+		}
+	}
+	our_contributed_weight = our_contributed_weight.saturating_add(funding_outputs.iter().fold(0u64, |weight, txout| {
+		weight.saturating_add(get_output_weight(&txout.script_pubkey).to_wu())
+	}));
+
+	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
+	if is_initiator {
+		our_contributed_weight = our_contributed_weight.saturating_add(TX_COMMON_FIELDS_WEIGHT);
+	}
+
+	let funding_satoshis = total_input_satoshis
+		.saturating_sub(fee_for_weight(funding_feerate_sat_per_1000_weight, our_contributed_weight));
+	if funding_satoshis < holder_dust_limit_satoshis {
+		Ok(0)
+	} else {
+		Ok(funding_satoshis)
+	}
+}
+
 /// Estimate our part of the fee of the new funding transaction.
 /// input_count: Number of contributed inputs.
 /// witness_weight: The witness weight for contributed inputs.
@@ -10430,8 +10465,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
-		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
-		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
+		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, user_id: u128, config: &UserConfig,
+		current_chain_height: u32, logger: &L, funding_inputs: Vec<(TxIn, TransactionU16LenLimited, usize)>,
 	) -> Result<Self, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
