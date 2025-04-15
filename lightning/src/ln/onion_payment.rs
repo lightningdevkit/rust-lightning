@@ -663,7 +663,7 @@ mod tests {
 		recipient_onion.custom_tlvs.push((13377331, vec![0; 1156]));
 
 		let path = Path { hops, blinded_tail: None, };
-		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).unwrap();
+		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv);
 		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
 			&path, total_amt_msat, &recipient_onion, cur_height + 1, &Some(keysend_preimage), None, None
 		).unwrap();
