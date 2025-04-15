@@ -2218,13 +2218,15 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	is_holder_quiescence_initiator: Option<bool>,
 }
 
+/// A channel struct implementing this trait has a [`ChannelContext`], exposed through accessors.
+pub(super) trait ChannelContextProvider<SP: Deref> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP>;
+	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
+}
+
 /// A channel struct implementing this trait can receive an initial counterparty commitment
 /// transaction signature.
-trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP>;
-
-	fn context_mut(&mut self) -> &mut ChannelContext<SP>;
-
+trait InitialRemoteCommitmentReceiver<SP: Deref>: ChannelContextProvider<SP> where SP::Target: SignerProvider {
 	fn funding(&self) -> &FundingScope;
 
 	fn funding_mut(&mut self) -> &mut FundingScope;
@@ -2346,7 +2348,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 	fn is_v2_established(&self) -> bool;
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> ChannelContextProvider<SP> for OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -2354,7 +2356,9 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> wh
 	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		&mut self.context
 	}
+}
 
+impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn funding(&self) -> &FundingScope {
 		&self.funding
 	}
@@ -2372,7 +2376,7 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for OutboundV1Channel<SP> wh
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> ChannelContextProvider<SP> for InboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
@@ -2380,7 +2384,9 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> whe
 	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		&mut self.context
 	}
+}
 
+impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn funding(&self) -> &FundingScope {
 		&self.funding
 	}
@@ -2398,15 +2404,19 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for InboundV1Channel<SP> whe
 	}
 }
 
-impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> ChannelContextProvider<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
+	#[inline]
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.context
 	}
 
+	#[inline]
 	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		&mut self.context
 	}
+}
 
+impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
 	fn funding(&self) -> &FundingScope {
 		&self.funding
 	}
