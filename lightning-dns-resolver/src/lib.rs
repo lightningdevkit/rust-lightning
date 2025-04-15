@@ -176,7 +176,7 @@ mod test {
 	use lightning::sign::{KeysManager, NodeSigner, Recipient};
 	use lightning::types::features::InitFeatures;
 	use lightning::types::payment::PaymentHash;
-	use lightning::util::logger::Logger;
+	use lightning::util::logger::{Logger, Span};
 
 	use lightning::{
 		commitment_signed_dance, expect_payment_claimed, expect_pending_htlcs_forwardable,
@@ -191,9 +191,13 @@ mod test {
 		node: &'static str,
 	}
 	impl Logger for TestLogger {
+		type UserSpan = ();
+
 		fn log(&self, record: lightning::util::logger::Record) {
 			eprintln!("{}: {}", self.node, record.args);
 		}
+
+		fn start(&self, _span: Span, _parent: Option<&()>) -> () {}
 	}
 	impl Deref for TestLogger {
 		type Target = TestLogger;

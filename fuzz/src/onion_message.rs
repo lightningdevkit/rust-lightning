@@ -276,7 +276,7 @@ impl SignerProvider for KeyProvider {
 #[cfg(test)]
 mod tests {
 	use bitcoin::hex::FromHex;
-	use lightning::util::logger::{Logger, Record};
+	use lightning::util::logger::{Logger, Record, Span};
 	use std::collections::HashMap;
 	use std::sync::Mutex;
 
@@ -285,6 +285,8 @@ mod tests {
 		pub lines: Mutex<HashMap<(String, String), usize>>,
 	}
 	impl Logger for TrackingLogger {
+		type UserSpan = ();
+
 		fn log(&self, record: Record) {
 			let mut lines_lock = self.lines.lock().unwrap();
 			let key = (record.module_path.to_string(), format!("{}", record.args));
@@ -298,6 +300,8 @@ mod tests {
 				record.args
 			);
 		}
+
+		fn start(&self, _span: Span, _parent: Option<&()>) -> () {}
 	}
 
 	#[test]

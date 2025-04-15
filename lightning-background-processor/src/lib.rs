@@ -633,7 +633,9 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
+/// #     type UserSpan = ();
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
+/// #     fn start(&self, _span: lightning::util::logger::Span, _parent: Option<&()>) -> () {}
 /// # }
 /// # struct Store {}
 /// # impl lightning::util::persist::KVStore for Store {

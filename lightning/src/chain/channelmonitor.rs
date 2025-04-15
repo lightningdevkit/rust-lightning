@@ -48,7 +48,7 @@ use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDe
 use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
-use crate::util::logger::{Logger, Record};
+use crate::util::logger::{Logger, Record, Span};
 use crate::util::persist::MonitorName;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
@@ -1471,11 +1471,17 @@ pub(crate) struct WithChannelMonitor<'a, L: Deref> where L::Target: Logger {
 }
 
 impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L> where L::Target: Logger {
+	type UserSpan = <<L as Deref>::Target as Logger>::UserSpan;
+
 	fn log(&self, mut record: Record) {
 		record.peer_id = self.peer_id;
 		record.channel_id = self.channel_id;
 		record.payment_hash = self.payment_hash;
 		self.logger.log(record)
+	}
+
+	fn start(&self, span: Span, parent: Option<&Self::UserSpan>) -> Self::UserSpan {
+		self.logger.start(span, parent)
 	}
 }
 

@@ -36,7 +36,7 @@ use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::logger::{BoxedSpan, Level, Logger, Span, WithContext};
 use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
@@ -607,6 +607,7 @@ struct Peer {
 
 	msgs_sent_since_pong: usize,
 	awaiting_pong_timer_tick_intervals: i64,
+	ping_pong_span: Option<BoxedSpan>,
 	received_message_since_timer_tick: bool,
 	sent_gossip_timestamp_filter: bool,
 
@@ -1151,6 +1152,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 					msgs_sent_since_pong: 0,
 					awaiting_pong_timer_tick_intervals: 0,
+					ping_pong_span: None,
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
@@ -1209,6 +1211,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 					msgs_sent_since_pong: 0,
 					awaiting_pong_timer_tick_intervals: 0,
+					ping_pong_span: None,
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
@@ -1896,6 +1899,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let mut peer_lock = peer_mutex.lock().unwrap();
 				peer_lock.awaiting_pong_timer_tick_intervals = 0;
 				peer_lock.msgs_sent_since_pong = 0;
+				peer_lock.ping_pong_span = None;
 			},
 
 			// Channel messages:
@@ -2708,6 +2712,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				ponglen: 0,
 				byteslen: 64,
 			};
+			let ping_pong_span = self.logger.start(Span::PingPong { node_id: peer.their_node_id.unwrap().0 }, None);
+			peer.ping_pong_span = Some(BoxedSpan::new(ping_pong_span));
 			self.enqueue_message(peer, &ping);
 		}
 	}
@@ -2777,6 +2783,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						ponglen: 0,
 						byteslen: 64,
 					};
+					let ping_pong_span = self.logger.start(Span::PingPong { node_id: peer.their_node_id.unwrap().0 }, None);
+					peer.ping_pong_span = Some(BoxedSpan::new(ping_pong_span));
 					self.enqueue_message(&mut *peer, &ping);
 					break;
 				}

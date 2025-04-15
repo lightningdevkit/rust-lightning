@@ -26,6 +26,7 @@ use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{get_holder_selected_channel_reserve_satoshis, Channel, InboundV1Channel, OutboundV1Channel, COINBASE_MATURITY, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError, MIN_CHAN_DUST_LIMIT_SATOSHIS};
+use crate::ln::channel_state::{InboundHTLCStateDetails, OutboundHTLCStateDetails};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
@@ -34,11 +35,12 @@ use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures}
 use crate::ln::msgs;
 use crate::ln::msgs::{AcceptChannel, BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
 use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::test_utils::{self, TestLogger, WatchtowerPersister};
+use crate::util::test_utils::{self, TestLogger, TestSpanBoundary, WatchtowerPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
 use crate::util::config::{ChannelConfigOverrides, ChannelHandshakeConfigUpdate, ChannelConfigUpdate, MaxDustHTLCExposure, UserConfig};
+use crate::util::logger::Span;
 use crate::ln::onion_utils::AttributionData;
 
 use bitcoin::hash_types::BlockHash;
@@ -12047,4 +12049,74 @@ pub fn test_funding_signed_event() {
 	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
 	nodes[0].node.get_and_clear_pending_msg_events();
 	nodes[1].node.get_and_clear_pending_msg_events();
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_payment_traces() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let channel_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let channel_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	assert_eq!(node_cfgs[1].logger.span_boundaries.lock().unwrap().as_ref(), vec![
+		TestSpanBoundary::Start(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }, None),
+		TestSpanBoundary::Start(
+			Span::InboundHTLCState { state: None },
+			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::InboundHTLCState { state: None }),
+		TestSpanBoundary::Start(
+			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) },
+			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) }),
+		TestSpanBoundary::Start(
+			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) },
+			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) }),
+		TestSpanBoundary::Start(
+			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::Committed) },
+			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
+		),
+		TestSpanBoundary::Start(Span::Forward, Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })),
+		TestSpanBoundary::Start(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }, Some(Span::Forward)),
+		TestSpanBoundary::Start(
+			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd },
+			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd }),
+		TestSpanBoundary::Start(
+			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
+			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed }),
+		TestSpanBoundary::Start(
+			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
+			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::Committed) }),
+		TestSpanBoundary::Start(
+			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill) },
+			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed }),
+		TestSpanBoundary::Start(
+			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess },
+			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess }),
+		TestSpanBoundary::Start(
+			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess },
+			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+		),
+		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess }),
+		TestSpanBoundary::End(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+		TestSpanBoundary::End(Span::Forward),
+		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill) }),
+		TestSpanBoundary::End(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
+	]);
 }
