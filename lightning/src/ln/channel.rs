@@ -2414,6 +2414,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
 		change_destination_opt: Option<ScriptBuf>,
+		_is_splice: bool, prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
 	{
@@ -2424,7 +2425,9 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		self.swap_out_dual_funding_context_inputs(&mut funding_inputs)
 			.map_err(|e| AbortReason::InternalError(e))?;
 
-		// TODO(splicing): Add prev funding tx as input, must be provided as a parameter
+		if let Some(prev_funding_input) = prev_funding_input {
+			funding_inputs.push(prev_funding_input);
+		}
 
 		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
