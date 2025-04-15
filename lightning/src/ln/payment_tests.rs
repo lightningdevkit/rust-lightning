@@ -1709,7 +1709,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel_1.context().get_short_channel_id().unwrap()
+			channel_1.funding().get_short_channel_id().unwrap()
 		);
 		assert_eq!(chan_1_used_liquidity, None);
 	}
@@ -1721,7 +1721,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
-			channel_2.context().get_short_channel_id().unwrap()
+			channel_2.funding().get_short_channel_id().unwrap()
 		);
 
 		assert_eq!(chan_2_used_liquidity, None);
@@ -1746,7 +1746,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel_1.context().get_short_channel_id().unwrap()
+			channel_1.funding().get_short_channel_id().unwrap()
 		);
 		// First hop accounts for expected 1000 msat fee
 		assert_eq!(chan_1_used_liquidity, Some(501000));
@@ -1759,7 +1759,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
-			channel_2.context().get_short_channel_id().unwrap()
+			channel_2.funding().get_short_channel_id().unwrap()
 		);
 
 		assert_eq!(chan_2_used_liquidity, Some(500000));
@@ -1785,7 +1785,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel_1.context().get_short_channel_id().unwrap()
+			channel_1.funding().get_short_channel_id().unwrap()
 		);
 		assert_eq!(chan_1_used_liquidity, None);
 	}
@@ -1797,7 +1797,7 @@ fn test_trivial_inflight_htlc_tracking(){
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
-			channel_2.context().get_short_channel_id().unwrap()
+			channel_2.funding().get_short_channel_id().unwrap()
 		);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
@@ -1838,7 +1838,7 @@ fn test_holding_cell_inflight_htlcs() {
 		let used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
-			channel.context().get_short_channel_id().unwrap()
+			channel.funding().get_short_channel_id().unwrap()
 		);
 
 		assert_eq!(used_liquidity, Some(2000000));
