@@ -12084,7 +12084,7 @@ where
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
 				let txid_opt = chan.funding.get_funding_txo();
 				let height_opt = chan.context.get_funding_tx_confirmation_height();
-				let hash_opt = chan.context.get_funding_tx_confirmed_in();
+				let hash_opt = chan.get_funding_tx_confirmed_in();
 				if let (Some(funding_txo), Some(conf_height), Some(block_hash)) =
 					(txid_opt, height_opt, hash_opt)
 				{
