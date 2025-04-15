@@ -82,6 +82,8 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::io::Cursor;
 use lightning::util::dyn_signer::DynSigner;
+
+use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::mem;
 use std::sync::atomic;
@@ -674,6 +676,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		}};
 	}
 
+	let default_mon_style = RefCell::new(ChannelMonitorUpdateStatus::Completed);
+	let mon_style = [default_mon_style.clone(), default_mon_style.clone(), default_mon_style];
+
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr, $fee_estimator: expr) => {{
 			let keys_manager = Arc::clone(&$keys_manager);
@@ -746,6 +751,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					Ok(ChannelMonitorUpdateStatus::Completed)
 				);
 			}
+			*chain_monitor.persister.update_ret.lock().unwrap() = *mon_style[$node_id].borrow();
 			res
 		}};
 	}
@@ -1393,28 +1399,22 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
 			// harm in doing so.
 			0x00 => {
-				*monitor_a.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::InProgress
+				*mon_style[0].borrow_mut() = ChannelMonitorUpdateStatus::InProgress;
 			},
 			0x01 => {
-				*monitor_b.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::InProgress
+				*mon_style[1].borrow_mut() = ChannelMonitorUpdateStatus::InProgress;
 			},
 			0x02 => {
-				*monitor_c.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::InProgress
+				*mon_style[2].borrow_mut() = ChannelMonitorUpdateStatus::InProgress;
 			},
 			0x04 => {
-				*monitor_a.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::Completed
+				*mon_style[0].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
 			},
 			0x05 => {
-				*monitor_b.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::Completed
+				*mon_style[1].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
 			},
 			0x06 => {
-				*monitor_c.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::Completed
+				*mon_style[2].borrow_mut() = ChannelMonitorUpdateStatus::Completed;
 			},
 
 			0x08 => complete_all_monitor_updates(&monitor_a, &chan_1_id),
@@ -1722,21 +1722,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
-				// First make sure there are no pending monitor updates and further update
-				// operations complete.
-				*monitor_a.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::Completed;
-				*monitor_b.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::Completed;
-				*monitor_c.persister.update_ret.lock().unwrap() =
-					ChannelMonitorUpdateStatus::Completed;
 
-				complete_all_monitor_updates(&monitor_a, &chan_1_id);
-				complete_all_monitor_updates(&monitor_b, &chan_1_id);
-				complete_all_monitor_updates(&monitor_b, &chan_2_id);
-				complete_all_monitor_updates(&monitor_c, &chan_2_id);
-
-				// Next, make sure peers are all connected to each other
+				// First, make sure peers are all connected to each other
 				if chan_a_disconnected {
 					let init_1 = Init {
 						features: nodes[1].init_features(),
@@ -1769,42 +1756,65 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 
 				macro_rules! process_all_events {
-					() => {
+					() => { {
+						let mut last_pass_no_updates = false;
 						for i in 0..std::usize::MAX {
 							if i == 100 {
 								panic!("It may take may iterations to settle the state, but it should not take forever");
 							}
+							// Next, make sure no monitor updates are pending
+							complete_all_monitor_updates(&monitor_a, &chan_1_id);
+							complete_all_monitor_updates(&monitor_b, &chan_1_id);
+							complete_all_monitor_updates(&monitor_b, &chan_2_id);
+							complete_all_monitor_updates(&monitor_c, &chan_2_id);
 							// Then, make sure any current forwards make their way to their destination
 							if process_msg_events!(0, false, ProcessMessages::AllMessages) {
+								last_pass_no_updates = false;
 								continue;
 							}
 							if process_msg_events!(1, false, ProcessMessages::AllMessages) {
+								last_pass_no_updates = false;
 								continue;
 							}
 							if process_msg_events!(2, false, ProcessMessages::AllMessages) {
+								last_pass_no_updates = false;
 								continue;
 							}
 							// ...making sure any pending PendingHTLCsForwardable events are handled and
 							// payments claimed.
 							if process_events!(0, false) {
+								last_pass_no_updates = false;
 								continue;
 							}
 							if process_events!(1, false) {
+								last_pass_no_updates = false;
 								continue;
 							}
 							if process_events!(2, false) {
+								last_pass_no_updates = false;
 								continue;
 							}
-							break;
+							if last_pass_no_updates {
+								// In some cases, we may generate a message to send in
+								// `process_msg_events`, but block sending until
+								// `complete_all_monitor_updates` gets called on the next
+								// iteration.
+								//
+								// Thus, we only exit if we manage two iterations with no messages
+								// or events to process.
+								break;
+							}
+							last_pass_no_updates = true;
 						}
-					};
+					} };
 				}
 
-				// At this point, we may be pending quiescence, so we'll process all messages to
-				// ensure we can complete its handshake. We'll then exit quiescence and process all
-				// messages again, to resolve any pending HTLCs (only irrevocably committed ones)
-				// before attempting to send more payments.
+				// We may be pending quiescence, so first process all messages to ensure we can
+				// complete the quiescence handshake.
 				process_all_events!();
+
+				// Then exit quiescence and process all messages again, to resolve any pending
+				// HTLCs (only irrevocably committed ones) before attempting to send more payments.
 				nodes[0].exit_quiescence(&nodes[1].get_our_node_id(), &chan_a_id).unwrap();
 				nodes[1].exit_quiescence(&nodes[0].get_our_node_id(), &chan_a_id).unwrap();
 				nodes[1].exit_quiescence(&nodes[2].get_our_node_id(), &chan_b_id).unwrap();
