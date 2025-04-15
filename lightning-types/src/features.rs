@@ -709,8 +709,8 @@ const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
 // space-wise, but we only get the remaining 2 usizes in length available for our own stuff (as any
 // other value is interpreted as the `Heap` variant).
 //
-// Thus, as long as we never use more than 15 bytes for our Held variant `FeatureFlags` is the same
-// length as a `Vec` in memory.
+// Thus, as long as we never use more than 16 bytes (15 bytes for the data and one byte for the
+// length) for our Held variant `FeatureFlags` is the same length as a `Vec` in memory.
 const DIRECT_ALLOC_BYTES: usize = if sealed::MIN_FEATURES_ALLOCATION_BYTES > 8 * 2 - 1 {
 	sealed::MIN_FEATURES_ALLOCATION_BYTES
 } else {
