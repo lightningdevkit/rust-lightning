@@ -21,7 +21,7 @@ use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason, ONION_DATA_
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::PaymentHash;
-use crate::util::logger::Logger;
+use crate::util::logger::{BoxedSpan, Logger};
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -93,7 +93,7 @@ enum RoutingInfo {
 #[rustfmt::skip]
 pub(super) fn create_fwd_pending_htlc_info(
 	msg: &msgs::UpdateAddHTLC, hop_data: onion_utils::Hop, shared_secret: [u8; 32],
-	next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
+	next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>, forward_span: Option<BoxedSpan>,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	debug_assert!(next_packet_pubkey_opt.is_some());
 
@@ -240,6 +240,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 		outgoing_amt_msat: amt_to_forward,
 		outgoing_cltv_value,
 		skimmed_fee_msat: None,
+		forward_span,
 	})
 }
 
@@ -247,7 +248,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 pub(super) fn create_recv_pending_htlc_info(
 	hop_data: onion_utils::Hop, shared_secret: [u8; 32], payment_hash: PaymentHash,
 	amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
-	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32
+	counterparty_skimmed_fee_msat: Option<u64>, current_height: u32, forward_span: Option<BoxedSpan>,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (
 		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
@@ -415,6 +416,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		outgoing_amt_msat: onion_amt_msat,
 		outgoing_cltv_value: onion_cltv_expiry,
 		skimmed_fee_msat: counterparty_skimmed_fee_msat,
+		forward_span,
 	})
 }
 
@@ -473,13 +475,13 @@ where
 
 			// TODO: If this is potentially a phantom payment we should decode the phantom payment
 			// onion here and check it.
-			create_fwd_pending_htlc_info(msg, hop, shared_secret.secret_bytes(), Some(next_packet_pubkey))?
+			create_fwd_pending_htlc_info(msg, hop, shared_secret.secret_bytes(), Some(next_packet_pubkey), None)?
 		},
 		_ => {
 			let shared_secret = hop.shared_secret().secret_bytes();
 			create_recv_pending_htlc_info(
 				hop, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
-				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height,
+				None, allow_skimmed_fees, msg.skimmed_fee_msat, cur_height, None
 			)?
 		}
 	})

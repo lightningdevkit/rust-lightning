@@ -63,7 +63,8 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	let secp_ctx = Secp256k1::new();
-	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
+	let logger: Arc<dyn Logger<UserSpan = ()>> =
+		Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 
 	let session_priv = SecretKey::from_slice(&usize_to_32_bytes(213127)).unwrap();
 	let payment_id = PaymentId(usize_to_32_bytes(232299));

@@ -66,7 +66,7 @@ use crate::sign::{
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::byte_utils;
-use crate::util::logger::{Logger, Record};
+use crate::util::logger::{Logger, Record, Span};
 use crate::util::persist::MonitorName;
 use crate::util::ser::{
 	MaybeReadable, Readable, ReadableArgs, RequiredWrapper, UpgradableRequired, Writeable, Writer,
@@ -1634,11 +1634,17 @@ impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L>
 where
 	L::Target: Logger,
 {
+	type UserSpan = <<L as Deref>::Target as Logger>::UserSpan;
+
 	fn log(&self, mut record: Record) {
 		record.peer_id = self.peer_id;
 		record.channel_id = self.channel_id;
 		record.payment_hash = self.payment_hash;
 		self.logger.log(record)
+	}
+
+	fn start(&self, span: Span, parent: Option<&Self::UserSpan>) -> Self::UserSpan {
+		self.logger.start(span, parent)
 	}
 }
 
