@@ -685,8 +685,6 @@ pub(crate) fn set_max_path_length(
 /// the hops can be of variable length.
 pub(crate) const ONION_DATA_LEN: usize = 20 * 65;
 
-pub(super) const INVALID_ONION_BLINDING: u16 = 0x8000 | 0x4000 | 24;
-
 #[inline]
 fn shift_slice_right(arr: &mut [u8], amt: usize) {
 	for i in (amt..arr.len()).rev() {
@@ -891,8 +889,8 @@ pub(super) fn test_crypt_failure_packet(shared_secret: &[u8], packet: &mut Onion
 }
 
 fn build_unencrypted_failure_packet(
-	shared_secret: &[u8], failure_type: u16, failure_data: &[u8], hold_time: u32,
-	min_packet_len: usize,
+	shared_secret: &[u8], failure_reason: LocalHTLCFailureReason, failure_data: &[u8],
+	hold_time: u32, min_packet_len: usize,
 ) -> OnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
 	assert!(failure_data.len() <= 64531);
@@ -913,7 +911,7 @@ fn build_unencrypted_failure_packet(
 
 	// Write failure len, type and data.
 	(failure_len as u16).write(&mut writer).unwrap();
-	failure_type.write(&mut writer).unwrap();
+	failure_reason.failure_code().write(&mut writer).unwrap();
 	writer.0.extend_from_slice(&failure_data[..]);
 
 	// Write pad len and resize to match padding.
@@ -950,11 +948,12 @@ fn update_attribution_data(
 }
 
 pub(super) fn build_failure_packet(
-	shared_secret: &[u8], failure_type: u16, failure_data: &[u8], hold_time: u32,
+	shared_secret: &[u8], failure_reason: LocalHTLCFailureReason, failure_data: &[u8],
+	hold_time: u32,
 ) -> OnionErrorPacket {
 	let mut onion_error_packet = build_unencrypted_failure_packet(
 		shared_secret,
-		failure_type,
+		failure_reason,
 		failure_data,
 		hold_time,
 		DEFAULT_MIN_FAILURE_PACKET_LEN,
@@ -1700,51 +1699,61 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 );
 
 impl HTLCFailReason {
-	#[rustfmt::skip]
-	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
-		const BADONION: u16 = 0x8000;
-		const PERM: u16 = 0x4000;
-		const NODE: u16 = 0x2000;
-		const UPDATE: u16 = 0x1000;
-
-		if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 2  | PERM | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 3  | PERM | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 4  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 5  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 6  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 7  | UPDATE {
-			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
-		else if failure_code == 8  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 9  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 10 | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 11 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
-		else if failure_code == 12 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
-		else if failure_code == 13 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 4, u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize) }
-		else if failure_code == 14 | UPDATE {
-			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
-		else if failure_code == 15 | PERM { debug_assert_eq!(data.len(), 12) }
-		else if failure_code == 18 { debug_assert_eq!(data.len(), 4) }
-		else if failure_code == 19 { debug_assert_eq!(data.len(), 8) }
-		else if failure_code == 20 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 2, u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize) }
-		else if failure_code == 21 { debug_assert!(data.is_empty()) }
-		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
-		else if failure_code == 23 { debug_assert!(data.is_empty()) }
-		else if failure_code == INVALID_ONION_BLINDING { debug_assert_eq!(data.len(), 32) }
-		else if failure_code & BADONION != 0 {
-			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
+	pub(super) fn reason(failure_reason: LocalHTLCFailureReason, data: Vec<u8>) -> Self {
+		match failure_reason {
+			LocalHTLCFailureReason::TemporaryNodeFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::PermanentNodeFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::RequiredNodeFeature => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::InvalidOnionVersion => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::InvalidOnionHMAC => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::InvalidOnionKey => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::TemporaryChannelFailure => debug_assert_eq!(
+				data.len() - 2,
+				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::PermanentChannelFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::RequiredChannelFeature => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::UnknownNextPeer => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::AmountBelowMinimum => debug_assert_eq!(
+				data.len() - 2 - 8,
+				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::FeeInsufficient => debug_assert_eq!(
+				data.len() - 2 - 8,
+				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::IncorrectCLTVExpiry => debug_assert_eq!(
+				data.len() - 2 - 4,
+				u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::CLTVExpiryTooSoon => debug_assert_eq!(
+				data.len() - 2,
+				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::IncorrectPaymentDetails => debug_assert_eq!(data.len(), 12),
+			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry => debug_assert_eq!(data.len(), 4),
+			LocalHTLCFailureReason::FinalIncorrectHTLCAmount => debug_assert_eq!(data.len(), 8),
+			LocalHTLCFailureReason::ChannelDisabled => debug_assert_eq!(
+				data.len() - 2 - 2,
+				u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize
+			),
+			LocalHTLCFailureReason::CLTVExpiryTooFar => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::InvalidOnionPayload => debug_assert!(data.len() <= 11),
+			LocalHTLCFailureReason::MPPTimeout => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::InvalidOnionBlinding => debug_assert_eq!(data.len(), 32),
+			LocalHTLCFailureReason::UnknownFailureCode { code } => {
+				// We set some bogus BADONION failure codes in tests, so allow unknown BADONION.
+				if code & BADONION == 0 {
+					debug_assert!(false, "Unknown failure code: {}", code)
+				}
+			},
 		}
-		else { debug_assert!(false, "Unknown failure code: {}", failure_code) }
 
-		Self(HTLCFailReasonRepr::Reason { failure_code, data })
+		Self(HTLCFailReasonRepr::Reason { failure_code: failure_reason.failure_code(), data })
 	}
 
-	pub(super) fn from_failure_code(failure_code: u16) -> Self {
-		Self::reason(failure_code, Vec::new())
+	pub(super) fn from_failure_code(failure_reason: LocalHTLCFailureReason) -> Self {
+		Self::reason(failure_reason, Vec::new())
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
@@ -1774,7 +1783,7 @@ impl HTLCFailReason {
 					// Phantom hop always reports zero hold time too.
 					let mut packet = build_failure_packet(
 						secondary_shared_secret,
-						*failure_code,
+						u16::into(*failure_code),
 						&data[..],
 						hold_time,
 					);
@@ -1786,7 +1795,7 @@ impl HTLCFailReason {
 				} else {
 					build_failure_packet(
 						incoming_packet_shared_secret,
-						*failure_code,
+						u16::into(*failure_code),
 						&data[..],
 						hold_time,
 					)
@@ -1977,14 +1986,14 @@ impl Hop {
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
-	Malformed { err_msg: &'static str, err_code: u16 },
+	Malformed { err_msg: &'static str, err_code: LocalHTLCFailureReason },
 	/// We failed to decode the onion payload.
 	///
 	/// If the payload we failed to decode belonged to a Trampoline onion, following the successful
 	/// decoding of the outer onion, the trampoline_shared_secret field should be set.
 	Relay {
 		err_msg: &'static str,
-		err_code: u16,
+		err_code: LocalHTLCFailureReason,
 		shared_secret: SharedSecret,
 		trampoline_shared_secret: Option<SharedSecret>,
 	},
@@ -2035,12 +2044,12 @@ where
 						return Err(OnionDecodeErr::Malformed {
 							err_msg:
 								"Final Node OnionHopData provided for us as an intermediary node",
-							err_code: INVALID_ONION_BLINDING,
+							err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
 						});
 					}
 					Err(OnionDecodeErr::Relay {
 						err_msg: "Final Node OnionHopData provided for us as an intermediary node",
-						err_code: 0x4000 | 22,
+						err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 						shared_secret,
 						trampoline_shared_secret: None,
 					})
@@ -2135,7 +2144,7 @@ where
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Non-final intro node Trampoline onion data provided to us as last hop",
-								err_code: 0x4000 | 22,
+								err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
@@ -2144,14 +2153,14 @@ where
 						}
 						Err(OnionDecodeErr::Malformed {
 							err_msg: "Non-final Trampoline onion data provided to us as last hop",
-							err_code: INVALID_ONION_BLINDING,
+							err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
 						})
 					},
 					Ok((msgs::InboundTrampolinePayload::BlindedReceive(hop_data), Some(_))) => {
 						if hop_data.intro_node_blinding_point.is_some() {
 							return Err(OnionDecodeErr::Relay {
 								err_msg: "Final Trampoline intro node onion data provided to us as intermediate hop",
-								err_code: 0x4000 | 22,
+								err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 								shared_secret,
 								trampoline_shared_secret: Some(SharedSecret::from_bytes(
 									trampoline_shared_secret,
@@ -2161,13 +2170,13 @@ where
 						Err(OnionDecodeErr::Malformed {
 							err_msg:
 								"Final Trampoline onion data provided to us as intermediate hop",
-							err_code: INVALID_ONION_BLINDING,
+							err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
 						})
 					},
 					Ok((msgs::InboundTrampolinePayload::Forward(_), None)) => {
 						Err(OnionDecodeErr::Relay {
 							err_msg: "Non-final Trampoline onion data provided to us as last hop",
-							err_code: 0x4000 | 22,
+							err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 							shared_secret,
 							trampoline_shared_secret: Some(SharedSecret::from_bytes(
 								trampoline_shared_secret,
@@ -2178,7 +2187,7 @@ where
 						Err(OnionDecodeErr::Relay {
 							err_msg:
 								"Final Trampoline onion data provided to us as intermediate hop",
-							err_code: 0x4000 | 22,
+							err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 							shared_secret,
 							trampoline_shared_secret: Some(SharedSecret::from_bytes(
 								trampoline_shared_secret,
@@ -2192,12 +2201,12 @@ where
 				if blinding_point.is_some() {
 					return Err(OnionDecodeErr::Malformed {
 						err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-						err_code: INVALID_ONION_BLINDING,
+						err_code: LocalHTLCFailureReason::InvalidOnionBlinding,
 					});
 				}
 				Err(OnionDecodeErr::Relay {
 					err_msg: "Intermediate Node OnionHopData provided for us as a final node",
-					err_code: 0x4000 | 22,
+					err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 					shared_secret,
 					trampoline_shared_secret: None,
 				})
@@ -2320,7 +2329,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 	if !fixed_time_eq(&Hmac::from_engine(hmac).to_byte_array(), &hmac_bytes) {
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
-			err_code: 0x8000 | 0x4000 | 5,
+			err_code: LocalHTLCFailureReason::InvalidOnionHMAC,
 		});
 	}
 
@@ -2330,13 +2339,13 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 		Err(err) => {
 			let error_code = match err {
 				// Unknown version
-				msgs::DecodeError::UnknownVersion => 0x8000 | 0x4000 | 4,
+				msgs::DecodeError::UnknownVersion => LocalHTLCFailureReason::InvalidOnionVersion,
 				// invalid_onion_payload
 				msgs::DecodeError::UnknownRequiredFeature
 				| msgs::DecodeError::InvalidValue
-				| msgs::DecodeError::ShortRead => 0x4000 | 22,
+				| msgs::DecodeError::ShortRead => LocalHTLCFailureReason::InvalidOnionPayload,
 				// Should never happen
-				_ => 0x2000 | 2,
+				_ => LocalHTLCFailureReason::TemporaryNodeFailure,
 			};
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data",
@@ -2350,7 +2359,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
 				return Err(OnionDecodeErr::Relay {
 					err_msg: "Unable to decode our hop data",
-					err_code: 0x4000 | 22,
+					err_code: LocalHTLCFailureReason::InvalidOnionPayload,
 					shared_secret: SharedSecret::from_bytes(shared_secret),
 					trampoline_shared_secret: None,
 				});
@@ -2915,7 +2924,9 @@ mod tests {
 				let decrypted_failure =
 					test_attributable_failure_packet_onion_with_mutation(Some(mutation));
 
-				if decrypted_failure.onion_error_code == Some(0x4000 | 15) {
+				if decrypted_failure.onion_error_code
+					== Some(LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code())
+				{
 					continue;
 				}
 
@@ -2928,7 +2939,10 @@ mod tests {
 	#[test]
 	fn test_attributable_failure_packet_onion_happy() {
 		let decrypted_failure = test_attributable_failure_packet_onion_with_mutation(None);
-		assert_eq!(decrypted_failure.onion_error_code, Some(0x4000 | 15));
+		assert_eq!(
+			decrypted_failure.onion_error_code,
+			Some(LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code())
+		);
 		assert_eq!(decrypted_failure.hold_times, [5, 4, 3, 2, 1]);
 	}
 
@@ -2991,7 +3005,7 @@ mod tests {
 		let onion_keys = build_test_onion_keys();
 		let mut onion_error = super::build_unencrypted_failure_packet(
 			onion_keys[4].shared_secret.as_ref(),
-			0x400f,
+			LocalHTLCFailureReason::IncorrectPaymentDetails,
 			&failure_data,
 			1,
 			1024,
@@ -3150,7 +3164,10 @@ mod tests {
 				Some(&trampoline_session_priv),
 				error_packet,
 			);
-			assert_eq!(decrypted_failure.onion_error_code, Some(0x400f));
+			assert_eq!(
+				decrypted_failure.onion_error_code,
+				Some(LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code())
+			);
 		}
 
 		{
@@ -3179,7 +3196,7 @@ mod tests {
 
 			{
 				// Ensure error decryption works without the Trampoline hops having been hit.
-				let error_code = 0x2002;
+				let error_code = LocalHTLCFailureReason::TemporaryNodeFailure;
 				let mut first_hop_error_packet = build_unencrypted_failure_packet(
 					outer_onion_keys[0].shared_secret.as_ref(),
 					error_code,
@@ -3195,12 +3212,12 @@ mod tests {
 
 				let decrypted_failure =
 					process_onion_failure(&secp_ctx, &logger, &htlc_source, first_hop_error_packet);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
 			};
 
 			{
 				// Ensure error decryption works from the first Trampoline hop, but at the outer onion.
-				let error_code = 0x2003;
+				let error_code = 0x2003.into();
 				let mut trampoline_outer_hop_error_packet = build_unencrypted_failure_packet(
 					outer_onion_keys[1].shared_secret.as_ref(),
 					error_code,
@@ -3226,12 +3243,12 @@ mod tests {
 					&htlc_source,
 					trampoline_outer_hop_error_packet,
 				);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
 			};
 
 			{
 				// Ensure error decryption works from the Trampoline inner onion.
-				let error_code = 0x2004;
+				let error_code = 0x2004.into();
 				let mut trampoline_inner_hop_error_packet = build_unencrypted_failure_packet(
 					trampoline_onion_keys[0].shared_secret.as_ref(),
 					error_code,
@@ -3262,12 +3279,12 @@ mod tests {
 					&htlc_source,
 					trampoline_inner_hop_error_packet,
 				);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
 			}
 
 			{
 				// Ensure error decryption works from a later hop in the Trampoline inner onion.
-				let error_code = 0x2005;
+				let error_code = 0x2005.into();
 				let mut trampoline_second_hop_error_packet = build_unencrypted_failure_packet(
 					trampoline_onion_keys[1].shared_secret.as_ref(),
 					error_code,
@@ -3303,7 +3320,7 @@ mod tests {
 					&htlc_source,
 					trampoline_second_hop_error_packet,
 				);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
 			}
 		}
 	}
@@ -3526,7 +3543,7 @@ mod tests {
 		let shared_secret = [0; 32];
 		let onion_error = super::build_unencrypted_failure_packet(
 			&shared_secret,
-			0x2002,
+			LocalHTLCFailureReason::TemporaryNodeFailure,
 			&failure_data,
 			0,
 			DEFAULT_MIN_FAILURE_PACKET_LEN,

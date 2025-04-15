@@ -17,6 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE};
 use crate::chain::transaction::OutPoint;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
 use crate::events::bump_transaction::WalletSource;
 use crate::events::{Event, FundingInfo, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
@@ -4816,7 +4817,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	// 100_000 msat as u64, followed by the height at which we failed back above
 	let mut expected_failure_data = (100_000 as u64).to_be_bytes().to_vec();
 	expected_failure_data.extend_from_slice(&(block_count - 1).to_be_bytes());
-	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
+	expect_payment_failed!(nodes[0], our_payment_hash, true, LocalHTLCFailureReason::IncorrectPaymentDetails, &expected_failure_data[..]);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -7783,7 +7784,7 @@ pub fn test_check_htlc_underpaying() {
 	// 10_000 msat as u64, followed by a height of CHAN_CONFIRM_DEPTH as u32
 	let mut expected_failure_data = (10_000 as u64).to_be_bytes().to_vec();
 	expected_failure_data.extend_from_slice(&CHAN_CONFIRM_DEPTH.to_be_bytes());
-	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000|15, &expected_failure_data[..]);
+	expect_payment_failed!(nodes[0], our_payment_hash, true, LocalHTLCFailureReason::IncorrectPaymentDetails, &expected_failure_data[..]);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -8976,7 +8977,7 @@ pub fn test_bad_secret_hash() {
 		}
 	}
 
-	let expected_error_code = 0x4000|15; // incorrect_or_unknown_payment_details
+	let expected_error_code = LocalHTLCFailureReason::IncorrectPaymentDetails;
 	// Error data is the HTLC value (100,000) and current block height
 	let expected_error_data = [0, 0, 0, 0, 0, 1, 0x86, 0xa0, 0, 0, 0, CHAN_CONFIRM_DEPTH as u8];
 
