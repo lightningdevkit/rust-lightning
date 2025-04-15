@@ -639,6 +639,8 @@ mod tests {
 
 	pub struct TestLogger();
 	impl lightning::util::logger::Logger for TestLogger {
+		type UserSpan = ();
+
 		fn log(&self, record: lightning::util::logger::Record) {
 			println!(
 				"{:<5} [{} : {}, {}] {}",
@@ -649,6 +651,8 @@ mod tests {
 				record.args
 			);
 		}
+
+		fn start(&self, _span: lightning::util::logger::Span, _parent: Option<&()>) -> () {}
 	}
 
 	struct MsgHandler {

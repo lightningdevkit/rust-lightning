@@ -196,13 +196,15 @@ where
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions, OnionMessagePath, OnionMessenger};
 /// # use lightning::onion_message::packet::OnionMessageContents;
 /// # use lightning::sign::{NodeSigner, ReceiveAuthKey};
-/// # use lightning::util::logger::{Logger, Record};
+/// # use lightning::util::logger::{Logger, Record, Span};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
 /// # use std::sync::Arc;
 /// # struct FakeLogger;
 /// # impl Logger for FakeLogger {
+/// #     type UserSpan = ();
 /// #     fn log(&self, record: Record) { println!("{:?}" , record); }
+/// #     fn start(&self, _span: Span, parent: Option<&()>) -> () {}
 /// # }
 /// # struct FakeMessageRouter {}
 /// # impl MessageRouter for FakeMessageRouter {

@@ -54,7 +54,7 @@ use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
 };
-use crate::util::logger::{Logger, Record};
+use crate::util::logger::{Logger, Record, Span};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
 use crate::util::persist::{KVStoreSync, MonitorName};
@@ -1445,10 +1445,48 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 	}
 }
 
+pub struct TestUserSpan {
+	span: Span,
+	span_boundaries: Arc<Mutex<Vec<TestSpanBoundary>>>,
+}
+
+impl TestUserSpan {
+	fn new(
+		span: Span, parent_span: Option<&TestUserSpan>,
+		span_boundaries: Arc<Mutex<Vec<TestSpanBoundary>>>,
+	) -> Self {
+		{
+			let mut span_boundaries_guard = span_boundaries.lock().unwrap();
+			span_boundaries_guard
+				.push(TestSpanBoundary::Start(span.clone(), parent_span.map(|s| s.span.clone())));
+			core::mem::drop(span_boundaries_guard);
+		}
+		TestUserSpan { span, span_boundaries }
+	}
+}
+
+impl Drop for TestUserSpan {
+	fn drop(&mut self) {
+		if std::thread::panicking() {
+			return;
+		}
+		let mut span_boundaries = self.span_boundaries.lock().unwrap();
+		span_boundaries.push(TestSpanBoundary::End(self.span.clone()));
+		core::mem::drop(span_boundaries);
+	}
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum TestSpanBoundary {
+	Start(Span, Option<Span>),
+	End(Span),
+}
+
 pub struct TestLogger {
 	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(&'static str, String), usize>>,
 	pub context: Mutex<HashMap<(&'static str, Option<PublicKey>, Option<ChannelId>), usize>>,
+	pub span_boundaries: Arc<Mutex<Vec<TestSpanBoundary>>>,
 }
 
 impl TestLogger {
@@ -1458,7 +1496,8 @@ impl TestLogger {
 	pub fn with_id(id: String) -> TestLogger {
 		let lines = Mutex::new(new_hash_map());
 		let context = Mutex::new(new_hash_map());
-		TestLogger { id, lines, context }
+		let span_boundaries = Arc::new(Mutex::new(Vec::new()));
+		TestLogger { id, lines, context, span_boundaries }
 	}
 	pub fn assert_log(&self, module: &str, line: String, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
@@ -1505,6 +1544,8 @@ impl TestLogger {
 }
 
 impl Logger for TestLogger {
+	type UserSpan = TestUserSpan;
+
 	fn log(&self, record: Record) {
 		let context =
 			format!("{} {} [{}:{}]", self.id, record.level, record.module_path, record.line);
@@ -1536,6 +1577,10 @@ impl Logger for TestLogger {
 				.or_insert(0) += 1;
 			println!("{}", s);
 		}
+	}
+
+	fn start(&self, span: Span, parent: Option<&TestUserSpan>) -> TestUserSpan {
+		TestUserSpan::new(span, parent, self.span_boundaries.clone())
 	}
 }
 
