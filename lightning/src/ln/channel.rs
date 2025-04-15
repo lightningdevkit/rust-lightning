@@ -1688,6 +1688,7 @@ pub(super) struct FundingScope {
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
+	short_channel_id: Option<u64>,
 }
 
 impl Writeable for FundingScope {
@@ -1700,6 +1701,7 @@ impl Writeable for FundingScope {
 			(9, self.funding_transaction, option),
 			(11, self.funding_tx_confirmed_in, option),
 			(13, self.funding_tx_confirmation_height, required),
+			(15, self.short_channel_id, option),
 		});
 		Ok(())
 	}
@@ -1714,6 +1716,7 @@ impl Readable for FundingScope {
 		let mut funding_transaction = None;
 		let mut funding_tx_confirmed_in = None;
 		let mut funding_tx_confirmation_height = RequiredWrapper(None);
+		let mut short_channel_id = None;
 
 		read_tlv_fields!(reader, {
 			(1, value_to_self_msat, required),
@@ -1723,6 +1726,7 @@ impl Readable for FundingScope {
 			(9, funding_transaction, option),
 			(11, funding_tx_confirmed_in, option),
 			(13, funding_tx_confirmation_height, required),
+			(15, short_channel_id, option),
 		});
 
 		Ok(Self {
@@ -1737,6 +1741,7 @@ impl Readable for FundingScope {
 			funding_transaction,
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height: funding_tx_confirmation_height.0.unwrap(),
+			short_channel_id,
 			#[cfg(any(test, fuzzing))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
@@ -1829,6 +1834,13 @@ impl FundingScope {
 		}
 
 		height.checked_sub(self.funding_tx_confirmation_height).map_or(0, |c| c + 1)
+	}
+
+	/// Gets the channel's `short_channel_id`.
+	///
+	/// Will return `None` if the funding hasn't been confirmed yet.
+	pub fn get_short_channel_id(&self) -> Option<u64> {
+		self.short_channel_id
 	}
 }
 
@@ -1989,7 +2001,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// milliseconds, so any accidental force-closes here should be exceedingly rare.
 	expecting_peer_commitment_signed: bool,
 
-	short_channel_id: Option<u64>,
 	/// Either the height at which this channel was created or the height at which it was last
 	/// serialized if it was serialized by versions prior to 0.0.103.
 	/// We use this to close if funding is never broadcasted.
@@ -2800,6 +2811,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_transaction: None,
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -2863,7 +2875,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw: None,
 
-			short_channel_id: None,
 			channel_creation_height: current_chain_height,
 
 			feerate_per_kw: open_channel_fields.commitment_feerate_sat_per_1000_weight,
@@ -3036,6 +3047,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_transaction: None,
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
 		};
 		let channel_context = Self {
 			user_id,
@@ -3097,7 +3109,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw: None,
 
-			short_channel_id: None,
 			channel_creation_height: current_chain_height,
 
 			feerate_per_kw: commitment_feerate,
@@ -3305,13 +3316,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// meaning and exists only to allow users to have a persistent identifier of a channel.
 	pub fn get_user_id(&self) -> u128 {
 		self.user_id
-	}
-
-	/// Gets the channel's `short_channel_id`.
-	///
-	/// Will return `None` if the channel hasn't been confirmed yet.
-	pub fn get_short_channel_id(&self) -> Option<u64> {
-		self.short_channel_id
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -5526,7 +5530,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		if let Some(scid_alias) = msg.short_channel_id_alias {
-			if Some(scid_alias) != self.context.short_channel_id {
+			if Some(scid_alias) != self.funding.short_channel_id {
 				// The scid alias provided can be used to route payments *from* our counterparty,
 				// i.e. can be used for inbound payments and provided in invoices, but is not used
 				// when routing outbound payments.
@@ -8202,7 +8206,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 							self.funding.funding_tx_confirmation_height = height;
 							self.funding.funding_tx_confirmed_in = Some(*block_hash);
-							self.context.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
+							self.funding.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 							}
@@ -8382,7 +8386,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel is not currently usable".to_owned()));
 		}
 
-		let short_channel_id = self.context.get_short_channel_id()
+		let short_channel_id = self.funding.get_short_channel_id()
 			.ok_or(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel has not been confirmed yet".to_owned()))?;
 		let node_id = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?);
@@ -8454,7 +8458,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					},
 					Ok(v) => v
 				};
-				let short_channel_id = match self.context.get_short_channel_id() {
+				let short_channel_id = match self.funding.get_short_channel_id() {
 					Some(scid) => scid,
 					None => return None,
 				};
@@ -10701,7 +10705,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 
 		self.funding.funding_tx_confirmed_in.write(writer)?;
 		self.funding.funding_tx_confirmation_height.write(writer)?;
-		self.context.short_channel_id.write(writer)?;
+		self.funding.short_channel_id.write(writer)?;
 
 		self.context.counterparty_dust_limit_satoshis.write(writer)?;
 		self.context.holder_dust_limit_satoshis.write(writer)?;
@@ -11337,6 +11341,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				funding_transaction,
 				funding_tx_confirmed_in,
 				funding_tx_confirmation_height,
+				short_channel_id,
 			},
 			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
@@ -11400,7 +11405,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				closing_fee_limits: None,
 				target_closing_feerate_sats_per_kw,
 
-				short_channel_id,
 				channel_creation_height,
 
 				counterparty_dust_limit_satoshis,
