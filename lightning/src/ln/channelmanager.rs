@@ -3179,7 +3179,7 @@ macro_rules! locked_close_channel {
 			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = $channel_context.get_short_channel_id() {
+		if let Some(short_id) = $channel_funding.get_short_channel_id() {
 			short_to_chan_info.remove(&short_id);
 		} else {
 			// If the channel was never confirmed on-chain prior to its closure, remove the
@@ -3302,7 +3302,7 @@ macro_rules! send_channel_ready {
 		let outbound_alias_insert = short_to_chan_info.insert($channel.context.outbound_scid_alias(), ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
 		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
 			"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
-		if let Some(real_scid) = $channel.context.get_short_channel_id() {
+		if let Some(real_scid) = $channel.funding.get_short_channel_id() {
 			let scid_insert = short_to_chan_info.insert(real_scid, ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
 			assert!(scid_insert.is_none() || scid_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
 				"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
@@ -4797,7 +4797,7 @@ where
 				action: msgs::ErrorAction::IgnoreError,
 			});
 		}
-		if chan.context.get_short_channel_id().is_none() {
+		if chan.funding.get_short_channel_id().is_none() {
 			return Err(LightningError {
 				err: "Channel not yet established".to_owned(),
 				action: msgs::ErrorAction::IgnoreError,
@@ -4827,7 +4827,7 @@ where
 	fn get_channel_update_for_unicast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
-		let short_channel_id = match chan.context.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
+		let short_channel_id = match chan.funding.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
@@ -6017,7 +6017,7 @@ where
 							err: format!("Channel with id {} not fully established", next_hop_channel_id)
 						})
 					}
-					funded_chan.context.get_short_channel_id().unwrap_or(funded_chan.context.outbound_scid_alias())
+					funded_chan.funding.get_short_channel_id().unwrap_or(funded_chan.context.outbound_scid_alias())
 				} else {
 					return Err(APIError::ChannelUnavailable {
 						err: format!("Channel with id {} for the passed counterparty node_id {} is still opening.",
@@ -6466,7 +6466,7 @@ where
 								};
 
 								let logger = WithChannelContext::from(&self.logger, &optimal_channel.context, Some(payment_hash));
-								let channel_description = if optimal_channel.context.get_short_channel_id() == Some(short_chan_id) {
+								let channel_description = if optimal_channel.funding.get_short_channel_id() == Some(short_chan_id) {
 									"specified"
 								} else {
 									"alternate"
@@ -8058,7 +8058,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
-		let short_channel_id = channel.context.get_short_channel_id().unwrap_or(channel.context.outbound_scid_alias());
+		let short_channel_id = channel.funding.get_short_channel_id().unwrap_or(channel.context.outbound_scid_alias());
 
 		let mut htlc_forwards = None;
 		if !pending_forwards.is_empty() {
@@ -11302,7 +11302,7 @@ where
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
 					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
-					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+					.and_then(|(_, channel)| channel.funding().get_short_channel_id()),
 			})
 			.collect::<Vec<_>>()
 	}
@@ -12249,7 +12249,7 @@ where
 									});
 								}
 								if funded_channel.is_our_channel_ready() {
-									if let Some(real_scid) = funded_channel.context.get_short_channel_id() {
+									if let Some(real_scid) = funded_channel.funding.get_short_channel_id() {
 										// If we sent a 0conf channel_ready, and now have an SCID, we add it
 										// to the short_to_chan_info map here. Note that we check whether we
 										// can relay using the real SCID at relay-time (i.e.
@@ -14431,7 +14431,7 @@ where
 					log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {} with {} blocked updates",
 						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
-					if let Some(short_channel_id) = channel.context.get_short_channel_id() {
+					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
 					per_peer_state.entry(channel.context.get_counterparty_node_id())

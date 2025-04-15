@@ -516,7 +516,7 @@ impl ChannelDetails {
 			} else {
 				None
 			},
-			short_channel_id: context.get_short_channel_id(),
+			short_channel_id: funding.get_short_channel_id(),
 			outbound_scid_alias: if context.is_usable() {
 				Some(context.outbound_scid_alias())
 			} else {
