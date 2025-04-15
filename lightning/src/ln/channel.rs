@@ -1385,7 +1385,14 @@ impl<SP: Deref> Channel<SP> where
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			ChannelPhase::Funded(_) => { debug_assert!(false); None },
+			#[cfg(not(splicing))]
+			ChannelPhase::Funded(_) => { debug_assert!(false); None }
+			#[cfg(splicing)]
+			ChannelPhase::Funded(chan) => {
+				chan.pending_splice.as_mut().map(|splice|
+					splice.refunding_scope.as_mut().map(|refunding_scope| &mut refunding_scope.pending_unfunded_context)
+				).flatten()
+			}
 			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedV2(chan) => Some(&mut chan.unfunded_context),
@@ -1932,10 +1939,17 @@ impl FundingScope {
 	}
 }
 
-/// Info about a pending splice, used in the pre-splice channel
+/// Info about a pending splice_init, used in the pre-splice channel
+#[cfg(splicing)]
+struct PendingSpliceInit {
+	pub our_funding_contribution: i64,
+}
+
+/// Info about a pending splice
 #[cfg(splicing)]
 struct PendingSplice {
-	pub our_funding_contribution: i64,
+	pub pending_splice_init: Option<PendingSpliceInit>,
+	pub refunding_scope: Option<RefundingScope>,
 }
 
 /// Contains everything about the channel including state, and various flags.
@@ -2442,6 +2456,81 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 	}
 }
 
+/// [`FundedChannel`] can act as a [`FundingTxConstructorV2`], but properly only when its
+/// [`RefundingScope`] is present.
+#[cfg(splicing)]
+impl<SP: Deref> FundingTxConstructorV2<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
+	#[inline]
+	fn pending_funding(&self) -> Result<&FundingScope, &'static str> {
+		self.pending_splice.as_ref().map(|splice|
+			splice.refunding_scope.as_ref().map(|refunding| &refunding.pending_funding)
+		).flatten().ok_or("Not re-funding")
+	}
+
+	#[inline]
+	fn pending_funding_mut(&mut self) -> Result<&mut FundingScope, &'static str> {
+		self.pending_splice.as_mut().map(|splice|
+			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_funding)
+		).flatten().ok_or("Not re-funding")
+	}
+
+	#[inline]
+	fn pending_funding_and_context_mut(&mut self) -> Result<(&FundingScope, &mut ChannelContext<SP>), &'static str> {
+		let context_mut = &mut self.context;
+		self.pending_splice.as_ref().map(|splice|
+			splice.refunding_scope.as_ref().map(|refunding| (&refunding.pending_funding, context_mut))
+		).flatten().ok_or("Not re-funding")
+	}
+
+	#[inline]
+	fn dual_funding_context(&self) -> Result<&DualFundingChannelContext, &'static str> {
+		self.pending_splice.as_ref().map(|splice|
+			splice.refunding_scope.as_ref().map(|refunding| &refunding.pending_dual_funding_context)
+		).flatten().ok_or("Not re-funding")
+	}
+
+	fn swap_out_dual_funding_context_inputs(&mut self, funding_inputs: &mut Vec<(TxIn, TransactionU16LenLimited)>) -> Result<(), &'static str> {
+		if let Some(pending_splice) = &mut self.pending_splice {
+			if let Some(refunding) = &mut pending_splice.refunding_scope {
+				mem::swap(&mut refunding.pending_dual_funding_context.our_funding_inputs, funding_inputs);
+				Ok(())
+			} else {
+				Err("Not re-funding")
+			}
+		} else {
+			Err("Not re-funding")
+		}
+	}
+
+	#[inline]
+	fn unfunded_context(&self) -> Result<&UnfundedChannelContext, &'static str> {
+		self.pending_splice.as_ref().map(|splice|
+			splice.refunding_scope.as_ref().map(|refunding| &refunding.pending_unfunded_context)
+		).flatten().ok_or("Not re-funding")
+	}
+
+	#[inline]
+	fn interactive_tx_constructor(&self) -> Result<Option<&InteractiveTxConstructor>, &'static str> {
+		self.pending_splice.as_ref().map(|splice|
+			splice.refunding_scope.as_ref().map(|refunding| refunding.pending_interactive_tx_constructor.as_ref())
+		).flatten().ok_or("Not re-funding")
+	}
+
+	#[inline]
+	fn interactive_tx_constructor_mut(&mut self) -> Result<&mut Option<InteractiveTxConstructor>, &'static str> {
+		self.pending_splice.as_mut().map(|splice|
+			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_interactive_tx_constructor)
+		).flatten().ok_or("Not re-funding")
+	}
+
+	#[inline]
+	fn interactive_tx_signing_session_mut(&mut self) -> Result<&mut Option<InteractiveTxSigningSession>, &'static str> {
+		self.pending_splice.as_mut().map(|splice|
+			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_interactive_tx_signing_session)
+		).flatten().ok_or("Not re-funding")
+	}
+}
+
 /// A channel struct implementing this trait can perform V2 transaction negotiation,
 /// either at channel open or during splicing.
 /// Accessors return a Result, because [`FundedChannel`] can act like a TX constructor,
@@ -2795,6 +2884,19 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 	fn interactive_tx_signing_session_mut(&mut self) -> Result<&mut Option<InteractiveTxSigningSession>, &'static str> {
 		Ok(&mut self.interactive_tx_signing_session)
 	}
+}
+
+/// Data needed during splicing --
+/// when the funding transaction is being renegotiated in a funded channel.
+#[cfg(splicing)]
+struct RefundingScope {
+	// Fields belonging for [`PendingV2Channel`], except the context
+	pending_funding: FundingScope,
+	pending_unfunded_context: UnfundedChannelContext,
+	pending_dual_funding_context: DualFundingChannelContext,
+	/// The current interactive transaction construction session under negotiation.
+	pending_interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	pending_interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
@@ -9009,10 +9111,11 @@ impl<SP: Deref> FundedChannel<SP> where
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
 		// Note: only a single outstanding splice is supported (per spec)
-		if let Some(splice_info) = &self.pending_splice {
+		if let Some(pending_splice) = &self.pending_splice {
 			return Err(APIError::APIMisuseError { err: format!(
 				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
-				self.context.channel_id(), splice_info.our_funding_contribution
+				self.context.channel_id(),
+				pending_splice.pending_splice_init.as_ref().map(|ps| ps.our_funding_contribution).unwrap_or_default(),
 			)});
 		}
 
@@ -9045,8 +9148,12 @@ impl<SP: Deref> FundedChannel<SP> where
 				self.context.channel_id(), err,
 			)})?;
 
-		self.pending_splice = Some(PendingSplice {
+		let pending_splice_init = Some(PendingSpliceInit {
 			our_funding_contribution: our_funding_contribution_satoshis,
+		});
+		self.pending_splice = Some(PendingSplice {
+			pending_splice_init,
+			refunding_scope: None,
 		});
 
 		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
@@ -9079,9 +9186,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		let our_funding_contribution_satoshis = 0i64;
 
 		// Check if a splice has been initiated already.
-		if let Some(splice_info) = &self.pending_splice {
+		if let Some(pending_splice) = &self.pending_splice {
 			return Err(ChannelError::Warn(format!(
-				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution,
+				"Channel {} has already a splice pending, contribution {}",
+				self.context.channel_id(),
+				pending_splice.pending_splice_init.as_ref().map(|si| si.our_funding_contribution).unwrap_or_default(),
 			)));
 		}
 
@@ -9126,7 +9235,11 @@ impl<SP: Deref> FundedChannel<SP> where
 	#[cfg(splicing)]
 	pub fn splice_ack(&mut self, _msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
 		// check if splice is pending
-		if self.pending_splice.is_none() {
+		if let Some(pending_splice) = &self.pending_splice {
+			if pending_splice.pending_splice_init.is_none() {
+				return Err(ChannelError::Warn(format!("Channel is not in pending splice_init")));
+			}
+		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
 		};
 
