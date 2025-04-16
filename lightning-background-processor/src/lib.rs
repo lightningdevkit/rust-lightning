@@ -44,6 +44,7 @@ use lightning_rapid_gossip_sync::RapidGossipSync;
 
 use core::ops::Deref;
 use core::time::Duration;
+use std::marker::PhantomData;
 
 #[cfg(feature = "std")]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +57,6 @@ use std::time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
-
-#[cfg(feature = "std")]
-use std::marker::PhantomData;
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -754,7 +752,7 @@ pub async fn process_events_async<
 	Sleeper: Fn(Duration) -> SleepFuture,
 	FetchTime: Fn() -> Option<Duration>,
 >(
-	config: BackgroundProcessorConfig<
+	#[rustfmt::skip] config: BackgroundProcessorConfig<
 		'a,
 		UL,
 		CF,
@@ -1043,23 +1041,6 @@ impl BackgroundProcessor {
 	/// This method is functionally equivalent to [`BackgroundProcessor::start`], but takes a configuration
 	/// object instead of individual parameters.
 	///
-	/// # Example
-	/// ```
-	/// # use lightning_background_processor::*;
-	/// let mut builder = BackgroundProcessorConfigBuilder::new(
-	///     persister,
-	///     event_handler,
-	///     chain_monitor,
-	///     channel_manager,
-	///     gossip_sync,
-	///     peer_manager,
-	///     logger
-	/// );
-	/// builder.with_onion_messenger(messenger);
-	/// 		.with_scorer(scorer);
-	/// let config = builder.build();
-	/// let bg_processor = BackgroundProcessor::from_config(config);
-	/// ```
 	pub fn from_config<
 		'a,
 		UL: 'static + Deref + Send + Sync,
@@ -1083,7 +1064,7 @@ impl BackgroundProcessor {
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
 	>(
-		config: BackgroundProcessorConfig<
+		#[rustfmt::skip] config: BackgroundProcessorConfig<
 			'a,
 			UL,
 			CF,
@@ -1193,32 +1174,6 @@ impl BackgroundProcessor {
 /// * Running the async variant of the background processor via [`process_events_async`]"
 )]
 ///
-/// # Example
-/// ```
-/// # use lightning_background_processor::*;
-/// let mut builder = BackgroundProcessorConfigBuilder::new(
-///     persister,
-///     event_handler,
-///     chain_monitor,
-///     channel_manager,
-///     gossip_sync,
-///     peer_manager,
-///     logger
-/// );
-/// builder.with_onion_messenger(messenger);  // Optional
-/// 		.with_scorer(scorer);              // Optional
-/// let config = builder.build();
-///
-/// // Use with BackgroundProcessor
-/// let processor = BackgroundProcessor::from_config(config);
-///
-#[cfg_attr(
-	feature = "futures",
-	doc = "
-/// // Or use with async processing
-/// process_events_async(config, sleeper, mobile_interruptable_platform, fetch_time).await?;"
-)]
-/// ```
 #[cfg(any(feature = "std", feature = "futures"))]
 pub struct BackgroundProcessorConfig<
 	'a,
@@ -1230,7 +1185,8 @@ pub struct BackgroundProcessorConfig<
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
 	#[cfg(feature = "std")] EH: 'static + EventHandler + Send,
-	#[cfg(feature = "futures")] EH: 'static + Fn(Event) -> core::future::Future<Output = Result<(), ReplayEvent>>,
+	#[cfg(feature = "futures")] EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
+	#[cfg(feature = "futures")] EH: 'static + Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
 	M: 'static
 		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
@@ -1272,7 +1228,7 @@ pub struct BackgroundProcessorConfig<
 /// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessorConfig`]
 /// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
 /// concrete types for components that aren't being used.
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "futures"))]
 pub struct BackgroundProcessorConfigBuilder<
 	'a,
 	UL: 'static + Deref + Send + Sync,
@@ -1282,7 +1238,9 @@ pub struct BackgroundProcessorConfigBuilder<
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
-	EH: 'static + EventHandler + Send,
+	#[cfg(feature = "std")] EH: 'static + EventHandler + Send,
+	#[cfg(feature = "futures")] EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
+	#[cfg(feature = "futures")] EH: 'static + Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
 	M: 'static
 		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
@@ -1319,7 +1277,7 @@ pub struct BackgroundProcessorConfigBuilder<
 	_phantom: PhantomData<(&'a (), CF, T, F, P)>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "futures"))]
 impl<
 		'a,
 		UL: 'static + Deref + Send + Sync,
@@ -1329,7 +1287,9 @@ impl<
 		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
-		EH: 'static + EventHandler + Send,
+		#[cfg(feature = "std")] EH: 'static + EventHandler + Send,
+		#[cfg(feature = "futures")] EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
+		#[cfg(feature = "futures")] EH: 'static + Fn(Event) -> EventHandlerFuture,
 		PS: 'static + Deref + Send,
 		M: 'static
 			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
@@ -3196,7 +3156,7 @@ mod tests {
 		// Check scorer is persisted
 		let filepath =
 			get_full_filepath(format!("{}_persister_0", &persist_dir), "scorer".to_string());
-		check_persisted_data!(nodes[0].scorer, filepath);
+		check_persisted_data!(nodes[0].scorer, filepath.clone());
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
