@@ -449,7 +449,8 @@ fn test_inbound_scid_privacy() {
 	);
 	check_added_monitors(&nodes[1], 1);
 
-	nodes[1].logger.assert_log_regex("lightning::ln::channelmanager", regex::Regex::new(r"Refusing to forward over real channel SCID as our counterparty requested").unwrap(), 1);
+	nodes[1].logger.assert_log_regex("lightning::ln::channelmanager",
+		regex::Regex::new(r"Failed to accept/forward incoming HTLC: RealSCIDForward").unwrap(), 1);
 
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
