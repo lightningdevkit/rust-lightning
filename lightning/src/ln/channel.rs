@@ -3303,22 +3303,32 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Checks whether the channel has any HTLC additions, HTLC removals, or fee updates that have
+	/// been sent by either side but not yet irrevocably committed on both commitments because we're
+	/// waiting on a pending monitor update or signer request.
+	pub fn is_monitor_or_signer_pending_channel_update(&self) -> bool {
+		self.channel_state.is_monitor_update_in_progress()
+			|| self.signer_pending_revoke_and_ack
+			|| self.signer_pending_commitment_update
+	}
+
+	/// Checks whether the channel has any HTLC additions, HTLC removals, or fee updates that have
 	/// been sent by either side but not yet irrevocably committed on both commitments. Holding cell
 	/// updates are not considered because they haven't been sent to the peer yet.
 	///
 	/// This can be used to satisfy quiescence's requirement when sending `stfu`:
 	///  - MUST NOT send `stfu` if any of the sender's htlc additions, htlc removals
 	///    or fee updates are pending for either peer.
-	fn has_pending_channel_update(&self) -> bool {
+	///
+	/// Note that it is still possible for an update to be pending that's not captured here due to a
+	/// pending monitor update or signer request. `is_monitor_or_signer_pending_channel_update`
+	/// should also be checked in such cases.
+	fn is_waiting_on_peer_pending_channel_update(&self) -> bool {
 		// An update from the local/remote node may be pending on the remote/local commitment since
 		// they are not tracked within our state, so we rely on whether any `commitment_signed` or
 		// `revoke_and_ack` messages are owed.
 		//
 		// We check these flags first as they are more likely to be set.
-		if self.channel_state.is_awaiting_remote_revoke() || self.expecting_peer_commitment_signed
-			|| self.monitor_pending_revoke_and_ack || self.signer_pending_revoke_and_ack
-			|| self.monitor_pending_commitment_signed || self.signer_pending_commitment_update
-		{
+		if self.channel_state.is_awaiting_remote_revoke() || self.expecting_peer_commitment_signed {
 			return true;
 		}
 
@@ -7513,8 +7523,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			|| self.context.channel_state.is_local_stfu_sent()
 			// Cleared upon receiving a message that triggers the end of quiescence.
 			|| self.context.channel_state.is_quiescent()
-			// Cleared upon receiving `revoke_and_ack`.
-			|| self.context.has_pending_channel_update()
+			// Cleared upon receiving `revoke_and_ack`. Since we're not queiscent, as we just
+			// checked above, we intentionally don't disconnect our counterparty if we're waiting on
+			// a monitor update or signer request.
+			|| (self.context.is_waiting_on_peer_pending_channel_update()
+				&& !self.context.is_monitor_or_signer_pending_channel_update())
 		{
 			// This is the first tick we've seen after expecting to make forward progress.
 			self.context.sent_message_awaiting_response = Some(1);
@@ -9397,7 +9410,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		);
 		debug_assert!(self.context.is_live());
 
-		if self.context.has_pending_channel_update() {
+		if self.context.is_waiting_on_peer_pending_channel_update()
+			|| self.context.is_monitor_or_signer_pending_channel_update()
+		{
 			return Err(ChannelError::Ignore(
 				"We cannot send `stfu` while state machine is pending".to_owned()
 			));
@@ -9458,10 +9473,11 @@ impl<SP: Deref> FundedChannel<SP> where
 				));
 			}
 
-			// We don't check `has_pending_channel_update` prior to setting the flag because it
-			// considers pending updates from either node. This means we may accept a counterparty
-			// `stfu` while they had pending updates, but that's fine as we won't send ours until
-			// _all_ pending updates complete, allowing the channel to become quiescent then.
+			// We don't check `is_waiting_on_peer_pending_channel_update` prior to setting the flag
+			// because it considers pending updates from either node. This means we may accept a
+			// counterparty `stfu` while they had pending updates, but that's fine as we won't send
+			// ours until _all_ pending updates complete, allowing the channel to become quiescent
+			// then.
 			self.context.channel_state.set_remote_stfu_sent();
 
 			let is_holder_initiator = if self.context.channel_state.is_awaiting_quiescence() {
@@ -9485,7 +9501,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		// We were expecting to receive `stfu` because we already sent ours.
 		self.mark_response_received();
 
-		if self.context.has_pending_channel_update() {
+		if self.context.is_waiting_on_peer_pending_channel_update()
+			|| self.context.is_monitor_or_signer_pending_channel_update()
+		{
 			// Since we've already sent `stfu`, it should not be possible for one of our updates to
 			// be pending, so anything pending currently must be from a counterparty update.
 			return Err(ChannelError::WarnAndDisconnect(

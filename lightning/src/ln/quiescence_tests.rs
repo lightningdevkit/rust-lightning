@@ -180,10 +180,10 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 }
 
 #[test]
-fn test_quiescence_tracks_monitor_update_in_progress_and_waits_for_async_signer() {
+fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	// Test that quiescence:
 	//   a) considers an async signer when determining whether a pending channel update exists
-	//   b) tracks in-progress monitor updates until no longer quiescent
+	//   b) waits until pending monitor updates complete to send `stfu`/become quiescent
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -244,29 +244,12 @@ fn test_quiescence_tracks_monitor_update_in_progress_and_waits_for_async_signer(
 	let revoke_and_ack = find_msg!(msg_events, SendRevokeAndACK);
 	let stfu = find_msg!(msg_events, SendStfu);
 
-	// While handling the last `revoke_and_ack` on nodes[0], we'll hold the monitor update and
-	// become quiescent.
+	// While handling the last `revoke_and_ack` on nodes[0], we'll hold the monitor update. We
+	// cannot become quiescent until it completes.
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.handle_revoke_and_ack(node_id_1, &revoke_and_ack);
 
 	nodes[0].node.handle_stfu(node_id_1, &stfu);
-	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
-	nodes[1].node.handle_stfu(node_id_0, &stfu);
-
-	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
-	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
-
-	// After exiting quiescence, we should be able to resume payments from nodes[0], but the monitor
-	// update has yet to complete. Attempting to send a payment now will be delayed until the
-	// monitor update completes.
-	{
-		let (route, payment_hash, _, payment_secret) =
-			get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
-		let onion = RecipientOnionFields::secret_only(payment_secret);
-		let payment_id = PaymentId(payment_hash.0);
-		nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
-	}
-	check_added_monitors(&nodes[0], 0);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// We have two updates pending:
@@ -276,17 +259,21 @@ fn test_quiescence_tracks_monitor_update_in_progress_and_waits_for_async_signer(
 			chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
 		let chain_monitor = &nodes[0].chain_monitor.chain_monitor;
 		// One for the latest commitment transaction update from the last `revoke_and_ack`
-		chain_monitor.channel_monitor_updated(chan_id, latest_update - 1).unwrap();
+		chain_monitor.channel_monitor_updated(chan_id, latest_update).unwrap();
 		expect_payment_sent(&nodes[0], preimage, None, true, true);
 		// One for the commitment secret update from the last `revoke_and_ack`
-		chain_monitor.channel_monitor_updated(chan_id, latest_update).unwrap();
+		chain_monitor.channel_monitor_updated(chan_id, latest_update + 1).unwrap();
 	}
 
-	// With the pending monitor updates complete, we'll see a new monitor update go out when freeing
-	// the holding cells to send out the new HTLC.
-	nodes[0].chain_monitor.complete_sole_pending_chan_update(&chan_id);
-	let _ = get_htlc_update_msgs!(&nodes[0], node_id_1);
-	check_added_monitors(&nodes[0], 1);
+	// With the updates completed, we can now become quiescent.
+	let stfu = get_event_msg!(&nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+
+	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
+	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+
+	// After exiting quiescence, we should be able to resume payments from nodes[0].
+	send_payment(&nodes[0], &[&nodes[1]], payment_amount);
 }
 
 #[test]
