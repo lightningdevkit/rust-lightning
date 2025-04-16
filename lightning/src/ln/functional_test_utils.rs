@@ -24,6 +24,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEven
 use crate::ln::outbound_payment::Retry;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use crate::onion_message::messenger::OnionMessenger;
+use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::sign::{EntropySource, RandomBytes};
@@ -2515,7 +2516,7 @@ pub fn expect_probe_successful_events(node: &Node, mut probe_results: Vec<(Payme
 }
 
 pub struct PaymentFailedConditions<'a> {
-	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,
+	pub(crate) expected_htlc_error_data: Option<(LocalHTLCFailureReason, &'a [u8])>,
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
 	pub(crate) expected_mpp_parts_remain: bool,
@@ -2544,8 +2545,8 @@ impl<'a> PaymentFailedConditions<'a> {
 		self.expected_blamed_chan_closed = Some(closed);
 		self
 	}
-	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
-		self.expected_htlc_error_data = Some((code, data));
+	pub fn expected_htlc_error_data(mut self, reason: LocalHTLCFailureReason, data: &'a [u8]) -> Self {
+		self.expected_htlc_error_data = Some((reason, data));
 		self
 	}
 	pub fn retry_expected(mut self) -> Self {
@@ -2566,11 +2567,11 @@ macro_rules! expect_payment_failed_with_update {
 
 #[cfg(any(test, feature = "_externalize_tests"))]
 macro_rules! expect_payment_failed {
-	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
+	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_reason: expr, $expected_error_data: expr)*) => {
 		#[allow(unused_mut)]
 		let mut conditions = $crate::ln::functional_test_utils::PaymentFailedConditions::new();
 		$(
-			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
+			conditions = conditions.expected_htlc_error_data($expected_error_reason, &$expected_error_data);
 		)*
 		$crate::ln::functional_test_utils::expect_payment_failed_conditions(&$node, $expected_payment_hash, $payment_failed_permanently, conditions);
 	};
@@ -2591,8 +2592,9 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
+				let reason: LocalHTLCFailureReason = error_code.unwrap().into();
 				if let Some((code, data)) = conditions.expected_htlc_error_data {
-					assert_eq!(error_code.unwrap(), code, "unexpected error code");
+					assert_eq!(reason, code, "unexpected error code");
 					assert_eq!(&error_data.as_ref().unwrap()[..], data, "unexpected error data");
 				}
 			}
