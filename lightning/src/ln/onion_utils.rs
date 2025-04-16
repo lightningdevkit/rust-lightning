@@ -36,7 +36,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::io::{Cursor, Read};
-use core::ops::Deref;
+use core::{fmt, ops::Deref};
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -1709,6 +1709,87 @@ impl From<u16> for LocalHTLCFailureReason {
 			LocalHTLCFailureReason::InvalidOnionBlinding
 		} else {
 			LocalHTLCFailureReason::UnknownFailureCode { code: value }
+		}
+	}
+}
+
+impl fmt::Display for LocalHTLCFailureReason {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			Self::TemporaryNodeFailure => write!(f, "Node indicated a temporary failure which may resolve on retry"),
+			Self::ForwardExpiryBuffer => {
+				write!(f, "HTLC forward's outgoing expiry is too close to current block height for safe handling")
+			},
+			Self::PermanentNodeFailure => write!(f, "Node indicated a permanent failure which will not resolve on retry"),
+			Self::RequiredNodeFeature => {
+				write!(f, "HTLC does not implmement a feature that is required by the node")
+			},
+			Self::PaymentSecretRequired => write!(f, "Payment secret field is missing for payment where it is required"),
+			Self::InvalidOnionVersion => write!(f, "Node does not understand the onion version received"),
+			Self::InvalidOnionHMAC => write!(f, "The HMAC of the onion packet is incorrect"),
+			Self::InvalidOnionKey => write!(f, "The ephemeral publick key of the onion packet is unparseable"),
+			Self::TemporaryChannelFailure => write!(f, "Node indiciated a temporary channel failure which may resolve on retry"),
+			Self::DustLimitHolder => {
+				write!(f, "HTLC exceeds our dust limit on holder commitment tx")
+			},
+			Self::DustLimitCounterparty => {
+				write!(f, "HTLC exceeds our dust limit on counterparty commitment tx")
+			},
+			Self::FeeSpikeBuffer => {
+				write!(f, "HTLC exceeds fee spike buffer reserved on counterparty's balance")
+			},
+			Self::ChannelNotReady => {
+				write!(f, "Channel is not ready to be utilized for forwards")
+			},
+			Self::AmountExceedsCapacity => {
+				write!(f, "Amount is greater than channel capacity")
+			},
+			Self::ZeroAmount => write!(f, "Zero amount HTLC not allowed"),
+			Self::HTLCMinimum => write!(f, "Amount is less than channel's current liquidity minimum"),
+			Self::HTLCMaximum => {
+				write!(f, "Amount is more than the channel's current liquidity maximum")
+			},
+			Self::PeerOffline => write!(f, "Outgoing channel counterparty is offline"),
+			Self::PermanentChannelFailure => write!(f, "Node indicated a permanent channel failure which will not resolve on retry"),
+			Self::ChannelClosed => write!(f, "Channel is has been closed"),
+			Self::OnChainTimeout => write!(f, "HTLC timed out on chain"),
+			Self::RequiredChannelFeature => {
+				write!(f, "HTLC does not implement a feature that is required by the channel")
+			},
+			Self::UnknownNextPeer => write!(f, "Requested outgoing channel is unknown"),
+			Self::PrivateChannelForward => write!(f, "Forward over private channel rejected"),
+			Self::RealSCIDForward => {
+				write!(f, "Forward using real scid over aliased channel rejected")
+			},
+			Self::InvalidTrampolineForward => write!(f, "Invalid trampoline forward"),
+			Self::AmountBelowMinimum => write!(f, "Amount is less than the required minimum for the outbound channel"),
+			Self::FeeInsufficient => write!(f, "Fee amount does not meet the amount required by the outgoing channel's advertised policy"),
+
+			Self::IncorrectCLTVExpiry => write!(f, "CLTV expiry does not meet the cltv_expiry_delta advertised by the outgoing channel"),
+			Self::CLTVExpiryTooSoon => write!(f, "CLTV expiry is too close to the current block height for safe relay"),
+			Self::OutgoingCLTVTooSoon => {
+				write!(f, "Outgoing CLTV value is too close to the current block height for safe relay")
+			},
+			Self::IncorrectPaymentDetails => write!(f, "Payment made with incorrect or unknown payment information"),
+			Self::PaymentClaimBuffer => write!(f, "Payment arrived too close to its expiry height to be safely claimed"),
+			Self::InvalidKeysendPreimage => write!(f, "Invalid or missing keysend preimage"),
+			Self::FinalIncorrectCLTVExpiry => {
+				write!(f, "Final node received a CLTV expiry that does not match the value in the onion")
+			},
+			Self::FinalIncorrectHTLCAmount => {
+				write!(f, "Final node received an amount that does not match the value in the onion")
+			},
+			Self::ChannelDisabled => write!(f, "Channel has been disconnected for some time"),
+			Self::CLTVExpiryTooFar => write!(f, "CLTV expiry is too far in the future"),
+			Self::InvalidOnionPayload => {
+				write!(f, "Onion payload could not be parsed")
+			},
+			Self::InvalidTrampolinePayload => {
+				write!(f, "Tramopline payload could not be parsed")
+			},
+			Self::MPPTimeout => write!(f, "Multi-part payment timed out before completion"),
+			Self::InvalidOnionBlinding => write!(f, "Invalid onion blinding information"),
+			Self::UnknownFailureCode { code } => write!(f, "Unknown failure code: {}", code),
 		}
 	}
 }
