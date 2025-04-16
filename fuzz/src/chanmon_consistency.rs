@@ -1746,8 +1746,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
-				// First make sure there are no pending monitor updates and further update
-				// operations complete.
 
 				// First, make sure peers are all connected to each other
 				if chan_a_disconnected {
