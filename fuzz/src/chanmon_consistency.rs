@@ -705,11 +705,15 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (channel_id, mut prev_state) in old_monitors.drain() {
 				let serialized_mon = if $use_old_mons % 3 == 0 {
+					// Reload with the oldest `ChannelMonitor` (the one that we already told
+					// `ChannelManager` we finished persisting).
 					prev_state.persisted_monitor
 				} else if $use_old_mons % 3 == 1 {
+					// Reload with the second-oldest `ChannelMonitor`
 					let old_mon = prev_state.persisted_monitor;
 					prev_state.pending_monitors.drain(..).next().map(|(_, v)| v).unwrap_or(old_mon)
 				} else {
+					// Reload with the newest `ChannelMonitor`
 					let old_mon = prev_state.persisted_monitor;
 					prev_state.pending_monitors.pop().map(|(_, v)| v).unwrap_or(old_mon)
 				};
