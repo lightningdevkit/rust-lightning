@@ -2573,7 +2573,7 @@ where
 	/// [`ChannelMonitorUpdateStatus::Completed`] without restarting. Because the API does not
 	/// otherwise directly enforce this, we enforce it in debug builds here by storing which one is
 	/// in use.
-	#[cfg(all(not(test), debug_assertions))]
+	#[cfg(not(test))]
 	monitor_update_type: AtomicUsize,
 
 	/// The set of events which we need to give to the user to handle. In some cases an event may
@@ -3319,7 +3319,7 @@ macro_rules! handle_new_monitor_update {
 				panic!("{}", err_str);
 			},
 			ChannelMonitorUpdateStatus::InProgress => {
-				#[cfg(all(not(test), debug_assertions))]
+				#[cfg(not(test))]
 				if $self.monitor_update_type.swap(1, Ordering::Relaxed) == 2 {
 					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
 				}
@@ -3328,7 +3328,7 @@ macro_rules! handle_new_monitor_update {
 				false
 			},
 			ChannelMonitorUpdateStatus::Completed => {
-				#[cfg(all(not(test), debug_assertions))]
+				#[cfg(not(test))]
 				if $self.monitor_update_type.swap(2, Ordering::Relaxed) == 1 {
 					panic!("Cannot use both ChannelMonitorUpdateStatus modes InProgress and Completed without restart");
 				}
@@ -3592,7 +3592,7 @@ where
 
 			per_peer_state: FairRwLock::new(new_hash_map()),
 
-			#[cfg(all(not(test), debug_assertions))]
+			#[cfg(not(test))]
 			monitor_update_type: AtomicUsize::new(0),
 
 			pending_events: Mutex::new(VecDeque::new()),
@@ -14765,7 +14765,7 @@ where
 
 			per_peer_state: FairRwLock::new(per_peer_state),
 
-			#[cfg(all(not(test), debug_assertions))]
+			#[cfg(not(test))]
 			monitor_update_type: AtomicUsize::new(0),
 
 			pending_events: Mutex::new(pending_events_read),
