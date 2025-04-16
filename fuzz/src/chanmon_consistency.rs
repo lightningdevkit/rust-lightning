@@ -969,10 +969,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let (node_b, mut monitor_b, keys_manager_b) = make_node!(1, fee_est_b);
 	let (node_c, mut monitor_c, keys_manager_c) = make_node!(2, fee_est_c);
 
-	let empty_node_a_ser = node_a.encode();
-	let empty_node_b_ser = node_b.encode();
-	let empty_node_c_ser = node_c.encode();
-
 	let mut nodes = [node_a, node_b, node_c];
 
 	let chan_1_id = make_channel!(nodes[0], nodes[1], keys_manager_b, 0);
