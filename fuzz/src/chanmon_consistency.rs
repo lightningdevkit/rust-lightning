@@ -1512,6 +1512,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x27 => process_ev_noret!(2, false),
 
 			0x2a | 0x2b | 0x2c => {
+				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
 				if !chan_a_disconnected {
 					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
@@ -1530,6 +1532,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				monitor_a = new_monitor_a;
 			},
 			0x28 | 0x29 | 0x2d => {
+				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
 					chan_a_disconnected = true;
@@ -1552,6 +1556,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				monitor_b = new_monitor_b;
 			},
 			0x2e | 0x2f => {
+				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
 					chan_b_disconnected = true;
