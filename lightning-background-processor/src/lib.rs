@@ -36,10 +36,10 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::{ChangeDestinationSource, OutputSpender};
+use lightning::sign::{ChangeDestinationSource, ChangeDestinationSourceSync, OutputSpender};
 use lightning::util::logger::Logger;
 use lightning::util::persist::{KVStore, Persister};
-use lightning::util::sweep::OutputSweeper;
+use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -313,7 +313,7 @@ macro_rules! define_run_body {
 		$channel_manager: ident, $process_channel_manager_events: expr,
 		$onion_messenger: ident, $process_onion_message_handler_events: expr,
 		$peer_manager: ident, $gossip_sync: ident,
-		$sweeper: ident,
+		$sweeper: expr,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
 		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
 	) => { {
@@ -473,7 +473,7 @@ macro_rules! define_run_body {
 
 			if $timer_elapsed(&mut last_sweeper_call, SWEEPER_TIMER) {
 				log_trace!($logger, "Regenerate sweeper spends if necessary");
-				let _ = $sweeper.regenerate_and_broadcast_spend_if_necessary_locked();
+				let _ = $sweeper;
 				last_sweeper_call = $get_timer(SWEEPER_TIMER);
 			}
 		}
@@ -602,7 +602,7 @@ pub(crate) mod futures_util {
 	}
 }
 #[cfg(feature = "futures")]
-use core::task;
+use core::{task, future::Future};
 #[cfg(feature = "futures")]
 use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 
@@ -757,6 +757,10 @@ pub async fn process_events_async<
 		+ Sync,
 	CM: 'static + Deref + Send + Sync,
 	OM: 'static + Deref + Send + Sync,
+	D: 'static + Deref + Send + Sync,
+	O: 'static + Deref + Send + Sync,
+	K: 'static + Deref + Send + Sync,
+	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	PM: 'static + Deref + Send + Sync,
@@ -768,12 +772,13 @@ pub async fn process_events_async<
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
+	sweeper: OS,
 	logger: L, scorer: Option<S>, sleeper: Sleeper, mobile_interruptable_platform: bool,
 	fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
-	CF::Target: 'static + chain::Filter,
+	CF::Target: 'static + chain::Filter + Sync + Send,
 	T::Target: 'static + BroadcasterInterface,
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
@@ -782,6 +787,9 @@ where
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
+	O::Target: 'static + OutputSpender + Send + Sync,
+	D::Target: 'static + ChangeDestinationSource + Send + Sync,
+	K::Target: 'static + KVStore + Send + Sync,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -825,6 +833,7 @@ where
 		},
 		peer_manager,
 		gossip_sync,
+		sweeper.regenerate_and_broadcast_spend_if_necessary().await,
 		logger,
 		scorer,
 		should_break,
@@ -937,16 +946,17 @@ impl BackgroundProcessor {
 		PM: 'static + Deref + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
-		D: 'static + Deref + Send + Sync,
+		D: Deref,
 		O: 'static + Deref + Send + Sync,
 		K: 'static + Deref + Send + Sync,
-		OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>> + Send + Sync,
+		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send + Sync,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
 		sweeper: OS, logger: L, scorer: Option<S>,
 	) -> Self
 	where
+		D::Target: ChangeDestinationSourceSync,
 		UL::Target: 'static + UtxoLookup,
 		CF::Target: 'static + chain::Filter + Sync + Send,
 		T::Target: 'static + BroadcasterInterface,
@@ -958,7 +968,6 @@ impl BackgroundProcessor {
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
 		O::Target: 'static + OutputSpender + Send + Sync,
-		D::Target: 'static + ChangeDestinationSource + Send + Sync,
 		K::Target: 'static + KVStore + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
@@ -995,7 +1004,7 @@ impl BackgroundProcessor {
 				},
 				peer_manager,
 				gossip_sync,
-				sweeper,
+				sweeper.regenerate_and_broadcast_spend_if_necessary(),
 				logger,
 				scorer,
 				stop_thread.load(Ordering::Acquire),
@@ -1108,8 +1117,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::routing::utxo::UtxoLookup;
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{ChangeDestinationSourceSync, InMemorySigner, KeysManager};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1121,7 +1129,7 @@ mod tests {
 		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
-	use lightning::util::sweep::{OutputSpendStatus, OutputSweeper, PRUNE_DELAY_BLOCKS};
+	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_persister::fs_store::FilesystemStore;
@@ -1242,7 +1250,7 @@ mod tests {
 		best_block: BestBlock,
 		scorer: Arc<LockingWrapper<TestScorer>>,
 		sweeper: Arc<
-			OutputSweeper<
+			OutputSweeperSync<
 				Arc<test_utils::TestBroadcaster>,
 				Arc<TestWallet>,
 				Arc<test_utils::TestFeeEstimator>,
@@ -1543,7 +1551,7 @@ mod tests {
 
 	struct TestWallet {}
 
-	impl ChangeDestinationSource for TestWallet {
+	impl ChangeDestinationSourceSync for TestWallet {
 		fn get_change_destination_script(&self) -> Result<ScriptBuf, ()> {
 			Ok(ScriptBuf::new())
 		}
@@ -1622,7 +1630,7 @@ mod tests {
 				IgnoringMessageHandler {},
 			));
 			let wallet = Arc::new(TestWallet {});
-			let sweeper = Arc::new(OutputSweeper::new(
+			let sweeper = Arc::new(OutputSweeperSync::new(
 				best_block,
 				Arc::clone(&tx_broadcaster),
 				Arc::clone(&fee_estimator),
@@ -2027,6 +2035,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.sweeper_async(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2514,6 +2523,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.sweeper_async(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2727,6 +2737,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			nodes[0].sweeper.sweeper_async(),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
