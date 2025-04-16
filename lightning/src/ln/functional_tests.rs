@@ -747,14 +747,14 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
-		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
-		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
+		let commitment_tx = CommitmentTransaction::new(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			&remote_point,
 			push_sats,
 			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
 			non_buffer_feerate + 4,
-			&mut htlcs,
+			nondust_htlcs,
 			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable(),
 			&secp_ctx,
 		);
@@ -832,8 +832,8 @@ pub fn test_update_fee_that_saturates_subs() {
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan_id).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
-		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
-		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
+		let commitment_tx = CommitmentTransaction::new(
 			INITIAL_COMMITMENT_NUMBER,
 			&remote_point,
 			8500,
@@ -841,7 +841,7 @@ pub fn test_update_fee_that_saturates_subs() {
 			// he will do a saturating subtraction of the total fees from node 0's balance.
 			0,
 			FEERATE,
-			&mut htlcs,
+			nondust_htlcs,
 			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable(),
 			&secp_ctx,
 		);
@@ -1566,13 +1566,13 @@ pub fn test_fee_spike_violation_fails_htlc() {
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).and_then(Channel::as_funded).unwrap();
 		let local_chan_signer = local_chan.get_signer();
-		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+		let commitment_tx = CommitmentTransaction::new(
 			commitment_number,
 			&remote_point,
 			95000,
 			local_chan_balance,
 			feerate_per_kw,
-			&mut vec![(accepted_htlc_info, ())],
+			vec![accepted_htlc_info],
 			&local_chan.funding.channel_transaction_parameters.as_counterparty_broadcastable(),
 			&secp_ctx,
 		);

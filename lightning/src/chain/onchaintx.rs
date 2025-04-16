@@ -1296,22 +1296,21 @@ mod tests {
 
 		// Create an OnchainTxHandler for a commitment containing HTLCs with CLTV expiries of 0, 1,
 		// and 2 blocks.
-		let mut htlcs = Vec::new();
+		let mut nondust_htlcs = Vec::new();
 		for i in 0..3 {
 			let preimage = PaymentPreimage([i; 32]);
 			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
-			htlcs.push((
+			nondust_htlcs.push(
 				HTLCOutputInCommitment {
 					offered: true,
 					amount_msat: 10000,
 					cltv_expiry: i as u32,
 					payment_hash: hash,
 					transaction_output_index: Some(i as u32),
-				},
-				(),
-			));
+				}
+			);
 		}
-		let holder_commit = HolderCommitmentTransaction::dummy(1000000, &mut htlcs);
+		let holder_commit = HolderCommitmentTransaction::dummy(1000000, nondust_htlcs);
 		let destination_script = ScriptBuf::new();
 		let mut tx_handler = OnchainTxHandler::new(
 			1000000,

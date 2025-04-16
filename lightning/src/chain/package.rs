@@ -1712,7 +1712,7 @@ mod tests {
 					payment_hash: PaymentHash::from(preimage),
 					transaction_output_index: None,
 				};
-				let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut vec![(htlc.clone(), ())]);
+				let commitment_tx = HolderCommitmentTransaction::dummy(0, vec![htlc.clone()]);
 				let trusted_tx = commitment_tx.trust();
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
 					HTLCDescriptor {
@@ -1746,7 +1746,7 @@ mod tests {
 					payment_hash: PaymentHash::from(PaymentPreimage([2;32])),
 					transaction_output_index: None,
 				};
-				let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut vec![(htlc.clone(), ())]);
+				let commitment_tx = HolderCommitmentTransaction::dummy(0, vec![htlc.clone()]);
 				let trusted_tx = commitment_tx.trust();
 				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(
 					HTLCDescriptor {
@@ -1770,7 +1770,7 @@ mod tests {
 
 	macro_rules! dumb_funding_output {
 		() => {{
-			let commitment_tx = HolderCommitmentTransaction::dummy(0, &mut Vec::new());
+			let commitment_tx = HolderCommitmentTransaction::dummy(0, Vec::new());
 			let mut channel_parameters = ChannelTransactionParameters::test_dummy(0);
 			channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 			PackageSolvingData::HolderFundingOutput(HolderFundingOutput::build(
