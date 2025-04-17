@@ -198,6 +198,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1CreateOrderRequest,
 	) -> Result<(), LightningError> {
+		let event_queue_notifier = self.pending_events.notifier();
 		if !is_valid(&params.order, &self.config.supported_options.as_ref().unwrap()) {
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_ORDER_MISMATCH_ERROR_CODE,
@@ -231,7 +232,7 @@ where
 				.insert(request_id.clone(), LSPS1Request::CreateOrder(params.clone()));
 		}
 
-		self.pending_events.enqueue(LSPS1ServiceEvent::RequestForPaymentDetails {
+		event_queue_notifier.enqueue(LSPS1ServiceEvent::RequestForPaymentDetails {
 			request_id,
 			counterparty_node_id: *counterparty_node_id,
 			order: params.order,
@@ -315,6 +316,7 @@ where
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
 		params: LSPS1GetOrderRequest,
 	) -> Result<(), LightningError> {
+		let event_queue_notifier = self.pending_events.notifier();
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -333,7 +335,7 @@ where
 
 				if let Err(e) = outbound_channel.awaiting_payment() {
 					peer_state_lock.outbound_channels_by_order_id.remove(&params.order_id);
-					self.pending_events.enqueue(LSPS1ServiceEvent::Refund {
+					event_queue_notifier.enqueue(LSPS1ServiceEvent::Refund {
 						request_id,
 						counterparty_node_id: *counterparty_node_id,
 						order_id: params.order_id,
@@ -345,7 +347,7 @@ where
 					.pending_requests
 					.insert(request_id.clone(), LSPS1Request::GetOrder(params.clone()));
 
-				self.pending_events.enqueue(LSPS1ServiceEvent::CheckPaymentConfirmation {
+				event_queue_notifier.enqueue(LSPS1ServiceEvent::CheckPaymentConfirmation {
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					order_id: params.order_id,

@@ -27,7 +27,7 @@ bitcoin = { version = "0.32.2", default-features = false, features = ["serde"] }
 
 chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 backtrace = { version = "0.3", optional = true }
 
 [dev-dependencies]
