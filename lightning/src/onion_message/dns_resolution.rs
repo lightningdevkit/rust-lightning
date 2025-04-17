@@ -179,32 +179,36 @@ impl OnionMessageContents for DNSResolverMessage {
 	}
 }
 
+// Note that `REQUIRED_EXTRA_LEN` includes the (implicit) trailing `.`
+const REQUIRED_EXTRA_LEN: usize = ".user._bitcoin-payment.".len() + 1;
+
 /// A struct containing the two parts of a BIP 353 Human Readable Name - the user and domain parts.
 ///
-/// The `user` and `domain` parts, together, cannot exceed 232 bytes in length, and both must be
+/// The `user` and `domain` parts, together, cannot exceed 231 bytes in length, and both must be
 /// non-empty.
 ///
-/// To protect against [Homograph Attacks], both parts of a Human Readable Name must be plain
-/// ASCII.
+/// If you intend to handle non-ASCII `user` or `domain` parts, you must handle [Homograph Attacks]
+/// and do punycode en-/de-coding yourself. This struct will always handle only plain ASCII `user`
+/// and `domain` parts.
+///
+/// This struct can also be used for LN-Address recipients.
 ///
 /// [Homograph Attacks]: https://en.wikipedia.org/wiki/IDN_homograph_attack
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct HumanReadableName {
-	// TODO Remove the heap allocations given the whole data can't be more than 256 bytes.
-	user: String,
-	domain: String,
+	contents: [u8; 255 - REQUIRED_EXTRA_LEN],
+	user_len: u8,
+	domain_len: u8,
 }
 
 impl HumanReadableName {
 	/// Constructs a new [`HumanReadableName`] from the `user` and `domain` parts. See the
 	/// struct-level documentation for more on the requirements on each.
-	pub fn new(user: String, mut domain: String) -> Result<HumanReadableName, ()> {
+	pub fn new(user: &str, mut domain: &str) -> Result<HumanReadableName, ()> {
 		// First normalize domain and remove the optional trailing `.`
-		if domain.ends_with(".") {
-			domain.pop();
+		if domain.ends_with('.') {
+			domain = &domain[..domain.len() - 1];
 		}
-		// Note that `REQUIRED_EXTRA_LEN` includes the (now implicit) trailing `.`
-		const REQUIRED_EXTRA_LEN: usize = ".user._bitcoin-payment.".len() + 1;
 		if user.len() + domain.len() + REQUIRED_EXTRA_LEN > 255 {
 			return Err(());
 		}
@@ -214,7 +218,14 @@ impl HumanReadableName {
 		if !Hostname::str_is_valid_hostname(&user) || !Hostname::str_is_valid_hostname(&domain) {
 			return Err(());
 		}
-		Ok(HumanReadableName { user, domain })
+		let mut contents = [0; 255 - REQUIRED_EXTRA_LEN];
+		contents[..user.len()].copy_from_slice(user.as_bytes());
+		contents[user.len()..user.len() + domain.len()].copy_from_slice(domain.as_bytes());
+		Ok(HumanReadableName {
+			contents,
+			user_len: user.len() as u8,
+			domain_len: domain.len() as u8,
+		})
 	}
 
 	/// Constructs a new [`HumanReadableName`] from the standard encoding - `user`@`domain`.
@@ -224,7 +235,7 @@ impl HumanReadableName {
 	pub fn from_encoded(encoded: &str) -> Result<HumanReadableName, ()> {
 		if let Some((user, domain)) = encoded.strip_prefix('₿').unwrap_or(encoded).split_once("@")
 		{
-			Self::new(user.to_string(), domain.to_string())
+			Self::new(user, domain)
 		} else {
 			Err(())
 		}
@@ -232,41 +243,42 @@ impl HumanReadableName {
 
 	/// Gets the `user` part of this Human Readable Name
 	pub fn user(&self) -> &str {
-		&self.user
+		let bytes = &self.contents[..self.user_len as usize];
+		core::str::from_utf8(bytes).expect("Checked in constructor")
 	}
 
 	/// Gets the `domain` part of this Human Readable Name
 	pub fn domain(&self) -> &str {
-		&self.domain
+		let user_len = self.user_len as usize;
+		let bytes = &self.contents[user_len..user_len + self.domain_len as usize];
+		core::str::from_utf8(bytes).expect("Checked in constructor")
 	}
 }
 
 // Serialized per the requirements for inclusion in a BOLT 12 `invoice_request`
 impl Writeable for HumanReadableName {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		(self.user.len() as u8).write(writer)?;
-		writer.write_all(&self.user.as_bytes())?;
-		(self.domain.len() as u8).write(writer)?;
-		writer.write_all(&self.domain.as_bytes())
+		(self.user().len() as u8).write(writer)?;
+		writer.write_all(&self.user().as_bytes())?;
+		(self.domain().len() as u8).write(writer)?;
+		writer.write_all(&self.domain().as_bytes())
 	}
 }
 
 impl Readable for HumanReadableName {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut read_bytes = [0; 255];
-
+		let mut user_bytes = [0; 255];
 		let user_len: u8 = Readable::read(reader)?;
-		reader.read_exact(&mut read_bytes[..user_len as usize])?;
-		let user_bytes: Vec<u8> = read_bytes[..user_len as usize].into();
-		let user = match String::from_utf8(user_bytes) {
+		reader.read_exact(&mut user_bytes[..user_len as usize])?;
+		let user = match core::str::from_utf8(&user_bytes[..user_len as usize]) {
 			Ok(user) => user,
 			Err(_) => return Err(DecodeError::InvalidValue),
 		};
 
+		let mut domain_bytes = [0; 255];
 		let domain_len: u8 = Readable::read(reader)?;
-		reader.read_exact(&mut read_bytes[..domain_len as usize])?;
-		let domain_bytes: Vec<u8> = read_bytes[..domain_len as usize].into();
-		let domain = match String::from_utf8(domain_bytes) {
+		reader.read_exact(&mut domain_bytes[..domain_len as usize])?;
+		let domain = match core::str::from_utf8(&domain_bytes[..domain_len as usize]) {
 			Ok(domain) => domain,
 			Err(_) => return Err(DecodeError::InvalidValue),
 		};
@@ -331,7 +343,7 @@ impl OMNameResolver {
 		&self, payment_id: PaymentId, name: HumanReadableName, entropy_source: &ES,
 	) -> Result<(DNSSECQuery, DNSResolverContext), ()> {
 		let dns_name =
-			Name::try_from(format!("{}.user._bitcoin-payment.{}.", name.user, name.domain));
+			Name::try_from(format!("{}.user._bitcoin-payment.{}.", name.user(), name.domain()));
 		debug_assert!(
 			dns_name.is_ok(),
 			"The HumanReadableName constructor shouldn't allow names which are too long"
