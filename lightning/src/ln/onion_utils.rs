@@ -1606,6 +1606,13 @@ pub enum LocalHTLCFailureReason {
 	HTLCMaximum,
 	/// The HTLC was failed because our remote peer is offline.
 	PeerOffline,
+	/// We have been unable to forward a payment to the next Trampoline node, but may be able to
+	/// later.
+	TemporaryTrampolineFailure,
+	/// The amount or CLTV expiry were insufficient to route the payment to the next Trampoline node.
+	TrampolineFeeOrExpiryInsufficient,
+	/// The specified next Trampoline node cannot be reached from our node.
+	UnknownNextTrampoline,
 }
 
 impl LocalHTLCFailureReason {
@@ -1647,6 +1654,9 @@ impl LocalHTLCFailureReason {
 			Self::InvalidOnionPayload | Self::InvalidTrampolinePayload => PERM | 22,
 			Self::MPPTimeout => 23,
 			Self::InvalidOnionBlinding => BADONION | PERM | 24,
+			Self::TemporaryTrampolineFailure => NODE | 25,
+			Self::TrampolineFeeOrExpiryInsufficient => NODE | 26,
+			Self::UnknownNextTrampoline => PERM | 27,
 			Self::UnknownFailureCode { code } => *code,
 		}
 	}
@@ -1707,6 +1717,12 @@ impl From<u16> for LocalHTLCFailureReason {
 			LocalHTLCFailureReason::MPPTimeout
 		} else if value == (BADONION | PERM | 24) {
 			LocalHTLCFailureReason::InvalidOnionBlinding
+		} else if value == (NODE | 25) {
+			LocalHTLCFailureReason::TemporaryTrampolineFailure
+		} else if value == (NODE | 26) {
+			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient
+		} else if value == (PERM | 27) {
+			LocalHTLCFailureReason::UnknownNextTrampoline
 		} else {
 			LocalHTLCFailureReason::UnknownFailureCode { code: value }
 		}
@@ -1759,6 +1775,9 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(81, HTLCMinimum) => {},
 	(83, HTLCMaximum) => {},
 	(85, PeerOffline) => {},
+	(87, TemporaryTrampolineFailure) => {},
+	(89, TrampolineFeeOrExpiryInsufficient) => {},
+	(91, UnknownNextTrampoline) => {},
 );
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -1915,6 +1934,9 @@ impl HTLCFailReason {
 					debug_assert!(false, "Unknown failure code: {}", code)
 				}
 			},
+			LocalHTLCFailureReason::TemporaryTrampolineFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient => debug_assert_eq!(data.len(), 10),
+			LocalHTLCFailureReason::UnknownNextTrampoline => debug_assert!(data.is_empty()),
 		}
 
 		Self(HTLCFailReasonRepr::Reason { data, failure_reason })

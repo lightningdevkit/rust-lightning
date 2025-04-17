@@ -2061,7 +2061,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						cltv_expiry_delta: 39,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2175,8 +2175,7 @@ fn test_trampoline_single_hop_receive() {
 	do_test_trampoline_single_hop_receive(false);
 }
 
-#[test]
-fn test_trampoline_unblinded_receive() {
+fn do_test_trampoline_unblinded_receive(underpay: bool) {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
 
 	const TOTAL_NODE_COUNT: usize = 3;
@@ -2246,7 +2245,7 @@ fn test_trampoline_unblinded_receive() {
 					node_features: NodeFeatures::empty(),
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
-					fee_msat: 0,
+					fee_msat: 0, // no routing fees because it's the final hop
 					cltv_expiry_delta: 48,
 					maybe_announced_channel: false,
 				}
@@ -2257,8 +2256,8 @@ fn test_trampoline_unblinded_receive() {
 					TrampolineHop {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
-						fee_msat: amt_msat,
-						cltv_expiry_delta: 24,
+						fee_msat: 0,
+						cltv_expiry_delta: 72,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2269,6 +2268,8 @@ fn test_trampoline_unblinded_receive() {
 		}],
 		route_params: None,
 	};
+
+	// outer 56
 
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
 
@@ -2285,12 +2286,13 @@ fn test_trampoline_unblinded_receive() {
 		// pop the last dummy hop
 		trampoline_payloads.pop();
 
+		let replacement_payload_amount = if underpay { amt_msat * 2 } else { amt_msat };
 		trampoline_payloads.push(msgs::OutboundTrampolinePayload::Receive {
 			payment_data: Some(msgs::FinalOnionHopData {
 				payment_secret,
-				total_msat: amt_msat,
+				total_msat: replacement_payload_amount,
 			}),
-			sender_intended_htlc_amt_msat: amt_msat,
+			sender_intended_htlc_amt_msat: replacement_payload_amount,
 			cltv_expiry_height: 104,
 		});
 
@@ -2334,15 +2336,50 @@ fn test_trampoline_unblinded_receive() {
 	});
 
 	let route: &[&Node] = &[&nodes[1], &nodes[2]];
-	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
-		.with_payment_secret(payment_secret);
+	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event);
+	let args = if underpay {
+		args.with_payment_preimage(payment_preimage)
+			.without_claimable_event()
+			.expect_failure(HTLCDestination::FailedPayment { payment_hash })
+	} else {
+		args.with_payment_secret(payment_secret)
+	};
+
 	do_pass_along_path(args);
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	if underpay {
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_update_fail_htlc(
+				nodes[2].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[1], &nodes[2], &unblinded_node_updates.commitment_signed, true, false);
+		}
+		{
+			let unblinded_node_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_update_fail_htlc(
+				nodes[1].node.get_our_node_id(), &unblinded_node_updates.update_fail_htlcs[0]
+			);
+			do_commitment_signed_dance(&nodes[0], &nodes[1], &unblinded_node_updates.commitment_signed, false, false);
+		}
+		{
+			let payment_failed_conditions = PaymentFailedConditions::new()
+				.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectHTLCAmount, &[0, 0, 0, 0, 0, 0, 3, 232]);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
+		}
+	} else {
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	}
 }
 
 #[test]
-fn test_trampoline_forward_rejection() {
+fn test_trampoline_unblinded_receive() {
+	do_test_trampoline_unblinded_receive(true);
+	do_test_trampoline_unblinded_receive(false);
+}
+
+#[test]
+fn test_trampoline_constraint_enforcement() {
 	const TOTAL_NODE_COUNT: usize = 3;
 
 	let chanmon_cfgs = create_chanmon_cfgs(TOTAL_NODE_COUNT);
@@ -2435,7 +2472,7 @@ fn test_trampoline_forward_rejection() {
 	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
 		.with_payment_preimage(payment_preimage)
 		.without_claimable_event()
-		.expect_failure(HTLCDestination::FailedPayment { payment_hash });
+		.expect_failure(HTLCDestination::InvalidOnion);
 	do_pass_along_path(args);
 
 	{
@@ -2455,7 +2492,7 @@ fn test_trampoline_forward_rejection() {
 	{
 		// Expect UnknownNextPeer error while we are unable to route forwarding Trampoline payments.
 		let payment_failed_conditions = PaymentFailedConditions::new()
-			.expected_htlc_error_data(LocalHTLCFailureReason::UnknownNextPeer, &[0; 0]);
+			.expected_htlc_error_data(LocalHTLCFailureReason::FinalIncorrectHTLCAmount, &[0, 0, 0, 0, 0, 0, 3, 232]);
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, payment_failed_conditions);
 	}
 }
