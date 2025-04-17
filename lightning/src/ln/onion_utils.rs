@@ -2232,6 +2232,12 @@ where
 				Ok(Hop::BlindedReceive { shared_secret, hop_data })
 			},
 			msgs::InboundOnionPayload::TrampolineEntrypoint(hop_data) => {
+				if blinding_point.is_some() {
+					return Err(OnionDecodeErr::Malformed {
+						err_msg: "UpdateAddHTLC messages cannot contain blinding points for TrampolineEntryPoint payloads.",
+						reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+					});
+				}
 				let incoming_trampoline_public_key = hop_data.trampoline_packet.public_key;
 				let trampoline_blinded_node_id_tweak = hop_data.current_path_key.map(|bp| {
 					let blinded_tlvs_ss =
@@ -2256,7 +2262,7 @@ where
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, node_signer),
+					(hop_data.current_path_key, node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((
