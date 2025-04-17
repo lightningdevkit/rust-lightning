@@ -7879,17 +7879,15 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	fn internal_htlc_satisfies_config(
 		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32, config: &ChannelConfig,
-	) -> Result<(), (&'static str, LocalHTLCFailureReason)> {
+	) -> Result<(), LocalHTLCFailureReason> {
 		let fee = amt_to_forward.checked_mul(config.forwarding_fee_proportional_millionths as u64)
 			.and_then(|prop_fee| (prop_fee / 1000000).checked_add(config.forwarding_fee_base_msat as u64));
 		if fee.is_none() || htlc.amount_msat < fee.unwrap() ||
 			(htlc.amount_msat - fee.unwrap()) < amt_to_forward {
-			return Err(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones",
-				LocalHTLCFailureReason::FeeInsufficient));
+			return Err(LocalHTLCFailureReason::FeeInsufficient);
 		}
 		if (htlc.cltv_expiry as u64) < outgoing_cltv_value as u64 + config.cltv_expiry_delta as u64 {
-			return Err(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
-				LocalHTLCFailureReason::IncorrectCLTVExpiry));
+			return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
 		}
 		Ok(())
 	}
@@ -7899,7 +7897,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// unsuccessful, falls back to the previous one if one exists.
 	pub fn htlc_satisfies_config(
 		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32,
-	) -> Result<(), (&'static str, LocalHTLCFailureReason)> {
+	) -> Result<(), LocalHTLCFailureReason> {
 		self.internal_htlc_satisfies_config(&htlc, amt_to_forward, outgoing_cltv_value, &self.context.config())
 			.or_else(|err| {
 				if let Some(prev_config) = self.context.prev_config() {
@@ -7914,13 +7912,13 @@ impl<SP: Deref> FundedChannel<SP> where
 	/// this function determines whether to fail the HTLC, or forward / claim it.
 	pub fn can_accept_incoming_htlc<F: Deref, L: Deref>(
 		&self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L
-	) -> Result<(), (&'static str, LocalHTLCFailureReason)>
+	) -> Result<(), LocalHTLCFailureReason>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger
 	{
 		if self.context.channel_state.is_local_shutdown_sent() {
-			return Err(("Shutdown was already sent", LocalHTLCFailureReason::ChannelClosed))
+			return Err(LocalHTLCFailureReason::ChannelClosed)
 		}
 
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
@@ -7931,8 +7929,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			// Note that the total dust exposure includes both the dust HTLCs and the excess mining fees of the counterparty commitment transaction
 			log_info!(logger, "Cannot accept value that would put our total dust exposure at {} over the limit {} on counterparty commitment tx",
 				on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-			return Err(("Exceeded our total dust exposure limit on counterparty commitment tx",
-				LocalHTLCFailureReason::DustLimitCounterparty))
+			return Err(LocalHTLCFailureReason::DustLimitCounterparty)
 		}
 		let htlc_success_dust_limit = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			0
@@ -7946,8 +7943,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
 					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				return Err(("Exceeded our dust exposure limit on holder commitment tx",
-					LocalHTLCFailureReason::DustLimitHolder))
+				return Err(LocalHTLCFailureReason::DustLimitHolder)
 			}
 		}
 
@@ -7985,7 +7981,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 			if pending_remote_value_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
-				return Err(("Fee spike buffer violation", LocalHTLCFailureReason::FeeSpikeBuffer));
+				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
 		}
 
