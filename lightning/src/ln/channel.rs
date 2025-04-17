@@ -5465,6 +5465,24 @@ where
 		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
+
+	fn check_funding_meets_minimum_depth(&self, funding: &mut FundingScope, height: u32) -> bool {
+		if funding.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
+			return false;
+		}
+
+		let funding_tx_confirmations =
+			height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
+		if funding_tx_confirmations <= 0 {
+			funding.funding_tx_confirmation_height = 0;
+		}
+
+		if funding_tx_confirmations < self.minimum_depth.unwrap_or(0) as i64 {
+			return false;
+		}
+
+		return true;
+	}
 }
 
 // Internal utility functions for channels
@@ -8779,16 +8797,7 @@ where
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
-		if self.funding.funding_tx_confirmation_height == 0 && self.context.minimum_depth != Some(0) {
-			return None;
-		}
-
-		let funding_tx_confirmations = height as i64 - self.funding.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations <= 0 {
-			self.funding.funding_tx_confirmation_height = 0;
-		}
-
-		if funding_tx_confirmations < self.context.minimum_depth.unwrap_or(0) as i64 {
+		if !self.context.check_funding_meets_minimum_depth(&mut self.funding, height) {
 			return None;
 		}
 
