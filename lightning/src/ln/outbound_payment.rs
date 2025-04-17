@@ -19,7 +19,7 @@ use crate::events::{self, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
+use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailurePayload};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::static_invoice::StaticInvoice;
@@ -2169,7 +2169,7 @@ impl OutboundPayments {
 
 	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
 	pub(super) fn fail_htlc<L: Deref>(
-		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
+		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailurePayload,
 		path: &Path, session_priv: &SecretKey, payment_id: &PaymentId,
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,

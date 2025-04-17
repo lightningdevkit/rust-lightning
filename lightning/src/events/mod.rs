@@ -26,7 +26,7 @@ use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::types::features::ChannelTypeFeatures;
-use crate::ln::msgs;
+use crate::ln::{msgs, LocalHTLCFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::onion_message::messenger::Responder;
@@ -466,12 +466,12 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	},
 );
 
-/// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
+/// The type of HTLC that is being handled in [`Event::HTLCHandlingFailed`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HTLCDestination {
+pub enum HTLCHandlingType {
 	/// We tried forwarding to a channel but failed to do so. An example of such an instance is when
 	/// there is insufficient capacity in our outbound channel.
-	NextHopChannel {
+	ForwardFailed {
 		/// The `node_id` of the next node. For backwards compatibility, this field is
 		/// marked as optional, versions prior to 0.0.110 may not always be able to provide
 		/// counterparty node information.
@@ -480,12 +480,16 @@ pub enum HTLCDestination {
 		channel_id: ChannelId,
 	},
 	/// Scenario where we are unsure of the next node to forward the HTLC to.
+	///
+	/// Deprecated: will only be used in versions before LDK v0.2.0.
 	UnknownNextHop {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64,
 	},
 	/// We couldn't forward to the outgoing scid. An example would be attempting to send a duplicate
 	/// intercept HTLC.
+	///
+	/// In LDK v0.2.0 and greater, this variant replaces [`Self::UnknownNextHop`].
 	InvalidForward {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64
@@ -502,14 +506,14 @@ pub enum HTLCDestination {
 	/// * The counterparty node modified the HTLC in transit,
 	/// * A probing attack where an intermediary node is trying to detect if we are the ultimate
 	///   recipient for a payment.
-	FailedPayment {
+	ReceiveFailed {
 		/// The payment hash of the payment we attempted to process.
 		payment_hash: PaymentHash
 	},
 }
 
-impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
-	(0, NextHopChannel) => {
+impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingType,
+	(0, ForwardFailed) => {
 		(0, node_id, required),
 		(2, channel_id, required),
 	},
@@ -520,10 +524,35 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 		(0, requested_forward_scid, required),
 	},
 	(3, InvalidOnion) => {},
-	(4, FailedPayment) => {
+	(4, ReceiveFailed) => {
 		(0, payment_hash, required),
 	},
 );
+
+/// The reason for HTLC failures in [`Event::HTLCHandlingFailed`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HTLCHandlingFailureReason {
+	/// The forwarded HTLC was failed back by the downstream node with an encrypted error reason.
+	Downstream,
+	/// The HTLC was failed locally by our node.
+	Local {
+		/// The reason that our node chose to fail the HTLC.
+		reason: LocalHTLCFailureReason,
+	},
+}
+
+impl_writeable_tlv_based_enum!(HTLCHandlingFailureReason,
+	(1, Downstream) => {},
+	(3, Local) => {
+		(0, reason, required),
+	},
+);
+
+impl From<LocalHTLCFailureReason> for HTLCHandlingFailureReason {
+	fn from(value: LocalHTLCFailureReason) -> Self {
+		HTLCHandlingFailureReason::Local { reason: value }
+	}
+}
 
 /// Will be used in [`Event::HTLCIntercepted`] to identify the next hop in the HTLC's path.
 /// Currently only used in serialization for the sake of maintaining compatibility. More variants
@@ -1460,8 +1489,12 @@ pub enum Event {
 	HTLCHandlingFailed {
 		/// The channel over which the HTLC was received.
 		prev_channel_id: ChannelId,
-		/// Destination of the HTLC that failed to be processed.
-		failed_next_destination: HTLCDestination,
+		/// The type of HTLC that was handled.
+		handling_type: HTLCHandlingType,
+		/// The reason that the HTLC failed.
+		///
+		/// This field will be `None` only for objects serialized prior to LDK 0.2.0.
+		handling_failure: Option<HTLCHandlingFailureReason>
 	},
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
@@ -1766,11 +1799,29 @@ impl Writeable for Event {
 					(8, path.blinded_tail, option),
 				})
 			},
-			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
+			&Event::HTLCHandlingFailed { ref prev_channel_id, ref handling_type, ref handling_failure } => {
 				25u8.write(writer)?;
+
+				// The [`HTLCHandlingType::UnknownNextPeer`] variant is deprecated, but we want to
+				// continue writing it to allow downgrading. Detect the case where we're
+				// representing it as [`HTLCHandlingType::InvalidForward`] and
+				// [`LocalHTLCFailureReason::UnknownNextHop`] and write the old variant instead.
+				let downgradable_type = match (handling_type, handling_failure) {
+					(HTLCHandlingType::InvalidForward { requested_forward_scid },
+						Some(HTLCHandlingFailureReason::Local { reason }))
+					if *reason == LocalHTLCFailureReason::UnknownNextPeer =>
+					{
+						HTLCHandlingType::UnknownNextHop {
+							requested_forward_scid: *requested_forward_scid,
+						}
+					}
+					_ => handling_type.clone()
+				};
+
 				write_tlv_fields!(writer, {
 					(0, prev_channel_id, required),
-					(2, failed_next_destination, required),
+					(1, handling_failure, option),
+					(2, downgradable_type, required),
 				})
 			},
 			&Event::BumpTransaction(ref event)=> {
@@ -2218,15 +2269,39 @@ impl MaybeReadable for Event {
 			25u8 => {
 				let mut f = || {
 					let mut prev_channel_id = ChannelId::new_zero();
-					let mut failed_next_destination_opt = UpgradableRequired(None);
+					let mut handling_failure = None;
+					let mut handling_type_opt = UpgradableRequired(None);
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
-						(2, failed_next_destination_opt, upgradable_required),
+						(1, handling_failure, option),
+						(2, handling_type_opt, upgradable_required),
 					});
-					Ok(Some(Event::HTLCHandlingFailed {
+
+					let mut event = Event::HTLCHandlingFailed {
 						prev_channel_id,
-						failed_next_destination: _init_tlv_based_struct_field!(failed_next_destination_opt, upgradable_required),
-					}))
+						handling_type: _init_tlv_based_struct_field!(handling_type_opt, upgradable_required),
+						handling_failure,
+					};
+
+					// The [`HTLCHandlingType::UnknownNextPeer`] variant is deprecated, but we
+					// continue writing it to allow downgrading. If it was written, upgrade
+					// it to its new representation of [`HTLCHandlingType::InvalidForward`] and
+					// [`LocalHTLCFailureReason::UnknownNextHop`]. This will cover both the case
+					// where we have a legacy event
+					match event {
+						Event::HTLCHandlingFailed { ref handling_type, .. } => {
+							if let HTLCHandlingType::UnknownNextHop { requested_forward_scid } = handling_type {
+								event = Event::HTLCHandlingFailed {
+									prev_channel_id,
+									handling_type: HTLCHandlingType::InvalidForward { requested_forward_scid: *requested_forward_scid },
+									handling_failure: Some(LocalHTLCFailureReason::UnknownNextPeer.into()),
+								}
+							}
+						}
+						_ => panic!("HTLCHandlingFailed wrong type")
+					}
+
+					Ok(Some(event))
 				};
 				f()
 			},

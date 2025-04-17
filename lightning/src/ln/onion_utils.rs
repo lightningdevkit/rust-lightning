@@ -11,6 +11,7 @@ use super::msgs::OnionErrorPacket;
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
+use crate::events::HTLCHandlingFailureReason;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
@@ -1761,9 +1762,21 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(85, PeerOffline) => {},
 );
 
+impl From<&HTLCFailurePayload> for HTLCHandlingFailureReason {
+	fn from(value: &HTLCFailurePayload) -> Self {
+		match value.0 {
+			HTLCFailReasonRepr::LightningError { .. } => HTLCHandlingFailureReason::Downstream,
+			HTLCFailReasonRepr::Reason { failure_reason, .. } => {
+				HTLCHandlingFailureReason::Local { reason: failure_reason }
+			},
+		}
+	}
+}
+
+/// Contains the information required to construct the failure message for a failed HTLC.
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
-pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
+pub(super) struct HTLCFailurePayload(HTLCFailReasonRepr);
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
@@ -1772,7 +1785,7 @@ enum HTLCFailReasonRepr {
 	Reason { data: Vec<u8>, failure_reason: LocalHTLCFailureReason },
 }
 
-impl HTLCFailReason {
+impl HTLCFailurePayload {
 	pub fn set_hold_time(&mut self, hold_time: u32) {
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { hold_time: ref mut current_hold_time, .. } => {
@@ -1783,7 +1796,7 @@ impl HTLCFailReason {
 	}
 }
 
-impl core::fmt::Debug for HTLCFailReason {
+impl core::fmt::Debug for HTLCFailurePayload {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_reason, .. } => {
@@ -1801,12 +1814,12 @@ impl core::fmt::Debug for HTLCFailReason {
 	}
 }
 
-impl Writeable for HTLCFailReason {
+impl Writeable for HTLCFailurePayload {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		self.0.write(writer)
 	}
 }
-impl Readable for HTLCFailReason {
+impl Readable for HTLCFailurePayload {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, msgs::DecodeError> {
 		Ok(Self(Readable::read(reader)?))
 	}
@@ -1844,7 +1857,7 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 	},
 );
 
-impl HTLCFailReason {
+impl HTLCFailurePayload {
 	pub(super) fn reason(failure_reason: LocalHTLCFailureReason, data: Vec<u8>) -> Self {
 		match failure_reason {
 			LocalHTLCFailureReason::TemporaryNodeFailure
