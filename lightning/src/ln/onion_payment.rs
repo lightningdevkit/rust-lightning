@@ -652,20 +652,6 @@ where
 			})
 		}
 		onion_utils::Hop::TrampolineForward { ref outer_hop_data, next_trampoline_hop_data: msgs::InboundTrampolineForwardPayload { amt_to_forward, outgoing_cltv_value, next_trampoline }, outer_shared_secret, trampoline_shared_secret, incoming_trampoline_public_key, .. } => {
-			if let Err(reason) = check_trampoline_onion_constraints(outer_hop_data, outgoing_cltv_value, amt_to_forward) {
-				let mut data = Vec::new();
-				match reason {
-					LocalHTLCFailureReason::FinalIncorrectCLTVExpiry => {
-						outer_hop_data.outgoing_cltv_value.write(&mut data).unwrap();
-					}
-					LocalHTLCFailureReason::FinalIncorrectHTLCAmount => {
-						outer_hop_data.amt_to_forward.write(&mut data).unwrap();
-					}
-					_ => unreachable!()
-				}
-				return encode_relay_error("Underflow calculating outbound amount or CLTV value for Trampoline forward",
-					reason, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &data);
-			}
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
@@ -685,20 +671,6 @@ where
 						LocalHTLCFailureReason::InvalidOnionBlinding, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &[0; 32]);
 				}
 			};
-			if let Err(reason) = check_trampoline_onion_constraints(outer_hop_data, outgoing_cltv_value, amt_to_forward) {
-				let mut data = Vec::new();
-				match reason {
-					LocalHTLCFailureReason::FinalIncorrectCLTVExpiry => {
-						outer_hop_data.outgoing_cltv_value.write(&mut data).unwrap();
-					}
-					LocalHTLCFailureReason::FinalIncorrectHTLCAmount => {
-						outer_hop_data.amt_to_forward.write(&mut data).unwrap();
-					}
-					_ => unreachable!()
-				}
-				return encode_relay_error("Underflow calculating outbound amount or CLTV value for Trampoline forward",
-					reason, outer_shared_secret.secret_bytes(), Some(trampoline_shared_secret.secret_bytes()), &data);
-			}
 			let next_trampoline_packet_pubkey = onion_utils::next_hop_pubkey(secp_ctx,
 				incoming_trampoline_public_key, &trampoline_shared_secret.secret_bytes());
 			Some(NextPacketDetails {
