@@ -626,7 +626,7 @@ impl Readable for InterceptId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PreviousHopIdData {
+pub(crate) struct PreviousHopId {
 	short_channel_id: u64,
 	htlc_id: u64,
 }
@@ -636,7 +636,7 @@ pub(crate) struct PreviousHopIdData {
 pub(crate) enum SentHTLCId {
 	PreviousHopData { short_channel_id: u64, htlc_id: u64 },
 	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
-	TrampolineForward { session_priv: [u8; SECRET_KEY_SIZE], previous_hop_data: Vec<PreviousHopIdData> }
+	TrampolineForward { session_priv: [u8; SECRET_KEY_SIZE], previous_hop_ids: Vec<PreviousHopId> }
 }
 impl SentHTLCId {
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
@@ -649,7 +649,7 @@ impl SentHTLCId {
 				Self::OutboundRoute { session_priv: session_priv.secret_bytes() },
 			HTLCSource::TrampolineForward { previous_hop_data, session_priv, .. } => Self::TrampolineForward {
 				session_priv: session_priv.secret_bytes(),
-				previous_hop_data: previous_hop_data.iter().map(|hop_data| PreviousHopIdData {
+				previous_hop_ids: previous_hop_data.iter().map(|hop_data| PreviousHopId {
 					short_channel_id: hop_data.short_channel_id,
 					htlc_id: hop_data.htlc_id,
 				}).collect(),
@@ -657,7 +657,7 @@ impl SentHTLCId {
 		}
 	}
 }
-impl_writeable_tlv_based!(PreviousHopIdData, {
+impl_writeable_tlv_based!(PreviousHopId, {
 	(0, short_channel_id, required),
 	(2, htlc_id, required),
 });
