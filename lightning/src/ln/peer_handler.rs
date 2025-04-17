@@ -1240,8 +1240,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		while !peer.awaiting_write_event {
 			if peer.should_buffer_onion_message() {
 				if let Some((peer_node_id, _)) = peer.their_node_id {
+					let handler = &self.message_handler.onion_message_handler;
 					if let Some(next_onion_message) =
-						self.message_handler.onion_message_handler.next_onion_message_for_peer(peer_node_id) {
+						handler.next_onion_message_for_peer(peer_node_id) {
 							self.enqueue_message(peer, &next_onion_message);
 					}
 				}
@@ -1271,7 +1272,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(c) if c == 0xffff_ffff_ffff_ffff => {
-						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(None) {
+						let handler = &self.message_handler.route_handler;
+						if let Some(msg) = handler.get_next_node_announcement(None) {
 							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						} else {
@@ -1280,7 +1282,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					},
 					InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
 					InitSyncTracker::NodesSyncing(sync_node_id) => {
-						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&sync_node_id)) {
+						let handler = &self.message_handler.route_handler;
+						if let Some(msg) = handler.get_next_node_announcement(Some(&sync_node_id)) {
 							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						} else {
@@ -1688,7 +1691,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			Some(LogicalMessage::CommitmentSignedBatch(channel_id, batch)) => {
 				log_trace!(logger, "Received commitment_signed batch {:?} from {}", batch, log_pubkey!(their_node_id));
-				self.message_handler.chan_handler.handle_commitment_signed_batch(their_node_id, channel_id, batch);
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_commitment_signed_batch(their_node_id, channel_id, batch);
 				return Ok(None);
 			},
 			None => Ok(None),
@@ -1713,7 +1717,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		if let wire::Message::Init(msg) = message {
 			// Check if we have any compatible chains if the `networks` field is specified.
 			if let Some(networks) = &msg.networks {
-				if let Some(our_chains) = self.message_handler.chan_handler.get_chain_hashes() {
+				let chan_handler = &self.message_handler.chan_handler;
+				if let Some(our_chains) = chan_handler.get_chain_hashes() {
 					let mut have_compatible_chains = false;
 					'our_chains: for our_chain in our_chains.iter() {
 						for their_chain in networks {
@@ -1754,22 +1759,27 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 
-			if let Err(()) = self.message_handler.route_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
+			let connection = peer_lock.inbound_connection;
+			let route_handler = &self.message_handler.route_handler;
+			if let Err(()) = route_handler.peer_connected(their_node_id, &msg, connection) {
 				log_debug!(logger, "Route Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				return Err(PeerHandleError { }.into());
 			}
-			if let Err(()) = self.message_handler.chan_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
+			let chan_handler = &self.message_handler.chan_handler;
+			if let Err(()) = chan_handler.peer_connected(their_node_id, &msg, connection) {
 				log_debug!(logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
-			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
+			let onion_message_handler = &self.message_handler.onion_message_handler;
+			if let Err(()) = onion_message_handler.peer_connected(their_node_id, &msg, connection) {
 				log_debug!(logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
 				return Err(PeerHandleError { }.into());
 			}
-			if let Err(()) = self.message_handler.custom_message_handler.peer_connected(their_node_id, &msg, peer_lock.inbound_connection) {
+			let custom_handler = &self.message_handler.custom_message_handler;
+			if let Err(()) = custom_handler.peer_connected(their_node_id, &msg, connection) {
 				log_debug!(logger, "Custom Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				self.message_handler.route_handler.peer_disconnected(their_node_id);
 				self.message_handler.chan_handler.peer_disconnected(their_node_id);
@@ -2011,7 +2021,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				self.message_handler.chan_handler.handle_update_fail_htlc(their_node_id, &msg);
 			},
 			wire::Message::UpdateFailMalformedHTLC(msg) => {
-				self.message_handler.chan_handler.handle_update_fail_malformed_htlc(their_node_id, &msg);
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_update_fail_malformed_htlc(their_node_id, &msg);
 			},
 
 			wire::Message::CommitmentSigned(msg) => {
@@ -2029,46 +2040,54 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			// Routing messages:
 			wire::Message::AnnouncementSignatures(msg) => {
-				self.message_handler.chan_handler.handle_announcement_signatures(their_node_id, &msg);
+				let chan_handler = &self.message_handler.chan_handler;
+				chan_handler.handle_announcement_signatures(their_node_id, &msg);
 			},
 			wire::Message::ChannelAnnouncement(msg) => {
-				if self.message_handler.route_handler.handle_channel_announcement(Some(their_node_id), &msg)
+				let route_handler = &self.message_handler.route_handler;
+				if route_handler.handle_channel_announcement(Some(their_node_id), &msg)
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
 				}
 				self.update_gossip_backlogged();
 			},
 			wire::Message::NodeAnnouncement(msg) => {
-				if self.message_handler.route_handler.handle_node_announcement(Some(their_node_id), &msg)
+				let route_handler = &self.message_handler.route_handler;
+				if route_handler.handle_node_announcement(Some(their_node_id), &msg)
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::NodeAnnouncement(msg));
 				}
 				self.update_gossip_backlogged();
 			},
 			wire::Message::ChannelUpdate(msg) => {
-				self.message_handler.chan_handler.handle_channel_update(their_node_id, &msg);
-				if self.message_handler.route_handler.handle_channel_update(Some(their_node_id), &msg)
+				let route_handler = &self.message_handler.route_handler;
+				if route_handler.handle_channel_update(Some(their_node_id), &msg)
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelUpdate(msg));
 				}
 				self.update_gossip_backlogged();
 			},
 			wire::Message::QueryShortChannelIds(msg) => {
-				self.message_handler.route_handler.handle_query_short_channel_ids(their_node_id, msg)?;
+				let route_handler = &self.message_handler.route_handler;
+				route_handler.handle_query_short_channel_ids(their_node_id, msg)?;
 			},
 			wire::Message::ReplyShortChannelIdsEnd(msg) => {
-				self.message_handler.route_handler.handle_reply_short_channel_ids_end(their_node_id, msg)?;
+				let route_handler = &self.message_handler.route_handler;
+				route_handler.handle_reply_short_channel_ids_end(their_node_id, msg)?;
 			},
 			wire::Message::QueryChannelRange(msg) => {
-				self.message_handler.route_handler.handle_query_channel_range(their_node_id, msg)?;
+				let route_handler = &self.message_handler.route_handler;
+				route_handler.handle_query_channel_range(their_node_id, msg)?;
 			},
 			wire::Message::ReplyChannelRange(msg) => {
-				self.message_handler.route_handler.handle_reply_channel_range(their_node_id, msg)?;
+				let route_handler = &self.message_handler.route_handler;
+				route_handler.handle_reply_channel_range(their_node_id, msg)?;
 			},
 
 			// Onion message:
 			wire::Message::OnionMessage(msg) => {
-				self.message_handler.onion_message_handler.handle_onion_message(their_node_id, &msg);
+				let onion_message_handler = &self.message_handler.onion_message_handler;
+				onion_message_handler.handle_onion_message(their_node_id, &msg);
 			},
 
 			// Unknown messages:
@@ -2080,7 +2099,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				log_trace!(logger, "Received unknown odd message of type {}, ignoring", type_id);
 			},
 			wire::Message::Custom(custom) => {
-				self.message_handler.custom_message_handler.handle_custom_message(custom, their_node_id)?;
+				let custom_message_handler = &self.message_handler.custom_message_handler;
+				custom_message_handler.handle_custom_message(custom, their_node_id)?;
 			},
 		};
 		Ok(should_forward)
