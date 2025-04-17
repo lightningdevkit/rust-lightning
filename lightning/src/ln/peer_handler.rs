@@ -1602,15 +1602,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 											}
 											(msgs::DecodeError::UnsupportedCompression, _) => {
 												log_gossip!(logger, "We don't support zlib-compressed message fields, sending a warning and ignoring message");
-												self.enqueue_message(peer, &msgs::WarningMessage { channel_id: ChannelId::new_zero(), data: "Unsupported message compression: zlib".to_owned() });
+												let channel_id = ChannelId::new_zero();
+												let data = "Unsupported message compression: zlib".to_owned();
+												let msg = msgs::WarningMessage { channel_id, data };
+												self.enqueue_message(peer, &msg);
 												continue;
 											}
 											(_, Some(ty)) if is_gossip_msg(ty) => {
 												log_gossip!(logger, "Got an invalid value while deserializing a gossip message");
-												self.enqueue_message(peer, &msgs::WarningMessage {
-													channel_id: ChannelId::new_zero(),
-													data: format!("Unreadable/bogus gossip message of type {}", ty),
-												});
+												let channel_id = ChannelId::new_zero();
+												let data = format!("Unreadable/bogus gossip message of type {}", ty);
+												let msg = msgs::WarningMessage {
+													channel_id,
+													data,
+												};
+												self.enqueue_message(peer, &msg);
 												continue;
 											}
 											(msgs::DecodeError::UnknownRequiredFeature, _) => {
