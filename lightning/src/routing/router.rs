@@ -2043,9 +2043,10 @@ impl<'a> PaymentPath<'a> {
 	// that it the value being transferred has decreased while we were doing path finding, leading
 	// to the fees being paid not lining up with the actual limits.
 	//
-	// Note that this function is not aware of the available_liquidity limit, and thus does not
-	// support increasing the value being transferred beyond what was selected during the initial
-	// routing passes.
+	// This function may also be used to increase the value being transferred in the case that
+	// overestimating later hops' fees caused us to underutilize earlier hops' capacity.
+	//
+	// Note that this function is not aware of the available_liquidity limit of any hops.
 	//
 	// Returns the amount that this path contributes to the total payment value, which may be greater
 	// than `value_msat` if we had to overpay to meet the final node's `htlc_minimum_msat`.
@@ -2110,14 +2111,55 @@ impl<'a> PaymentPath<'a> {
 					cur_hop.hop_use_fee_msat = new_fee;
 					total_fee_paid_msat += new_fee;
 				} else {
-					// It should not be possible because this function is called only to reduce the
-					// value. In that case, compute_fee was already called with the same fees for
-					// larger amount and there was no overflow.
+					// It should not be possible because this function is only called either to reduce the
+					// value or with a larger amount that was already checked for overflow in
+					// `compute_max_final_value_contribution`. In the former case, compute_fee was already
+					// called with the same fees for larger amount and there was no overflow.
 					unreachable!();
 				}
 			}
 		}
 		value_msat + extra_contribution_msat
+	}
+
+	// Returns the maximum contribution that this path can make to the final value of the payment. May
+	// be slightly lower than the actual max due to rounding errors when aggregating fees along the
+	// path.
+	fn compute_max_final_value_contribution(
+		&self, used_liquidities: &HashMap<CandidateHopId, u64>, channel_saturation_pow_half: u8
+	) -> u64 {
+		let mut max_path_contribution = u64::MAX;
+		for (idx, (hop, _)) in self.hops.iter().enumerate() {
+			let hop_effective_capacity_msat = hop.candidate.effective_capacity();
+			let hop_max_msat = max_htlc_from_capacity(
+				hop_effective_capacity_msat, channel_saturation_pow_half
+			).saturating_sub(*used_liquidities.get(&hop.candidate.id()).unwrap_or(&0_u64));
+
+			let next_hops_feerates_iter = self.hops
+				.iter()
+				.skip(idx + 1)
+				.map(|(hop, _)| hop.candidate.fees());
+
+			// Aggregate the fees of the hops that come after this one, and use those fees to compute the
+			// maximum amount that this hop can contribute to the final value received by the payee.
+			let (next_hops_aggregated_base, next_hops_aggregated_prop) =
+				crate::blinded_path::payment::compute_aggregated_base_prop_fee(next_hops_feerates_iter).unwrap();
+
+			// ceil(((hop_max_msat - agg_base) * 1_000_000) / (1_000_000 + agg_prop))
+			let hop_max_final_value_contribution = (hop_max_msat as u128)
+				.checked_sub(next_hops_aggregated_base as u128)
+				.and_then(|f| f.checked_mul(1_000_000))
+				.and_then(|f| f.checked_add(1_000_000 - 1))
+				.and_then(|f| f.checked_add(next_hops_aggregated_prop as u128))
+				.map(|f| f / ((next_hops_aggregated_prop as u128).saturating_add(1_000_000)));
+
+			if let Some(hop_contribution) = hop_max_final_value_contribution {
+				let hop_contribution: u64 = hop_contribution.try_into().unwrap_or(u64::MAX);
+				max_path_contribution = core::cmp::min(hop_contribution, max_path_contribution);
+			} else { debug_assert!(false); }
+		}
+
+		max_path_contribution
 	}
 }
 
@@ -3269,7 +3311,10 @@ where L::Target: Logger {
 				// recompute the fees again, so that if that's the case, we match the currently
 				// underpaid htlc_minimum_msat with fees.
 				debug_assert_eq!(payment_path.get_value_msat(), value_contribution_msat);
-				let desired_value_contribution = cmp::min(value_contribution_msat, final_value_msat);
+				let max_path_contribution_msat = payment_path.compute_max_final_value_contribution(
+					&used_liquidities, channel_saturation_pow_half
+				);
+				let desired_value_contribution = cmp::min(max_path_contribution_msat, final_value_msat);
 				value_contribution_msat = payment_path.update_value_and_recompute_fees(desired_value_contribution);
 
 				// Since a path allows to transfer as much value as
@@ -3281,7 +3326,6 @@ where L::Target: Logger {
 				// might have been computed considering a larger value.
 				// Remember that we used these channels so that we don't rely
 				// on the same liquidity in future paths.
-				let mut prevented_redundant_path_selection = false;
 				for (hop, _) in payment_path.hops.iter() {
 					let spent_on_hop_msat = value_contribution_msat + hop.next_hops_fee_msat;
 					let used_liquidity_msat = used_liquidities
@@ -3290,14 +3334,9 @@ where L::Target: Logger {
 						.or_insert(spent_on_hop_msat);
 					let hop_capacity = hop.candidate.effective_capacity();
 					let hop_max_msat = max_htlc_from_capacity(hop_capacity, channel_saturation_pow_half);
-					if *used_liquidity_msat == hop_max_msat {
-						// If this path used all of this channel's available liquidity, we know
-						// this path will not be selected again in the next loop iteration.
-						prevented_redundant_path_selection = true;
-					}
 					debug_assert!(*used_liquidity_msat <= hop_max_msat);
 				}
-				if !prevented_redundant_path_selection {
+				if max_path_contribution_msat > value_contribution_msat {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
