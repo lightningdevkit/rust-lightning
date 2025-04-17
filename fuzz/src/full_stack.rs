@@ -299,6 +299,14 @@ impl<'a> MoneyLossDetector<'a> {
 	}
 
 	fn connect_block(&mut self, all_txn: &[Transaction]) {
+		if self.blocks_connected > 50_000 {
+			// Connecting blocks is relatively slow, and some commands can connect many blocks.
+			// This can inflate the total runtime substantially, leading to spurious timeouts.
+			// Instead, because block connection rate is expected to be limited by PoW, simply
+			// start ignoring blocks after the first 50k.
+			return;
+		}
+
 		let mut txdata = Vec::with_capacity(all_txn.len());
 		for (idx, tx) in all_txn.iter().enumerate() {
 			let txid = tx.compute_txid();
