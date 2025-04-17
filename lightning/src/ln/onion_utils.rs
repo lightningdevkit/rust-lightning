@@ -1457,6 +1457,9 @@ const UPDATE: u16 = 0x1000;
 /// [`Self::FeeInsufficient`] is a direct representation of its underlying BOLT04 error code.
 /// [`Self::PrivateChannelForward`] provides additional information that is not provided by its
 ///  BOLT04 error code.
+//
+// Note that variants that directly represent BOLT04 error codes must implement conversion from u16
+// values using [`impl_from_u16_for_htlc_reason`]
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub enum LocalHTLCFailureReason {
 	/// There has been a temporary processing failure on the node which may resolve on retry.
@@ -1691,57 +1694,49 @@ impl LocalHTLCFailureReason {
 	}
 }
 
-impl From<u16> for LocalHTLCFailureReason {
-	fn from(value: u16) -> Self {
-		if value == (NODE | 2) {
-			LocalHTLCFailureReason::TemporaryNodeFailure
-		} else if value == (PERM | NODE | 2) {
-			LocalHTLCFailureReason::PermanentNodeFailure
-		} else if value == (PERM | NODE | 3) {
-			LocalHTLCFailureReason::RequiredNodeFeature
-		} else if value == (BADONION | PERM | 4) {
-			LocalHTLCFailureReason::InvalidOnionVersion
-		} else if value == (BADONION | PERM | 5) {
-			LocalHTLCFailureReason::InvalidOnionHMAC
-		} else if value == (BADONION | PERM | 6) {
-			LocalHTLCFailureReason::InvalidOnionKey
-		} else if value == (UPDATE | 7) {
-			LocalHTLCFailureReason::TemporaryChannelFailure
-		} else if value == (PERM | 8) {
-			LocalHTLCFailureReason::PermanentChannelFailure
-		} else if value == (PERM | 9) {
-			LocalHTLCFailureReason::RequiredChannelFeature
-		} else if value == (PERM | 10) {
-			LocalHTLCFailureReason::UnknownNextPeer
-		} else if value == (UPDATE | 11) {
-			LocalHTLCFailureReason::AmountBelowMinimum
-		} else if value == (UPDATE | 12) {
-			LocalHTLCFailureReason::FeeInsufficient
-		} else if value == (UPDATE | 13) {
-			LocalHTLCFailureReason::IncorrectCLTVExpiry
-		} else if value == (UPDATE | 14) {
-			LocalHTLCFailureReason::CLTVExpiryTooSoon
-		} else if value == (PERM | 15) {
-			LocalHTLCFailureReason::IncorrectPaymentDetails
-		} else if value == 18 {
-			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
-		} else if value == 19 {
-			LocalHTLCFailureReason::FinalIncorrectHTLCAmount
-		} else if value == (UPDATE | 20) {
-			LocalHTLCFailureReason::ChannelDisabled
-		} else if value == 21 {
-			LocalHTLCFailureReason::CLTVExpiryTooFar
-		} else if value == (PERM | 22) {
-			LocalHTLCFailureReason::InvalidOnionPayload
-		} else if value == 23 {
-			LocalHTLCFailureReason::MPPTimeout
-		} else if value == (BADONION | PERM | 24) {
-			LocalHTLCFailureReason::InvalidOnionBlinding
-		} else {
-			LocalHTLCFailureReason::UnknownFailureCode { code: value }
-		}
-	}
+macro_rules! impl_from_u16_for_htlc_reason {
+    ($enum:ident, [$($variant:ident),* $(,)?]) => {
+        impl From<u16> for $enum {
+            fn from(value: u16) -> Self {
+                $(
+                    if value == $enum::$variant.failure_code() {
+                        return $enum::$variant;
+                    }
+                )*
+                $enum::UnknownFailureCode { code: value }
+            }
+        }
+    };
 }
+
+// Error codes that represent BOLT04 error codes must be included here.
+impl_from_u16_for_htlc_reason!(
+	LocalHTLCFailureReason,
+	[
+		TemporaryNodeFailure,
+		PermanentNodeFailure,
+		RequiredNodeFeature,
+		InvalidOnionVersion,
+		InvalidOnionHMAC,
+		InvalidOnionKey,
+		TemporaryChannelFailure,
+		PermanentChannelFailure,
+		RequiredChannelFeature,
+		UnknownNextPeer,
+		AmountBelowMinimum,
+		FeeInsufficient,
+		IncorrectCLTVExpiry,
+		CLTVExpiryTooSoon,
+		IncorrectPaymentDetails,
+		FinalIncorrectCLTVExpiry,
+		FinalIncorrectHTLCAmount,
+		ChannelDisabled,
+		CLTVExpiryTooFar,
+		InvalidOnionPayload,
+		MPPTimeout,
+		InvalidOnionBlinding,
+	]
+);
 
 impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(1, TemporaryNodeFailure) => {},
