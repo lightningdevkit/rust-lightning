@@ -1935,7 +1935,9 @@ impl HTLCFailReason {
 				}
 			},
 			LocalHTLCFailureReason::TemporaryTrampolineFailure => debug_assert!(data.is_empty()),
-			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient => debug_assert_eq!(data.len(), 10),
+			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient => {
+				debug_assert_eq!(data.len(), 10)
+			},
 			LocalHTLCFailureReason::UnknownNextTrampoline => debug_assert!(data.is_empty()),
 		}
 
