@@ -145,8 +145,9 @@ pub(crate) fn get_onion_error_description(error_code: u16) -> (&'static str, &'s
 		_c if _c == 21 => ("Node indicated the CLTV expiry in the HTLC is too far in the future", "expiry_too_far"),
 		_c if _c == PERM|22 => ("Node indicated that the decrypted onion per-hop payload was not understood by it or is incomplete", "invalid_onion_payload"),
 		_c if _c == 23 => ("The final node indicated the complete amount of the multi-part payment was not received within a reasonable time", "mpp_timeout"),
-		_c if _c == NODE|25 => ("The Trampoline node was unable to relay the payment to the subsequent Trampoline node.", "temporary_trampoline_failure"),
+		_c if _c == NODE|25 => ("The Trampoline node was unable to relay the payment to the subsequent Trampoline node", "temporary_trampoline_failure"),
 		_c if _c == NODE|26 => ("Node indicated the fee amount or CLTV value was below that required by the Trampoline node", "trampoline_fee_or_expiry_insufficient"),
+		_c if _c == PERM|27 => ("The next Trampoline node specified in outgoing_node_id could not be found", "unknown_next_trampoline"),
 		_ => ("Unknown", ""),
 	}
 }
