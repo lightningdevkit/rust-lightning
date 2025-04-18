@@ -10121,6 +10121,61 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_ack)".to_owned(), msg.channel_id))
 	}
 
+	#[cfg(splicing)]
+	fn internal_splice_locked(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked,
+	) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::send_err_msg_no_close(
+				format!(
+					"Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id
+				),
+				msg.channel_id,
+			)
+		})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+					counterparty_node_id
+				), msg.channel_id)),
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					let announcement_sigs_opt = try_channel_entry!(
+						self, peer_state, chan.splice_locked(
+							msg, &self.node_signer, self.chain_hash, &self.default_configuration,
+							&self.best_block.read().unwrap(), &&logger,
+						), chan_entry
+					);
+
+					if !chan.has_pending_splice() {
+						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+						insert_short_channel_id!(short_to_chan_info, chan);
+					}
+
+					if let Some(announcement_sigs) = announcement_sigs_opt {
+						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
+						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+							node_id: counterparty_node_id.clone(),
+							msg: announcement_sigs,
+						});
+					}
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
+				}
+			},
+		};
+
+		Ok(())
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	#[rustfmt::skip]
 	fn process_pending_monitor_events(&self) -> bool {
@@ -12612,9 +12667,16 @@ where
 	#[cfg(splicing)]
 	#[rustfmt::skip]
 	fn handle_splice_locked(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceLocked) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Splicing not supported (splice_locked)".to_owned(),
-			msg.channel_id)), counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_splice_locked(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::DoPersist,
+			};
+			let _ = handle_error!(self, res, counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: PublicKey, msg: &msgs::Shutdown) {
