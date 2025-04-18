@@ -3018,7 +3018,7 @@ macro_rules! handle_error {
 /// Note that this step can be skipped if the channel was never opened (through the creation of a
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
 macro_rules! locked_close_channel {
-	($self: ident, $peer_state: expr, $channel_context: expr, $shutdown_res_mut: expr) => {{
+	($self: ident, $peer_state: expr, $channel_context: expr, $channel_funding: expr, $shutdown_res_mut: expr) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
 			handle_new_monitor_update!($self, funding_txo, update, $peer_state,
 				$channel_context, REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER);
@@ -3028,12 +3028,12 @@ macro_rules! locked_close_channel {
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
 		// never even got confirmations (which would open us up to DoS attacks).
 		let update_id = $channel_context.get_latest_monitor_update_id();
-		if $channel_context.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth() == Some(0) || update_id > 1 {
+		if $channel_funding.get_funding_tx_confirmation_height().is_some() || $channel_funding.minimum_depth() == Some(0) || update_id > 1 {
 			let chan_id = $channel_context.channel_id();
 			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = $channel_context.get_short_channel_id() {
+		if let Some(short_id) = $channel_funding.get_short_channel_id() {
 			short_to_chan_info.remove(&short_id);
 		} else {
 			// If the channel was never confirmed on-chain prior to its closure, remove the
@@ -3066,7 +3066,7 @@ macro_rules! convert_channel_err {
 				let logger = WithChannelContext::from(&$self.logger, &$context, None);
 				log_error!(logger, "Closing channel {} due to close-required error: {}", $channel_id, msg);
 				let mut shutdown_res = $context.force_shutdown($funding, true, reason);
-				locked_close_channel!($self, $peer_state, $context, &mut shutdown_res);
+				locked_close_channel!($self, $peer_state, $context, $funding, &mut shutdown_res);
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
 				(true, err)
@@ -3131,7 +3131,7 @@ macro_rules! remove_channel_entry {
 	($self: ident, $peer_state: expr, $entry: expr, $shutdown_res_mut: expr) => {
 		{
 			let channel = $entry.remove_entry().1;
-			locked_close_channel!($self, $peer_state, &channel.context(), $shutdown_res_mut);
+			locked_close_channel!($self, $peer_state, &channel.context(), channel.funding(), $shutdown_res_mut);
 			channel
 		}
 	}
@@ -3149,7 +3149,7 @@ macro_rules! send_channel_ready {
 		let outbound_alias_insert = short_to_chan_info.insert($channel.context.outbound_scid_alias(), ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
 		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
 			"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
-		if let Some(real_scid) = $channel.context.get_short_channel_id() {
+		if let Some(real_scid) = $channel.funding.get_short_channel_id() {
 			let scid_insert = short_to_chan_info.insert(real_scid, ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
 			assert!(scid_insert.is_none() || scid_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
 				"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
@@ -4088,7 +4088,7 @@ where
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
 						let mut close_res = chan.force_shutdown(false, ClosureReason::FundingBatchClosure);
-						locked_close_channel!(self, &mut *peer_state, chan.context(), close_res);
+						locked_close_channel!(self, &mut *peer_state, chan.context(), chan.funding(), close_res);
 						shutdown_results.push(close_res);
 					}
 				}
@@ -4567,7 +4567,7 @@ where
 				action: msgs::ErrorAction::IgnoreError
 			});
 		}
-		if chan.context.get_short_channel_id().is_none() {
+		if chan.funding.get_short_channel_id().is_none() {
 			return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError});
 		}
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
@@ -4589,7 +4589,7 @@ where
 	fn get_channel_update_for_unicast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
-		let short_channel_id = match chan.context.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
+		let short_channel_id = match chan.funding.get_short_channel_id().or(chan.context.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
@@ -5484,7 +5484,7 @@ where
 						.map(|(mut chan, mut peer_state)| {
 							let closure_reason = ClosureReason::ProcessingError { err: e.clone() };
 							let mut close_res = chan.force_shutdown(false, closure_reason);
-							locked_close_channel!(self, peer_state, chan.context(), close_res);
+							locked_close_channel!(self, peer_state, chan.context(), chan.funding(), close_res);
 							shutdown_results.push(close_res);
 							peer_state.pending_msg_events.push(MessageSendEvent::HandleError {
 								node_id: counterparty_node_id,
@@ -5652,7 +5652,7 @@ where
 							err: format!("Channel with id {} not fully established", next_hop_channel_id)
 						})
 					}
-					funded_chan.context.get_short_channel_id().unwrap_or(funded_chan.context.outbound_scid_alias())
+					funded_chan.funding.get_short_channel_id().unwrap_or(funded_chan.context.outbound_scid_alias())
 				} else {
 					return Err(APIError::ChannelUnavailable {
 						err: format!("Channel with id {} for the passed counterparty node_id {} is still opening.",
@@ -6095,7 +6095,7 @@ where
 								};
 
 								let logger = WithChannelContext::from(&self.logger, &optimal_channel.context, Some(payment_hash));
-								let channel_description = if optimal_channel.context.get_short_channel_id() == Some(short_chan_id) {
+								let channel_description = if optimal_channel.funding.get_short_channel_id() == Some(short_chan_id) {
 									"specified"
 								} else {
 									"alternate"
@@ -6725,8 +6725,8 @@ where
 										"Force-closing pending channel with ID {} for not establishing in a timely manner",
 										context.channel_id());
 									let mut close_res = chan.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) });
-									let context = chan.context_mut();
-									locked_close_channel!(self, peer_state, context, close_res);
+									let (funding, context) = chan.funding_and_context_mut();
+									locked_close_channel!(self, peer_state, context, funding, close_res);
 									shutdown_channels.push(close_res);
 									pending_msg_events.push(MessageSendEvent::HandleError {
 										node_id: context.get_counterparty_node_id(),
@@ -7651,7 +7651,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
-		let short_channel_id = channel.context.get_short_channel_id().unwrap_or(channel.context.outbound_scid_alias());
+		let short_channel_id = channel.funding.get_short_channel_id().unwrap_or(channel.context.outbound_scid_alias());
 
 		let mut htlc_forwards = None;
 		if !pending_forwards.is_empty() {
@@ -7935,7 +7935,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if accept_0conf {
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
-			debug_assert!(channel.context().minimum_depth().unwrap() == 0);
+			debug_assert!(channel.funding().minimum_depth().unwrap() == 0);
 		} else if channel.funding().get_channel_type().requires_zero_conf() {
 			let send_msg_err_event = MessageSendEvent::HandleError {
 				node_id: channel.context().get_counterparty_node_id(),
@@ -8011,8 +8011,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Some(funded_chan) => {
 					// This covers non-zero-conf inbound `Channel`s that we are currently monitoring, but those
 					// which have not yet had any confirmations on-chain.
-					if !funded_chan.funding.is_outbound() && funded_chan.context.minimum_depth().unwrap_or(1) != 0 &&
-						funded_chan.context.get_funding_tx_confirmations(best_block_height) == 0
+					if !funded_chan.funding.is_outbound() && funded_chan.funding.minimum_depth().unwrap_or(1) != 0 &&
+						funded_chan.funding.get_funding_tx_confirmations(best_block_height) == 0
 					{
 						num_unfunded_channels += 1;
 					}
@@ -8024,7 +8024,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 
 					// 0conf channels are not considered unfunded.
-					if chan.context().minimum_depth().unwrap_or(1) == 0 {
+					if chan.funding().minimum_depth().unwrap_or(1) == 0 {
 						continue;
 					}
 
@@ -9591,6 +9591,48 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_ack)".to_owned(), msg.channel_id))
 	}
 
+	#[cfg(splicing)]
+	fn internal_splice_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Look for the channel
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+					counterparty_node_id
+				), msg.channel_id)),
+			hash_map::Entry::Occupied(mut chan_entry) => {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					let announcement_sigs_opt = try_channel_entry!(
+						self, peer_state, chan.splice_locked(
+							msg, &self.node_signer, self.chain_hash, &self.default_configuration,
+							&self.best_block.read().unwrap(), &&logger,
+						), chan_entry
+					);
+					if let Some(announcement_sigs) = announcement_sigs_opt {
+						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
+						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+							node_id: counterparty_node_id.clone(),
+							msg: announcement_sigs,
+						});
+					}
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
+				}
+			},
+		};
+
+		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_locked)".to_owned(), msg.channel_id))
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
@@ -9838,7 +9880,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					let context = &chan.context();
 					let logger = WithChannelContext::from(&self.logger, context, None);
 					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
-					locked_close_channel!(self, peer_state, context, shutdown_result);
+					locked_close_channel!(self, peer_state, context, chan.funding(), shutdown_result);
 					shutdown_results.push(shutdown_result);
 					false
 				} else {
@@ -9880,7 +9922,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									}
 									debug_assert_eq!(shutdown_result_opt.is_some(), funded_chan.is_shutdown());
 									if let Some(mut shutdown_result) = shutdown_result_opt {
-										locked_close_channel!(self, peer_state, &funded_chan.context, shutdown_result);
+										locked_close_channel!(self, peer_state, &funded_chan.context, &funded_chan.funding, shutdown_result);
 										shutdown_results.push(shutdown_result);
 									}
 									if let Some(tx) = tx_opt {
@@ -10902,7 +10944,7 @@ where
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
 					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
-					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+					.and_then(|(_, channel)| channel.funding().get_short_channel_id()),
 			})
 			.collect::<Vec<_>>();
 
@@ -11206,8 +11248,8 @@ where
 					}
 					// Clean up for removal.
 					let mut close_res = chan.force_shutdown(false, ClosureReason::DisconnectedPeer);
-					let context = chan.context_mut();
-					locked_close_channel!(self, peer_state, &context, close_res);
+					let (funding, context) = chan.funding_and_context_mut();
+					locked_close_channel!(self, peer_state, &context, funding, close_res);
 					failed_channels.push(close_res);
 					false
 				});
@@ -11627,8 +11669,8 @@ where
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
 				let txid_opt = chan.funding.get_funding_txo();
-				let height_opt = chan.context.get_funding_tx_confirmation_height();
-				let hash_opt = chan.context.get_funding_tx_confirmed_in();
+				let height_opt = chan.funding.get_funding_tx_confirmation_height();
+				let hash_opt = chan.funding.get_funding_tx_confirmed_in();
 				if let (Some(funding_txo), Some(conf_height), Some(block_hash)) = (txid_opt, height_opt, hash_opt) {
 					res.push((funding_txo.txid, conf_height, Some(block_hash)));
 				}
@@ -11651,6 +11693,12 @@ where
 	}
 }
 
+pub(super) enum FundingConfirmedMessage {
+	Establishment(msgs::ChannelReady),
+	#[cfg(splicing)]
+	Splice(msgs::SpliceLocked),
+}
+
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -11666,7 +11714,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut FundedChannel<SP>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut FundedChannel<SP>) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -11687,7 +11735,7 @@ where
 						None => true,
 						Some(funded_channel) => {
 							let res = f(funded_channel);
-							if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
 									let data = self.get_htlc_inbound_temp_fail_data(reason);
@@ -11695,19 +11743,29 @@ where
 										HTLCDestination::NextHopChannel { node_id: Some(funded_channel.context.get_counterparty_node_id()), channel_id: funded_channel.context.channel_id() }));
 								}
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
-								if let Some(channel_ready) = channel_ready_opt {
-									send_channel_ready!(self, pending_msg_events, funded_channel, channel_ready);
-									if funded_channel.context.is_usable() {
-										log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", funded_channel.context.channel_id());
-										if let Ok(msg) = self.get_channel_update_for_unicast(funded_channel) {
-											pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
-												node_id: funded_channel.context.get_counterparty_node_id(),
-												msg,
-											});
+								match funding_confirmed_opt {
+									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
+										send_channel_ready!(self, pending_msg_events, funded_channel, channel_ready);
+										if funded_channel.context.is_usable() {
+											log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", funded_channel.context.channel_id());
+											if let Ok(msg) = self.get_channel_update_for_unicast(funded_channel) {
+												pending_msg_events.push(MessageSendEvent::SendChannelUpdate {
+													node_id: funded_channel.context.get_counterparty_node_id(),
+													msg,
+												});
+											}
+										} else {
+											log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", funded_channel.context.channel_id());
 										}
-									} else {
-										log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", funded_channel.context.channel_id());
-									}
+									},
+									#[cfg(splicing)]
+									Some(FundingConfirmedMessage::Splice(splice_locked)) => {
+										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+											node_id: funded_channel.context.get_counterparty_node_id(),
+											msg: splice_locked,
+										});
+									},
+									None => {},
 								}
 
 								{
@@ -11719,7 +11777,7 @@ where
 									// (re-)broadcast signed `channel_announcement`s and
 									// `channel_update`s for any channels less than a week old.
 									let funding_conf_height =
-										funded_channel.context.get_funding_tx_confirmation_height().unwrap_or(height);
+										funded_channel.funding.get_funding_tx_confirmation_height().unwrap_or(height);
 									// To avoid broadcast storms after each block, only
 									// re-broadcast every hour (6 blocks) after the initial
 									// broadcast, or if this is the first time we're ready to
@@ -11758,7 +11816,7 @@ where
 									});
 								}
 								if funded_channel.is_our_channel_ready() {
-									if let Some(real_scid) = funded_channel.context.get_short_channel_id() {
+									if let Some(real_scid) = funded_channel.funding.get_short_channel_id() {
 										// If we sent a 0conf channel_ready, and now have an SCID, we add it
 										// to the short_to_chan_info map here. Note that we check whether we
 										// can relay using the real SCID at relay-time (i.e.
@@ -11777,7 +11835,7 @@ where
 								// reorged out of the main chain. Close the channel.
 								let reason_message = format!("{}", reason);
 								let mut close_res = funded_channel.context.force_shutdown(&funded_channel.funding, true, reason);
-								locked_close_channel!(self, peer_state, &funded_channel.context, close_res);
+								locked_close_channel!(self, peer_state, &funded_channel.context, &funded_channel.funding, close_res);
 								failed_channels.push(close_res);
 								if let Ok(update) = self.get_channel_update_for_broadcast(&funded_channel) {
 									let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
@@ -12082,9 +12140,16 @@ where
 
 	#[cfg(splicing)]
 	fn handle_splice_locked(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceLocked) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Splicing not supported (splice_locked)".to_owned(),
-			msg.channel_id)), counterparty_node_id);
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_splice_locked(&counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				Err(_) => NotifyOption::SkipPersistHandleEvents,
+				Ok(()) => NotifyOption::SkipPersistHandleEvents,
+			};
+			let _ = handle_error!(self, res, counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: PublicKey, msg: &msgs::Shutdown) {
@@ -13850,7 +13915,7 @@ where
 					log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {} with {} blocked updates",
 						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
-					if let Some(short_channel_id) = channel.context.get_short_channel_id() {
+					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
 					per_peer_state.entry(channel.context.get_counterparty_node_id())
