@@ -36,8 +36,10 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
+use lightning::sign::{ChangeDestinationSource, ChangeDestinationSourceSync, OutputSpender};
 use lightning::util::logger::Logger;
-use lightning::util::persist::Persister;
+use lightning::util::persist::{KVStore, Persister};
+use lightning::util::sweep::{OutputSweeper, OutputSweeperSync};
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -129,6 +131,11 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 const REBROADCAST_TIMER: u64 = 30;
 #[cfg(test)]
 const REBROADCAST_TIMER: u64 = 1;
+
+#[cfg(not(test))]
+const SWEEPER_TIMER: u64 = 30;
+#[cfg(test)]
+const SWEEPER_TIMER: u64 = 1;
 
 #[cfg(feature = "futures")]
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
@@ -306,6 +313,7 @@ macro_rules! define_run_body {
 		$channel_manager: ident, $process_channel_manager_events: expr,
 		$onion_messenger: ident, $process_onion_message_handler_events: expr,
 		$peer_manager: ident, $gossip_sync: ident,
+		$sweeper: expr,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
 		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
 	) => { {
@@ -320,6 +328,7 @@ macro_rules! define_run_body {
 		let mut last_prune_call = $get_timer(FIRST_NETWORK_PRUNE_TIMER);
 		let mut last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
 		let mut last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
+		let mut last_sweeper_call = $get_timer(SWEEPER_TIMER);
 		let mut have_pruned = false;
 		let mut have_decayed_scorer = false;
 
@@ -460,6 +469,12 @@ macro_rules! define_run_body {
 				log_trace!($logger, "Rebroadcasting monitor's pending claims");
 				$chain_monitor.rebroadcast_pending_claims();
 				last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
+			}
+
+			if $timer_elapsed(&mut last_sweeper_call, SWEEPER_TIMER) {
+				log_trace!($logger, "Regenerate sweeper spends if necessary");
+				let _ = $sweeper;
+				last_sweeper_call = $get_timer(SWEEPER_TIMER);
 			}
 		}
 
@@ -650,7 +665,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger>;
-/// #
+///
 /// # struct Node<
 /// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
 /// #     F: lightning::chain::Filter + Send + Sync + 'static,
@@ -708,6 +723,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///			Some(background_onion_messenger),
 ///			background_gossip_sync,
 ///			background_peer_man,
+/// 		None,
 ///			background_logger,
 ///			Some(background_scorer),
 ///			sleeper,
@@ -742,6 +758,10 @@ pub async fn process_events_async<
 		+ Sync,
 	CM: 'static + Deref + Send + Sync,
 	OM: 'static + Deref + Send + Sync,
+	D: 'static + Deref + Send + Sync,
+	O: 'static + Deref + Send + Sync,
+	K: 'static + Deref + Send + Sync,
+	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	PM: 'static + Deref + Send + Sync,
@@ -753,12 +773,13 @@ pub async fn process_events_async<
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
+	sweeper: Option<OS>,
 	logger: L, scorer: Option<S>, sleeper: Sleeper, mobile_interruptable_platform: bool,
 	fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
-	CF::Target: 'static + chain::Filter,
+	CF::Target: 'static + chain::Filter + Sync + Send,
 	T::Target: 'static + BroadcasterInterface,
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
@@ -767,6 +788,9 @@ where
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
+	O::Target: 'static + OutputSpender + Send + Sync,
+	D::Target: 'static + ChangeDestinationSource + Send + Sync,
+	K::Target: 'static + KVStore + Send + Sync,
 {
 	let mut should_break = false;
 	let async_event_handler = |event| {
@@ -810,6 +834,13 @@ where
 		},
 		peer_manager,
 		gossip_sync,
+		{
+			if let Some(ref sweeper) = sweeper {
+				sweeper.regenerate_and_broadcast_spend_if_necessary().await
+			} else {
+				Ok(())
+			}
+		},
 		logger,
 		scorer,
 		should_break,
@@ -922,14 +953,19 @@ impl BackgroundProcessor {
 		PM: 'static + Deref + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: for<'b> WriteableScore<'b>,
+		D: Deref,
+		O: 'static + Deref + Send + Sync,
+		K: 'static + Deref + Send + Sync,
+		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send + Sync,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-		logger: L, scorer: Option<S>,
+		sweeper: Option<OS>, logger: L, scorer: Option<S>,
 	) -> Self
 	where
+		D::Target: ChangeDestinationSourceSync,
 		UL::Target: 'static + UtxoLookup,
-		CF::Target: 'static + chain::Filter,
+		CF::Target: 'static + chain::Filter + Sync + Send,
 		T::Target: 'static + BroadcasterInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
@@ -938,6 +974,8 @@ impl BackgroundProcessor {
 		CM::Target: AChannelManager + Send + Sync,
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
+		O::Target: 'static + OutputSpender + Send + Sync,
+		K::Target: 'static + KVStore + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -973,6 +1011,13 @@ impl BackgroundProcessor {
 				},
 				peer_manager,
 				gossip_sync,
+				{
+					if let Some(ref sweeper) = sweeper {
+						sweeper.regenerate_and_broadcast_spend_if_necessary()
+					} else {
+						Ok(())
+					}
+				},
 				logger,
 				scorer,
 				stop_thread.load(Ordering::Acquire),
@@ -1069,7 +1114,7 @@ mod tests {
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::transaction::OutPoint;
-	use lightning::chain::{chainmonitor, BestBlock, Confirm, Filter};
+	use lightning::chain::{self, chainmonitor, BestBlock, Confirm, Filter};
 	use lightning::events::{Event, PathFailure, ReplayEvent};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{
@@ -1085,7 +1130,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{ChangeDestinationSourceSync, InMemorySigner, KeysManager};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1097,7 +1142,7 @@ mod tests {
 		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
-	use lightning::util::sweep::{OutputSpendStatus, OutputSweeper, PRUNE_DELAY_BLOCKS};
+	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, TrackedSpendableOutput, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_persister::fs_store::FilesystemStore;
@@ -1155,7 +1200,7 @@ mod tests {
 
 	type ChainMonitor = chainmonitor::ChainMonitor<
 		InMemorySigner,
-		Arc<test_utils::TestChainSource>,
+		Arc<dyn chain::Filter + Sync + Send>,
 		Arc<test_utils::TestBroadcaster>,
 		Arc<test_utils::TestFeeEstimator>,
 		Arc<test_utils::TestLogger>,
@@ -1218,7 +1263,7 @@ mod tests {
 		best_block: BestBlock,
 		scorer: Arc<LockingWrapper<TestScorer>>,
 		sweeper: Arc<
-			OutputSweeper<
+			OutputSweeperSync<
 				Arc<test_utils::TestBroadcaster>,
 				Arc<TestWallet>,
 				Arc<test_utils::TestFeeEstimator>,
@@ -1519,7 +1564,7 @@ mod tests {
 
 	struct TestWallet {}
 
-	impl ChangeDestinationSource for TestWallet {
+	impl ChangeDestinationSourceSync for TestWallet {
 		fn get_change_destination_script(&self) -> Result<ScriptBuf, ()> {
 			Ok(ScriptBuf::new())
 		}
@@ -1558,12 +1603,13 @@ mod tests {
 				Arc::clone(&keys_manager),
 			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
+			let x: Arc<dyn Filter + Send + Sync> = chain_source.clone();
 			let kv_store =
 				Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
-				Some(chain_source.clone()),
+				Some(x.clone()),
 				tx_broadcaster.clone(),
 				logger.clone(),
 				fee_estimator.clone(),
@@ -1597,7 +1643,7 @@ mod tests {
 				IgnoringMessageHandler {},
 			));
 			let wallet = Arc::new(TestWallet {});
-			let sweeper = Arc::new(OutputSweeper::new(
+			let sweeper = Arc::new(OutputSweeperSync::new(
 				best_block,
 				Arc::clone(&tx_broadcaster),
 				Arc::clone(&fee_estimator),
@@ -1823,6 +1869,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
+
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
@@ -1831,6 +1878,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1924,6 +1972,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1966,6 +2015,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1998,6 +2048,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2034,6 +2085,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2063,6 +2115,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2109,6 +2162,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2171,6 +2225,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2216,10 +2271,22 @@ mod tests {
 
 		advance_chain(&mut nodes[0], 3);
 
+		let tx_broadcaster = nodes[0].tx_broadcaster.clone();
+		let wait_for_sweep_tx = || -> Transaction {
+			loop {
+				let sweep_tx = tx_broadcaster.txn_broadcasted.lock().unwrap().pop();
+				if let Some(sweep_tx) = sweep_tx {
+					return sweep_tx;
+				}
+
+				std::thread::sleep(Duration::from_millis(100));
+			}
+		};
+
 		// Check we generate an initial sweeping tx.
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let sweep_tx_0 = wait_for_sweep_tx();
 		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
-		let sweep_tx_0 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		match tracked_output.status {
 			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
 				assert_eq!(sweep_tx_0.compute_txid(), latest_spending_tx.compute_txid());
@@ -2230,8 +2297,8 @@ mod tests {
 		// Check we regenerate and rebroadcast the sweeping tx each block.
 		advance_chain(&mut nodes[0], 1);
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let sweep_tx_1 = wait_for_sweep_tx();
 		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
-		let sweep_tx_1 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		match tracked_output.status {
 			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
 				assert_eq!(sweep_tx_1.compute_txid(), latest_spending_tx.compute_txid());
@@ -2242,8 +2309,8 @@ mod tests {
 
 		advance_chain(&mut nodes[0], 1);
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let sweep_tx_2 = wait_for_sweep_tx();
 		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
-		let sweep_tx_2 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		match tracked_output.status {
 			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
 				assert_eq!(sweep_tx_2.compute_txid(), latest_spending_tx.compute_txid());
@@ -2322,6 +2389,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2351,6 +2419,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2446,6 +2515,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2478,6 +2548,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2640,6 +2711,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2690,6 +2762,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
