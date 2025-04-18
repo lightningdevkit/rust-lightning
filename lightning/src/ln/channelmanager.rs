@@ -12605,6 +12605,11 @@ where
 				);
 
 				if self.default_configuration.manually_handle_bolt12_invoices {
+					// Update the corresponding entry in `PendingOutboundPayment` for this invoice.
+					// This ensures that event generation remains idempotent in case we receive
+					// the same invoice multiple times.
+					self.pending_outbound_payments.mark_invoice_received(&invoice, payment_id).ok()?;
+
 					let event = Event::InvoiceReceived {
 						payment_id, invoice, context, responder,
 					};
