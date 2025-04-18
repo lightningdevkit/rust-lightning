@@ -1129,7 +1129,7 @@ mod tests {
 		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
-	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
+	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, TrackedSpendableOutput, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_persister::fs_store::FilesystemStore;
@@ -2258,10 +2258,22 @@ mod tests {
 
 		advance_chain(&mut nodes[0], 3);
 
+		let tx_broadcaster = nodes[0].tx_broadcaster.clone();
+		let wait_for_sweep_tx = || -> Transaction {
+			loop {
+				let sweep_tx = tx_broadcaster.txn_broadcasted.lock().unwrap().pop();
+				if let Some(sweep_tx) = sweep_tx {
+					return sweep_tx;
+				}
+
+				std::thread::sleep(Duration::from_millis(100));
+			}
+		};
+
 		// Check we generate an initial sweeping tx.
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let sweep_tx_0 = wait_for_sweep_tx();
 		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
-		let sweep_tx_0 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		match tracked_output.status {
 			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
 				assert_eq!(sweep_tx_0.compute_txid(), latest_spending_tx.compute_txid());
@@ -2272,8 +2284,8 @@ mod tests {
 		// Check we regenerate and rebroadcast the sweeping tx each block.
 		advance_chain(&mut nodes[0], 1);
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let sweep_tx_1 = wait_for_sweep_tx();
 		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
-		let sweep_tx_1 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		match tracked_output.status {
 			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
 				assert_eq!(sweep_tx_1.compute_txid(), latest_spending_tx.compute_txid());
@@ -2284,8 +2296,8 @@ mod tests {
 
 		advance_chain(&mut nodes[0], 1);
 		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let sweep_tx_2 = wait_for_sweep_tx();
 		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
-		let sweep_tx_2 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		match tracked_output.status {
 			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
 				assert_eq!(sweep_tx_2.compute_txid(), latest_spending_tx.compute_txid());
