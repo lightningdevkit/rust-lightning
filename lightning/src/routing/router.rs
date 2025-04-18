@@ -1068,7 +1068,10 @@ impl PaymentParameters {
 				found_blinded_tail = true;
 			}
 		}
-		debug_assert!(found_blinded_tail);
+		if failed_blinded_tail.trampoline_hops.is_empty() {
+			// do not mandate path hints when paying using blinded Trampoline hops
+			debug_assert!(found_blinded_tail);
+		}
 	}
 }
 
