@@ -32,7 +32,7 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
-use core::{hint, task};
+use core::task;
 use std::sync::Arc;
 
 use super::async_poll::dummy_waker;
@@ -412,6 +412,7 @@ where
 		}
 	}
 
+	/// Tells the sweeper to track the given outputs descriptors.
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
@@ -421,10 +422,12 @@ where
 		)
 	}
 
+	/// Returns a list of the currently tracked spendable outputs.
 	pub fn tracked_spendable_outputs(&self) -> Vec<TrackedSpendableOutput> {
 		self.sweeper.tracked_spendable_outputs()
 	}
 
+	/// Returns the inner async sweeper for testing purposes.
 	// #[cfg(test)]
 	pub fn sweeper_async(&self) -> Arc<OutputSweeper<B, Arc<ChangeDestinationSourceSyncWrapper<D>>, E, F, K, L, O>> {
 		self.sweeper.clone()

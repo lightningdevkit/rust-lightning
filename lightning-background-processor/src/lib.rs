@@ -602,7 +602,7 @@ pub(crate) mod futures_util {
 	}
 }
 #[cfg(feature = "futures")]
-use core::{task, future::Future};
+use core::task;
 #[cfg(feature = "futures")]
 use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 
@@ -665,7 +665,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger>;
-/// #
+///
 /// # struct Node<
 /// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
 /// #     F: lightning::chain::Filter + Send + Sync + 'static,
@@ -723,6 +723,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 ///			Some(background_onion_messenger),
 ///			background_gossip_sync,
 ///			background_peer_man,
+/// 		None,
 ///			background_logger,
 ///			Some(background_scorer),
 ///			sleeper,
@@ -772,7 +773,7 @@ pub async fn process_events_async<
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-	sweeper: OS,
+	sweeper: Option<OS>,
 	logger: L, scorer: Option<S>, sleeper: Sleeper, mobile_interruptable_platform: bool,
 	fetch_time: FetchTime,
 ) -> Result<(), lightning::io::Error>
@@ -833,7 +834,13 @@ where
 		},
 		peer_manager,
 		gossip_sync,
-		sweeper.regenerate_and_broadcast_spend_if_necessary().await,
+		{
+			if let Some(ref sweeper) = sweeper {
+				sweeper.regenerate_and_broadcast_spend_if_necessary().await
+			} else {
+				Ok(())
+			}
+		},
 		logger,
 		scorer,
 		should_break,
@@ -953,7 +960,7 @@ impl BackgroundProcessor {
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-		sweeper: OS, logger: L, scorer: Option<S>,
+		sweeper: Option<OS>, logger: L, scorer: Option<S>,
 	) -> Self
 	where
 		D::Target: ChangeDestinationSourceSync,
@@ -1004,7 +1011,13 @@ impl BackgroundProcessor {
 				},
 				peer_manager,
 				gossip_sync,
-				sweeper.regenerate_and_broadcast_spend_if_necessary(),
+				{
+					if let Some(ref sweeper) = sweeper {
+						sweeper.regenerate_and_broadcast_spend_if_necessary()
+					} else {
+						Ok(())
+					}
+				},
 				logger,
 				scorer,
 				stop_thread.load(Ordering::Acquire),
@@ -1865,7 +1878,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -1959,7 +1972,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2002,7 +2015,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2035,7 +2048,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.sweeper_async(),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2072,7 +2085,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2102,7 +2115,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2149,7 +2162,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2212,7 +2225,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2376,7 +2389,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2406,7 +2419,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2502,7 +2515,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2535,7 +2548,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.sweeper_async(),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2698,7 +2711,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.clone(),
+			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 		);
@@ -2749,7 +2762,7 @@ mod tests {
 			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			nodes[0].sweeper.sweeper_async(),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
