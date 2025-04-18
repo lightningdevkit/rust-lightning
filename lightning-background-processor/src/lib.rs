@@ -1081,11 +1081,14 @@ mod tests {
 		IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 	};
 	use lightning::ln::types::ChannelId;
+	use lightning::offers::flow::OffersMessageFlow;
 	use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{
+		ChangeDestinationSource, InMemorySigner, KeysManager, NodeSigner, Recipient,
+	};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1557,6 +1560,21 @@ mod tests {
 				network_graph.clone(),
 				Arc::clone(&keys_manager),
 			));
+			let best_block = BestBlock::from_network(network);
+			let params = ChainParameters { network, best_block };
+			let chain_hash = ChainHash::using_genesis_block(params.network);
+
+			let flow = OffersMessageFlow::new(
+				chain_hash,
+				params.best_block,
+				keys_manager.get_node_id(Recipient::Node).unwrap(),
+				genesis_block.header.time,
+				keys_manager.get_inbound_payment_key(),
+				keys_manager.clone(),
+				msg_router.clone(),
+				router.clone(),
+			);
+
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store =
 				Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
@@ -1569,14 +1587,14 @@ mod tests {
 				fee_estimator.clone(),
 				kv_store.clone(),
 			));
-			let best_block = BestBlock::from_network(network);
-			let params = ChainParameters { network, best_block };
+
 			let manager = Arc::new(ChannelManager::new(
 				fee_estimator.clone(),
 				chain_monitor.clone(),
 				tx_broadcaster.clone(),
 				router.clone(),
 				msg_router.clone(),
+				flow,
 				logger.clone(),
 				keys_manager.clone(),
 				keys_manager.clone(),

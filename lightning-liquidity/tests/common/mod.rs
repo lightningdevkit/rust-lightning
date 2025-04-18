@@ -5,7 +5,8 @@
 #![allow(unused_macros)]
 
 use lightning::chain::Filter;
-use lightning::sign::EntropySource;
+use lightning::offers::flow::OffersMessageFlow;
+use lightning::sign::{EntropySource, NodeSigner, Recipient};
 
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
@@ -421,6 +422,22 @@ pub(crate) fn create_liquidity_node(
 	));
 	let msg_router =
 		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager)));
+
+	let best_block = BestBlock::from_network(network);
+	let chain_params = ChainParameters { network, best_block };
+	let chain_hash = ChainHash::using_genesis_block(chain_params.network);
+
+	let flow = OffersMessageFlow::new(
+		chain_hash,
+		chain_params.best_block,
+		keys_manager.get_node_id(Recipient::Node).unwrap(),
+		genesis_block.header.time,
+		keys_manager.get_inbound_payment_key(),
+		keys_manager.clone(),
+		msg_router.clone(),
+		router.clone(),
+	);
+
 	let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 	let kv_store =
 		Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
@@ -431,14 +448,13 @@ pub(crate) fn create_liquidity_node(
 		fee_estimator.clone(),
 		kv_store.clone(),
 	));
-	let best_block = BestBlock::from_network(network);
-	let chain_params = ChainParameters { network, best_block };
 	let channel_manager = Arc::new(ChannelManager::new(
 		fee_estimator.clone(),
 		chain_monitor.clone(),
 		tx_broadcaster.clone(),
 		router.clone(),
 		msg_router.clone(),
+		flow,
 		logger.clone(),
 		keys_manager.clone(),
 		keys_manager.clone(),

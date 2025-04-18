@@ -16,6 +16,7 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
+use crate::offers::flow::OffersMessageFlow;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::types::features::InitFeatures;
@@ -27,7 +28,7 @@ use crate::onion_message::messenger::OnionMessenger;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
-use crate::sign::{EntropySource, RandomBytes};
+use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient};
 use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
@@ -37,6 +38,7 @@ use crate::util::test_utils;
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
 
+use bitcoin::constants::ChainHash;
 use bitcoin::{Weight, WPubkeyHash};
 use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header, Version as BlockVersion};
@@ -3383,7 +3385,17 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 			network,
 			best_block: BestBlock::from_network(network),
 		};
-		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, &cfgs[i].router, &cfgs[i].message_router, cfgs[i].logger, cfgs[i].keys_manager,
+		let chain_hash = ChainHash::using_genesis_block(params.network);
+		let our_network_pubkey = cfgs[i].keys_manager.get_node_id(Recipient::Node).unwrap();
+		let expanded_inbound_key = cfgs[i].keys_manager.get_inbound_payment_key();
+
+		let flow = OffersMessageFlow::new(
+			chain_hash, params.best_block, our_network_pubkey,
+			genesis_block.header.time, expanded_inbound_key,
+			cfgs[i].keys_manager, &cfgs[i].message_router, &cfgs[i].router
+		);
+
+		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, &cfgs[i].router, &cfgs[i].message_router, flow, cfgs[i].logger, cfgs[i].keys_manager,
 			cfgs[i].keys_manager, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { test_default_channel_config() }, params, genesis_block.header.time);
 		chanmgrs.push(node);
 	}
