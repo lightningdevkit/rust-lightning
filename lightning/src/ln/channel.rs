@@ -9154,6 +9154,41 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(())
 	}
 
+	#[cfg(splicing)]
+	pub fn splice_locked<NS: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
+		user_config: &UserConfig, best_block: &BestBlock, logger: &L,
+	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
+		let pending_splice = match self.pending_splice.as_mut() {
+			Some(pending_splice) => pending_splice,
+			None => {
+				return Err(ChannelError::Ignore(format!("Channel is not in pending splice")));
+			},
+		};
+
+		if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+			if sent_funding_txid == msg.splice_txid {
+				if let Some(funding) = self.pending_funding
+					.iter_mut()
+					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
+				{
+					promote_splice_funding!(self, funding);
+					return Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger));
+				}
+
+				// TODO: Close channel?
+				return Ok(None);
+			}
+		}
+
+		pending_splice.received_funding_txid = Some(msg.splice_txid);
+		Ok(None)
+	}
+
 	// Send stuff to our remote peers:
 
 	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
