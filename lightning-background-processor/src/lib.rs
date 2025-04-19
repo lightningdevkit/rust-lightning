@@ -36,6 +36,7 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
+use lightning::sign::EntropySource;
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 #[cfg(feature = "std")]
@@ -649,7 +650,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
 /// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
-/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger>;
+/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, Store>;
 /// #
 /// # struct Node<
 /// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
@@ -736,8 +737,9 @@ pub async fn process_events_async<
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
+	ES: 'static + Deref + Send,
 	M: 'static
-		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
 		+ Send
 		+ Sync,
 	CM: 'static + Deref + Send + Sync,
@@ -764,6 +766,7 @@ where
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 	PS::Target: 'static + Persister<'a, CM, L, S>,
+	ES::Target: 'static + EntropySource,
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
@@ -911,8 +914,11 @@ impl BackgroundProcessor {
 		P: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
+		ES: 'static + Deref + Send,
 		M: 'static
-			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
+			+ Deref<
+				Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>,
+			>
 			+ Send
 			+ Sync,
 		CM: 'static + Deref + Send + Sync,
@@ -935,6 +941,7 @@ impl BackgroundProcessor {
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
 		PS::Target: 'static + Persister<'a, CM, L, S>,
+		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager + Send + Sync,
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
@@ -1085,7 +1092,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager, NodeSigner};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1160,6 +1167,7 @@ mod tests {
 		Arc<test_utils::TestFeeEstimator>,
 		Arc<test_utils::TestLogger>,
 		Arc<FilesystemStore>,
+		Arc<KeysManager>,
 	>;
 
 	type PGS = Arc<
@@ -1208,6 +1216,7 @@ mod tests {
 				Arc<test_utils::TestLogger>,
 				IgnoringMessageHandler,
 				Arc<KeysManager>,
+				IgnoringMessageHandler,
 			>,
 		>,
 		chain_monitor: Arc<ChainMonitor>,
@@ -1568,6 +1577,8 @@ mod tests {
 				logger.clone(),
 				fee_estimator.clone(),
 				kv_store.clone(),
+				keys_manager.clone(),
+				keys_manager.get_peer_storage_key(),
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
@@ -1621,6 +1632,7 @@ mod tests {
 				route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
 				onion_message_handler: messenger.clone(),
 				custom_message_handler: IgnoringMessageHandler {},
+				send_only_message_handler: IgnoringMessageHandler {},
 			};
 			let peer_manager = Arc::new(PeerManager::new(
 				msg_handler,
