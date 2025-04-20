@@ -30,8 +30,7 @@ use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
 
-#[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::sync::Arc;
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -205,12 +204,8 @@ impl LSPSDateTime {
 	}
 
 	/// Returns if the given time is in the past.
-	#[cfg(feature = "std")]
-	pub fn is_past(&self) -> bool {
-		let now_seconds_since_epoch = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.expect("system clock to be ahead of the unix epoch")
-			.as_secs();
+	pub fn is_past(&self, time_provider: Arc<dyn TimeProvider>) -> bool {
+		let now_seconds_since_epoch = time_provider.duration_since_epoch().as_secs();
 		let datetime_seconds_since_epoch =
 			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
 		now_seconds_since_epoch > datetime_seconds_since_epoch

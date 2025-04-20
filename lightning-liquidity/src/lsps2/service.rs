@@ -16,8 +16,12 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::events::EventQueue;
+
+#[cfg(feature = "time")]
+use crate::lsps0::ser::DefaultTimeProvider;
+
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError, TimeProvider,
 	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
@@ -400,18 +404,20 @@ struct OutboundJITChannel {
 	user_channel_id: u128,
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
+	time_provider: Arc<dyn TimeProvider>,
 }
 
 impl OutboundJITChannel {
 	fn new(
 		payment_size_msat: Option<u64>, opening_fee_params: LSPS2OpeningFeeParams,
-		user_channel_id: u128,
+		user_channel_id: u128, time_provider: Arc<dyn TimeProvider>,
 	) -> Self {
 		Self {
 			user_channel_id,
 			state: OutboundJITChannelState::new(),
 			opening_fee_params,
 			payment_size_msat,
+			time_provider,
 		}
 	}
 
@@ -451,7 +457,8 @@ impl OutboundJITChannel {
 	fn is_prunable(&self) -> bool {
 		// We deem an OutboundJITChannel prunable if our offer expired and we haven't intercepted
 		// any HTLCs initiating the flow yet.
-		let is_expired = is_expired_opening_fee_params(&self.opening_fee_params);
+		let is_expired =
+			is_expired_opening_fee_params(&self.opening_fee_params, self.time_provider.clone());
 		self.is_pending_initial_payment() && is_expired
 	}
 }
@@ -481,13 +488,16 @@ impl PeerState {
 		self.outbound_channels_by_intercept_scid.insert(intercept_scid, channel);
 	}
 
-	fn prune_expired_request_state(&mut self) {
+	fn prune_expired_request_state(&mut self, time_provider: Arc<dyn TimeProvider>) {
 		self.pending_requests.retain(|_, entry| {
 			match entry {
 				LSPS2Request::GetInfo(_) => false,
 				LSPS2Request::Buy(request) => {
 					// Prune any expired buy requests.
-					!is_expired_opening_fee_params(&request.opening_fee_params)
+					!is_expired_opening_fee_params(
+						&request.opening_fee_params,
+						time_provider.clone(),
+					)
 				},
 			}
 		});
@@ -566,16 +576,32 @@ where
 	peer_by_channel_id: RwLock<HashMap<ChannelId, PublicKey>>,
 	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
+	time_provider: Arc<dyn TimeProvider>,
 }
 
 impl<CM: Deref> LSPS2ServiceHandler<CM>
 where
 	CM::Target: AChannelManager,
 {
+	#[cfg(feature = "time")]
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
 		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
 		config: LSPS2ServiceConfig,
+	) -> Self {
+		let time_provider = Arc::new(DefaultTimeProvider);
+		Self::new_with_custom_time_provider(
+			pending_messages,
+			pending_events,
+			channel_manager,
+			config,
+			time_provider,
+		)
+	}
+
+	pub(crate) fn new_with_custom_time_provider(
+		pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>, channel_manager: CM,
+		config: LSPS2ServiceConfig, time_provider: Arc<dyn TimeProvider>,
 	) -> Self {
 		Self {
 			pending_messages,
@@ -586,6 +612,7 @@ where
 			total_pending_requests: AtomicUsize::new(0),
 			channel_manager,
 			config,
+			time_provider,
 		}
 	}
 
@@ -737,6 +764,7 @@ where
 								buy_request.payment_size_msat,
 								buy_request.opening_fee_params,
 								user_channel_id,
+								self.time_provider.clone(),
 							);
 
 							peer_state_lock
@@ -1192,7 +1220,11 @@ where
 		}
 
 		// TODO: if payment_size_msat is specified, make sure our node has sufficient incoming liquidity from public network to receive it.
-		if !is_valid_opening_fee_params(&params.opening_fee_params, &self.config.promise_secret) {
+		if !is_valid_opening_fee_params(
+			&params.opening_fee_params,
+			&self.config.promise_secret,
+			self.time_provider.clone(),
+		) {
 			let response = LSPS2Response::BuyError(LSPSResponseError {
 				code: LSPS2_BUY_REQUEST_INVALID_OPENING_FEE_PARAMS_ERROR_CODE,
 				message: "valid_until is already past OR the promise did not match the provided parameters".to_string(),
@@ -1334,7 +1366,7 @@ where
 		let is_prunable =
 			if let Some(inner_state_lock) = outer_state_lock.get(&counterparty_node_id) {
 				let mut peer_state_lock = inner_state_lock.lock().unwrap();
-				peer_state_lock.prune_expired_request_state();
+				peer_state_lock.prune_expired_request_state(self.time_provider.clone());
 				peer_state_lock.is_prunable()
 			} else {
 				return;
@@ -1349,7 +1381,7 @@ where
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
 		outer_state_lock.retain(|_, inner_state_lock| {
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
-			peer_state_lock.prune_expired_request_state();
+			peer_state_lock.prune_expired_request_state(self.time_provider.clone());
 			peer_state_lock.is_prunable() == false
 		});
 	}
