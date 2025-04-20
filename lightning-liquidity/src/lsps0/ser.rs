@@ -8,6 +8,7 @@ use alloc::string::String;
 
 use core::fmt::{self, Display};
 use core::str::FromStr;
+use core::time::Duration;
 
 use crate::lsps0::msgs::{
 	LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request, LSPS0Response,
@@ -782,5 +783,26 @@ pub(crate) mod u32_fee_rate {
 		let fee_rate_sat_kwu = u32::deserialize(deserializer)?;
 
 		Ok(FeeRate::from_sat_per_kwu(fee_rate_sat_kwu as u64))
+	}
+}
+
+/// Trait defining a time provider
+///
+/// This trait is used to provide the current time service operations and to convert between timestamps and durations.
+pub trait TimeProvider {
+	/// Get the current time as a duration since the Unix epoch.
+	fn duration_since_epoch(&self) -> Duration;
+}
+
+/// Default time provider using the system clock.
+#[derive(Clone, Debug)]
+#[cfg(feature = "time")]
+pub struct DefaultTimeProvider;
+
+#[cfg(feature = "time")]
+impl TimeProvider for DefaultTimeProvider {
+	fn duration_since_epoch(&self) -> Duration {
+		use std::time::{SystemTime, UNIX_EPOCH};
+		SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
 	}
 }
