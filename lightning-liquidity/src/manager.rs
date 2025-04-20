@@ -7,8 +7,8 @@ use crate::lsps0::client::LSPS0ClientHandler;
 use crate::lsps0::msgs::LSPS0Message;
 use crate::lsps0::ser::{
 	LSPSMessage, LSPSMethod, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
-	RawLSPSMessage, JSONRPC_INVALID_MESSAGE_ERROR_CODE, JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE,
-	LSPS_MESSAGE_TYPE_ID,
+	RawLSPSMessage, TimeProvider, JSONRPC_INVALID_MESSAGE_ERROR_CODE,
+	JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE, LSPS_MESSAGE_TYPE_ID,
 };
 use crate::lsps0::service::LSPS0ServiceHandler;
 use crate::message_queue::{MessageQueue, ProcessMessagesCallback};
@@ -128,7 +128,7 @@ where
 	pub fn new(
 		entropy_source: ES, channel_manager: CM, chain_source: Option<C>,
 		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
-		client_config: Option<LiquidityClientConfig>,
+		client_config: Option<LiquidityClientConfig>, time_provider: Option<Arc<dyn TimeProvider>>,
 	) -> Self
 where {
 		let pending_messages = Arc::new(MessageQueue::new());
@@ -154,12 +154,32 @@ where {
 				{
 					supported_protocols.push(number);
 				}
-				LSPS2ServiceHandler::new(
-					Arc::clone(&pending_messages),
-					Arc::clone(&pending_events),
-					channel_manager.clone(),
-					config.clone(),
-				)
+				if time_provider.is_some() {
+					// Always use custom time provider if provided
+					LSPS2ServiceHandler::new_with_custom_time_provider(
+						Arc::clone(&pending_messages),
+						Arc::clone(&pending_events),
+						channel_manager.clone(),
+						config.clone(),
+						time_provider.unwrap(),
+					)
+				} else {
+					#[cfg(feature = "time")]
+					{
+						// Use default new if time feature is enabled and no custom provider
+						LSPS2ServiceHandler::new(
+							Arc::clone(&pending_messages),
+							Arc::clone(&pending_events),
+							channel_manager.clone(),
+							config.clone(),
+						)
+					}
+					#[cfg(not(feature = "time"))]
+					{
+						// Panic if no time provider and time feature is not enabled
+						panic!("A custom time_provider must be provided if the 'time' feature is not enabled.");
+					}
+				}
 			})
 		});
 
