@@ -451,11 +451,7 @@ where
 
 	/// Regenerates and broadcasts the spending transaction for any outputs that are pending
 	pub fn regenerate_and_broadcast_spend_if_necessary(&self) -> Result<(), ()> {
-		let mut sweeper_state = self.sweeper_state.lock().unwrap();
-
-		let cur_height = sweeper_state.best_block.height;
-		let cur_hash = sweeper_state.best_block.block_hash;
-		let filter_fn = |o: &TrackedSpendableOutput| {
+		let filter_fn = |o: &TrackedSpendableOutput, cur_height: u32| {
 			if o.status.is_confirmed() {
 				// Don't rebroadcast confirmed txs.
 				return false;
@@ -474,8 +470,17 @@ where
 			true
 		};
 
-		let respend_descriptors: Vec<&SpendableOutputDescriptor> =
-			sweeper_state.outputs.iter().filter(|o| filter_fn(*o)).map(|o| &o.descriptor).collect();
+		let sweeper_state = &mut self.sweeper_state.lock().unwrap();
+
+		let cur_height = sweeper_state.best_block.height;
+		let cur_hash = sweeper_state.best_block.block_hash;
+
+		let respend_descriptors: Vec<&SpendableOutputDescriptor> = sweeper_state
+			.outputs
+			.iter()
+			.filter(|o| filter_fn(*o, cur_height))
+			.map(|o| &o.descriptor)
+			.collect();
 
 		if respend_descriptors.is_empty() {
 			// Nothing to do.
@@ -499,7 +504,8 @@ where
 
 		// As we didn't modify the state so far, the same filter_fn yields the same elements as
 		// above.
-		let respend_outputs = sweeper_state.outputs.iter_mut().filter(|o| filter_fn(&**o));
+		let respend_outputs =
+			sweeper_state.outputs.iter_mut().filter(|o| filter_fn(&**o, cur_height));
 		for output_info in respend_outputs {
 			if let Some(filter) = self.chain_data_source.as_ref() {
 				let watched_output = output_info.to_watched_output(cur_hash);
