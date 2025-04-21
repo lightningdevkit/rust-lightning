@@ -10925,7 +10925,18 @@ where
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
-		events.into_inner()
+		let collected_events = events.into_inner();
+
+		// To expand the coverage and make sure all events are properly serialised and deserialised,
+		// we test all generated events round-trip:
+		for event in &collected_events {
+			let ser = event.encode();
+			if let Some(deser) = events::Event::read(&mut &ser[..]).expect("event should deserialize") {
+				assert_eq!(&deser, event, "event should roundtrip correctly");
+			}
+		}
+
+		collected_events
 	}
 
 	#[cfg(feature = "_test_utils")]
