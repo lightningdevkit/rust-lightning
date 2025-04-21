@@ -36,10 +36,17 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::{ChangeDestinationSource, OutputSpender};
+#[cfg(feature = "futures")]
+use lightning::sign::ChangeDestinationSource;
+#[cfg(feature = "std")]
+use lightning::sign::ChangeDestinationSourceSync;
+use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{KVStore, Persister};
+#[cfg(feature = "futures")]
 use lightning::util::sweep::OutputSweeper;
+#[cfg(feature = "std")]
+use lightning::util::sweep::OutputSweeperSync;
 #[cfg(feature = "std")]
 use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -866,7 +873,7 @@ where
 		gossip_sync,
 		{
 			if let Some(ref sweeper) = sweeper {
-				let _ = sweeper.regenerate_and_broadcast_spend_if_necessary();
+				let _ = sweeper.regenerate_and_broadcast_spend_if_necessary().await;
 			}
 		},
 		logger,
@@ -992,7 +999,7 @@ impl BackgroundProcessor {
 		D: 'static + Deref,
 		O: 'static + Deref,
 		K: 'static + Deref,
-		OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>> + Send + Sync,
+		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send + Sync,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
@@ -1010,8 +1017,8 @@ impl BackgroundProcessor {
 		OM::Target: AOnionMessenger,
 		PM::Target: APeerManager,
 		LM::Target: ALiquidityManager,
+		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
-		D::Target: 'static + ChangeDestinationSource,
 		K::Target: 'static + KVStore,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
@@ -1175,7 +1182,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{ChangeDestinationSourceSync, InMemorySigner, KeysManager};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1187,7 +1194,7 @@ mod tests {
 		SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 	};
 	use lightning::util::ser::Writeable;
-	use lightning::util::sweep::{OutputSpendStatus, OutputSweeper, PRUNE_DELAY_BLOCKS};
+	use lightning::util::sweep::{OutputSpendStatus, OutputSweeperSync, PRUNE_DELAY_BLOCKS};
 	use lightning::util::test_utils;
 	use lightning::{get_event, get_event_msg};
 	use lightning_liquidity::LiquidityManager;
@@ -1313,7 +1320,7 @@ mod tests {
 		best_block: BestBlock,
 		scorer: Arc<LockingWrapper<TestScorer>>,
 		sweeper: Arc<
-			OutputSweeper<
+			OutputSweeperSync<
 				Arc<test_utils::TestBroadcaster>,
 				Arc<TestWallet>,
 				Arc<test_utils::TestFeeEstimator>,
@@ -1614,7 +1621,7 @@ mod tests {
 
 	struct TestWallet {}
 
-	impl ChangeDestinationSource for TestWallet {
+	impl ChangeDestinationSourceSync for TestWallet {
 		fn get_change_destination_script(&self) -> Result<ScriptBuf, ()> {
 			Ok(ScriptBuf::new())
 		}
@@ -1692,7 +1699,7 @@ mod tests {
 				IgnoringMessageHandler {},
 			));
 			let wallet = Arc::new(TestWallet {});
-			let sweeper = Arc::new(OutputSweeper::new(
+			let sweeper = Arc::new(OutputSweeperSync::new(
 				best_block,
 				Arc::clone(&tx_broadcaster),
 				Arc::clone(&fee_estimator),
@@ -2109,7 +2116,7 @@ mod tests {
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2617,7 +2624,7 @@ mod tests {
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
@@ -2833,7 +2840,7 @@ mod tests {
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
+			Some(nodes[0].sweeper.sweeper_async()),
 			nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()),
 			move |dur: Duration| {
