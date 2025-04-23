@@ -61,9 +61,11 @@ where
 	fn handle_response(
 		&self, response: LSPS0Response, counterparty_node_id: &PublicKey,
 	) -> Result<(), LightningError> {
+		let event_queue_notifier = self.pending_events.notifier();
+
 		match response {
 			LSPS0Response::ListProtocols(LSPS0ListProtocolsResponse { protocols }) => {
-				self.pending_events.enqueue(LSPS0ClientEvent::ListProtocolsResponse {
+				event_queue_notifier.enqueue(LSPS0ClientEvent::ListProtocolsResponse {
 					counterparty_node_id: *counterparty_node_id,
 					protocols,
 				});
