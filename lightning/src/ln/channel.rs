@@ -1952,6 +1952,10 @@ pub(super) struct FundingScope {
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
 	short_channel_id: Option<u64>,
+
+	/// The minimum number of confirmations before the funding is locked. If set, this will override
+	/// [`ChannelContext::minimum_depth`].
+	minimum_depth_override: Option<u32>,
 }
 
 impl Writeable for FundingScope {
@@ -1965,6 +1969,7 @@ impl Writeable for FundingScope {
 			(11, self.funding_tx_confirmed_in, option),
 			(13, self.funding_tx_confirmation_height, required),
 			(15, self.short_channel_id, option),
+			(17, self.minimum_depth_override, option),
 		});
 		Ok(())
 	}
@@ -1981,6 +1986,7 @@ impl Readable for FundingScope {
 		let mut funding_tx_confirmed_in = None;
 		let mut funding_tx_confirmation_height = RequiredWrapper(None);
 		let mut short_channel_id = None;
+		let mut minimum_depth_override = None;
 
 		read_tlv_fields!(reader, {
 			(1, value_to_self_msat, required),
@@ -1991,6 +1997,7 @@ impl Readable for FundingScope {
 			(11, funding_tx_confirmed_in, option),
 			(13, funding_tx_confirmation_height, required),
 			(15, short_channel_id, option),
+			(17, minimum_depth_override, option),
 		});
 
 		Ok(Self {
@@ -2006,6 +2013,7 @@ impl Readable for FundingScope {
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height: funding_tx_confirmation_height.0.unwrap(),
 			short_channel_id,
+			minimum_depth_override,
 			#[cfg(any(test, fuzzing))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
@@ -3114,6 +3122,7 @@ where
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
+			minimum_depth_override: None,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -3355,6 +3364,7 @@ where
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
+			minimum_depth_override: None,
 		};
 		let channel_context = Self {
 			user_id,
@@ -5455,7 +5465,9 @@ where
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &mut FundingScope, height: u32) -> bool {
-		if funding.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
+		let minimum_depth = funding.minimum_depth_override.or(self.minimum_depth);
+
+		if funding.funding_tx_confirmation_height == 0 && minimum_depth != Some(0) {
 			return false;
 		}
 
@@ -5465,7 +5477,7 @@ where
 			funding.funding_tx_confirmation_height = 0;
 		}
 
-		if funding_tx_confirmations < self.minimum_depth.unwrap_or(0) as i64 {
+		if funding_tx_confirmations < minimum_depth.unwrap_or(0) as i64 {
 			return false;
 		}
 
@@ -8883,7 +8895,7 @@ where
 						if tx.is_coinbase() &&
 							self.context.minimum_depth.unwrap_or(0) > 0 &&
 							self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
-							self.context.minimum_depth = Some(COINBASE_MATURITY);
+							self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 						}
 					}
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
@@ -10323,7 +10335,7 @@ where
 		if funding_transaction.is_coinbase() &&
 			self.context.minimum_depth.unwrap_or(0) > 0 &&
 			self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
-			self.context.minimum_depth = Some(COINBASE_MATURITY);
+			self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 		}
 
 		debug_assert!(self.funding.funding_transaction.is_none());
@@ -11597,7 +11609,8 @@ where
 			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
-			(58, self.interactive_tx_signing_session, option) // Added in 0.2
+			(58, self.interactive_tx_signing_session, option), // Added in 0.2
+			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 		});
 
 		Ok(())
@@ -11918,6 +11931,8 @@ where
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
 
+		let mut minimum_depth_override: Option<u32> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -11957,6 +11972,7 @@ where
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
+			(59, minimum_depth_override, option), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -12132,6 +12148,7 @@ where
 				funding_tx_confirmed_in,
 				funding_tx_confirmation_height,
 				short_channel_id,
+				minimum_depth_override,
 			},
 			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
