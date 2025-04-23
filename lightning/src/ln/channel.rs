@@ -5005,7 +5005,24 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &mut FundingScope, height: u32) -> bool {
-		if funding.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
+		let is_coinbase = funding
+			.funding_transaction
+			.as_ref()
+			.map(|tx| tx.is_coinbase())
+			.unwrap_or(false);
+
+		let minimum_depth = {
+			// If the funding transaction is a coinbase transaction, we need to set the minimum
+			// depth to 100. We can skip this if it is a zero-conf channel.
+			let minimum_depth = self.minimum_depth.unwrap_or(0);
+			if is_coinbase && minimum_depth > 0 && minimum_depth < COINBASE_MATURITY {
+				Some(COINBASE_MATURITY)
+			} else {
+				self.minimum_depth
+			}
+		};
+
+		if funding.funding_tx_confirmation_height == 0 && minimum_depth != Some(0) {
 			return false;
 		}
 
@@ -5014,7 +5031,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding.funding_tx_confirmation_height = 0;
 		}
 
-		if funding_tx_confirmations < self.minimum_depth.unwrap_or(0) as i64 {
+		if funding_tx_confirmations < minimum_depth.unwrap_or(0) as i64 {
 			return false;
 		}
 
@@ -8473,19 +8490,19 @@ impl<SP: Deref> FundedChannel<SP> where
 								}
 							}
 
+							// The acceptor of v1-established channels doesn't have the funding
+							// transaction until it is seen on chain. Set it so that minimum_depth
+							// checks can tell if the coinbase transaction was used.
+							if self.funding.funding_transaction.is_none() {
+								self.funding.funding_transaction = Some(tx.clone());
+							}
+
 							self.funding.funding_tx_confirmation_height = height;
 							self.funding.funding_tx_confirmed_in = Some(*block_hash);
 							self.funding.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 							}
-						}
-						// If this is a coinbase transaction and not a 0-conf channel
-						// we should update our min_depth to 100 to handle coinbase maturity
-						if tx.is_coinbase() &&
-							self.context.minimum_depth.unwrap_or(0) > 0 &&
-							self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
-							self.context.minimum_depth = Some(COINBASE_MATURITY);
 						}
 					}
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
@@ -9893,14 +9910,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		self.context.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
-
-		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
-		// We can skip this if it is a zero-conf channel.
-		if funding_transaction.is_coinbase() &&
-			self.context.minimum_depth.unwrap_or(0) > 0 &&
-			self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
-			self.context.minimum_depth = Some(COINBASE_MATURITY);
-		}
 
 		debug_assert!(self.funding.funding_transaction.is_none());
 		self.funding.funding_transaction = Some(funding_transaction);
