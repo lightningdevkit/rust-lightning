@@ -256,7 +256,7 @@ impl OutboundJITChannelState {
 					Ok(Some(forward_payment))
 				} else {
 					*self = OutboundJITChannelState::PendingPayment {
-						payment_queue: payment_queue.clone(),
+						payment_queue,
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
 					};

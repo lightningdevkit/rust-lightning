@@ -49,7 +49,7 @@ impl Notifier {
 	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
 	///
 	/// We deem the notification successful either directly after any callbacks were made, or after
-	/// the user [`poll`]ed a previously-completed future.
+	/// the user [`poll`]ed a previously-generated [`Future`].
 	///
 	/// [`poll`]: core::future::Future::poll
 	pub fn notify(&self) {
