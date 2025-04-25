@@ -5733,7 +5733,7 @@ where
 			});
 
 			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::UnknownNextPeer);
-			let destination = HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: short_channel_id };
+			let destination = HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_channel_id };
 			self.fail_htlc_backwards_internal(&htlc_source, &payment.forward_info.payment_hash, &reason, destination);
 		} else { unreachable!() } // Only `PendingHTLCRouting::Forward`s are intercepted
 
@@ -5752,7 +5752,7 @@ where
 							node_id: Some(*outgoing_counterparty_node_id),
 							channel_id: *outgoing_channel_id,
 						},
-					None => HTLCHandlingFailureType::UnknownNextHop {
+					None => HTLCHandlingFailureType::InvalidForward {
 						requested_forward_scid: outgoing_scid,
 					},
 				}
@@ -5932,7 +5932,7 @@ where
 												});
 
 												let reason = if $next_hop_unknown {
-													HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: short_chan_id }
+													HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_chan_id }
 												} else {
 													HTLCHandlingFailureType::Receive{ payment_hash }
 												};

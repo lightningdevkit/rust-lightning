@@ -480,12 +480,17 @@ pub enum HTLCHandlingFailureType {
 		channel_id: ChannelId,
 	},
 	/// Scenario where we are unsure of the next node to forward the HTLC to.
+	///
+	/// Deprecated: will only be used in versions before LDK v0.2.0. Downgrades will result in
+	/// this type being represented as [`Self::InvalidForward`].
 	UnknownNextHop {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64,
 	},
 	/// We couldn't forward to the outgoing scid. An example would be attempting to send a duplicate
 	/// intercept HTLC.
+	///
+	/// In LDK v0.2.0 and greater, this variant replaces [`Self::UnknownNextHop`].
 	InvalidForward {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64
@@ -2255,10 +2260,17 @@ impl MaybeReadable for Event {
 						(1, failure_reason, option),
 						(2, failure_type_opt, upgradable_required),
 					});
+
+					// If a legacy HTLCHandlingFailureType::UnknownNextHop was written, upgrade
+					// it to its new representation, otherwise leave unchanged.
+					if let Some(HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid }) = failure_type_opt.0 {
+						failure_type_opt.0 = Some(HTLCHandlingFailureType::InvalidForward { requested_forward_scid });
+						failure_reason = Some(LocalHTLCFailureReason::UnknownNextPeer.into());
+					}
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_id,
 						failure_type: _init_tlv_based_struct_field!(failure_type_opt, upgradable_required),
-						failure_reason,
+						failure_reason
 					}))
 				};
 				f()

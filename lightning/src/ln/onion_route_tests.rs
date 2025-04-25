@@ -549,7 +549,7 @@ fn test_onion_failure() {
 	bogus_route.paths[0].hops[1].short_channel_id -= 1;
 	let short_channel_id = bogus_route.paths[0].hops[1].short_channel_id;
 	run_onion_failure_test("unknown_next_peer", 100, &nodes, &bogus_route, &payment_hash, &payment_secret, |_| {}, ||{}, true, Some(LocalHTLCFailureReason::UnknownNextPeer),
-	  Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent:true}), Some(short_channel_id), Some(HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: short_channel_id }));
+	  Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent:true}), Some(short_channel_id), Some(HTLCHandlingFailureType::InvalidForward { requested_forward_scid: short_channel_id }));
 
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	let amt_to_forward = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
@@ -1751,7 +1751,7 @@ fn test_phantom_failure_modified_cltv() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: phantom_scid }]
+		&[HTLCHandlingFailureType::InvalidForward { requested_forward_scid: phantom_scid }]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -1800,7 +1800,7 @@ fn test_phantom_failure_expires_too_soon() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: phantom_scid }]
+		&[HTLCHandlingFailureType::InvalidForward { requested_forward_scid: phantom_scid }]
 	);
 	check_added_monitors(&nodes[1], 1);
 
@@ -1905,7 +1905,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_htlc_handling_failed_destinations!(
 		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: phantom_scid }]
+		&[HTLCHandlingFailureType::InvalidForward { requested_forward_scid: phantom_scid }]
 	);
 	check_added_monitors(&nodes[1], 1);
 

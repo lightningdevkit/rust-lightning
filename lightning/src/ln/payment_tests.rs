@@ -1939,7 +1939,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	if test == InterceptTest::Fail {
 		// Ensure we can fail the intercepted payment back.
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: intercept_scid }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid }]);
 		nodes[1].node.process_pending_htlc_forwards();
 		let update_fail = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		check_added_monitors!(&nodes[1], 1);
@@ -3406,7 +3406,7 @@ fn test_threaded_payment_retries() {
 		nodes[1].node.process_pending_htlc_forwards();
 		expect_htlc_handling_failed_destinations!(
 			nodes[1].node.get_and_clear_pending_events(),
-			&[HTLCHandlingFailureType::UnknownNextHop { requested_forward_scid: route.paths[0].hops[1].short_channel_id }]
+			&[HTLCHandlingFailureType::InvalidForward { requested_forward_scid: route.paths[0].hops[1].short_channel_id }]
 		);
 		check_added_monitors(&nodes[1], 1);
 
