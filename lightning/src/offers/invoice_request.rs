@@ -989,7 +989,14 @@ impl VerifiedInvoiceRequest {
 		InvoiceWithDerivedSigningPubkeyBuilder
 	);
 
-	pub(crate) fn fields(&self) -> InvoiceRequestFields {
+	/// Fetch the [`InvoiceRequestFields`] for this verified invoice.
+	///
+	/// These are fields which we expect to be useful when receiving a payment for this invoice
+	/// request, and include the returned [`InvoiceRequestFields`] in the
+	/// [`PaymentContext::Bolt12Offer`].
+	///
+	/// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
+	pub fn fields(&self) -> InvoiceRequestFields {
 		let InvoiceRequestContents {
 			payer_signing_pubkey,
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey { quantity, payer_note, .. },
@@ -1404,7 +1411,12 @@ pub struct InvoiceRequestFields {
 }
 
 /// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
+#[cfg(not(fuzzing))]
 pub const PAYER_NOTE_LIMIT: usize = 512;
+
+/// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
+#[cfg(fuzzing)]
+pub const PAYER_NOTE_LIMIT: usize = 8;
 
 impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
