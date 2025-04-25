@@ -31,18 +31,14 @@
 
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, feature = "_test_utils")), forbid(unsafe_code))]
-
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
-
 // In general, rust is absolutely horrid at supporting users doing things like,
 // for example, compiling Rust code for real environments. Disable useless lints
 // that don't do anything but annoy us and cant actually ever be resolved.
 #![allow(bare_trait_objects)]
 #![allow(ellipsis_inclusive_range_patterns)]
-
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
-
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #[cfg(all(fuzzing, test))]
@@ -60,24 +56,28 @@ pub extern crate lightning_invoice as bolt11_invoice;
 #[cfg(any(test, feature = "std"))]
 extern crate core;
 
-#[cfg(any(test, feature = "_test_utils"))] extern crate regex;
+#[cfg(any(test, feature = "_test_utils"))]
+extern crate regex;
 
-#[cfg(not(feature = "std"))] extern crate libm;
+#[cfg(not(feature = "std"))]
+extern crate libm;
 
-#[cfg(ldk_bench)] extern crate criterion;
+#[cfg(ldk_bench)]
+extern crate criterion;
 
-#[cfg(all(feature = "std", test))] extern crate parking_lot;
+#[cfg(all(feature = "std", test))]
+extern crate parking_lot;
 
 #[macro_use]
 pub mod util;
+pub mod blinded_path;
 pub mod chain;
+pub mod events;
 pub mod ln;
 pub mod offers;
+pub mod onion_message;
 pub mod routing;
 pub mod sign;
-pub mod onion_message;
-pub mod blinded_path;
-pub mod events;
 
 pub(crate) mod crypto;
 
@@ -95,7 +95,7 @@ pub mod io_extras {
 	pub use bitcoin::io::sink;
 
 	pub fn copy<R: ?Sized, W: ?Sized>(reader: &mut R, writer: &mut W) -> Result<u64, io::Error>
-		where
+	where
 		R: Read,
 		W: Write,
 	{
@@ -105,7 +105,10 @@ pub mod io_extras {
 		loop {
 			match reader.read(&mut buf) {
 				Ok(0) => break,
-				Ok(n) => { writer.write_all(&buf[0..n])?; count += n as u64; },
+				Ok(n) => {
+					writer.write_all(&buf[0..n])?;
+					count += n as u64;
+				},
 				Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {},
 				Err(e) => return Err(e.into()),
 			};
@@ -131,7 +134,7 @@ pub mod io_extras {
 mod prelude {
 	#![allow(unused_imports)]
 
-	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
+	pub use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
 
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;

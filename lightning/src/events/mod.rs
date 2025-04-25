@@ -19,33 +19,38 @@ pub mod bump_transaction;
 pub use bump_transaction::BumpTransactionEvent;
 
 use crate::blinded_path::message::OffersContext;
-use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
+use crate::blinded_path::payment::{
+	Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef,
+};
 use crate::chain::transaction;
-use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
-use crate::offers::invoice::Bolt12Invoice;
-use crate::offers::static_invoice::StaticInvoice;
-use crate::types::features::ChannelTypeFeatures;
+use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
-use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 use crate::sign::SpendableOutputDescriptor;
+use crate::types::features::ChannelTypeFeatures;
+use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
-use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
+use crate::util::ser::{
+	BigSize, FixedLengthReader, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired,
+	WithoutLength, Writeable, Writer,
+};
 use crate::util::string::UntrustedString;
 
-use bitcoin::{Transaction, OutPoint};
-use bitcoin::script::ScriptBuf;
-use bitcoin::hashes::Hash;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::PublicKey;
 use crate::io;
-use core::time::Duration;
-use core::ops::Deref;
 use crate::sync::Arc;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
+use bitcoin::script::ScriptBuf;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::{OutPoint, Transaction};
+use core::ops::Deref;
+use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -63,12 +68,12 @@ pub enum FundingInfo {
 	/// The full funding `Transaction`.
 	Tx {
 		/// The funding transaction
-		transaction: Transaction
+		transaction: Transaction,
 	},
 	/// The `OutPoint` of the funding.
 	OutPoint {
 		/// The outpoint of the funding
-		outpoint: transaction::OutPoint
+		outpoint: transaction::OutPoint,
 	},
 }
 
@@ -80,7 +85,6 @@ impl_writeable_tlv_based_enum!(FundingInfo,
 		(1, outpoint, required)
 	}
 );
-
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
@@ -182,22 +186,15 @@ impl PaymentPurpose {
 	/// Errors when provided an `AsyncBolt12OfferContext`, see below.
 	pub(crate) fn from_parts(
 		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
-		payment_context: Option<PaymentContext>
+		payment_context: Option<PaymentContext>,
 	) -> Result<Self, ()> {
 		match payment_context {
-			None => {
-				Ok(PaymentPurpose::Bolt11InvoicePayment {
-					payment_preimage,
-					payment_secret,
-				})
-			},
-			Some(PaymentContext::Bolt12Offer(context)) => {
-				Ok(PaymentPurpose::Bolt12OfferPayment {
-					payment_preimage,
-					payment_secret,
-					payment_context: context,
-				})
-			},
+			None => Ok(PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret }),
+			Some(PaymentContext::Bolt12Offer(context)) => Ok(PaymentPurpose::Bolt12OfferPayment {
+				payment_preimage,
+				payment_secret,
+				payment_context: context,
+			}),
 			Some(PaymentContext::Bolt12Refund(context)) => {
 				Ok(PaymentPurpose::Bolt12RefundPayment {
 					payment_preimage,
@@ -210,7 +207,7 @@ impl PaymentPurpose {
 				// using the invoice request provided in the payment onion prior to calling this method.
 				debug_assert!(false);
 				Err(())
-			}
+			},
 		}
 	}
 }
@@ -337,7 +334,7 @@ pub enum ClosureReason {
 		///
 		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn.
 		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn.
-		broadcasted_latest_txn: Option<bool>
+		broadcasted_latest_txn: Option<bool>,
 	},
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
@@ -418,30 +415,56 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn } => {
 				f.write_str("user force-closed the channel")?;
 				if let Some(brodcasted) = broadcasted_latest_txn {
-					write!(f, " and {} the latest transaction", if *brodcasted { "broadcasted" } else { "elected not to broadcast" })
+					write!(
+						f,
+						" and {} the latest transaction",
+						if *brodcasted { "broadcasted" } else { "elected not to broadcast" }
+					)
 				} else {
 					Ok(())
 				}
 			},
-			ClosureReason::LegacyCooperativeClosure => f.write_str("the channel was cooperatively closed"),
-			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
-			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
-			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
-			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
+			ClosureReason::LegacyCooperativeClosure => {
+				f.write_str("the channel was cooperatively closed")
+			},
+			ClosureReason::CounterpartyInitiatedCooperativeClosure => {
+				f.write_str("the channel was cooperatively closed by our peer")
+			},
+			ClosureReason::LocallyInitiatedCooperativeClosure => {
+				f.write_str("the channel was cooperatively closed by us")
+			},
+			ClosureReason::CommitmentTxConfirmed => {
+				f.write_str("commitment or closing transaction was confirmed on chain.")
+			},
+			ClosureReason::FundingTimedOut => write!(
+				f,
+				"funding transaction failed to confirm within {} blocks",
+				FUNDING_CONF_DEADLINE_BLOCKS
+			),
 			ClosureReason::ProcessingError { err } => {
 				f.write_str("of an exception: ")?;
 				f.write_str(&err)
 			},
-			ClosureReason::DisconnectedPeer => f.write_str("the peer disconnected prior to the channel being funded"),
-			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
-			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
-			ClosureReason::FundingBatchClosure => f.write_str("another channel in the same funding batch closed"),
+			ClosureReason::DisconnectedPeer => {
+				f.write_str("the peer disconnected prior to the channel being funded")
+			},
+			ClosureReason::OutdatedChannelManager => f.write_str(
+				"the ChannelManager read from disk was stale compared to ChannelMonitor(s)",
+			),
+			ClosureReason::CounterpartyCoopClosedUnfundedChannel => {
+				f.write_str("the peer requested the unfunded channel be closed")
+			},
+			ClosureReason::FundingBatchClosure => {
+				f.write_str("another channel in the same funding batch closed")
+			},
 			ClosureReason::HTLCsTimedOut => f.write_str("htlcs on the channel timed out"),
-			ClosureReason::PeerFeerateTooLow { peer_feerate_sat_per_kw, required_feerate_sat_per_kw } =>
-				f.write_fmt(format_args!(
-					"peer provided a feerate ({} sat/kw) which was below our lower bound ({} sat/kw)",
-					peer_feerate_sat_per_kw, required_feerate_sat_per_kw,
-				)),
+			ClosureReason::PeerFeerateTooLow {
+				peer_feerate_sat_per_kw,
+				required_feerate_sat_per_kw,
+			} => f.write_fmt(format_args!(
+				"peer provided a feerate ({} sat/kw) which was below our lower bound ({} sat/kw)",
+				peer_feerate_sat_per_kw, required_feerate_sat_per_kw,
+			)),
 		}
 	}
 }
@@ -488,7 +511,7 @@ pub enum HTLCDestination {
 	/// intercept HTLC.
 	InvalidForward {
 		/// Short channel id we are requesting to forward an HTLC to.
-		requested_forward_scid: u64
+		requested_forward_scid: u64,
 	},
 	/// We couldn't decode the incoming onion to obtain the forwarding details.
 	InvalidOnion,
@@ -504,7 +527,7 @@ pub enum HTLCDestination {
 	///   recipient for a payment.
 	FailedPayment {
 		/// The payment hash of the payment we attempted to process.
-		payment_hash: PaymentHash
+		payment_hash: PaymentHash,
 	},
 }
 
@@ -530,9 +553,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 /// will be added for general-purpose HTLC forward intercepts as well as trampoline forward
 /// intercepts in upcoming work.
 enum InterceptNextHop {
-	FakeScid {
-		requested_next_hop_scid: u64,
-	},
+	FakeScid { requested_next_hop_scid: u64 },
 }
 
 impl_writeable_tlv_based_enum!(InterceptNextHop,
@@ -556,13 +577,22 @@ pub enum PaymentFailureReason {
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	UserAbandoned,
-	#[cfg_attr(feature = "std", doc = "We exhausted all of our retry attempts while trying to send the payment, or we")]
+	#[cfg_attr(
+		feature = "std",
+		doc = "We exhausted all of our retry attempts while trying to send the payment, or we"
+	)]
 	#[cfg_attr(feature = "std", doc = "exhausted the [`Retry::Timeout`] if the user set one.")]
-	#[cfg_attr(not(feature = "std"), doc = "We exhausted all of our retry attempts while trying to send the payment.")]
+	#[cfg_attr(
+		not(feature = "std"),
+		doc = "We exhausted all of our retry attempts while trying to send the payment."
+	)]
 	/// If at any point a retry attempt failed while being forwarded along the path, an [`Event::PaymentPathFailed`] will
 	/// have come before this.
 	#[cfg_attr(feature = "std", doc = "")]
-	#[cfg_attr(feature = "std", doc = "[`Retry::Timeout`]: crate::ln::channelmanager::Retry::Timeout")]
+	#[cfg_attr(
+		feature = "std",
+		doc = "[`Retry::Timeout`]: crate::ln::channelmanager::Retry::Timeout"
+	)]
 	RetriesExhausted,
 	/// Either the BOLT 12 invoice was expired by the time we received it or the payment expired while
 	/// retrying based on the provided [`PaymentParameters::expiry_time`].
@@ -1507,7 +1537,7 @@ pub enum Event {
 		/// The node id of the peer we just connected to, who advertises support for
 		/// onion messages.
 		peer_node_id: PublicKey,
-	}
+	},
 }
 
 impl Writeable for Event {
@@ -1518,9 +1548,17 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, counterparty_skimmed_fee_msat,
-				ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
-				ref claim_deadline, ref onion_fields, ref payment_id,
+			&Event::PaymentClaimable {
+				ref payment_hash,
+				ref amount_msat,
+				counterparty_skimmed_fee_msat,
+				ref purpose,
+				ref receiver_node_id,
+				ref via_channel_id,
+				ref via_user_channel_id,
+				ref claim_deadline,
+				ref onion_fields,
+				ref payment_id,
 			} => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
@@ -1528,20 +1566,25 @@ impl Writeable for Event {
 				let mut payment_context = None;
 				match &purpose {
 					PaymentPurpose::Bolt11InvoicePayment {
-						payment_preimage: preimage, payment_secret: secret
+						payment_preimage: preimage,
+						payment_secret: secret,
 					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
 					},
 					PaymentPurpose::Bolt12OfferPayment {
-						payment_preimage: preimage, payment_secret: secret, payment_context: context
+						payment_preimage: preimage,
+						payment_secret: secret,
+						payment_context: context,
 					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
 						payment_context = Some(PaymentContextRef::Bolt12Offer(context));
 					},
 					PaymentPurpose::Bolt12RefundPayment {
-						payment_preimage: preimage, payment_secret: secret, payment_context: context
+						payment_preimage: preimage,
+						payment_secret: secret,
+						payment_context: context,
 					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
@@ -1549,10 +1592,13 @@ impl Writeable for Event {
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
-					}
+					},
 				}
-				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 { None }
-					else { Some(counterparty_skimmed_fee_msat) };
+				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 {
+					None
+				} else {
+					Some(counterparty_skimmed_fee_msat)
+				};
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
@@ -1569,7 +1615,14 @@ impl Writeable for Event {
 					(13, payment_id, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat, ref bolt12_invoice } => {
+			&Event::PaymentSent {
+				ref payment_id,
+				ref payment_preimage,
+				ref payment_hash,
+				ref amount_msat,
+				ref fee_paid_msat,
+				ref bolt12_invoice,
+			} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
@@ -1581,8 +1634,12 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref failure,
-				ref path, ref short_channel_id,
+				ref payment_id,
+				ref payment_hash,
+				ref payment_failed_permanently,
+				ref failure,
+				ref path,
+				ref short_channel_id,
 				#[cfg(any(test, feature = "_test_utils"))]
 				ref error_code,
 				#[cfg(any(test, feature = "_test_utils"))]
@@ -1618,7 +1675,13 @@ impl Writeable for Event {
 					(1, channel_id, option),
 				});
 			},
-			&Event::HTLCIntercepted { requested_next_hop_scid, payment_hash, inbound_amount_msat, expected_outbound_amount_msat, intercept_id } => {
+			&Event::HTLCIntercepted {
+				requested_next_hop_scid,
+				payment_hash,
+				inbound_amount_msat,
+				expected_outbound_amount_msat,
+				intercept_id,
+			} => {
 				6u8.write(writer)?;
 				let intercept_scid = InterceptNextHop::FakeScid { requested_next_hop_scid };
 				write_tlv_fields!(writer, {
@@ -1628,11 +1691,18 @@ impl Writeable for Event {
 					(6, inbound_amount_msat, required),
 					(8, expected_outbound_amount_msat, required),
 				});
-			}
+			},
 			&Event::PaymentForwarded {
-				prev_channel_id, next_channel_id, prev_user_channel_id, next_user_channel_id,
-				prev_node_id, next_node_id, total_fee_earned_msat, skimmed_fee_msat,
-				claim_from_onchain_tx, outbound_amount_forwarded_msat,
+				prev_channel_id,
+				next_channel_id,
+				prev_user_channel_id,
+				next_user_channel_id,
+				prev_node_id,
+				next_node_id,
+				total_fee_earned_msat,
+				skimmed_fee_msat,
+				claim_from_onchain_tx,
+				outbound_amount_forwarded_msat,
 			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1648,8 +1718,13 @@ impl Writeable for Event {
 					(15, next_node_id, option),
 				});
 			},
-			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
-				ref counterparty_node_id, ref channel_capacity_sats, ref channel_funding_txo,
+			&Event::ChannelClosed {
+				ref channel_id,
+				ref user_channel_id,
+				ref reason,
+				ref counterparty_node_id,
+				ref channel_capacity_sats,
+				ref channel_funding_txo,
 				ref last_local_balance_msat,
 			} => {
 				9u8.write(writer)?;
@@ -1702,21 +1777,25 @@ impl Writeable for Event {
 					None => &None,
 					// Variants available prior to version 0.0.124.
 					Some(PaymentFailureReason::RecipientRejected)
-						| Some(PaymentFailureReason::UserAbandoned)
-						| Some(PaymentFailureReason::RetriesExhausted)
-						| Some(PaymentFailureReason::PaymentExpired)
-						| Some(PaymentFailureReason::RouteNotFound)
-						| Some(PaymentFailureReason::UnexpectedError) => reason,
+					| Some(PaymentFailureReason::UserAbandoned)
+					| Some(PaymentFailureReason::RetriesExhausted)
+					| Some(PaymentFailureReason::PaymentExpired)
+					| Some(PaymentFailureReason::RouteNotFound)
+					| Some(PaymentFailureReason::UnexpectedError) => reason,
 					// Variants introduced at version 0.0.124 or later. Prior versions fail to parse
 					// unknown variants, while versions 0.0.124 or later will use None.
-					Some(PaymentFailureReason::UnknownRequiredFeatures) =>
-						&Some(PaymentFailureReason::RecipientRejected),
-					Some(PaymentFailureReason::InvoiceRequestExpired) =>
-						&Some(PaymentFailureReason::RetriesExhausted),
-					Some(PaymentFailureReason::InvoiceRequestRejected) =>
-						&Some(PaymentFailureReason::RecipientRejected),
-					Some(PaymentFailureReason::BlindedPathCreationFailed) =>
+					Some(PaymentFailureReason::UnknownRequiredFeatures) => {
+						&Some(PaymentFailureReason::RecipientRejected)
+					},
+					Some(PaymentFailureReason::InvoiceRequestExpired) => {
+						&Some(PaymentFailureReason::RetriesExhausted)
+					},
+					Some(PaymentFailureReason::InvoiceRequestRejected) => {
+						&Some(PaymentFailureReason::RecipientRejected)
+					},
+					Some(PaymentFailureReason::BlindedPathCreationFailed) => {
 						&Some(PaymentFailureReason::RouteNotFound)
+					},
 				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
@@ -1731,8 +1810,14 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose,
-				ref receiver_node_id, ref htlcs, ref sender_intended_total_msat, ref onion_fields,
+			&Event::PaymentClaimed {
+				ref payment_hash,
+				ref amount_msat,
+				ref purpose,
+				ref receiver_node_id,
+				ref htlcs,
+				ref sender_intended_total_msat,
+				ref onion_fields,
 				ref payment_id,
 			} => {
 				19u8.write(writer)?;
@@ -1756,7 +1841,12 @@ impl Writeable for Event {
 					(6, path.blinded_tail, option),
 				})
 			},
-			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
+			&Event::ProbeFailed {
+				ref payment_id,
+				ref payment_hash,
+				ref path,
+				ref short_channel_id,
+			} => {
 				23u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
@@ -1773,17 +1863,22 @@ impl Writeable for Event {
 					(2, failed_next_destination, required),
 				})
 			},
-			&Event::BumpTransaction(ref event)=> {
+			&Event::BumpTransaction(ref event) => {
 				27u8.write(writer)?;
 				match event {
 					// We never write the ChannelClose|HTLCResolution events as they'll be replayed
 					// upon restarting anyway if they remain unresolved.
-					BumpTransactionEvent::ChannelClose { .. } => {}
-					BumpTransactionEvent::HTLCResolution { .. } => {}
+					BumpTransactionEvent::ChannelClose { .. } => {},
+					BumpTransactionEvent::HTLCResolution { .. } => {},
 				}
 				write_tlv_fields!(writer, {}); // Write a length field for forwards compat
-			}
-			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
+			},
+			&Event::ChannelReady {
+				ref channel_id,
+				ref user_channel_id,
+				ref counterparty_node_id,
+				ref channel_type,
+			} => {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
@@ -1792,9 +1887,13 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::ChannelPending { ref channel_id, ref user_channel_id,
-				ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo,
-				ref channel_type
+			&Event::ChannelPending {
+				ref channel_id,
+				ref user_channel_id,
+				ref former_temporary_channel_id,
+				ref counterparty_node_id,
+				ref funding_txo,
+				ref channel_type,
 			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1832,7 +1931,13 @@ impl Writeable for Event {
 					(6, responder, option),
 				});
 			},
-			&Event::FundingTxBroadcastSafe { ref channel_id, ref user_channel_id, ref funding_txo, ref counterparty_node_id, ref former_temporary_channel_id} => {
+			&Event::FundingTxBroadcastSafe {
+				ref channel_id,
+				ref user_channel_id,
+				ref funding_txo,
+				ref counterparty_node_id,
+				ref former_temporary_channel_id,
+			} => {
 				43u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
@@ -1885,16 +1990,21 @@ impl MaybeReadable for Event {
 						(13, payment_id, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context)
-							.map_err(|()| msgs::DecodeError::InvalidValue)?,
-						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
+						Some(secret) => {
+							PaymentPurpose::from_parts(payment_preimage, secret, payment_context)
+								.map_err(|()| msgs::DecodeError::InvalidValue)?
+						},
+						None if payment_preimage.is_some() => {
+							PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap())
+						},
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
 					Ok(Some(Event::PaymentClaimable {
 						receiver_node_id,
 						payment_hash,
 						amount_msat,
-						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt.unwrap_or(0),
+						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt
+							.unwrap_or(0),
 						purpose,
 						via_channel_id,
 						via_user_channel_id,
@@ -1922,7 +2032,9 @@ impl MaybeReadable for Event {
 						(9, bolt12_invoice, option),
 					});
 					if payment_hash.is_none() {
-						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
+						payment_hash = Some(PaymentHash(
+							Sha256::hash(&payment_preimage.0[..]).to_byte_array(),
+						));
 					}
 					Ok(Some(Event::PaymentSent {
 						payment_id,
@@ -1961,7 +2073,8 @@ impl MaybeReadable for Event {
 						(11, payment_id, option),
 						(13, failure_opt, upgradable_option),
 					});
-					let failure = failure_opt.unwrap_or_else(|| PathFailure::OnPath { network_update });
+					let failure =
+						failure_opt.unwrap_or_else(|| PathFailure::OnPath { network_update });
 					Ok(Some(Event::PaymentPathFailed {
 						payment_id,
 						payment_hash,
@@ -1993,7 +2106,8 @@ impl MaybeReadable for Event {
 			6u8 => {
 				let mut payment_hash = PaymentHash([0; 32]);
 				let mut intercept_id = InterceptId([0; 32]);
-				let mut requested_next_hop_scid = InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
+				let mut requested_next_hop_scid =
+					InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
 				let mut inbound_amount_msat = 0;
 				let mut expected_outbound_amount_msat = 0;
 				read_tlv_fields!(reader, {
@@ -2004,7 +2118,7 @@ impl MaybeReadable for Event {
 					(8, expected_outbound_amount_msat, required),
 				});
 				let next_scid = match requested_next_hop_scid {
-					InterceptNextHop::FakeScid { requested_next_hop_scid: scid } => scid
+					InterceptNextHop::FakeScid { requested_next_hop_scid: scid } => scid,
 				};
 				Ok(Some(Event::HTLCIntercepted {
 					payment_hash,
@@ -2039,9 +2153,15 @@ impl MaybeReadable for Event {
 						(15, next_node_id, option),
 					});
 					Ok(Some(Event::PaymentForwarded {
-						prev_channel_id, next_channel_id, prev_user_channel_id,
-						next_user_channel_id, prev_node_id, next_node_id,
-						total_fee_earned_msat, skimmed_fee_msat, claim_from_onchain_tx,
+						prev_channel_id,
+						next_channel_id,
+						prev_user_channel_id,
+						next_user_channel_id,
+						prev_node_id,
+						next_node_id,
+						total_fee_earned_msat,
+						skimmed_fee_msat,
+						claim_from_onchain_tx,
 						outbound_amount_forwarded_msat,
 					}))
 				};
@@ -2071,12 +2191,17 @@ impl MaybeReadable for Event {
 					// `user_channel_id` used to be a single u64 value. In order to remain
 					// backwards compatible with versions prior to 0.0.113, the u128 is serialized
 					// as two separate u64 values.
-					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128) +
-						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
+					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128)
+						+ ((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
 					Ok(Some(Event::ChannelClosed {
-						channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
-						counterparty_node_id, channel_capacity_sats, channel_funding_txo, last_local_balance_msat,
+						channel_id,
+						user_channel_id,
+						reason: _init_tlv_based_struct_field!(reason, upgradable_required),
+						counterparty_node_id,
+						channel_capacity_sats,
+						channel_funding_txo,
+						last_local_balance_msat,
 					}))
 				};
 				f()
@@ -2097,7 +2222,7 @@ impl MaybeReadable for Event {
 					} else {
 						funding_info.ok_or(msgs::DecodeError::InvalidValue)?
 					};
-					Ok(Some(Event::DiscardFunding { channel_id, funding_info } ))
+					Ok(Some(Event::DiscardFunding { channel_id, funding_info }))
 				};
 				f()
 			},
@@ -2225,7 +2350,10 @@ impl MaybeReadable for Event {
 					});
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_id,
-						failed_next_destination: _init_tlv_based_struct_field!(failed_next_destination_opt, upgradable_required),
+						failed_next_destination: _init_tlv_based_struct_field!(
+							failed_next_destination_opt,
+							upgradable_required
+						),
 					}))
 				};
 				f()
@@ -2248,7 +2376,7 @@ impl MaybeReadable for Event {
 						channel_id,
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						channel_type: channel_type.0.unwrap()
+						channel_type: channel_type.0.unwrap(),
 					}))
 				};
 				f()
@@ -2304,7 +2432,8 @@ impl MaybeReadable for Event {
 						(2, message, required),
 					});
 					Ok(Some(Event::OnionMessageIntercepted {
-						peer_node_id: peer_node_id.0.unwrap(), message: message.0.unwrap()
+						peer_node_id: peer_node_id.0.unwrap(),
+						message: message.0.unwrap(),
 					}))
 				};
 				f()
@@ -2315,7 +2444,7 @@ impl MaybeReadable for Event {
 						(0, peer_node_id, required),
 					});
 					Ok(Some(Event::OnionMessagePeerConnected {
-						peer_node_id: peer_node_id.0.unwrap()
+						peer_node_id: peer_node_id.0.unwrap(),
 					}))
 				};
 				f()
@@ -2369,10 +2498,11 @@ impl MaybeReadable for Event {
 				// exactly the number of bytes specified, ignoring them entirely.
 				let tlv_len: BigSize = Readable::read(reader)?;
 				FixedLengthReader::new(reader, tlv_len.0)
-					.eat_remaining().map_err(|_| msgs::DecodeError::ShortRead)?;
+					.eat_remaining()
+					.map_err(|_| msgs::DecodeError::ShortRead)?;
 				Ok(None)
 			},
-			_ => Err(msgs::DecodeError::InvalidValue)
+			_ => Err(msgs::DecodeError::InvalidValue),
 		}
 	}
 }
@@ -2421,7 +2551,9 @@ pub trait EventsProvider {
 	/// Processes any events generated since the last call using the given event handler.
 	///
 	/// See the trait-level documentation for requirements.
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler;
+	fn process_pending_events<H: Deref>(&self, handler: H)
+	where
+		H::Target: EventHandler;
 }
 
 /// An error type that may be returned to LDK in order to safely abort event handling if it can't
@@ -2444,7 +2576,10 @@ pub trait EventHandler {
 	fn handle_event(&self, event: Event) -> Result<(), ReplayEvent>;
 }
 
-impl<F> EventHandler for F where F: Fn(Event) -> Result<(), ReplayEvent> {
+impl<F> EventHandler for F
+where
+	F: Fn(Event) -> Result<(), ReplayEvent>,
+{
 	fn handle_event(&self, event: Event) -> Result<(), ReplayEvent> {
 		self(event)
 	}
@@ -2465,7 +2600,7 @@ pub enum PaidBolt12Invoice {
 	/// The Static invoice, used in the async payment specification update proposal,
 	/// where the user cannot perform proof of payment.
 	StaticInvoice(StaticInvoice),
- }
+}
 
 impl_writeable_tlv_based_enum!(PaidBolt12Invoice,
 	{0, Bolt12Invoice} => (),
