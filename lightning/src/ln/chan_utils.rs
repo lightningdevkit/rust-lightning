@@ -10,43 +10,46 @@
 //! Various utilities for building scripts related to channels. These are
 //! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
-use bitcoin::{PubkeyHash, WPubkeyHash};
 use bitcoin::amount::Amount;
-use bitcoin::script::{Script, ScriptBuf, Builder};
 use bitcoin::opcodes;
-use bitcoin::transaction::{TxIn,TxOut,OutPoint,Transaction};
+use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
+use bitcoin::transaction::{OutPoint, Transaction, TxIn, TxOut};
+use bitcoin::{PubkeyHash, WPubkeyHash};
 
-use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::hashes::hash160::Hash as Hash160;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hash_types::Txid;
+use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::ripemd160::Hash as Ripemd160;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
+use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
-use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
 
-use bitcoin::locktime::absolute::LockTime;
 use bitcoin::ecdsa::Signature as BitcoinSignature;
-use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::secp256k1::{ecdsa::Signature, Message, Secp256k1};
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 use bitcoin::{secp256k1, Sequence, Witness};
 
-use crate::io;
-use core::cmp;
-use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
-use core::ops::Deref;
+use super::channel_keys::{
+	DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, HtlcKey, RevocationBasepoint,
+	RevocationKey,
+};
 use crate::chain;
-use crate::types::features::ChannelTypeFeatures;
 use crate::crypto::utils::{sign, sign_with_aux_rand};
-use super::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, HtlcBasepoint, RevocationKey, RevocationBasepoint};
+use crate::io;
+use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, INITIAL_COMMITMENT_NUMBER};
+use crate::types::features::ChannelTypeFeatures;
+use core::cmp;
+use core::ops::Deref;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -87,18 +90,16 @@ pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
 pub const HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 327;
 
 /// The size of the 2-of-2 multisig script
-const MULTISIG_SCRIPT_SIZE: u64 =
-	1 + // OP_2
+const MULTISIG_SCRIPT_SIZE: u64 = 1 + // OP_2
 	1 + // data len
 	33 + // pubkey1
 	1 + // data len
 	33 + // pubkey2
 	1 + // OP_2
-	1;  // OP_CHECKMULTISIG
+	1; // OP_CHECKMULTISIG
 /// The weight of a funding transaction input (2-of-2 P2WSH)
 /// See https://github.com/lightning/bolts/blob/master/03-transactions.md#expected-weight-of-the-commitment-transaction
-pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 =
-	1 + // number_of_witness_elements
+pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 = 1 + // number_of_witness_elements
 	1 + // nil_len
 	1 + // sig len
 	73 + // sig1
@@ -112,7 +113,11 @@ pub const FUNDING_TRANSACTION_WITNESS_WEIGHT: u64 =
 pub fn htlc_success_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 	const HTLC_SUCCESS_ANCHOR_TX_WEIGHT: u64 = 706;
-	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		HTLC_SUCCESS_ANCHOR_TX_WEIGHT
+	} else {
+		HTLC_SUCCESS_TX_WEIGHT
+	}
 }
 
 /// Gets the weight for an HTLC-Timeout transaction.
@@ -120,7 +125,11 @@ pub fn htlc_success_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u6
 pub fn htlc_timeout_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
-	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		HTLC_TIMEOUT_ANCHOR_TX_WEIGHT
+	} else {
+		HTLC_TIMEOUT_TX_WEIGHT
+	}
 }
 
 /// Describes the type of HTLC claim as determined by analyzing the witness.
@@ -181,8 +190,9 @@ impl HTLCClaim {
 			} else {
 				None
 			}
-		} else if witness_script.len() > MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT &&
-			witness_script.len() <= MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT {
+		} else if witness_script.len() > MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT
+			&& witness_script.len() <= MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT
+		{
 			// Handle remaining range of ACCEPTED_HTLC_SCRIPT_WEIGHT.
 			if witness.len() == 3 && second_to_last.len() == 33 {
 				// <revocation sig> <revocationpubkey> <witness_script>
@@ -210,24 +220,38 @@ pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 pub(crate) fn commitment_tx_base_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
 	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
-	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		COMMITMENT_TX_BASE_ANCHOR_WEIGHT
+	} else {
+		COMMITMENT_TX_BASE_WEIGHT
+	}
 }
 
 /// Get the fee cost of a commitment tx with a given number of HTLC outputs.
 /// Note that num_htlcs should not include dust HTLCs.
-pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	feerate_per_kw as u64 *
-		(commitment_tx_base_weight(channel_type_features) +
-			num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)
+pub(crate) fn commit_tx_fee_sat(
+	feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures,
+) -> u64 {
+	feerate_per_kw as u64
+		* (commitment_tx_base_weight(channel_type_features)
+			+ num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)
 		/ 1000
 }
 
-pub(crate) fn commit_and_htlc_tx_fees_sat(feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
+pub(crate) fn commit_and_htlc_tx_fees_sat(
+	feerate_per_kw: u32, num_accepted_htlcs: usize, num_offered_htlcs: usize,
+	channel_type_features: &ChannelTypeFeatures,
+) -> u64 {
 	let num_htlcs = num_accepted_htlcs + num_offered_htlcs;
 	let commit_tx_fees_sat = commit_tx_fee_sat(feerate_per_kw, num_htlcs, channel_type_features);
 	let htlc_tx_fees_sat = if !channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		num_accepted_htlcs as u64 * htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	  + num_offered_htlcs as u64 * htlc_timeout_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
+		num_accepted_htlcs as u64
+			* htlc_success_tx_weight(channel_type_features)
+			* feerate_per_kw as u64
+			/ 1000 + num_offered_htlcs as u64
+			* htlc_timeout_tx_weight(channel_type_features)
+			* feerate_per_kw as u64
+			/ 1000
 	} else {
 		0
 	};
@@ -251,7 +275,10 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 }
 
 /// Build a closing transaction
-pub fn build_closing_transaction(to_holder_value_sat: Amount, to_counterparty_value_sat: Amount, to_holder_script: ScriptBuf, to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint) -> Transaction {
+pub fn build_closing_transaction(
+	to_holder_value_sat: Amount, to_counterparty_value_sat: Amount, to_holder_script: ScriptBuf,
+	to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint,
+) -> Transaction {
 	let txins = {
 		let ins: Vec<TxIn> = vec![TxIn {
 			previous_output: funding_outpoint,
@@ -265,32 +292,24 @@ pub fn build_closing_transaction(to_holder_value_sat: Amount, to_counterparty_va
 	let mut txouts: Vec<(TxOut, ())> = Vec::new();
 
 	if to_counterparty_value_sat > Amount::ZERO {
-		txouts.push((TxOut {
-			script_pubkey: to_counterparty_script,
-			value: to_counterparty_value_sat
-		}, ()));
+		txouts.push((
+			TxOut { script_pubkey: to_counterparty_script, value: to_counterparty_value_sat },
+			(),
+		));
 	}
 
 	if to_holder_value_sat > Amount::ZERO {
-		txouts.push((TxOut {
-			script_pubkey: to_holder_script,
-			value: to_holder_value_sat
-		}, ()));
+		txouts.push((TxOut { script_pubkey: to_holder_script, value: to_holder_value_sat }, ()));
 	}
 
-	transaction_utils::sort_outputs(&mut txouts, |_, _| { cmp::Ordering::Equal }); // Ordering doesnt matter if they used our pubkey...
+	transaction_utils::sort_outputs(&mut txouts, |_, _| cmp::Ordering::Equal); // Ordering doesnt matter if they used our pubkey...
 
 	let mut outputs: Vec<TxOut> = Vec::new();
 	for out in txouts.drain(..) {
 		outputs.push(out.0);
 	}
 
-	Transaction {
-		version: Version::TWO,
-		lock_time: LockTime::ZERO,
-		input: txins,
-		output: outputs,
-	}
+	Transaction { version: Version::TWO, lock_time: LockTime::ZERO, input: txins, output: outputs }
 }
 
 /// Implements the per-commitment secret storage scheme from
@@ -306,9 +325,11 @@ pub struct CounterpartyCommitmentSecrets {
 impl Eq for CounterpartyCommitmentSecrets {}
 impl PartialEq for CounterpartyCommitmentSecrets {
 	fn eq(&self, other: &Self) -> bool {
-		for (&(ref secret, ref idx), &(ref o_secret, ref o_idx)) in self.old_secrets.iter().zip(other.old_secrets.iter()) {
+		for (&(ref secret, ref idx), &(ref o_secret, ref o_idx)) in
+			self.old_secrets.iter().zip(other.old_secrets.iter())
+		{
 			if secret != o_secret || idx != o_idx {
-				return false
+				return false;
 			}
 		}
 		true
@@ -318,14 +339,14 @@ impl PartialEq for CounterpartyCommitmentSecrets {
 impl CounterpartyCommitmentSecrets {
 	/// Creates a new empty `CounterpartyCommitmentSecrets` structure.
 	pub fn new() -> Self {
-		Self { old_secrets: [([0; 32], 1 << 48); 49], }
+		Self { old_secrets: [([0; 32], 1 << 48); 49] }
 	}
 
 	#[inline]
 	fn place_secret(idx: u64) -> u8 {
 		for i in 0..48 {
 			if idx & (1 << i) == (1 << i) {
-				return i
+				return i;
 			}
 		}
 		48
@@ -379,7 +400,7 @@ impl CounterpartyCommitmentSecrets {
 	pub fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		for i in 0..self.old_secrets.len() {
 			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
-				return Some(Self::derive_secret(self.old_secrets[i].0, i as u8, idx))
+				return Some(Self::derive_secret(self.old_secrets[i].0, i as u8, idx));
 			}
 		}
 		assert!(idx < self.get_min_seen_secret());
@@ -411,7 +432,9 @@ impl Readable for CounterpartyCommitmentSecrets {
 
 /// Derives a per-commitment-transaction private key (eg an htlc key or delayed_payment key)
 /// from the base secret and the per_commitment_point.
-pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> SecretKey {
+pub fn derive_private_key<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey,
+) -> SecretKey {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
@@ -427,10 +450,12 @@ pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_co
 /// commitment transaction, thus per_commitment_secret always come from cheater
 /// and revocation_base_secret always come from punisher, which is the broadcaster
 /// of the transaction spending with this key knowledge.
-pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>,
-	per_commitment_secret: &SecretKey, countersignatory_revocation_base_secret: &SecretKey)
--> SecretKey {
-	let countersignatory_revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &countersignatory_revocation_base_secret);
+pub fn derive_private_revocation_key<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey,
+	countersignatory_revocation_base_secret: &SecretKey,
+) -> SecretKey {
+	let countersignatory_revocation_base_point =
+		PublicKey::from_secret_key(&secp_ctx, &countersignatory_revocation_base_secret);
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
 	let rev_append_commit_hash_key = {
@@ -448,9 +473,13 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 		Sha256::from_engine(sha).to_byte_array()
 	};
 
-	let countersignatory_contrib = countersignatory_revocation_base_secret.clone().mul_tweak(&Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
+	let countersignatory_contrib = countersignatory_revocation_base_secret
+		.clone()
+		.mul_tweak(&Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
 		.expect("Multiplying a secret key by a hash is expected to never fail per secp256k1 docs");
-	let broadcaster_contrib = per_commitment_secret.clone().mul_tweak(&Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
+	let broadcaster_contrib = per_commitment_secret
+		.clone()
+		.mul_tweak(&Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
 		.expect("Multiplying a secret key by a hash is expected to never fail per secp256k1 docs");
 	countersignatory_contrib.add_tweak(&Scalar::from_be_bytes(broadcaster_contrib.secret_bytes()).unwrap())
 		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak commits to the key.")
@@ -526,19 +555,44 @@ impl_writeable_tlv_based!(ChannelPublicKeys, {
 impl TxCreationKeys {
 	/// Create per-state keys from channel base points and the per-commitment point.
 	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
-	pub fn derive_new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, broadcaster_delayed_payment_base: &DelayedPaymentBasepoint, broadcaster_htlc_base: &HtlcBasepoint, countersignatory_revocation_base: &RevocationBasepoint, countersignatory_htlc_base: &HtlcBasepoint) -> TxCreationKeys {
+	pub fn derive_new<T: secp256k1::Signing + secp256k1::Verification>(
+		secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey,
+		broadcaster_delayed_payment_base: &DelayedPaymentBasepoint,
+		broadcaster_htlc_base: &HtlcBasepoint,
+		countersignatory_revocation_base: &RevocationBasepoint,
+		countersignatory_htlc_base: &HtlcBasepoint,
+	) -> TxCreationKeys {
 		TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
-			revocation_key: RevocationKey::from_basepoint(&secp_ctx, &countersignatory_revocation_base, &per_commitment_point),
-			broadcaster_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &broadcaster_htlc_base, &per_commitment_point),
-			countersignatory_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &countersignatory_htlc_base, &per_commitment_point),
-			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(&secp_ctx, &broadcaster_delayed_payment_base, &per_commitment_point),
+			revocation_key: RevocationKey::from_basepoint(
+				&secp_ctx,
+				&countersignatory_revocation_base,
+				&per_commitment_point,
+			),
+			broadcaster_htlc_key: HtlcKey::from_basepoint(
+				&secp_ctx,
+				&broadcaster_htlc_base,
+				&per_commitment_point,
+			),
+			countersignatory_htlc_key: HtlcKey::from_basepoint(
+				&secp_ctx,
+				&countersignatory_htlc_base,
+				&per_commitment_point,
+			),
+			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(
+				&secp_ctx,
+				&broadcaster_delayed_payment_base,
+				&per_commitment_point,
+			),
 		}
 	}
 
 	/// Generate per-state keys from channel static keys.
 	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
-	pub fn from_channel_static_keys<T: secp256k1::Signing + secp256k1::Verification>(per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> TxCreationKeys {
+	pub fn from_channel_static_keys<T: secp256k1::Signing + secp256k1::Verification>(
+		per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys,
+		countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>,
+	) -> TxCreationKeys {
 		TxCreationKeys::derive_new(
 			&secp_ctx,
 			&per_commitment_point,
@@ -555,29 +609,35 @@ impl TxCreationKeys {
 // keys of 33 bytes (+ 1 push). Generally, pushes are only 2 bytes (for values below 0x7fff, i.e.
 // around 7 months), however, a 7 month contest delay shouldn't result in being unable to reclaim
 // on-chain funds.
-pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 4 + 34*2;
+pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 4 + 34 * 2;
 
 /// A script either spendable by the revocation
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
-pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay: u16, broadcaster_delayed_payment_key: &DelayedPaymentKey) -> ScriptBuf {
-	let res = Builder::new().push_opcode(opcodes::all::OP_IF)
-	              .push_slice(&revocation_key.to_public_key().serialize())
-	              .push_opcode(opcodes::all::OP_ELSE)
-	              .push_int(contest_delay as i64)
-	              .push_opcode(opcodes::all::OP_CSV)
-	              .push_opcode(opcodes::all::OP_DROP)
-	              .push_slice(&broadcaster_delayed_payment_key.to_public_key().serialize())
-	              .push_opcode(opcodes::all::OP_ENDIF)
-	              .push_opcode(opcodes::all::OP_CHECKSIG)
-	              .into_script();
+pub fn get_revokeable_redeemscript(
+	revocation_key: &RevocationKey, contest_delay: u16,
+	broadcaster_delayed_payment_key: &DelayedPaymentKey,
+) -> ScriptBuf {
+	let res = Builder::new()
+		.push_opcode(opcodes::all::OP_IF)
+		.push_slice(&revocation_key.to_public_key().serialize())
+		.push_opcode(opcodes::all::OP_ELSE)
+		.push_int(contest_delay as i64)
+		.push_opcode(opcodes::all::OP_CSV)
+		.push_opcode(opcodes::all::OP_DROP)
+		.push_slice(&broadcaster_delayed_payment_key.to_public_key().serialize())
+		.push_opcode(opcodes::all::OP_ENDIF)
+		.push_opcode(opcodes::all::OP_CHECKSIG)
+		.into_script();
 	debug_assert!(res.len() <= REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH);
 	res
 }
 
 /// Returns the script for the counterparty's output on a holder's commitment transaction based on
 /// the channel type.
-pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
+pub fn get_counterparty_payment_script(
+	channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey,
+) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		get_to_countersigner_keyed_anchor_redeemscript(payment_key).to_p2wsh()
 	} else {
@@ -633,105 +693,125 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 });
 
 #[inline]
-pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_htlc_key: &HtlcKey, countersignatory_htlc_key: &HtlcKey, revocation_key: &RevocationKey) -> ScriptBuf {
+pub(crate) fn get_htlc_redeemscript_with_explicit_keys(
+	htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures,
+	broadcaster_htlc_key: &HtlcKey, countersignatory_htlc_key: &HtlcKey,
+	revocation_key: &RevocationKey,
+) -> ScriptBuf {
 	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).to_byte_array();
 	if htlc.offered {
-		let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(PubkeyHash::hash(&revocation_key.to_public_key().serialize()))
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_IF)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_slice(&countersignatory_htlc_key.to_public_key().serialize())
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_opcode(opcodes::all::OP_SIZE)
-		              .push_int(32)
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_NOTIF)
-		              .push_opcode(opcodes::all::OP_DROP)
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_slice(&broadcaster_htlc_key.to_public_key().serialize())
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_CHECKMULTISIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&payment_hash160)
-		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ENDIF);
+		let mut bldr = Builder::new()
+			.push_opcode(opcodes::all::OP_DUP)
+			.push_opcode(opcodes::all::OP_HASH160)
+			.push_slice(PubkeyHash::hash(&revocation_key.to_public_key().serialize()))
+			.push_opcode(opcodes::all::OP_EQUAL)
+			.push_opcode(opcodes::all::OP_IF)
+			.push_opcode(opcodes::all::OP_CHECKSIG)
+			.push_opcode(opcodes::all::OP_ELSE)
+			.push_slice(&countersignatory_htlc_key.to_public_key().serialize())
+			.push_opcode(opcodes::all::OP_SWAP)
+			.push_opcode(opcodes::all::OP_SIZE)
+			.push_int(32)
+			.push_opcode(opcodes::all::OP_EQUAL)
+			.push_opcode(opcodes::all::OP_NOTIF)
+			.push_opcode(opcodes::all::OP_DROP)
+			.push_int(2)
+			.push_opcode(opcodes::all::OP_SWAP)
+			.push_slice(&broadcaster_htlc_key.to_public_key().serialize())
+			.push_int(2)
+			.push_opcode(opcodes::all::OP_CHECKMULTISIG)
+			.push_opcode(opcodes::all::OP_ELSE)
+			.push_opcode(opcodes::all::OP_HASH160)
+			.push_slice(&payment_hash160)
+			.push_opcode(opcodes::all::OP_EQUALVERIFY)
+			.push_opcode(opcodes::all::OP_CHECKSIG)
+			.push_opcode(opcodes::all::OP_ENDIF);
 		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
+			bldr = bldr
+				.push_opcode(opcodes::all::OP_PUSHNUM_1)
 				.push_opcode(opcodes::all::OP_CSV)
 				.push_opcode(opcodes::all::OP_DROP);
 		}
-		bldr.push_opcode(opcodes::all::OP_ENDIF)
-			.into_script()
+		bldr.push_opcode(opcodes::all::OP_ENDIF).into_script()
 	} else {
-			let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&PubkeyHash::hash(&revocation_key.to_public_key().serialize()))
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_IF)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_slice(&countersignatory_htlc_key.to_public_key().serialize())
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_opcode(opcodes::all::OP_SIZE)
-		              .push_int(32)
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_IF)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&payment_hash160)
-		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_slice(&broadcaster_htlc_key.to_public_key().serialize())
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_CHECKMULTISIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_opcode(opcodes::all::OP_DROP)
-		              .push_int(htlc.cltv_expiry as i64)
-		              .push_opcode(opcodes::all::OP_CLTV)
-		              .push_opcode(opcodes::all::OP_DROP)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ENDIF);
+		let mut bldr = Builder::new()
+			.push_opcode(opcodes::all::OP_DUP)
+			.push_opcode(opcodes::all::OP_HASH160)
+			.push_slice(&PubkeyHash::hash(&revocation_key.to_public_key().serialize()))
+			.push_opcode(opcodes::all::OP_EQUAL)
+			.push_opcode(opcodes::all::OP_IF)
+			.push_opcode(opcodes::all::OP_CHECKSIG)
+			.push_opcode(opcodes::all::OP_ELSE)
+			.push_slice(&countersignatory_htlc_key.to_public_key().serialize())
+			.push_opcode(opcodes::all::OP_SWAP)
+			.push_opcode(opcodes::all::OP_SIZE)
+			.push_int(32)
+			.push_opcode(opcodes::all::OP_EQUAL)
+			.push_opcode(opcodes::all::OP_IF)
+			.push_opcode(opcodes::all::OP_HASH160)
+			.push_slice(&payment_hash160)
+			.push_opcode(opcodes::all::OP_EQUALVERIFY)
+			.push_int(2)
+			.push_opcode(opcodes::all::OP_SWAP)
+			.push_slice(&broadcaster_htlc_key.to_public_key().serialize())
+			.push_int(2)
+			.push_opcode(opcodes::all::OP_CHECKMULTISIG)
+			.push_opcode(opcodes::all::OP_ELSE)
+			.push_opcode(opcodes::all::OP_DROP)
+			.push_int(htlc.cltv_expiry as i64)
+			.push_opcode(opcodes::all::OP_CLTV)
+			.push_opcode(opcodes::all::OP_DROP)
+			.push_opcode(opcodes::all::OP_CHECKSIG)
+			.push_opcode(opcodes::all::OP_ENDIF);
 		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
+			bldr = bldr
+				.push_opcode(opcodes::all::OP_PUSHNUM_1)
 				.push_opcode(opcodes::all::OP_CSV)
 				.push_opcode(opcodes::all::OP_DROP);
 		}
-		bldr.push_opcode(opcodes::all::OP_ENDIF)
-			.into_script()
+		bldr.push_opcode(opcodes::all::OP_ENDIF).into_script()
 	}
 }
 
 /// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
 /// does not need to have its previous_output_index filled.
 #[inline]
-pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, keys: &TxCreationKeys) -> ScriptBuf {
-	get_htlc_redeemscript_with_explicit_keys(htlc, channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
+pub fn get_htlc_redeemscript(
+	htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures,
+	keys: &TxCreationKeys,
+) -> ScriptBuf {
+	get_htlc_redeemscript_with_explicit_keys(
+		htlc,
+		channel_type_features,
+		&keys.broadcaster_htlc_key,
+		&keys.countersignatory_htlc_key,
+		&keys.revocation_key,
+	)
 }
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
 /// Note that the order of funding public keys does not matter.
-pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &PublicKey) -> ScriptBuf {
+pub fn make_funding_redeemscript(
+	broadcaster: &PublicKey, countersignatory: &PublicKey,
+) -> ScriptBuf {
 	let broadcaster_funding_key = broadcaster.serialize();
 	let countersignatory_funding_key = countersignatory.serialize();
 
 	make_funding_redeemscript_from_slices(&broadcaster_funding_key, &countersignatory_funding_key)
 }
 
-pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u8; 33], countersignatory_funding_key: &[u8; 33]) -> ScriptBuf {
+pub(crate) fn make_funding_redeemscript_from_slices(
+	broadcaster_funding_key: &[u8; 33], countersignatory_funding_key: &[u8; 33],
+) -> ScriptBuf {
 	let builder = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2);
 	if broadcaster_funding_key[..] < countersignatory_funding_key[..] {
-		builder.push_slice(broadcaster_funding_key)
-			.push_slice(countersignatory_funding_key)
+		builder.push_slice(broadcaster_funding_key).push_slice(countersignatory_funding_key)
 	} else {
-		builder.push_slice(countersignatory_funding_key)
-			.push_slice(broadcaster_funding_key)
-	}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
+		builder.push_slice(countersignatory_funding_key).push_slice(broadcaster_funding_key)
+	}
+	.push_opcode(opcodes::all::OP_PUSHNUM_2)
+	.push_opcode(opcodes::all::OP_CHECKMULTISIG)
+	.into_script()
 }
 
 /// Builds an unsigned HTLC-Success or HTLC-Timeout transaction from the given channel and HTLC
@@ -741,13 +821,21 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
-pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey) -> Transaction {
-	let txins= vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
+pub fn build_htlc_transaction(
+	commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment,
+	channel_type_features: &ChannelTypeFeatures,
+	broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey,
+) -> Transaction {
+	let txins = vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(build_htlc_output(
-		feerate_per_kw, contest_delay, htlc, channel_type_features,
-		broadcaster_delayed_payment_key, revocation_key
+		feerate_per_kw,
+		contest_delay,
+		htlc,
+		channel_type_features,
+		broadcaster_delayed_payment_key,
+		revocation_key,
 	));
 
 	Transaction {
@@ -758,27 +846,40 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	}
 }
 
-pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures) -> TxIn {
+pub(crate) fn build_htlc_input(
+	commitment_txid: &Txid, htlc: &HTLCOutputInCommitment,
+	channel_type_features: &ChannelTypeFeatures,
+) -> TxIn {
 	TxIn {
 		previous_output: OutPoint {
 			txid: commitment_txid.clone(),
-			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
+			vout: htlc
+				.transaction_output_index
+				.expect("Can't build an HTLC transaction for a dust output"),
 		},
 		script_sig: ScriptBuf::new(),
-		sequence: Sequence(if channel_type_features.supports_anchors_zero_fee_htlc_tx() { 1 } else { 0 }),
+		sequence: Sequence(if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+			1
+		} else {
+			0
+		}),
 		witness: Witness::new(),
 	}
 }
 
 pub(crate) fn build_htlc_output(
-	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey
+	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment,
+	channel_type_features: &ChannelTypeFeatures,
+	broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey,
 ) -> TxOut {
 	let weight = if htlc.offered {
 		htlc_timeout_tx_weight(channel_type_features)
 	} else {
 		htlc_success_tx_weight(channel_type_features)
 	};
-	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() && !channel_type_features.supports_anchors_nonzero_fee_htlc_tx() {
+	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx()
+		&& !channel_type_features.supports_anchors_nonzero_fee_htlc_tx()
+	{
 		htlc.to_bitcoin_amount()
 	} else {
 		let total_fee = Amount::from_sat(feerate_per_kw as u64 * weight / 1000);
@@ -786,7 +887,12 @@ pub(crate) fn build_htlc_output(
 	};
 
 	TxOut {
-		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_p2wsh(),
+		script_pubkey: get_revokeable_redeemscript(
+			revocation_key,
+			contest_delay,
+			broadcaster_delayed_payment_key,
+		)
+		.to_p2wsh(),
 		value: output_value,
 	}
 }
@@ -805,7 +911,10 @@ pub fn build_htlc_input_witness(
 	let mut witness = Witness::new();
 	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 	witness.push(vec![]);
-	witness.push_ecdsa_signature(&BitcoinSignature { signature: *remote_sig, sighash_type: remote_sighash_type });
+	witness.push_ecdsa_signature(&BitcoinSignature {
+		signature: *remote_sig,
+		sighash_type: remote_sighash_type,
+	});
 	witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(*local_sig));
 	if let Some(preimage) = preimage {
 		witness.push(preimage.0.to_vec());
@@ -836,7 +945,9 @@ pub fn build_htlc_input_witness(
 /// [`CounterpartyReceivedHTLCOutput`]: crate::chain::package::CounterpartyReceivedHTLCOutput
 /// [`HolderHTLCOutput`]: crate::chain::package::HolderHTLCOutput
 /// [`HolderFundingOutput`]: crate::chain::package::HolderFundingOutput
-pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features(features: &ChannelTypeFeatures) -> Option<()> {
+pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features(
+	features: &ChannelTypeFeatures,
+) -> Option<()> {
 	let mut legacy_version_bit_set = ChannelTypeFeatures::only_static_remote_key();
 	legacy_version_bit_set.set_scid_privacy_required();
 	legacy_version_bit_set.set_zero_conf_required();
@@ -875,7 +986,8 @@ pub fn shared_anchor_script_pubkey() -> ScriptBuf {
 /// <>
 /// (empty vector required to satisfy compliance with MINIMALIF-standard rule)
 pub fn get_keyed_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
-	Builder::new().push_slice(funding_pubkey.serialize())
+	Builder::new()
+		.push_slice(funding_pubkey.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIG)
 		.push_opcode(opcodes::all::OP_IFDUP)
 		.push_opcode(opcodes::all::OP_NOTIF)
@@ -887,16 +999,23 @@ pub fn get_keyed_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
 
 /// Locates the output with a keyed anchor (non-zero-fee-commitments) script paying to
 /// `funding_pubkey` within `commitment_tx`.
-pub(crate) fn get_keyed_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
+pub(crate) fn get_keyed_anchor_output<'a>(
+	commitment_tx: &'a Transaction, funding_pubkey: &PublicKey,
+) -> Option<(u32, &'a TxOut)> {
 	let anchor_script = get_keyed_anchor_redeemscript(funding_pubkey).to_p2wsh();
-	commitment_tx.output.iter().enumerate()
+	commitment_tx
+		.output
+		.iter()
+		.enumerate()
 		.find(|(_, txout)| txout.script_pubkey == anchor_script)
 		.map(|(idx, txout)| (idx as u32, txout))
 }
 
 /// Returns the witness required to satisfy and spend a keyed anchor (non-zero-fee-commitments)
 /// input.
-pub fn build_keyed_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
+pub fn build_keyed_anchor_input_witness(
+	funding_key: &PublicKey, funding_sig: &Signature,
+) -> Witness {
 	let anchor_redeem_script = get_keyed_anchor_redeemscript(funding_key);
 	let mut ret = Witness::new();
 	ret.push_ecdsa_signature(&BitcoinSignature::sighash_all(*funding_sig));
@@ -961,11 +1080,11 @@ impl ChannelTransactionParameters {
 	///
 	/// self.is_populated() must be true before calling this function.
 	pub fn as_holder_broadcastable(&self) -> DirectedChannelTransactionParameters {
-		assert!(self.is_populated(), "self.late_parameters must be set before using as_holder_broadcastable");
-		DirectedChannelTransactionParameters {
-			inner: self,
-			holder_is_broadcaster: true
-		}
+		assert!(
+			self.is_populated(),
+			"self.late_parameters must be set before using as_holder_broadcastable"
+		);
+		DirectedChannelTransactionParameters { inner: self, holder_is_broadcaster: true }
 	}
 
 	/// Convert the holder/counterparty parameters to broadcaster/countersignatory-organized parameters,
@@ -973,17 +1092,17 @@ impl ChannelTransactionParameters {
 	///
 	/// self.is_populated() must be true before calling this function.
 	pub fn as_counterparty_broadcastable(&self) -> DirectedChannelTransactionParameters {
-		assert!(self.is_populated(), "self.late_parameters must be set before using as_counterparty_broadcastable");
-		DirectedChannelTransactionParameters {
-			inner: self,
-			holder_is_broadcaster: false
-		}
+		assert!(
+			self.is_populated(),
+			"self.late_parameters must be set before using as_counterparty_broadcastable"
+		);
+		DirectedChannelTransactionParameters { inner: self, holder_is_broadcaster: false }
 	}
 
 	pub(crate) fn make_funding_redeemscript(&self) -> ScriptBuf {
 		make_funding_redeemscript(
 			&self.holder_pubkeys.funding_pubkey,
-			&self.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey
+			&self.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
 		)
 	}
 
@@ -1010,7 +1129,8 @@ impl ChannelTransactionParameters {
 				selected_contest_delay: 42,
 			}),
 			funding_outpoint: Some(chain::transaction::OutPoint {
-				txid: Txid::from_byte_array([42; 32]), index: 0
+				txid: Txid::from_byte_array([42; 32]),
+				index: 0,
 			}),
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::empty(),
@@ -1026,7 +1146,10 @@ impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {
 
 impl Writeable for ChannelTransactionParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
+		let legacy_deserialization_prevention_marker =
+			legacy_deserialization_prevention_marker_for_channel_type_features(
+				&self.channel_type_features,
+			);
 		write_tlv_fields!(writer, {
 			(0, self.holder_pubkeys, required),
 			(2, self.holder_selected_contest_delay, required),
@@ -1080,7 +1203,10 @@ impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
-		chain::package::verify_channel_type_features(&channel_type_features, Some(&additional_features))?;
+		chain::package::verify_channel_type_features(
+			&channel_type_features,
+			Some(&additional_features),
+		)?;
 
 		Ok(Self {
 			holder_pubkeys: holder_pubkeys.0.unwrap(),
@@ -1089,7 +1215,8 @@ impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 			counterparty_parameters,
 			funding_outpoint,
 			splice_parent_funding_txid,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
+			channel_type_features: channel_type_features
+				.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
 			channel_value_satoshis,
 		})
 	}
@@ -1130,7 +1257,11 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 	/// Note that the contest delay was selected by the countersignatory.
 	pub fn contest_delay(&self) -> u16 {
 		let counterparty_parameters = self.inner.counterparty_parameters.as_ref().unwrap();
-		if self.holder_is_broadcaster { counterparty_parameters.selected_contest_delay } else { self.inner.holder_selected_contest_delay }
+		if self.holder_is_broadcaster {
+			counterparty_parameters.selected_contest_delay
+		} else {
+			self.inner.holder_selected_contest_delay
+		}
 	}
 
 	/// Whether the channel is outbound from the broadcaster.
@@ -1138,7 +1269,11 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 	/// The boolean representing the side that initiated the channel is
 	/// an input to the commitment number obscure factor computation.
 	pub fn is_outbound(&self) -> bool {
-		if self.holder_is_broadcaster { self.inner.is_outbound_from_holder } else { !self.inner.is_outbound_from_holder }
+		if self.holder_is_broadcaster {
+			self.inner.is_outbound_from_holder
+		} else {
+			!self.inner.is_outbound_from_holder
+		}
 	}
 
 	/// The funding outpoint
@@ -1170,7 +1305,9 @@ pub struct HolderCommitmentTransaction {
 impl Deref for HolderCommitmentTransaction {
 	type Target = CommitmentTransaction;
 
-	fn deref(&self) -> &Self::Target { &self.inner }
+	fn deref(&self) -> &Self::Target {
+		&self.inner
+	}
 }
 
 impl Eq for HolderCommitmentTransaction {}
@@ -1192,22 +1329,33 @@ impl HolderCommitmentTransaction {
 	#[cfg(test)]
 	pub fn dummy(channel_value_satoshis: u64, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> Self {
 		let secp_ctx = Secp256k1::new();
-		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_key =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sig = sign(
+			&secp_ctx,
+			&secp256k1::Message::from_digest([42; 32]),
+			&SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
 
 		let channel_pubkeys = ChannelPublicKeys {
 			funding_pubkey: dummy_key.clone(),
 			revocation_basepoint: RevocationBasepoint::from(dummy_key),
 			payment_point: dummy_key.clone(),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key.clone()),
-			htlc_basepoint: HtlcBasepoint::from(dummy_key.clone())
+			htlc_basepoint: HtlcBasepoint::from(dummy_key.clone()),
 		};
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: channel_pubkeys.clone(),
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
-			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: channel_pubkeys.clone(),
+				selected_contest_delay: 0,
+			}),
+			funding_outpoint: Some(chain::transaction::OutPoint {
+				txid: Txid::all_zeros(),
+				index: 0,
+			}),
 			splice_parent_funding_txid: None,
 			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 			channel_value_satoshis,
@@ -1216,36 +1364,56 @@ impl HolderCommitmentTransaction {
 		for _ in 0..nondust_htlcs.len() {
 			counterparty_htlc_sigs.push(dummy_sig);
 		}
-		let inner = CommitmentTransaction::new(0, &dummy_key, 0, 0, 0, nondust_htlcs, &channel_parameters.as_counterparty_broadcastable(), &secp_ctx);
+		let inner = CommitmentTransaction::new(
+			0,
+			&dummy_key,
+			0,
+			0,
+			0,
+			nondust_htlcs,
+			&channel_parameters.as_counterparty_broadcastable(),
+			&secp_ctx,
+		);
 		HolderCommitmentTransaction {
 			inner,
 			counterparty_sig: dummy_sig,
 			counterparty_htlc_sigs,
-			holder_sig_first: false
+			holder_sig_first: false,
 		}
 	}
 
 	/// Create a new holder transaction with the given counterparty signatures.
 	/// The funding keys are used to figure out which signature should go first when building the transaction for broadcast.
-	pub fn new(commitment_tx: CommitmentTransaction, counterparty_sig: Signature, counterparty_htlc_sigs: Vec<Signature>, holder_funding_key: &PublicKey, counterparty_funding_key: &PublicKey) -> Self {
+	pub fn new(
+		commitment_tx: CommitmentTransaction, counterparty_sig: Signature,
+		counterparty_htlc_sigs: Vec<Signature>, holder_funding_key: &PublicKey,
+		counterparty_funding_key: &PublicKey,
+	) -> Self {
 		Self {
 			inner: commitment_tx,
 			counterparty_sig,
 			counterparty_htlc_sigs,
-			holder_sig_first: holder_funding_key.serialize()[..] < counterparty_funding_key.serialize()[..],
+			holder_sig_first: holder_funding_key.serialize()[..]
+				< counterparty_funding_key.serialize()[..],
 		}
 	}
 
-	pub(crate) fn add_holder_sig(&self, funding_redeemscript: &Script, holder_sig: Signature) -> Transaction {
+	pub(crate) fn add_holder_sig(
+		&self, funding_redeemscript: &Script, holder_sig: Signature,
+	) -> Transaction {
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		let mut tx = self.inner.built.transaction.clone();
 		tx.input[0].witness.push(Vec::new());
 
 		if self.holder_sig_first {
 			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
+			tx.input[0]
+				.witness
+				.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
 		} else {
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
+			tx.input[0]
+				.witness
+				.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
 			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
 		}
 
@@ -1275,13 +1443,25 @@ impl BuiltCommitmentTransaction {
 	/// Get the SIGHASH_ALL sighash value of the transaction.
 	///
 	/// This can be used to verify a signature.
-	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
-		let sighash = &sighash::SighashCache::new(&self.transaction).p2wsh_signature_hash(0, funding_redeemscript, Amount::from_sat(channel_value_satoshis), EcdsaSighashType::All).unwrap()[..];
+	pub fn get_sighash_all(
+		&self, funding_redeemscript: &Script, channel_value_satoshis: u64,
+	) -> Message {
+		let sighash = &sighash::SighashCache::new(&self.transaction)
+			.p2wsh_signature_hash(
+				0,
+				funding_redeemscript,
+				Amount::from_sat(channel_value_satoshis),
+				EcdsaSighashType::All,
+			)
+			.unwrap()[..];
 		hash_to_message!(sighash)
 	}
 
 	/// Signs the counterparty's commitment transaction.
-	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(
+		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		secp_ctx: &Secp256k1<T>,
+	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
 	}
@@ -1289,8 +1469,11 @@ impl BuiltCommitmentTransaction {
 	/// Signs the holder commitment transaction because we are about to broadcast it.
 	pub fn sign_holder_commitment<T: secp256k1::Signing, ES: Deref>(
 		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Signature where ES::Target: EntropySource {
+		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+	) -> Signature
+	where
+		ES::Target: EntropySource,
+	{
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign_with_aux_rand(secp_ctx, &sighash, funding_key, entropy_source)
 	}
@@ -1313,25 +1496,24 @@ pub struct ClosingTransaction {
 impl ClosingTransaction {
 	/// Construct an object of the class
 	pub fn new(
-		to_holder_value_sat: u64,
-		to_counterparty_value_sat: u64,
-		to_holder_script: ScriptBuf,
-		to_counterparty_script: ScriptBuf,
-		funding_outpoint: OutPoint,
+		to_holder_value_sat: u64, to_counterparty_value_sat: u64, to_holder_script: ScriptBuf,
+		to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint,
 	) -> Self {
 		let to_holder_value_sat = Amount::from_sat(to_holder_value_sat);
 		let to_counterparty_value_sat = Amount::from_sat(to_counterparty_value_sat);
 		let built = build_closing_transaction(
-			to_holder_value_sat, to_counterparty_value_sat,
-			to_holder_script.clone(), to_counterparty_script.clone(),
-			funding_outpoint
+			to_holder_value_sat,
+			to_counterparty_value_sat,
+			to_holder_script.clone(),
+			to_counterparty_script.clone(),
+			funding_outpoint,
 		);
 		ClosingTransaction {
 			to_holder_value_sat,
 			to_counterparty_value_sat,
 			to_holder_script,
 			to_counterparty_script,
-			built
+			built,
 		}
 	}
 
@@ -1353,12 +1535,14 @@ impl ClosingTransaction {
 	/// or using the built transaction.
 	pub fn verify(&self, funding_outpoint: OutPoint) -> Result<TrustedClosingTransaction, ()> {
 		let built = build_closing_transaction(
-			self.to_holder_value_sat, self.to_counterparty_value_sat,
-			self.to_holder_script.clone(), self.to_counterparty_script.clone(),
-			funding_outpoint
+			self.to_holder_value_sat,
+			self.to_counterparty_value_sat,
+			self.to_holder_script.clone(),
+			self.to_counterparty_script.clone(),
+			funding_outpoint,
 		);
 		if self.built != built {
-			return Err(())
+			return Err(());
 		}
 		Ok(TrustedClosingTransaction { inner: self })
 	}
@@ -1397,7 +1581,9 @@ pub struct TrustedClosingTransaction<'a> {
 impl<'a> Deref for TrustedClosingTransaction<'a> {
 	type Target = ClosingTransaction;
 
-	fn deref(&self) -> &Self::Target { self.inner }
+	fn deref(&self) -> &Self::Target {
+		self.inner
+	}
 }
 
 impl<'a> TrustedClosingTransaction<'a> {
@@ -1409,14 +1595,26 @@ impl<'a> TrustedClosingTransaction<'a> {
 	/// Get the SIGHASH_ALL sighash value of the transaction.
 	///
 	/// This can be used to verify a signature.
-	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
-		let sighash = &sighash::SighashCache::new(&self.inner.built).p2wsh_signature_hash(0, funding_redeemscript, Amount::from_sat(channel_value_satoshis), EcdsaSighashType::All).unwrap()[..];
+	pub fn get_sighash_all(
+		&self, funding_redeemscript: &Script, channel_value_satoshis: u64,
+	) -> Message {
+		let sighash = &sighash::SighashCache::new(&self.inner.built)
+			.p2wsh_signature_hash(
+				0,
+				funding_redeemscript,
+				Amount::from_sat(channel_value_satoshis),
+				EcdsaSighashType::All,
+			)
+			.unwrap()[..];
 		hash_to_message!(sighash)
 	}
 
 	/// Sign a transaction, either because we are counter-signing the counterparty's transaction or
 	/// because we are about to broadcast a holder transaction.
-	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn sign<T: secp256k1::Signing>(
+		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		secp_ctx: &Secp256k1<T>,
+	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
 	}
@@ -1449,13 +1647,13 @@ pub struct CommitmentTransaction {
 impl Eq for CommitmentTransaction {}
 impl PartialEq for CommitmentTransaction {
 	fn eq(&self, o: &Self) -> bool {
-		let eq = self.commitment_number == o.commitment_number &&
-			self.to_broadcaster_value_sat == o.to_broadcaster_value_sat &&
-			self.to_countersignatory_value_sat == o.to_countersignatory_value_sat &&
-			self.feerate_per_kw == o.feerate_per_kw &&
-			self.nondust_htlcs == o.nondust_htlcs &&
-			self.channel_type_features == o.channel_type_features &&
-			self.keys == o.keys;
+		let eq = self.commitment_number == o.commitment_number
+			&& self.to_broadcaster_value_sat == o.to_broadcaster_value_sat
+			&& self.to_countersignatory_value_sat == o.to_countersignatory_value_sat
+			&& self.feerate_per_kw == o.feerate_per_kw
+			&& self.nondust_htlcs == o.nondust_htlcs
+			&& self.channel_type_features == o.channel_type_features
+			&& self.keys == o.keys;
 		if eq {
 			debug_assert_eq!(self.built.transaction, o.built.transaction);
 			debug_assert_eq!(self.built.txid, o.built.txid);
@@ -1466,7 +1664,10 @@ impl PartialEq for CommitmentTransaction {
 
 impl Writeable for CommitmentTransaction {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
+		let legacy_deserialization_prevention_marker =
+			legacy_deserialization_prevention_marker_for_channel_type_features(
+				&self.channel_type_features,
+			);
 		write_tlv_fields!(writer, {
 			(0, self.commitment_number, required),
 			(1, self.to_broadcaster_delay, option),
@@ -1500,7 +1701,10 @@ impl Readable for CommitmentTransaction {
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
-		chain::package::verify_channel_type_features(&channel_type_features, Some(&additional_features))?;
+		chain::package::verify_channel_type_features(
+			&channel_type_features,
+			Some(&additional_features),
+		)?;
 
 		Ok(Self {
 			commitment_number: commitment_number.0.unwrap(),
@@ -1511,7 +1715,8 @@ impl Readable for CommitmentTransaction {
 			keys: keys.0.unwrap(),
 			built: built.0.unwrap(),
 			nondust_htlcs,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features: channel_type_features
+				.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
 		})
 	}
 }
@@ -1522,18 +1727,37 @@ impl CommitmentTransaction {
 	/// All HTLCs MUST be above the dust limit for the channel.
 	/// The broadcaster and countersignatory amounts MUST be either 0 or above dust. If the amount
 	/// is 0, the corresponding output will be omitted from the transaction.
-	pub fn new(commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, feerate_per_kw: u32, mut nondust_htlcs: Vec<HTLCOutputInCommitment>, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>) -> CommitmentTransaction {
+	pub fn new(
+		commitment_number: u64, per_commitment_point: &PublicKey, to_broadcaster_value_sat: u64,
+		to_countersignatory_value_sat: u64, feerate_per_kw: u32,
+		mut nondust_htlcs: Vec<HTLCOutputInCommitment>,
+		channel_parameters: &DirectedChannelTransactionParameters,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> CommitmentTransaction {
 		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
 		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
-		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			channel_parameters.broadcaster_pubkeys(),
+			channel_parameters.countersignatory_pubkeys(),
+			secp_ctx,
+		);
 
 		// Build and sort the outputs of the transaction.
 		// Also sort the HTLC output data in `nondust_htlcs` in the same order, and populate the
 		// transaction output indices therein.
-		let outputs = Self::build_outputs_and_htlcs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, &mut nondust_htlcs, channel_parameters);
+		let outputs = Self::build_outputs_and_htlcs(
+			&keys,
+			to_broadcaster_value_sat,
+			to_countersignatory_value_sat,
+			&mut nondust_htlcs,
+			channel_parameters,
+		);
 
-		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(commitment_number, channel_parameters);
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
+		let (obscured_commitment_transaction_number, txins) =
+			Self::build_inputs(commitment_number, channel_parameters);
+		let transaction =
+			Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
 		CommitmentTransaction {
 			commitment_number,
@@ -1544,10 +1768,7 @@ impl CommitmentTransaction {
 			nondust_htlcs,
 			channel_type_features: channel_parameters.channel_type_features().clone(),
 			keys,
-			built: BuiltCommitmentTransaction {
-				transaction,
-				txid
-			},
+			built: BuiltCommitmentTransaction { transaction, txid },
 		}
 	}
 
@@ -1568,8 +1789,12 @@ impl CommitmentTransaction {
 	//
 	// `txouts` and `nondust_htlcs` MUST be of equal length, and of length >= 2.
 	// For all `i < len`, the `TxOut` at `txouts[i]` MUST correspond to the HTLC at `nondust_htlcs[i]`.
-	fn is_left_greater(i: usize, txouts: &Vec<TxOut>, nondust_htlcs: &Vec<HTLCOutputInCommitment>) -> bool {
-		txouts[i - 1].value.cmp(&txouts[i].value)
+	fn is_left_greater(
+		i: usize, txouts: &Vec<TxOut>, nondust_htlcs: &Vec<HTLCOutputInCommitment>,
+	) -> bool {
+		txouts[i - 1]
+			.value
+			.cmp(&txouts[i].value)
 			.then(txouts[i - 1].script_pubkey.cmp(&txouts[i].script_pubkey))
 			.then(nondust_htlcs[i - 1].cltv_expiry.cmp(&nondust_htlcs[i].cltv_expiry))
 			// Note that due to hash collisions, we have to have a fallback comparison
@@ -1579,21 +1804,36 @@ impl CommitmentTransaction {
 			.is_gt()
 	}
 
-	fn rebuild_transaction(&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters) -> Result<BuiltCommitmentTransaction, ()> {
-		let (obscured_commitment_transaction_number, txins) = Self::build_inputs(self.commitment_number, channel_parameters);
+	fn rebuild_transaction(
+		&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters,
+	) -> Result<BuiltCommitmentTransaction, ()> {
+		let (obscured_commitment_transaction_number, txins) =
+			Self::build_inputs(self.commitment_number, channel_parameters);
 
 		// First rebuild the htlc outputs, note that `outputs` is now the same length as `self.nondust_htlcs`
-		let mut outputs = Self::build_htlc_outputs(keys, &self.nondust_htlcs, channel_parameters.channel_type_features());
+		let mut outputs = Self::build_htlc_outputs(
+			keys,
+			&self.nondust_htlcs,
+			channel_parameters.channel_type_features(),
+		);
 
 		// Check that the HTLC outputs are sorted by value, script pubkey, and cltv expiry.
 		// Note that this only iterates if the length of `outputs` and `self.nondust_htlcs` is >= 2.
-		if (1..outputs.len()).into_iter().any(|i| Self::is_left_greater(i, &outputs, &self.nondust_htlcs)) {
-			return Err(())
+		if (1..outputs.len())
+			.into_iter()
+			.any(|i| Self::is_left_greater(i, &outputs, &self.nondust_htlcs))
+		{
+			return Err(());
 		}
 
 		// Then insert the max-4 non-htlc outputs, ordered by value, then by script pubkey
 		let insert_non_htlc_output = |non_htlc_output: TxOut| {
-			let idx = match outputs.binary_search_by(|output| output.value.cmp(&non_htlc_output.value).then(output.script_pubkey.cmp(&non_htlc_output.script_pubkey))) {
+			let idx = match outputs.binary_search_by(|output| {
+				output
+					.value
+					.cmp(&non_htlc_output.value)
+					.then(output.script_pubkey.cmp(&non_htlc_output.script_pubkey))
+			}) {
 				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
 				// close the channel due to mismatches - they're doing something dumb
 				Ok(i) => i,
@@ -1608,37 +1848,42 @@ impl CommitmentTransaction {
 			self.to_countersignatory_value_sat,
 			channel_parameters,
 			!self.nondust_htlcs.is_empty(),
-			insert_non_htlc_output
+			insert_non_htlc_output,
 		);
 
-		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
+		let transaction =
+			Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.compute_txid();
-		let built_transaction = BuiltCommitmentTransaction {
-			transaction,
-			txid
-		};
+		let built_transaction = BuiltCommitmentTransaction { transaction, txid };
 		Ok(built_transaction)
 	}
 
-	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
+	fn make_transaction(
+		obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>,
+	) -> Transaction {
 		Transaction {
 			version: Version::TWO,
-			lock_time: LockTime::from_consensus(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
+			lock_time: LockTime::from_consensus(
+				((0x20 as u32) << 8 * 3)
+					| ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
+			),
 			input: txins,
 			output: outputs,
 		}
 	}
 
 	fn build_outputs_and_htlcs(
-		keys: &TxCreationKeys,
-		to_broadcaster_value_sat: Amount,
-		to_countersignatory_value_sat: Amount,
-		nondust_htlcs: &mut Vec<HTLCOutputInCommitment>,
-		channel_parameters: &DirectedChannelTransactionParameters
+		keys: &TxCreationKeys, to_broadcaster_value_sat: Amount,
+		to_countersignatory_value_sat: Amount, nondust_htlcs: &mut Vec<HTLCOutputInCommitment>,
+		channel_parameters: &DirectedChannelTransactionParameters,
 	) -> Vec<TxOut> {
 		// First build and sort the HTLC outputs.
 		// Also sort the HTLC output data in `nondust_htlcs` in the same order.
-		let mut outputs = Self::build_sorted_htlc_outputs(keys, nondust_htlcs, channel_parameters.channel_type_features());
+		let mut outputs = Self::build_sorted_htlc_outputs(
+			keys,
+			nondust_htlcs,
+			channel_parameters.channel_type_features(),
+		);
 		let tx_has_htlc_outputs = !outputs.is_empty();
 
 		// Initialize the transaction output indices; we will update them below when we
@@ -1650,7 +1895,12 @@ impl CommitmentTransaction {
 
 		// Then insert the max-4 non-htlc outputs, ordered by value, then by script pubkey
 		let insert_non_htlc_output = |non_htlc_output: TxOut| {
-			let idx = match outputs.binary_search_by(|output| output.value.cmp(&non_htlc_output.value).then(output.script_pubkey.cmp(&non_htlc_output.script_pubkey))) {
+			let idx = match outputs.binary_search_by(|output| {
+				output
+					.value
+					.cmp(&non_htlc_output.value)
+					.then(output.script_pubkey.cmp(&non_htlc_output.script_pubkey))
+			}) {
 				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
 				// close the channel due to mismatches - they're doing something dumb
 				Ok(i) => i,
@@ -1677,33 +1927,36 @@ impl CommitmentTransaction {
 			to_countersignatory_value_sat,
 			channel_parameters,
 			tx_has_htlc_outputs,
-			insert_non_htlc_output
+			insert_non_htlc_output,
 		);
 
 		outputs
 	}
 
 	fn insert_non_htlc_outputs<F>(
-		keys: &TxCreationKeys,
-		to_broadcaster_value_sat: Amount,
+		keys: &TxCreationKeys, to_broadcaster_value_sat: Amount,
 		to_countersignatory_value_sat: Amount,
-		channel_parameters: &DirectedChannelTransactionParameters,
-		tx_has_htlc_outputs: bool,
+		channel_parameters: &DirectedChannelTransactionParameters, tx_has_htlc_outputs: bool,
 		mut insert_non_htlc_output: F,
 	) where
 		F: FnMut(TxOut),
 	{
-		let countersignatory_payment_point = &channel_parameters.countersignatory_pubkeys().payment_point;
-		let countersignatory_funding_key = &channel_parameters.countersignatory_pubkeys().funding_pubkey;
+		let countersignatory_payment_point =
+			&channel_parameters.countersignatory_pubkeys().payment_point;
+		let countersignatory_funding_key =
+			&channel_parameters.countersignatory_pubkeys().funding_pubkey;
 		let broadcaster_funding_key = &channel_parameters.broadcaster_pubkeys().funding_pubkey;
 		let channel_type = channel_parameters.channel_type_features();
 		let contest_delay = channel_parameters.contest_delay();
 
 		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-				get_to_countersigner_keyed_anchor_redeemscript(countersignatory_payment_point).to_p2wsh()
+				get_to_countersigner_keyed_anchor_redeemscript(countersignatory_payment_point)
+					.to_p2wsh()
 			} else {
-				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_payment_point.serialize()).into())
+				ScriptBuf::new_p2wpkh(
+					&Hash160::hash(&countersignatory_payment_point.serialize()).into(),
+				)
 			};
 			insert_non_htlc_output(TxOut {
 				script_pubkey: script,
@@ -1742,16 +1995,16 @@ impl CommitmentTransaction {
 		}
 	}
 
-	fn build_htlc_outputs(keys: &TxCreationKeys, nondust_htlcs: &Vec<HTLCOutputInCommitment>, channel_type: &ChannelTypeFeatures) -> Vec<TxOut> {
+	fn build_htlc_outputs(
+		keys: &TxCreationKeys, nondust_htlcs: &Vec<HTLCOutputInCommitment>,
+		channel_type: &ChannelTypeFeatures,
+	) -> Vec<TxOut> {
 		// Allocate memory for the 4 possible non-htlc outputs
 		let mut txouts = Vec::with_capacity(nondust_htlcs.len() + 4);
 
 		for htlc in nondust_htlcs {
 			let script = get_htlc_redeemscript(htlc, channel_type, keys);
-			let txout = TxOut {
-				script_pubkey: script.to_p2wsh(),
-				value: htlc.to_bitcoin_amount(),
-			};
+			let txout = TxOut { script_pubkey: script.to_p2wsh(), value: htlc.to_bitcoin_amount() };
 			txouts.push(txout);
 		}
 
@@ -1759,9 +2012,8 @@ impl CommitmentTransaction {
 	}
 
 	fn build_sorted_htlc_outputs(
-		keys: &TxCreationKeys,
-		nondust_htlcs: &mut Vec<HTLCOutputInCommitment>,
-		channel_type: &ChannelTypeFeatures
+		keys: &TxCreationKeys, nondust_htlcs: &mut Vec<HTLCOutputInCommitment>,
+		channel_type: &ChannelTypeFeatures,
 	) -> Vec<TxOut> {
 		// Note that `txouts` has the same length as `nondust_htlcs` here
 		let mut txouts = Self::build_htlc_outputs(keys, nondust_htlcs, channel_type);
@@ -1771,9 +2023,9 @@ impl CommitmentTransaction {
 		// Also sort the HTLC output data in `nondust_htlcs` in the same order.
 		//
 		// This is insertion sort. In the worst case this is O(n^2) over 2 * 483 HTLCs in the
-		// channel. We expect people to transition soon to zero-fee-commitment channels, 
+		// channel. We expect people to transition soon to zero-fee-commitment channels,
 		// where n will be 2 * 114.
-		// 
+		//
 		// These are small numbers, and channels today rarely reach this protocol-max, if ever,
 		// so we accept the performance tradeoff.
 
@@ -1793,24 +2045,29 @@ impl CommitmentTransaction {
 		txouts
 	}
 
-	fn build_inputs(commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters) -> (u64, Vec<TxIn>) {
+	fn build_inputs(
+		commitment_number: u64, channel_parameters: &DirectedChannelTransactionParameters,
+	) -> (u64, Vec<TxIn>) {
 		let broadcaster_pubkeys = channel_parameters.broadcaster_pubkeys();
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
-		let commitment_transaction_number_obscure_factor = get_commitment_transaction_number_obscure_factor(
-			&broadcaster_pubkeys.payment_point,
-			&countersignatory_pubkeys.payment_point,
-			channel_parameters.is_outbound(),
-		);
+		let commitment_transaction_number_obscure_factor =
+			get_commitment_transaction_number_obscure_factor(
+				&broadcaster_pubkeys.payment_point,
+				&countersignatory_pubkeys.payment_point,
+				channel_parameters.is_outbound(),
+			);
 
-		let obscured_commitment_transaction_number =
-			commitment_transaction_number_obscure_factor ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
+		let obscured_commitment_transaction_number = commitment_transaction_number_obscure_factor
+			^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
 			let ins: Vec<TxIn> = vec![TxIn {
 				previous_output: channel_parameters.funding_outpoint(),
 				script_sig: ScriptBuf::new(),
-				sequence: Sequence(((0x80 as u32) << 8 * 3)
-					| ((obscured_commitment_transaction_number >> 3 * 8) as u32)),
+				sequence: Sequence(
+					((0x80 as u32) << 8 * 3)
+						| ((obscured_commitment_transaction_number >> 3 * 8) as u32),
+				),
 				witness: Witness::new(),
 			}];
 			ins
@@ -1869,10 +2126,17 @@ impl CommitmentTransaction {
 	///
 	/// An external validating signer must call this method before signing
 	/// or using the built transaction.
-	pub fn verify<T: secp256k1::Signing + secp256k1::Verification>(&self, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<T>) -> Result<TrustedCommitmentTransaction, ()> {
+	pub fn verify<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<T>,
+	) -> Result<TrustedCommitmentTransaction, ()> {
 		// This is the only field of the key cache that we trust
 		let per_commitment_point = &self.keys.per_commitment_point;
-		let keys = TxCreationKeys::from_channel_static_keys(per_commitment_point, channel_parameters.broadcaster_pubkeys(), channel_parameters.countersignatory_pubkeys(), secp_ctx);
+		let keys = TxCreationKeys::from_channel_static_keys(
+			per_commitment_point,
+			channel_parameters.broadcaster_pubkeys(),
+			channel_parameters.countersignatory_pubkeys(),
+			secp_ctx,
+		);
 		if keys != self.keys {
 			return Err(());
 		}
@@ -1897,7 +2161,9 @@ pub struct TrustedCommitmentTransaction<'a> {
 impl<'a> Deref for TrustedCommitmentTransaction<'a> {
 	type Target = CommitmentTransaction;
 
-	fn deref(&self) -> &Self::Target { self.inner }
+	fn deref(&self) -> &Self::Target {
+		self.inner
+	}
 }
 
 impl<'a> TrustedCommitmentTransaction<'a> {
@@ -1928,22 +2194,50 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	///
 	/// This function is only valid in the holder commitment context, it always uses EcdsaSighashType::All.
 	pub fn get_htlc_sigs<T: secp256k1::Signing, ES: Deref>(
-		&self, htlc_base_key: &SecretKey, channel_parameters: &DirectedChannelTransactionParameters,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<Signature>, ()> where ES::Target: EntropySource {
+		&self, htlc_base_key: &SecretKey,
+		channel_parameters: &DirectedChannelTransactionParameters, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<Signature>, ()>
+	where
+		ES::Target: EntropySource,
+	{
 		let inner = self.inner;
 		let keys = &inner.keys;
 		let txid = inner.built.txid;
 		let mut ret = Vec::with_capacity(inner.nondust_htlcs.len());
-		let holder_htlc_key = derive_private_key(secp_ctx, &inner.keys.per_commitment_point, htlc_base_key);
+		let holder_htlc_key =
+			derive_private_key(secp_ctx, &inner.keys.per_commitment_point, htlc_base_key);
 
 		for this_htlc in inner.nondust_htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
-			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &self.channel_type_features, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = build_htlc_transaction(
+				&txid,
+				inner.feerate_per_kw,
+				channel_parameters.contest_delay(),
+				&this_htlc,
+				&self.channel_type_features,
+				&keys.broadcaster_delayed_payment_key,
+				&keys.revocation_key,
+			);
 
-			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
+			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(
+				&this_htlc,
+				&self.channel_type_features,
+				&keys.broadcaster_htlc_key,
+				&keys.countersignatory_htlc_key,
+				&keys.revocation_key,
+			);
 
-			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All).unwrap()[..]);
+			let sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx)
+					.p2wsh_signature_hash(
+						0,
+						&htlc_redeemscript,
+						this_htlc.to_bitcoin_amount(),
+						EcdsaSighashType::All
+					)
+					.unwrap()[..]
+			);
 			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
 		}
 		Ok(ret)
@@ -1966,7 +2260,9 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		);
 		let revokeable_p2wsh = revokeable_redeemscript.to_p2wsh();
 		let outputs = &self.inner.built.transaction.output;
-		outputs.iter().enumerate()
+		outputs
+			.iter()
+			.enumerate()
 			.find(|(_, out)| out.script_pubkey == revokeable_p2wsh)
 			.map(|(idx, _)| idx)
 	}
@@ -1982,35 +2278,25 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	/// The built transaction will allow fee bumping with RBF, and this method takes
 	/// `feerate_per_kw` as an input such that multiple copies of a justice transaction at different
 	/// fee rates may be built.
-	pub fn build_to_local_justice_tx(&self, feerate_per_kw: u64, destination_script: ScriptBuf)
-	-> Result<Transaction, ()> {
+	pub fn build_to_local_justice_tx(
+		&self, feerate_per_kw: u64, destination_script: ScriptBuf,
+	) -> Result<Transaction, ()> {
 		let output_idx = self.revokeable_output_index().ok_or(())?;
 		let input = vec![TxIn {
-			previous_output: OutPoint {
-				txid: self.trust().txid(),
-				vout: output_idx as u32,
-			},
+			previous_output: OutPoint { txid: self.trust().txid(), vout: output_idx as u32 },
 			script_sig: ScriptBuf::new(),
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			witness: Witness::new(),
 		}];
 		let value = self.inner.built.transaction.output[output_idx].value;
-		let output = vec![TxOut {
-			script_pubkey: destination_script,
-			value,
-		}];
-		let mut justice_tx = Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::ZERO,
-			input,
-			output,
-		};
+		let output = vec![TxOut { script_pubkey: destination_script, value }];
+		let mut justice_tx =
+			Transaction { version: Version::TWO, lock_time: LockTime::ZERO, input, output };
 		let weight = justice_tx.weight().to_wu() + WEIGHT_REVOKED_OUTPUT;
 		let fee = Amount::from_sat(fee_for_weight(feerate_per_kw as u32, weight));
 		justice_tx.output[0].value = value.checked_sub(fee).ok_or(())?;
 		Ok(justice_tx)
 	}
-
 }
 
 /// Commitment transaction numbers which appear in the transactions themselves are XOR'd with a
@@ -2020,8 +2306,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 /// This function gets the shared secret from relevant channel public keys and can be used to
 /// "decrypt" the commitment transaction number given a commitment transaction on-chain.
 pub fn get_commitment_transaction_number_obscure_factor(
-	broadcaster_payment_basepoint: &PublicKey,
-	countersignatory_payment_basepoint: &PublicKey,
+	broadcaster_payment_basepoint: &PublicKey, countersignatory_payment_basepoint: &PublicKey,
 	outbound_from_broadcaster: bool,
 ) -> u64 {
 	let mut sha = Sha256::engine();
@@ -2045,18 +2330,23 @@ pub fn get_commitment_transaction_number_obscure_factor(
 
 #[cfg(test)]
 mod tests {
-	use super::{CounterpartyCommitmentSecrets, ChannelPublicKeys};
+	use super::{ChannelPublicKeys, CounterpartyCommitmentSecrets};
 	use crate::chain;
-	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersigner_keyed_anchor_redeemscript, CommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment, TrustedCommitmentTransaction, BuiltCommitmentTransaction};
-	use bitcoin::secp256k1::{self, PublicKey, SecretKey, Secp256k1};
-	use crate::util::test_utils;
+	use crate::ln::chan_utils::{
+		get_htlc_redeemscript, get_to_countersigner_keyed_anchor_redeemscript,
+		BuiltCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction,
+		CounterpartyChannelTransactionParameters, HTLCOutputInCommitment,
+		TrustedCommitmentTransaction,
+	};
 	use crate::sign::{ChannelSigner, SignerProvider};
-	use bitcoin::{Network, Txid, ScriptBuf, CompressedPublicKey};
+	use crate::types::features::ChannelTypeFeatures;
+	use crate::types::payment::PaymentHash;
+	use crate::util::test_utils;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
-	use crate::types::payment::PaymentHash;
+	use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::PublicKey as BitcoinPublicKey;
-	use crate::types::features::ChannelTypeFeatures;
+	use bitcoin::{CompressedPublicKey, Network, ScriptBuf, Txid};
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
@@ -2067,7 +2357,7 @@ mod tests {
 		feerate_per_kw: u32,
 		channel_parameters: ChannelTransactionParameters,
 		counterparty_pubkeys: ChannelPublicKeys,
-		secp_ctx: Secp256k1::<secp256k1::All>,
+		secp_ctx: Secp256k1<secp256k1::All>,
 	}
 
 	impl TestCommitmentTxBuilder {
@@ -2076,18 +2366,33 @@ mod tests {
 			let seed = [42; 32];
 			let network = Network::Testnet;
 			let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-			let signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(false, 0));
-			let counterparty_signer = keys_provider.derive_channel_signer(keys_provider.generate_channel_keys_id(true, 1));
-			let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
-			let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
+			let signer = keys_provider
+				.derive_channel_signer(keys_provider.generate_channel_keys_id(false, 0));
+			let counterparty_signer = keys_provider
+				.derive_channel_signer(keys_provider.generate_channel_keys_id(true, 1));
+			let per_commitment_secret = SecretKey::from_slice(
+				&<Vec<u8>>::from_hex(
+					"1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+				)
+				.unwrap()[..],
+			)
+			.unwrap();
+			let per_commitment_point =
+				PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 			let holder_pubkeys = signer.pubkeys(None, &secp_ctx);
 			let counterparty_pubkeys = counterparty_signer.pubkeys(None, &secp_ctx).clone();
 			let channel_parameters = ChannelTransactionParameters {
 				holder_pubkeys: holder_pubkeys.clone(),
 				holder_selected_contest_delay: 0,
 				is_outbound_from_holder: false,
-				counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
-				funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
+				counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+					pubkeys: counterparty_pubkeys.clone(),
+					selected_contest_delay: 0,
+				}),
+				funding_outpoint: Some(chain::transaction::OutPoint {
+					txid: Txid::all_zeros(),
+					index: 0,
+				}),
 				splice_parent_funding_txid: None,
 				channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 				channel_value_satoshis: 3000,
@@ -2103,14 +2408,25 @@ mod tests {
 			}
 		}
 
-		fn build(&self, to_broadcaster_sats: u64, to_countersignatory_sats: u64, nondust_htlcs: Vec<HTLCOutputInCommitment>) -> CommitmentTransaction {
+		fn build(
+			&self, to_broadcaster_sats: u64, to_countersignatory_sats: u64,
+			nondust_htlcs: Vec<HTLCOutputInCommitment>,
+		) -> CommitmentTransaction {
 			CommitmentTransaction::new(
-				self.commitment_number, &self.per_commitment_point, to_broadcaster_sats, to_countersignatory_sats, self.feerate_per_kw,
-				nondust_htlcs, &self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx
+				self.commitment_number,
+				&self.per_commitment_point,
+				to_broadcaster_sats,
+				to_countersignatory_sats,
+				self.feerate_per_kw,
+				nondust_htlcs,
+				&self.channel_parameters.as_holder_broadcastable(),
+				&self.secp_ctx,
 			)
 		}
 
-		fn verify<'a>(&self, tx: &'a CommitmentTransaction) -> Result<TrustedCommitmentTransaction<'a>, ()> {
+		fn verify<'a>(
+			&self, tx: &'a CommitmentTransaction,
+		) -> Result<TrustedCommitmentTransaction<'a>, ()> {
 			tx.verify(&self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx)
 		}
 	}
@@ -2122,13 +2438,27 @@ mod tests {
 		// Generate broadcaster and counterparty outputs
 		let tx = builder.build(1000, 2000, Vec::new());
 		assert_eq!(tx.built.transaction.output.len(), 2);
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_point), Network::Testnet).script_pubkey());
+		assert_eq!(
+			tx.built.transaction.output[1].script_pubkey,
+			bitcoin::address::Address::p2wpkh(
+				&CompressedPublicKey(builder.counterparty_pubkeys.payment_point),
+				Network::Testnet
+			)
+			.script_pubkey()
+		);
 
 		// Generate broadcaster and counterparty outputs as well as two anchors
-		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		builder.channel_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(1000, 2000, Vec::new());
 		assert_eq!(tx.built.transaction.output.len(), 4);
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersigner_keyed_anchor_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
+		assert_eq!(
+			tx.built.transaction.output[3].script_pubkey,
+			get_to_countersigner_keyed_anchor_redeemscript(
+				&builder.counterparty_pubkeys.payment_point
+			)
+			.to_p2wsh()
+		);
 
 		// Generate broadcaster output and anchor
 		let tx = builder.build(3000, 0, Vec::new());
@@ -2155,27 +2485,93 @@ mod tests {
 		};
 
 		// Generate broadcaster output and received and offered HTLC outputs,  w/o anchors
-		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+		builder.channel_parameters.channel_type_features =
+			ChannelTypeFeatures::only_static_remote_key();
 		let tx = builder.build(3000, 0, vec![received_htlc.clone(), offered_htlc.clone()]);
 		let keys = tx.trust().keys();
 		assert_eq!(tx.built.transaction.output.len(), 3);
-		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
-				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
-				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
+		assert_eq!(
+			tx.built.transaction.output[0].script_pubkey,
+			get_htlc_redeemscript(
+				&received_htlc,
+				&ChannelTypeFeatures::only_static_remote_key(),
+				&keys
+			)
+			.to_p2wsh()
+		);
+		assert_eq!(
+			tx.built.transaction.output[1].script_pubkey,
+			get_htlc_redeemscript(
+				&offered_htlc,
+				&ChannelTypeFeatures::only_static_remote_key(),
+				&keys
+			)
+			.to_p2wsh()
+		);
+		assert_eq!(
+			get_htlc_redeemscript(
+				&received_htlc,
+				&ChannelTypeFeatures::only_static_remote_key(),
+				&keys
+			)
+			.to_p2wsh()
+			.to_hex_string(),
+			"0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb"
+		);
+		assert_eq!(
+			get_htlc_redeemscript(
+				&offered_htlc,
+				&ChannelTypeFeatures::only_static_remote_key(),
+				&keys
+			)
+			.to_p2wsh()
+			.to_hex_string(),
+			"0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d"
+		);
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
-		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		builder.channel_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(3000, 0, vec![received_htlc.clone(), offered_htlc.clone()]);
 		assert_eq!(tx.built.transaction.output.len(), 5);
-		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
-				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
-				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
+		assert_eq!(
+			tx.built.transaction.output[2].script_pubkey,
+			get_htlc_redeemscript(
+				&received_htlc,
+				&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+				&keys
+			)
+			.to_p2wsh()
+		);
+		assert_eq!(
+			tx.built.transaction.output[3].script_pubkey,
+			get_htlc_redeemscript(
+				&offered_htlc,
+				&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+				&keys
+			)
+			.to_p2wsh()
+		);
+		assert_eq!(
+			get_htlc_redeemscript(
+				&received_htlc,
+				&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+				&keys
+			)
+			.to_p2wsh()
+			.to_hex_string(),
+			"0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc"
+		);
+		assert_eq!(
+			get_htlc_redeemscript(
+				&offered_htlc,
+				&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+				&keys
+			)
+			.to_p2wsh()
+			.to_hex_string(),
+			"002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7"
+		);
 	}
 
 	#[test]
@@ -2216,16 +2612,26 @@ mod tests {
 
 		// Generate a random public key for destination script
 		let secret_key = SecretKey::from_slice(
-			&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100")
-			.unwrap()[..]).unwrap();
-		let pubkey_hash = BitcoinPublicKey::new(
-			PublicKey::from_secret_key(&Secp256k1::new(), &secret_key)).wpubkey_hash().unwrap();
+			&<Vec<u8>>::from_hex(
+				"1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+			)
+			.unwrap()[..],
+		)
+		.unwrap();
+		let pubkey_hash =
+			BitcoinPublicKey::new(PublicKey::from_secret_key(&Secp256k1::new(), &secret_key))
+				.wpubkey_hash()
+				.unwrap();
 		let destination_script = ScriptBuf::new_p2wpkh(&pubkey_hash);
 
-		let justice_tx = tx.trust().build_to_local_justice_tx(253, destination_script.clone()).unwrap();
+		let justice_tx =
+			tx.trust().build_to_local_justice_tx(253, destination_script.clone()).unwrap();
 		assert_eq!(justice_tx.input.len(), 1);
 		assert_eq!(justice_tx.input[0].previous_output.txid, tx.built.transaction.compute_txid());
-		assert_eq!(justice_tx.input[0].previous_output.vout, tx.trust().revokeable_output_index().unwrap() as u32);
+		assert_eq!(
+			justice_tx.input[0].previous_output.vout,
+			tx.trust().revokeable_output_index().unwrap() as u32
+		);
 		assert!(justice_tx.input[0].sequence.is_rbf());
 
 		assert_eq!(justice_tx.output.len(), 1);
@@ -2257,42 +2663,82 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 		}
@@ -2303,13 +2749,25 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			assert!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710654, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2318,23 +2776,45 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710652, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2343,23 +2823,45 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710652, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2368,43 +2870,85 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710648, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2413,33 +2957,65 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			assert!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710650, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2448,43 +3024,85 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710648, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2493,43 +3111,85 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710648, secrets.last().unwrap().clone())
+				.is_err());
 		}
 
 		{
@@ -2538,43 +3198,85 @@ mod tests {
 			secrets.clear();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
+				)
+				.unwrap(),
+			);
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
-			assert!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err());
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(
+				&<Vec<u8>>::from_hex(
+					"a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4",
+				)
+				.unwrap(),
+			);
+			assert!(monitor
+				.provide_secret(281474976710648, secrets.last().unwrap().clone())
+				.is_err());
 		}
 	}
 
@@ -2602,16 +3304,13 @@ mod tests {
 				assert_eq!(transaction.output.len(), 2);
 				transaction.output.swap(0, 1);
 				let txid = transaction.compute_txid();
-				let built = BuiltCommitmentTransaction {
-					transaction,
-					txid,
-				};
+				let built = BuiltCommitmentTransaction { transaction, txid };
 				commit_tx.built = built;
 
 				// Yes the HTLCs in `nondust_htlcs` are in the same order as in the cached transaction,
 				// but they are not sorted!
 				assert!(builder.verify(&commit_tx).is_err());
-			}
+			};
 		}
 
 		// script_pubkey: Script(OP_0 OP_PUSHBYTES_32 1b202f6bdf42cd8ba08e263868b5bd0cf5a7f95c227c27e1935984a8f6130fa3)

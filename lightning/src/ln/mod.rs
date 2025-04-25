@@ -13,15 +13,15 @@
 #[macro_use]
 pub mod functional_test_utils;
 
-pub mod onion_payment;
-pub mod channelmanager;
+pub mod chan_utils;
 pub mod channel_keys;
 pub mod channel_state;
+pub mod channelmanager;
+mod features;
 pub mod inbound_payment;
 pub mod msgs;
+pub mod onion_payment;
 pub mod peer_handler;
-pub mod chan_utils;
-mod features;
 pub mod script;
 pub mod types;
 
@@ -57,24 +57,39 @@ pub use onion_utils::process_onion_failure;
 #[cfg(fuzzing)]
 pub use onion_utils::AttributionData;
 
+#[cfg(all(test, async_payments))]
+#[allow(unused_mut)]
+mod async_payments_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod async_signer_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 pub mod bolt11_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod blinded_payment_tests;
-#[cfg(all(test, async_payments))]
+mod chanmon_update_fail_tests;
+#[cfg(test)]
 #[allow(unused_mut)]
-mod async_payments_tests;
+mod dual_funding_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
 pub mod functional_tests;
-#[cfg(all(test, splicing))]
-#[allow(unused_mut)]
-mod splicing_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod max_payment_path_len_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod monitor_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod onion_route_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod payment_tests;
@@ -82,33 +97,18 @@ mod payment_tests;
 #[allow(unused_mut)]
 mod priv_short_conf_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
-mod chanmon_update_fail_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod reorg_tests;
+mod quiescence_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod reload_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod onion_route_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod monitor_tests;
+mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod shutdown_tests;
-#[cfg(test)]
-mod quiescence_tests;
-#[cfg(test)]
+#[cfg(all(test, splicing))]
 #[allow(unused_mut)]
-mod async_signer_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod offers_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod dual_funding_tests;
+mod splicing_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
