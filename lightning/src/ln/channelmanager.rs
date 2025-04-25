@@ -30,7 +30,7 @@ use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, Sequence, SignedAmount};
+use bitcoin::{secp256k1, Amount, Sequence};
 
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, OffersContext,
@@ -65,7 +65,7 @@ use crate::ln::channel::{
 	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::funding::SpliceContribution;
+use crate::ln::funding::{FundingTxInput, SpliceContribution};
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
@@ -9814,6 +9814,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			false,
 			user_channel_id,
 			config_overrides,
+			Amount::ZERO,
+			vec![],
 		)
 	}
 
@@ -9845,15 +9847,69 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			true,
 			user_channel_id,
 			config_overrides,
+			Amount::ZERO,
+			vec![],
 		)
 	}
 
-	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
+	/// Accepts a request to open a dual-funded channel with a contribution provided after an
+	/// [`Event::OpenChannelRequest`].
+	///
+	/// The [`Event::OpenChannelRequest::channel_negotiation_type`] field will indicate the open channel
+	/// request is for a dual-funded channel when the variant is [`InboundChannelFunds::DualFunded`].
+	///
+	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted,
+	/// and the `counterparty_node_id` parameter is the id of the peer that has requested to open
+	/// the channel.
+	///
+	/// The `user_channel_id` parameter will be provided back in
+	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
+	/// with which `accept_inbound_channel_*` call.
+	///
+	/// The `funding_inputs` parameter provides which UTXOs to use for `our_funding_contribution`
+	/// along with the corresponding satisfaction weight. They must be able to cover any fees needed
+	/// to pay for the contributed weight to the funding transaction. This includes the witnesses
+	/// provided through calling [`ChannelManager::funding_transaction_signed`] after receiving
+	/// [`Event::FundingTransactionReadyForSigning`].
+	///
+	/// Note that this method will return an error and reject the channel if it requires support for
+	/// zero confirmations.
+	// TODO(dual_funding): Discussion on complications with 0conf dual-funded channels where "locking"
+	// of UTXOs used for funding would be required and other issues.
+	// See https://diyhpl.us/~bryan/irc/bitcoin/bitcoin-dev/linuxfoundation-pipermail/lightning-dev/2023-May/003922.txt
+	///
+	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
+	/// [`Event::OpenChannelRequest::channel_negotiation_type`]: events::Event::OpenChannelRequest::channel_negotiation_type
+	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`ChannelManager::funding_transaction_signed`]: ChannelManager::funding_transaction_signed
+	pub fn accept_inbound_channel_with_contribution(
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
+		our_funding_contribution: Amount, funding_inputs: Vec<FundingTxInput>,
+	) -> Result<(), APIError> {
+		self.do_accept_inbound_channel(
+			temporary_channel_id,
+			counterparty_node_id,
+			false,
+			user_channel_id,
+			config_overrides,
+			our_funding_contribution,
+			funding_inputs,
+		)
+	}
+
 	#[rustfmt::skip]
 	fn do_accept_inbound_channel(
-		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
-		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+		accept_0conf: bool, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>,
+		our_funding_contribution: Amount, funding_inputs: Vec<FundingTxInput>
 	) -> Result<(), APIError> {
+		if our_funding_contribution > Amount::MAX_MONEY {
+			return Err(APIError::APIMisuseError {
+				err: format!("the funding contribution must be smaller than the total bitcoin supply, it was {}", our_funding_contribution)
+			});
+		}
 
 		let mut config = self.config.read().unwrap().clone();
 
@@ -9911,7 +9967,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							&self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg,
 							user_channel_id, &config, best_block_height,
-							&self.logger,
+							&self.logger, our_funding_contribution, funding_inputs,
 						).map_err(|e| {
 							let channel_id = open_channel_msg.common_fields.temporary_channel_id;
 							MsgHandleErrInternal::from_chan_no_close(e, channel_id)
@@ -10055,7 +10111,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					// Inbound V2 channels with contributed inputs are not considered unfunded.
 					if let Some(unfunded_chan) = chan.as_unfunded_v2() {
-						if unfunded_chan.funding_negotiation_context.our_funding_contribution > SignedAmount::ZERO {
+						if unfunded_chan.our_funding_contribution() > Amount::ZERO {
 							continue;
 						}
 					}
@@ -10197,7 +10253,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(),
 					&peer_state.latest_features, msg, user_channel_id,
-					&self.config.read().unwrap(), best_block_height, &self.logger,
+					&self.config.read().unwrap(), best_block_height, &self.logger, Amount::ZERO, vec![],
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,

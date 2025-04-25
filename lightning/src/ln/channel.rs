@@ -13946,7 +13946,7 @@ where
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	pub funding_negotiation_context: FundingNegotiationContext,
+	pub funding_negotiation_context: Option<FundingNegotiationContext>,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
@@ -14021,7 +14021,7 @@ where
 			funding,
 			context,
 			unfunded_context,
-			funding_negotiation_context,
+			funding_negotiation_context: Some(funding_negotiation_context),
 			interactive_tx_constructor: None,
 		};
 		Ok(chan)
@@ -14096,29 +14096,28 @@ where
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.funding_negotiation_context.funding_tx_locktime.to_consensus_u32(),
+			locktime: self.funding_tx_locktime().to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
 	}
 
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
 	#[allow(dead_code)] // TODO(dual_funding): Remove once V2 channels is enabled.
 	#[rustfmt::skip]
 	pub fn new_inbound<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
-		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
-		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
+		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, user_id: u128, config: &UserConfig,
+		current_chain_height: u32, logger: &L, our_funding_contribution: Amount,
+		our_funding_inputs: Vec<FundingTxInput>,
 	) -> Result<Self, ChannelError>
 		where ES::Target: EntropySource,
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
-		// TODO(dual_funding): Take these as input once supported
-		let (our_funding_contribution, our_funding_contribution_sats) = (SignedAmount::ZERO, 0u64);
-		let our_funding_inputs = Vec::new();
+		debug_assert!(our_funding_contribution <= Amount::MAX_MONEY);
+		let our_funding_contribution_sats = our_funding_contribution.to_sat();
 
 		let channel_value_satoshis =
 			our_funding_contribution_sats.saturating_add(msg.common_fields.funding_satoshis);
@@ -14163,7 +14162,9 @@ where
 
 		let funding_negotiation_context = FundingNegotiationContext {
 			is_initiator: false,
-			our_funding_contribution,
+			our_funding_contribution: our_funding_contribution
+				.to_signed()
+				.expect("our_funding_contribution should not be greater than Amount::MAX_MONEY"),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			shared_funding_input: None,
@@ -14171,29 +14172,20 @@ where
 			our_funding_outputs: Vec::new(),
 			change_script: None,
 		};
-		let shared_funding_output = TxOut {
-			value: Amount::from_sat(funding.get_value_satoshis()),
-			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
-		};
 
-		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
-			InteractiveTxConstructorArgs {
+		let mut interactive_tx_constructor = funding_negotiation_context
+			.into_interactive_tx_constructor(
+				&context,
+				&funding,
+				signer_provider,
 				entropy_source,
 				holder_node_id,
-				counterparty_node_id,
-				channel_id: context.channel_id,
-				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
-				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
-				is_initiator: false,
-				inputs_to_contribute: our_funding_inputs,
-				shared_funding_input: None,
-				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
-				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
-			}
-		).map_err(|err| {
-			let reason = ClosureReason::ProcessingError { err: err.reason.to_string() };
-			ChannelError::Close((err.reason.to_string(), reason))
-		})?);
+			)
+			.map_err(|err| {
+				let reason = ClosureReason::ProcessingError { err: err.reason.to_string() };
+				ChannelError::Close((err.reason.to_string(), reason))
+			})?;
+		debug_assert!(interactive_tx_constructor.take_initiator_first_message().is_none());
 
 		let unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
@@ -14202,8 +14194,8 @@ where
 		Ok(Self {
 			funding,
 			context,
-			funding_negotiation_context,
-			interactive_tx_constructor,
+			funding_negotiation_context: None,
+			interactive_tx_constructor: Some(interactive_tx_constructor),
 			unfunded_context,
 		})
 	}
@@ -14267,8 +14259,7 @@ where
 				}),
 				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
-			funding_satoshis: self.funding_negotiation_context.our_funding_contribution.to_sat()
-				as u64,
+			funding_satoshis: self.our_funding_contribution().to_sat(),
 			second_per_commitment_point,
 			require_confirmed_inputs: None,
 		}
@@ -14282,6 +14273,24 @@ where
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
+	}
+
+	pub fn our_funding_contribution(&self) -> Amount {
+		Amount::from_sat(self.funding.value_to_self_msat / 1000)
+	}
+
+	pub fn funding_tx_locktime(&self) -> LockTime {
+		self.funding_negotiation_context
+			.as_ref()
+			.map(|context| context.funding_tx_locktime)
+			.or_else(|| {
+				self.interactive_tx_constructor
+					.as_ref()
+					.map(|constructor| constructor.funding_tx_locktime())
+			})
+			.expect(
+				"either funding_negotiation_context or interactive_tx_constructor should be set",
+			)
 	}
 }
 
