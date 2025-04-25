@@ -51,7 +51,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		&[session.initiator_input_value_satoshis],
 	)
 	.into_iter()
-	.map(|(txin, tx, _)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
+	.map(|(txin, tx, weight)| (txin, TransactionU16LenLimited::new(tx).unwrap(), weight))
 	.collect();
 
 	// Alice creates a dual-funded channel as initiator.
