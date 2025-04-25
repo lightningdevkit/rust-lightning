@@ -885,7 +885,7 @@ where
 	pub fn htlc_handling_failed(
 		&self, failure_type: HTLCHandlingFailureType,
 	) -> Result<(), APIError> {
-		if let HTLCHandlingFailureType::NextHopChannel { channel_id, .. } = failure_type {
+		if let HTLCHandlingFailureType::Forward { channel_id, .. } = failure_type {
 			let peer_by_channel_id = self.peer_by_channel_id.read().unwrap();
 			if let Some(counterparty_node_id) = peer_by_channel_id.get(&channel_id) {
 				let outer_state_lock = self.per_peer_state.read().unwrap();

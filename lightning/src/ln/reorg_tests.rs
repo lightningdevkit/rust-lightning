@@ -130,7 +130,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	} else {
 		// Confirm the timeout tx and check that we fail the HTLC backwards
 		connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, Vec::new()));
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	}
 
 	check_added_monitors!(nodes[1], 1);
