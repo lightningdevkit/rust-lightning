@@ -26,7 +26,7 @@ use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::types::features::ChannelTypeFeatures;
-use crate::ln::msgs;
+use crate::ln::{msgs, LocalHTLCFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::onion_message::messenger::Responder;
@@ -524,6 +524,31 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCHandlingFailureType,
 		(0, payment_hash, required),
 	},
 );
+
+/// The reason for HTLC failures in [`Event::HTLCHandlingFailed`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HTLCHandlingFailureReason {
+	/// The forwarded HTLC was failed back by the downstream node with an encrypted error reason.
+	Downstream,
+	/// The HTLC was failed locally by our node.
+	Local {
+		/// The reason that our node chose to fail the HTLC.
+		reason: LocalHTLCFailureReason,
+	},
+}
+
+impl_writeable_tlv_based_enum!(HTLCHandlingFailureReason,
+	(1, Downstream) => {},
+	(3, Local) => {
+		(0, reason, required),
+	},
+);
+
+impl From<LocalHTLCFailureReason> for HTLCHandlingFailureReason {
+	fn from(value: LocalHTLCFailureReason) -> Self {
+		HTLCHandlingFailureReason::Local { reason: value }
+	}
+}
 
 /// Will be used in [`Event::HTLCIntercepted`] to identify the next hop in the HTLC's path.
 /// Currently only used in serialization for the sake of maintaining compatibility. More variants
@@ -1462,6 +1487,10 @@ pub enum Event {
 		prev_channel_id: ChannelId,
 		/// The type of HTLC handling that failed.
 		failure_type: HTLCHandlingFailureType,
+		/// The reason that the HTLC failed.
+		///
+		/// This field will be `None` only for objects serialized prior to LDK 0.2.0.
+		failure_reason: Option<HTLCHandlingFailureReason>
 	},
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
@@ -1766,10 +1795,11 @@ impl Writeable for Event {
 					(8, path.blinded_tail, option),
 				})
 			},
-			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failure_type } => {
+			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failure_type, ref failure_reason } => {
 				25u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, prev_channel_id, required),
+					(1, failure_reason, option),
 					(2, failure_type, required),
 				})
 			},
@@ -2218,14 +2248,17 @@ impl MaybeReadable for Event {
 			25u8 => {
 				let mut f = || {
 					let mut prev_channel_id = ChannelId::new_zero();
+					let mut failure_reason = None;
 					let mut failure_type_opt = UpgradableRequired(None);
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
+						(1, failure_reason, option),
 						(2, failure_type_opt, upgradable_required),
 					});
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_id,
 						failure_type: _init_tlv_based_struct_field!(failure_type_opt, upgradable_required),
+						failure_reason,
 					}))
 				};
 				f()
