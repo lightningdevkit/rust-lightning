@@ -1217,7 +1217,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(as_htlc_timeout_claim.len(), 1);
 	check_spends!(as_htlc_timeout_claim[0], as_txn[0]);
 	expect_pending_htlcs_forwardable_conditions!(nodes[0],
-		[HTLCHandlingFailureType::FailedPayment { payment_hash: to_a_failed_payment_hash }]);
+		[HTLCHandlingFailureType::Receive { payment_hash: to_a_failed_payment_hash }]);
 
 	assert_eq!(as_pre_spend_claims,
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
@@ -1235,7 +1235,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1));
 	expect_pending_htlcs_forwardable_conditions!(nodes[1],
-		[HTLCHandlingFailureType::FailedPayment { payment_hash: to_b_failed_payment_hash }]);
+		[HTLCHandlingFailureType::Receive { payment_hash: to_b_failed_payment_hash }]);
 	let bs_htlc_timeout_claim = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_htlc_timeout_claim.len(), 1);
 	check_spends!(bs_htlc_timeout_claim[0], as_txn[0]);
@@ -1422,7 +1422,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 				assert_eq!(*node_id, Some(nodes[1].node.get_our_node_id()));
 				false
 			},
-			Event::HTLCHandlingFailed { failure_type: HTLCHandlingFailureType::FailedPayment { payment_hash }, .. } => {
+			Event::HTLCHandlingFailed { failure_type: HTLCHandlingFailureType::Receive { payment_hash }, .. } => {
 				assert!(failed_payments.remove(payment_hash));
 				false
 			},
@@ -1737,7 +1737,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// pinnable claims, which the remainder of the test assumes.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV - COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
-		[HTLCHandlingFailureType::FailedPayment { payment_hash: failed_payment_hash }]);
+		[HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash }]);
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);

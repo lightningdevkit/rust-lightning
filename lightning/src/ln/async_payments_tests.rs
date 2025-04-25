@@ -172,7 +172,7 @@ fn invalid_keysend_payment_secret() {
 		PassAlongPathArgs::new(&nodes[0], &expected_route[0], amt_msat, payment_hash, ev.clone())
 			.with_payment_secret(invalid_payment_secret)
 			.with_payment_preimage(keysend_preimage)
-			.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
+			.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 
 	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -701,7 +701,7 @@ fn amount_doesnt_match_invreq() {
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(keysend_preimage)
 		.without_claimable_event()
-		.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 
 	// Modify the invoice request stored in our outbounds to be the correct one, to make sure the
@@ -917,7 +917,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	nodes[2].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_conditions(
 		nodes[2].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::FailedPayment { payment_hash }],
+		&[HTLCHandlingFailureType::Receive { payment_hash }],
 	);
 	nodes[2].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[2], 1);
@@ -937,7 +937,7 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(keysend_preimage)
 		.without_claimable_event()
-		.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2]], true);
 
@@ -1103,7 +1103,7 @@ fn expired_static_invoice_payment_path() {
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(keysend_preimage)
 		.without_claimable_event()
-		.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 	fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1], &nodes[2]], false);
 	nodes[2].logger.assert_log_contains(

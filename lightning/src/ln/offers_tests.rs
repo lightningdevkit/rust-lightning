@@ -2308,7 +2308,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
 		.with_payment_preimage(payment_preimage)
-		.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);

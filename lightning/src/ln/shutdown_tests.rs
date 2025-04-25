@@ -1336,7 +1336,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	if use_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash_opt.unwrap());
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[0],
-			[HTLCHandlingFailureType::FailedPayment { payment_hash: payment_hash_opt.unwrap() }]);
+			[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_opt.unwrap() }]);
 	} else {
 		*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() *= 10;
 		nodes[0].node.timer_tick_occurred();

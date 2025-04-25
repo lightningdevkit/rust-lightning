@@ -830,7 +830,7 @@ fn three_hop_blinded_path_fail() {
 
 	nodes[3].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_conditions(
-		nodes[3].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::FailedPayment { payment_hash }]
+		nodes[3].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]
 	);
 	nodes[3].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[3], 1);
@@ -958,7 +958,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			);
 			nodes[2].node.fail_htlc_backwards(&payment_hash);
 			expect_pending_htlcs_forwardable_conditions(
-				nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::FailedPayment { payment_hash }]
+				nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]
 			);
 			nodes[2].node.process_pending_htlc_forwards();
 			check_added_monitors!(nodes[2], 1);
@@ -998,7 +998,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 			expect_pending_htlcs_forwardable!(nodes[2]);
-			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::FailedPayment { payment_hash }]);
+			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors(&nodes[2], 1);
 		},
 		ReceiveCheckFail::ChannelCheck => {
@@ -1014,7 +1014,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			nodes[2].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
 			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
 			expect_pending_htlcs_forwardable!(nodes[2]);
-			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::FailedPayment { payment_hash }]);
+			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors(&nodes[2], 1);
 		},
 		ReceiveCheckFail::ProcessPendingHTLCsCheck => {
@@ -1024,7 +1024,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 			expect_pending_htlcs_forwardable!(nodes[2]);
 			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[2],
-				vec![HTLCHandlingFailureType::FailedPayment { payment_hash }]);
+				vec![HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors!(nodes[2], 1);
 		},
 		ReceiveCheckFail::PaymentConstraints => {
@@ -1032,7 +1032,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 			expect_pending_htlcs_forwardable!(nodes[2]);
-			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::FailedPayment { payment_hash }]);
+			expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors(&nodes[2], 1);
 		}
 	}
@@ -1121,7 +1121,7 @@ fn blinded_path_retries() {
 		($intro_node: expr) => {
 			nodes[3].node.fail_htlc_backwards(&payment_hash);
 			expect_pending_htlcs_forwardable_conditions(
-				nodes[3].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::FailedPayment { payment_hash }]
+				nodes[3].node.get_and_clear_pending_events(), &[HTLCHandlingFailureType::Receive { payment_hash }]
 			);
 			nodes[3].node.process_pending_htlc_forwards();
 			check_added_monitors!(nodes[3], 1);
@@ -2435,7 +2435,7 @@ fn test_trampoline_forward_rejection() {
 	let args = PassAlongPathArgs::new(&nodes[0], route, amt_msat, payment_hash, first_message_event)
 		.with_payment_preimage(payment_preimage)
 		.without_claimable_event()
-		.expect_failure(HTLCHandlingFailureType::FailedPayment { payment_hash });
+		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
 
 	{

@@ -2868,7 +2868,7 @@ pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expect
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
 		expect_htlc_handling_failed_destinations!(
 			path.last().unwrap().node.get_and_clear_pending_events(),
-			&[HTLCHandlingFailureType::FailedPayment { payment_hash: *payment_hash }]
+			&[HTLCHandlingFailureType::Receive { payment_hash: *payment_hash }]
 		);
 	}
 }
@@ -3182,7 +3182,7 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash);
-	let expected_destinations: Vec<HTLCHandlingFailureType> = repeat(HTLCHandlingFailureType::FailedPayment { payment_hash: our_payment_hash }).take(expected_paths.len()).collect();
+	let expected_destinations: Vec<HTLCHandlingFailureType> = repeat(HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }).take(expected_paths.len()).collect();
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(expected_paths[0].last().unwrap(), expected_destinations);
 
 	pass_failed_payment_back(origin_node, expected_paths, skip_last, our_payment_hash, PaymentFailureReason::RecipientRejected);

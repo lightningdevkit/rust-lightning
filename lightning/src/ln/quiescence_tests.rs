@@ -144,7 +144,7 @@ fn allow_shutdown_while_awaiting_quiescence(local_shutdown: bool) {
 	expect_pending_htlcs_forwardable!(remote_node);
 	expect_htlc_handling_failed_destinations!(
 		remote_node.node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::FailedPayment { payment_hash }]
+		&[HTLCHandlingFailureType::Receive { payment_hash }]
 	);
 	check_added_monitors(remote_node, 1);
 
@@ -342,7 +342,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	// `stfu`, the `update_fail/fulfill` will go into the holding cell.
 	if fail_htlc {
 		nodes[1].node.fail_htlc_backwards(&payment_hash2);
-		let failed_payment = HTLCHandlingFailureType::FailedPayment { payment_hash: payment_hash2 };
+		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash2 };
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![failed_payment]);
 	} else {
 		nodes[1].node.claim_funds(payment_preimage2);
@@ -392,7 +392,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	// Have nodes[0] fail/claim nodes[1]'s payment.
 	if fail_htlc {
 		nodes[0].node.fail_htlc_backwards(&payment_hash1);
-		let failed_payment = HTLCHandlingFailureType::FailedPayment { payment_hash: payment_hash1 };
+		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash1 };
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[0], vec![failed_payment]);
 	} else {
 		nodes[0].node.claim_funds(payment_preimage1);

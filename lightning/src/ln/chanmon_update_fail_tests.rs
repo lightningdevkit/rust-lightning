@@ -825,7 +825,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::FailedPayment { payment_hash: payment_hash_1 }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]);
 	check_added_monitors!(nodes[2], 1);
 
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -1731,7 +1731,7 @@ fn test_monitor_update_on_pending_forwards() {
 
 	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::FailedPayment { payment_hash: payment_hash_1 }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]);
 	check_added_monitors!(nodes[2], 1);
 
 	let cs_fail_update = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -2512,7 +2512,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	};
 	if second_fails {
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::FailedPayment { payment_hash }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::Receive { payment_hash }]);
 		check_added_monitors!(nodes[2], 1);
 		get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	} else {
