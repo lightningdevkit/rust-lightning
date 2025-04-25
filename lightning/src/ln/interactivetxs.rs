@@ -832,6 +832,12 @@ pub(crate) fn estimate_input_weight(prev_output: &TxOut) -> Weight {
 	})
 }
 
+pub(crate) fn get_input_weight(witness_weight: Weight) -> Weight {
+	Weight::from_wu(
+		(BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT).saturating_add(witness_weight.to_wu()),
+	)
+}
+
 pub(crate) fn get_output_weight(script_pubkey: &ScriptBuf) -> Weight {
 	Weight::from_wu(
 		(8 /* value */ + script_pubkey.consensus_encode(&mut sink()).unwrap() as u64)
@@ -1949,7 +1955,7 @@ where
 	pub feerate_sat_per_kw: u32,
 	pub is_initiator: bool,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<(TxIn, Transaction)>,
+	pub inputs_to_contribute: Vec<(TxIn, Transaction, Weight)>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	pub shared_funding_output: SharedOwnedOutput,
 	pub outputs_to_contribute: Vec<TxOut>,
@@ -1989,7 +1995,7 @@ impl InteractiveTxConstructor {
 		);
 
 		// Check for the existence of prevouts'
-		for (txin, tx) in inputs_to_contribute.iter() {
+		for (txin, tx, _) in inputs_to_contribute.iter() {
 			let vout = txin.previous_output.vout as usize;
 			if tx.output.get(vout).is_none() {
 				return Err(AbortReason::PrevTxOutInvalid);
@@ -1997,7 +2003,7 @@ impl InteractiveTxConstructor {
 		}
 		let mut inputs_to_contribute: Vec<(SerialId, InputOwned)> = inputs_to_contribute
 			.into_iter()
-			.map(|(txin, tx)| {
+			.map(|(txin, tx, _)| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
 				let vout = txin.previous_output.vout as usize;
 				let prev_output = tx.output.get(vout).unwrap().clone(); // checked above
@@ -2165,6 +2171,11 @@ impl InteractiveTxConstructor {
 /// given inputs and outputs, and intended contribution. Takes into account the fees and the dust
 /// limit.
 ///
+/// Note that since the type of change output cannot be determined at this point, this calculation
+/// does not account for the weight contributed by the change output itself. The fees for the
+/// weight of this change output should be subtracted from the result of this function call to get
+/// the final amount for the change output (if above dust).
+///
 /// Three outcomes are possible:
 /// - Inputs are sufficient for intended contribution, fees, and a larger-than-dust change:
 ///   `Ok(Some(change_amount))`
@@ -2247,13 +2258,14 @@ mod tests {
 	use crate::util::atomic_counter::AtomicCounter;
 	use bitcoin::absolute::LockTime as AbsoluteLockTime;
 	use bitcoin::amount::Amount;
+	use bitcoin::ecdsa::Signature;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
 	use bitcoin::key::{TweakedPublicKey, UntweakedPublicKey};
 	use bitcoin::script::Builder;
 	use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::transaction::Version;
-	use bitcoin::{opcodes, WScriptHash, Weight, XOnlyPublicKey};
+	use bitcoin::{opcodes, WScriptHash, Weight, Witness, XOnlyPublicKey};
 	use bitcoin::{
 		OutPoint, PubkeyHash, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn, TxOut,
 		WPubkeyHash,
@@ -2310,12 +2322,12 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<(TxIn, Transaction)>,
+		inputs_a: Vec<(TxIn, Transaction, Weight)>,
 		a_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_a: (TxOut, u64),
 		outputs_a: Vec<TxOut>,
-		inputs_b: Vec<(TxIn, Transaction)>,
+		inputs_b: Vec<(TxIn, Transaction, Weight)>,
 		b_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_b: (TxOut, u64),
@@ -2585,7 +2597,7 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, Transaction)> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, Transaction, Weight)> {
 		let tx = generate_tx(outputs);
 		let txid = tx.compute_txid();
 		tx.output
@@ -2596,9 +2608,16 @@ mod tests {
 					previous_output: OutPoint { txid, vout: idx as u32 },
 					script_sig: Default::default(),
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-					witness: Default::default(),
+					witness: Witness::p2wpkh(
+						&Signature::sighash_all(
+							bitcoin::secp256k1::ecdsa::Signature::from_der(&<Vec<u8>>::from_hex("3044022008f4f37e2d8f74e18c1b8fde2374d5f28402fb8ab7fd1cc5b786aa40851a70cb022032b1374d1a0f125eae4f69d1bc0b7f896c964cfdba329f38a952426cf427484c").unwrap()[..]).unwrap()
+						)
+						.into(),
+						&PublicKey::from_slice(&[2; 33]).unwrap(),
+					),
 				};
-				(txin, tx.clone())
+				let witness_weight = Weight::from_wu_usize(txin.witness.size());
+				(txin, tx.clone(), witness_weight)
 			})
 			.collect()
 	}
@@ -2646,12 +2665,12 @@ mod tests {
 		(generate_txout(&TestOutput::P2WSH(value)), local_value)
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, Transaction)> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, Transaction, Weight)> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<(TxIn, Transaction)> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<(TxIn, Transaction, Weight)> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
@@ -2664,7 +2683,7 @@ mod tests {
 			);
 			let txid = tx.compute_txid();
 
-			let mut temp: Vec<(TxIn, Transaction)> = tx
+			let mut temp: Vec<(TxIn, Transaction, Weight)> = tx
 				.output
 				.iter()
 				.enumerate()
@@ -2673,9 +2692,16 @@ mod tests {
 						previous_output: OutPoint { txid, vout: idx as u32 },
 						script_sig: Default::default(),
 						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						witness: Default::default(),
+						witness: Witness::p2wpkh(
+							&Signature::sighash_all(
+								bitcoin::secp256k1::ecdsa::Signature::from_der(&<Vec<u8>>::from_hex("3044022008f4f37e2d8f74e18c1b8fde2374d5f28402fb8ab7fd1cc5b786aa40851a70cb022032b1374d1a0f125eae4f69d1bc0b7f896c964cfdba329f38a952426cf427484c").unwrap()[..]).unwrap()
+							)
+							.into(),
+							&PublicKey::from_slice(&[2; 33]).unwrap(),
+						),
 					};
-					(input, tx.clone())
+					let witness_weight = Weight::from_wu_usize(input.witness.size());
+					(input, tx.clone(), witness_weight)
 				})
 				.collect();
 
@@ -2891,9 +2917,15 @@ mod tests {
 			previous_output: OutPoint { txid: tx.compute_txid(), vout: 0 },
 			..Default::default()
 		};
+		let invalid_sequence_input_witness_weight =
+			Weight::from_wu_usize(invalid_sequence_input.witness.size());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
-			inputs_a: vec![(invalid_sequence_input, tx.clone())],
+			inputs_a: vec![(
+				invalid_sequence_input,
+				tx.clone(),
+				invalid_sequence_input_witness_weight,
+			)],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
@@ -2908,9 +2940,13 @@ mod tests {
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
+		let duplicate_input_witness_weight = Weight::from_wu_usize(duplicate_input.witness.size());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
+			inputs_a: vec![
+				(duplicate_input.clone(), tx.clone(), duplicate_input_witness_weight),
+				(duplicate_input, tx.clone(), duplicate_input_witness_weight),
+			],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
@@ -2926,13 +2962,14 @@ mod tests {
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
+		let duplicate_input_witness_weight = Weight::from_wu_usize(duplicate_input.witness.size());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![(duplicate_input.clone(), tx.clone(), duplicate_input_witness_weight)],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 905_000),
 			outputs_a: vec![],
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![(duplicate_input.clone(), tx.clone(), duplicate_input_witness_weight)],
 			b_shared_input: None,
 			shared_output_b: generate_funding_txout(1_000_000, 95_000),
 			outputs_b: vec![],
@@ -2943,13 +2980,14 @@ mod tests {
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
+		let duplicate_input_witness_weight = Weight::from_wu_usize(duplicate_input.witness.size());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![(duplicate_input.clone(), tx.clone(), duplicate_input_witness_weight)],
 			a_shared_input: None,
 			shared_output_a: generate_funding_txout(1_000_000, 1_000_000),
 			outputs_a: vec![],
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![(duplicate_input.clone(), tx.clone(), duplicate_input_witness_weight)],
 			b_shared_input: None,
 			shared_output_b: generate_funding_txout(1_000_000, 0),
 			outputs_b: vec![],
