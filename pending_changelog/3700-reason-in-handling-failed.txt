@@ -1,0 +1,8 @@
+## API Updates (0.2)
+
+* The `HTLCHandlingFailed` event was updated to include a `failure_reason` field that provides
+  additional information about why the HTLC was failed.
+* The `failed_next_destination` field, which previously contained a combination of failure
+  and HTLC-related information, was renamed to `failure_type` and the `UnknownNextHop`
+  variant was deprecated. This type will be represented as `InvalidForward` for nodes
+  downgrading from v0.2.0.
