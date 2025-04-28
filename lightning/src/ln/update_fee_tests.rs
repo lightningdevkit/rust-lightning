@@ -16,9 +16,9 @@ use crate::ln::msgs::{
 };
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::types::features::ChannelTypeFeatures;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
-use crate::types::features::ChannelTypeFeatures;
 
 use lightning_macros::xtest;
 
@@ -66,17 +66,20 @@ pub fn test_async_inbound_update_fee() {
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
-	let (update_msg, commitment_signed) = match events_0[0] { // (1)
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
-			(update_fee.as_ref(), commitment_signed)
-		},
+	let (update_msg, commitment_signed) = match events_0[0] {
+		// (1)
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref(), commitment_signed),
 		_ => panic!("Unexpected event"),
 	};
 
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
 
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
+	let (route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
@@ -136,7 +139,7 @@ pub fn test_async_inbound_update_fee() {
 	let events_2 = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		Event::PendingHTLCsForwardable {..} => {}, // If we actually processed we'd receive the payment
+		Event::PendingHTLCsForwardable { .. } => {}, // If we actually processed we'd receive the payment
 		_ => panic!("Unexpected event"),
 	}
 
@@ -171,17 +174,20 @@ pub fn test_update_fee_unordered_raa() {
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
-	let update_msg = match events_0[0] { // (1)
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
-			update_fee.as_ref()
-		},
+	let update_msg = match events_0[0] {
+		// (1)
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, .. },
+			..
+		} => update_fee.as_ref(),
 		_ => panic!("Unexpected event"),
 	};
 
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
 
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
+	let (route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 40000);
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
@@ -251,10 +257,12 @@ pub fn test_multi_flight_update_fee() {
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
-	let (update_msg_1, commitment_signed_1) = match events_0[0] { // (1)
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
-			(update_fee.as_ref().unwrap(), commitment_signed)
-		},
+	let (update_msg_1, commitment_signed_1) = match events_0[0] {
+		// (1)
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref().unwrap(), commitment_signed),
 		_ => panic!("Unexpected event"),
 	};
 
@@ -296,7 +304,10 @@ pub fn test_multi_flight_update_fee() {
 	assert!(as_second_update.update_fail_malformed_htlcs.is_empty());
 	// Check that the update_fee newly generated matches what we delivered:
 	assert_eq!(as_second_update.update_fee.as_ref().unwrap().channel_id, update_msg_2.channel_id);
-	assert_eq!(as_second_update.update_fee.as_ref().unwrap().feerate_per_kw, update_msg_2.feerate_per_kw);
+	assert_eq!(
+		as_second_update.update_fee.as_ref().unwrap().feerate_per_kw,
+		update_msg_2.feerate_per_kw
+	);
 
 	// Deliver (2) commitment_signed
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_commitment_signed);
@@ -309,7 +320,9 @@ pub fn test_multi_flight_update_fee() {
 	check_added_monitors(&nodes[1], 1);
 
 	// Delever (4)
-	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_second_update.commitment_signed);
+	nodes[1]
+		.node
+		.handle_commitment_signed_batch_test(node_a_id, &as_second_update.commitment_signed);
 	let (bs_second_revoke, bs_second_commitment) = get_revoke_commit_msgs!(nodes[1], node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
@@ -349,9 +362,10 @@ pub fn test_update_fee_vanilla() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
-			(update_fee.as_ref(), commitment_signed)
-		},
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref(), commitment_signed),
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
@@ -386,7 +400,13 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 
 	let channel_value = 5000;
 	let push_sats = 700;
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, push_sats * 1000);
+	let chan = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		channel_value,
+		push_sats * 1000,
+	);
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
 	let default_config = UserConfig::default();
@@ -399,8 +419,12 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 	// CONCURRENT_INBOUND_HTLC_FEE_BUFFER HTLCs before actually running out of local balance, so we
 	// calculate two different feerates here - the expected local limit as well as the expected
 	// remote limit.
-	let feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / (commitment_tx_base_weight(&channel_type_features) + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)) as u32;
-	let non_buffer_feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / commitment_tx_base_weight(&channel_type_features)) as u32;
+	let feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000
+		/ (commitment_tx_base_weight(&channel_type_features)
+			+ CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC))
+		as u32;
+	let non_buffer_feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000
+		/ commitment_tx_base_weight(&channel_type_features)) as u32;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = feerate;
@@ -420,7 +444,8 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		//We made sure neither party's funds are below the dust limit and there are no HTLCs here
 		assert_eq!(commitment_tx.output.len(), 2);
 		let total_fee: u64 = commit_tx_fee_msat(feerate, 0, &channel_type_features) / 1000;
-		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value.to_sat());
+		let mut actual_fee =
+			commitment_tx.output.iter().fold(0, |acc, output| acc + output.value.to_sat());
 		actual_fee = channel_value - actual_fee;
 		assert_eq!(total_fee, actual_fee);
 	}
@@ -451,7 +476,8 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		let mut per_peer_lock;
 		let mut peer_state_lock;
 
-		let local_chan = get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
+		let local_chan =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan.2);
 		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
 
 		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
@@ -459,7 +485,9 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 			INITIAL_COMMITMENT_NUMBER - 1,
 			&remote_point,
 			push_sats,
-			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
+			channel_value
+				- push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features)
+				/ 1000,
 			non_buffer_feerate + 4,
 			nondust_htlcs,
 			&local_chan.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
@@ -482,10 +510,7 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		partial_signature_with_nonce: None,
 	};
 
-	let update_fee = msgs::UpdateFee {
-		channel_id: chan.2,
-		feerate_per_kw: non_buffer_feerate + 4,
-	};
+	let update_fee = msgs::UpdateFee { channel_id: chan.2, feerate_per_kw: non_buffer_feerate + 4 };
 
 	nodes[1].node.handle_update_fee(node_a_id, &update_fee);
 
@@ -512,7 +537,8 @@ pub fn test_update_fee_that_saturates_subs() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -544,7 +570,8 @@ pub fn test_update_fee_that_saturates_subs() {
 		let mut per_peer_lock;
 		let mut peer_state_lock;
 
-		let local_chan = get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
+		let local_chan =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, chan_id);
 		let local_chan_signer = local_chan.as_funded().unwrap().get_signer();
 		let nondust_htlcs: Vec<HTLCOutputInCommitment> = vec![];
 		let commitment_tx = CommitmentTransaction::new(
@@ -576,10 +603,7 @@ pub fn test_update_fee_that_saturates_subs() {
 		partial_signature_with_nonce: None,
 	};
 
-	let update_fee = msgs::UpdateFee {
-		channel_id: chan_id,
-		feerate_per_kw: FEERATE,
-	};
+	let update_fee = msgs::UpdateFee { channel_id: chan_id, feerate_per_kw: FEERATE };
 
 	nodes[1].node.handle_update_fee(node_a_id, &update_fee);
 
@@ -617,9 +641,10 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
-			(update_fee.as_ref(), commitment_signed)
-		},
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref(), commitment_signed),
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
@@ -627,7 +652,8 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
 	check_added_monitors(&nodes[1], 1);
 
-	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 800000);
+	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 800000);
 
 	// nothing happens since node[1] is in AwaitingRemoteRevoke
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
@@ -658,7 +684,9 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	assert_eq!(commitment_update.update_fee.is_none(), true);
 
 	nodes[0].node.handle_update_add_htlc(node_b_id, &commitment_update.update_add_htlcs[0]);
-	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
+	nodes[0]
+		.node
+		.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 	let (revoke, commitment_signed) = get_revoke_commit_msgs!(nodes[0], node_b_id);
 
@@ -680,7 +708,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentClaimable { .. } => { },
+		Event::PaymentClaimable { .. } => {},
 		_ => panic!("Unexpected event"),
 	};
 
@@ -735,9 +763,10 @@ pub fn test_update_fee() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
-			(update_fee.as_ref(), commitment_signed)
-		},
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref(), commitment_signed),
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
@@ -762,9 +791,10 @@ pub fn test_update_fee() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
-			(update_fee.as_ref(), commitment_signed)
-		},
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref(), commitment_signed),
 		_ => panic!("Unexpected event"),
 	};
 
@@ -797,7 +827,9 @@ pub fn test_update_fee() {
 	check_added_monitors(&nodes[1], 1);
 
 	// Deliver (7)
-	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
+	nodes[0]
+		.node
+		.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
 	check_added_monitors(&nodes[0], 1);
 	let revoke_msg = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
@@ -834,7 +866,11 @@ pub fn test_chan_init_feerate_unaffordability() {
 	// Set the push_msat amount such that nodes[0] will not be able to afford to add even a single
 	// HTLC.
 	let mut push_amt = 100_000_000;
-	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, &channel_type_features);
+	push_amt -= commit_tx_fee_msat(
+		feerate_per_kw,
+		MIN_AFFORDABLE_HTLC_COUNT as u64,
+		&channel_type_features,
+	);
 	assert_eq!(nodes[0].node.create_channel(node_b_id, 100_000, push_amt + 1, 42, None, None).unwrap_err(),
 		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
 
@@ -842,14 +878,17 @@ pub fn test_chan_init_feerate_unaffordability() {
 	// requirement only comes into play on the open_channel handling side.
 	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	nodes[0].node.create_channel(node_b_id, 100_000, push_amt, 42, None, None).unwrap();
-	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	let mut open_channel_msg =
+		get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 	open_channel_msg.push_msat += 1;
 	nodes[1].node.handle_open_channel(node_a_id, &open_channel_msg);
 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	match msg_events[0] {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, .. } => {
+		MessageSendEvent::HandleError {
+			action: ErrorAction::SendErrorMessage { ref msg }, ..
+		} => {
 			assert_eq!(msg.data, "Insufficient funding amount for initial reserve");
 		},
 		_ => panic!("Unexpected event"),
@@ -887,7 +926,10 @@ pub fn accept_busted_but_better_fee() {
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => {
 			nodes[1].node.handle_update_fee(node_a_id, update_fee.as_ref().unwrap());
 			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
 		},
@@ -906,7 +948,10 @@ pub fn accept_busted_but_better_fee() {
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => {
 			nodes[1].node.handle_update_fee(node_a_id, update_fee.as_ref().unwrap());
 			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
 		},
@@ -925,7 +970,10 @@ pub fn accept_busted_but_better_fee() {
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, .. },
+			..
+		} => {
 			nodes[1].node.handle_update_fee(node_a_id, update_fee.as_ref().unwrap());
 			let reason = ClosureReason::PeerFeerateTooLow {
 				peer_feerate_sat_per_kw: 1000,
