@@ -13,7 +13,7 @@ use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, Spen
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
-use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
+use crate::events::bump_transaction::{BumpTransactionEvent, WalletSourceSync};
 use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
