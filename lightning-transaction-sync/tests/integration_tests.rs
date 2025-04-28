@@ -1,12 +1,12 @@
 #![cfg(all(
 	not(target_os = "windows"),
-	any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum")
+	any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum")
 ))]
 
 use lightning::chain::transaction::{OutPoint, TransactionData};
 use lightning::chain::{Confirm, Filter, WatchedOutput};
 use lightning::util::test_utils::TestLogger;
-#[cfg(feature = "electrum")]
+#[cfg(feature = "_electrum")]
 use lightning_transaction_sync::ElectrumSyncClient;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 use lightning_transaction_sync::EsploraSyncClient;
@@ -332,7 +332,7 @@ async fn test_esplora_syncs() {
 }
 
 #[test]
-#[cfg(feature = "electrum")]
+#[cfg(feature = "_electrum")]
 fn test_electrum_syncs() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 101);

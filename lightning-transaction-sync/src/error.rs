@@ -65,14 +65,14 @@ impl From<esplora_client::Error> for InternalError {
 	}
 }
 
-#[cfg(feature = "electrum")]
+#[cfg(feature = "_electrum")]
 impl From<electrum_client::Error> for InternalError {
 	fn from(_e: electrum_client::Error) -> Self {
 		Self::Failed
 	}
 }
 
-#[cfg(feature = "electrum")]
+#[cfg(feature = "_electrum")]
 impl From<electrum_client::Error> for TxSyncError {
 	fn from(_e: electrum_client::Error) -> Self {
 		Self::Failed
