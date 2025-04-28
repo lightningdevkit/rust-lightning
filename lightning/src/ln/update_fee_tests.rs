@@ -62,7 +62,7 @@ pub fn test_async_inbound_update_fee() {
 		*feerate_lock += 20;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -80,7 +80,7 @@ pub fn test_async_inbound_update_fee() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let payment_event = {
 		let mut events_1 = nodes[1].node.get_and_clear_pending_msg_events();
@@ -95,13 +95,13 @@ pub fn test_async_inbound_update_fee() {
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &payment_event.commitment_msg); // (2)
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// nodes[0] is awaiting nodes[1] revoke_and_ack so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	// deliver(1), generate (3):
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
 	let bs_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 	// nodes[1] is awaiting nodes[0] revoke_and_ack so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack); // deliver (2)
 	let bs_update = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -110,7 +110,7 @@ pub fn test_async_inbound_update_fee() {
 	assert!(bs_update.update_fail_htlcs.is_empty()); // (4)
 	assert!(bs_update.update_fail_malformed_htlcs.is_empty()); // (4)
 	assert!(bs_update.update_fee.is_none()); // (4)
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack); // deliver (3)
 	let as_update = get_htlc_update_msgs!(nodes[0], node_b_id);
@@ -119,19 +119,19 @@ pub fn test_async_inbound_update_fee() {
 	assert!(as_update.update_fail_htlcs.is_empty()); // (5)
 	assert!(as_update.update_fail_malformed_htlcs.is_empty()); // (5)
 	assert!(as_update.update_fee.is_none()); // (5)
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_update.commitment_signed); // deliver (4)
 	let as_second_revoke = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// only (6) so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_update.commitment_signed); // deliver (5)
 	let bs_second_revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_revoke);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_2 = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events_2.len(), 1);
@@ -141,7 +141,7 @@ pub fn test_async_inbound_update_fee() {
 	}
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_revoke); // deliver (6)
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -167,7 +167,7 @@ pub fn test_update_fee_unordered_raa() {
 		*feerate_lock += 20;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -185,7 +185,7 @@ pub fn test_update_fee_unordered_raa() {
 	let onion = RecipientOnionFields::secret_only(our_payment_secret);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[1].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let payment_event = {
 		let mut events_1 = nodes[1].node.get_and_clear_pending_msg_events();
@@ -200,10 +200,10 @@ pub fn test_update_fee_unordered_raa() {
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &payment_event.commitment_msg); // (2)
 	let as_revoke_msg = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// nodes[0] is awaiting nodes[1] revoke_and_ack so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_msg); // deliver (2)
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// We can't continue, sadly, because our (1) now has a bogus signature
 }
@@ -247,7 +247,7 @@ pub fn test_multi_flight_update_fee() {
 		*feerate_lock = initial_feerate + 20;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -262,7 +262,7 @@ pub fn test_multi_flight_update_fee() {
 	nodes[1].node.handle_update_fee(node_a_id, update_msg_1);
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed_1);
 	let (bs_revoke_msg, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// nodes[0] is awaiting a revoke from nodes[1] before it will create a new commitment
 	// transaction:
@@ -289,7 +289,7 @@ pub fn test_multi_flight_update_fee() {
 	// Deliver (1), generating (3) and (4)
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_revoke_msg);
 	let as_second_update = get_htlc_update_msgs!(nodes[0], node_b_id);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	assert!(as_second_update.update_add_htlcs.is_empty());
 	assert!(as_second_update.update_fulfill_htlcs.is_empty());
 	assert!(as_second_update.update_fail_htlcs.is_empty());
@@ -301,30 +301,30 @@ pub fn test_multi_flight_update_fee() {
 	// Deliver (2) commitment_signed
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_commitment_signed);
 	let as_revoke_msg = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_revoke_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Delever (4)
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &as_second_update.commitment_signed);
 	let (bs_second_revoke, bs_second_commitment) = get_revoke_commit_msgs!(nodes[1], node_a_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &bs_second_revoke);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &bs_second_commitment);
 	let as_second_revoke = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &as_second_revoke);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -344,7 +344,7 @@ pub fn test_update_fee_vanilla() {
 		*feerate_lock += 25;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -358,20 +358,20 @@ pub fn test_update_fee_vanilla() {
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
 	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed);
 	let revoke_msg = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -406,7 +406,7 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		*feerate_lock = feerate;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let update_msg = get_htlc_update_msgs!(nodes[0], node_b_id);
 
 	nodes[1].node.handle_update_fee(node_a_id, &update_msg.update_fee.unwrap());
@@ -433,7 +433,7 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 	nodes[0].node.timer_tick_occurred();
 	let err = format!("Cannot afford to send new feerate at {}", feerate + 4);
 	nodes[0].logger.assert_log("lightning::ln::channel", err, 1);
-	check_added_monitors!(nodes[0], 0);
+	check_added_monitors(&nodes[0], 0);
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
 
@@ -495,7 +495,7 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 	nodes[1].node.handle_commitment_signed(node_a_id, &commit_signed_msg);
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event!(nodes[1], 1, reason, [node_a_id], channel_value);
@@ -586,7 +586,7 @@ pub fn test_update_fee_that_saturates_subs() {
 	nodes[1].node.handle_commitment_signed(node_a_id, &commit_signed_msg);
 	let err = "Funding remote cannot afford proposed new fee";
 	nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", err, 3);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event!(nodes[1], 1, reason, [node_a_id], 10_000);
@@ -612,7 +612,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 		*feerate_lock += 20;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -625,7 +625,7 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
 	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[1], node_a_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 800000);
 
@@ -640,14 +640,14 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed);
 	let revoke_msg = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_msg);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	// AwaitingRemoteRevoke ends here
 
 	let commitment_update = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -659,20 +659,20 @@ pub fn test_update_fee_with_fundee_update_add_htlc() {
 
 	nodes[0].node.handle_update_add_htlc(node_b_id, &commitment_update.update_add_htlcs[0]);
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let (revoke, commitment_signed) = get_revoke_commit_msgs!(nodes[0], node_b_id);
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &commitment_signed);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	let revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	expect_pending_htlcs_forwardable!(nodes[0]);
@@ -730,7 +730,7 @@ pub fn test_update_fee() {
 		*feerate_lock = feerate + 20;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -745,12 +745,12 @@ pub fn test_update_fee() {
 	// Generate (2) and (3):
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
 	let (revoke_msg, commitment_signed_0) = get_revoke_commit_msgs!(nodes[1], node_a_id);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Deliver (2):
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	// Create and deliver (4)...
 	{
@@ -758,7 +758,7 @@ pub fn test_update_fee() {
 		*feerate_lock = feerate + 30;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
@@ -770,21 +770,21 @@ pub fn test_update_fee() {
 
 	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
 	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	// ... creating (5)
 	let revoke_msg = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 
 	// Handle (3), creating (6):
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_signed_0);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let revoke_msg_0 = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 
 	// Deliver (5):
 	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	// Deliver (6), creating (7):
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_msg_0);
@@ -794,16 +794,16 @@ pub fn test_update_fee() {
 	assert!(commitment_update.update_fail_htlcs.is_empty());
 	assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
 	assert!(commitment_update.update_fee.is_none());
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 
 	// Deliver (7)
 	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &commitment_update.commitment_signed);
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 	let revoke_msg = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_b_id);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 
 	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_msg);
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	assert_eq!(get_feerate!(nodes[0], nodes[1], channel_id), feerate + 30);
@@ -882,7 +882,7 @@ pub fn accept_busted_but_better_fee() {
 		*feerate_lock = 1000;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -901,7 +901,7 @@ pub fn accept_busted_but_better_fee() {
 		*feerate_lock = 2000;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -920,7 +920,7 @@ pub fn accept_busted_but_better_fee() {
 		*feerate_lock = 1000;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors(&nodes[0], 1);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -933,7 +933,7 @@ pub fn accept_busted_but_better_fee() {
 			};
 			check_closed_event!(nodes[1], 1, reason, [node_a_id], 100000);
 			check_closed_broadcast!(nodes[1], true);
-			check_added_monitors!(nodes[1], 1);
+			check_added_monitors(&nodes[1], 1);
 		},
 		_ => panic!("Unexpected event"),
 	};
