@@ -93,6 +93,7 @@ use core::time::Duration;
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
 
+use super::async_poll::AsyncResult;
 use super::test_channel_signer::SignerOp;
 
 pub fn pubkey(byte: u8) -> PublicKey {

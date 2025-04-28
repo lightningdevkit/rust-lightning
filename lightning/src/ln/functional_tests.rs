@@ -2958,6 +2958,26 @@ pub fn claim_htlc_outputs() {
 // This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
 #[xtest(feature = "_externalize_tests")]
 pub fn test_multiple_package_conflicts() {
+	// Wanted to use #[tokio::test] for this, but that macro adds a test attribute and then the external test runner
+	// can't find the test anymore.
+	let body = async {
+		test_multiple_package_conflicts_internal().await;
+	};
+	let mut body = body;
+	#[allow(unused_mut)]
+	let mut body = unsafe { tokio::macros::support::Pin::new_unchecked(&mut body) };
+	let body: ::core::pin::Pin<&mut dyn ::core::future::Future<Output = ()>> = body;
+	#[allow(clippy::expect_used, clippy::diverging_sub_expression)]
+	{
+		return tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.expect("Failed building the Runtime")
+			.block_on(body);
+	}
+}
+
+async fn test_multiple_package_conflicts_internal() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut user_cfg = test_default_channel_config();
@@ -3106,21 +3126,18 @@ pub fn test_multiple_package_conflicts() {
 	check_closed_broadcast!(nodes[2], true);
 	check_added_monitors(&nodes[2], 1);
 
-	let process_bump_event = |node: &Node| {
-		let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		let bump_event = match &events[0] {
-			Event::BumpTransaction(bump_event) => bump_event,
-			_ => panic!("Unexepected event"),
-		};
-		node.bump_tx_handler.handle_event(bump_event);
-
-		let mut tx = node.tx_broadcaster.txn_broadcast();
-		assert_eq!(tx.len(), 1);
-		tx.pop().unwrap()
+	let events = nodes[2].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let bump_event = match &events[0] {
+		Event::BumpTransaction(bump_event) => bump_event,
+		_ => panic!("Unexpected event"),
 	};
+	nodes[2].bump_tx_handler.handle_event(bump_event).await;
 
-	let conflict_tx = process_bump_event(&nodes[2]);
+	let mut tx = nodes[2].tx_broadcaster.txn_broadcast();
+	assert_eq!(tx.len(), 1);
+	let conflict_tx = tx.pop().unwrap();
+
 	assert_eq!(conflict_tx.input.len(), 3);
 	assert_eq!(conflict_tx.input[0].previous_output.txid, node2_commit_tx.compute_txid());
 	assert_eq!(conflict_tx.input[1].previous_output.txid, node2_commit_tx.compute_txid());

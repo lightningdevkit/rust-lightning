@@ -97,4 +97,7 @@ pub(crate) fn dummy_waker() -> Waker {
 }
 
 /// A type alias for a future that returns a result of type T.
+#[cfg(feature = "std")]
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;
+#[cfg(not(feature = "std"))]
+pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a>>;
