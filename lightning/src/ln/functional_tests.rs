@@ -20,7 +20,7 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::events::bump_transaction::WalletSource;
+use crate::events::bump_transaction::WalletSourceSync;
 use crate::events::{
 	ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
 	PaymentPurpose,
