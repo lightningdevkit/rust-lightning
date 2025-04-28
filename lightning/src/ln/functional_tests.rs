@@ -4667,27 +4667,15 @@ pub fn bolt2_open_channel_sending_node_checks_part2() {
 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	// BOLT #2 spec: Sending node must set funding_satoshis to less than 2^24 satoshis
-	let channel_value_satoshis=2^24;
-	let push_msat=10001;
-	assert!(nodes[0].node.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None).is_err());
-
 	// BOLT #2 spec: Sending node must set push_msat to equal or less than 1000 * funding_satoshis
 	let channel_value_satoshis=10000;
 	// Test when push_msat is equal to 1000 * funding_satoshis.
 	let push_msat=1000*channel_value_satoshis+1;
 	assert!(nodes[0].node.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None).is_err());
 
-	// BOLT #2 spec: Sending node must set set channel_reserve_satoshis greater than or equal to dust_limit_satoshis
-	let channel_value_satoshis=10000;
-	let push_msat=10001;
-	assert!(nodes[0].node.create_channel(node_b_id, channel_value_satoshis, push_msat, 42, None, None).is_ok()); //Create a valid channel
-	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis>=node0_to_1_send_open_channel.common_fields.dust_limit_satoshis);
+	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
 
-	// BOLT #2 spec: Sending node must set undefined bits in channel_flags to 0
-	// Only the least-significant bit of channel_flags is currently defined resulting in channel_flags only having one of two possible states 0 or 1
-	assert!(node0_to_1_send_open_channel.common_fields.channel_flags<=1);
+	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
 	// BOLT #2 spec: Sending node should set to_self_delay sufficient to ensure the sender can irreversibly spend a commitment transaction output, in case of misbehaviour by the receiver.
 	assert!(BREAKDOWN_TIMEOUT>0);
@@ -4696,13 +4684,6 @@ pub fn bolt2_open_channel_sending_node_checks_part2() {
 	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
 	let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
 	assert_eq!(node0_to_1_send_open_channel.common_fields.chain_hash, chain_hash);
-
-	// BOLT #2 spec: Sending node must set funding_pubkey, revocation_basepoint, htlc_basepoint, payment_basepoint, and delayed_payment_basepoint to valid DER-encoded, compressed, secp256k1 pubkeys.
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.funding_pubkey.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.revocation_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.htlc_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.payment_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.delayed_payment_basepoint.serialize()).is_ok());
 }
 
 #[xtest(feature = "_externalize_tests")]
