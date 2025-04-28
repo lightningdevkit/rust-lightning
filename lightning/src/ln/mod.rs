@@ -72,6 +72,9 @@ pub mod functional_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
 pub mod htlc_reserve_unit_tests;
+#[cfg(any(test, feature = "_externalize_tests"))]
+#[allow(unused_mut)]
+pub mod update_fee_tests;
 #[cfg(all(test, splicing))]
 #[allow(unused_mut)]
 mod splicing_tests;
