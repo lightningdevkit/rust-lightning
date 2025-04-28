@@ -30,7 +30,7 @@ use crate::sign::{
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sync::Mutex;
-use crate::util::async_poll::AsyncResult;
+use crate::util::async_poll::{AsyncResult, MaybeSync};
 use crate::util::logger::Logger;
 
 use bitcoin::{OutPoint, Psbt, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
@@ -345,10 +345,10 @@ pub trait CoinSelectionSource {
 	/// other claims, implementations must be willing to double spend their UTXOs. The choice of
 	/// which UTXOs to double spend is left to the implementation, but it must strive to keep the
 	/// set of other claims being double spent to a minimum.
-	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
+		fn select_confirmed_utxos<'a>(
+		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a[TxOut],
 		target_feerate_sat_per_1000_weight: u32,
-	) -> Result<CoinSelection, ()>;
+		) -> AsyncResult<'a, CoinSelection>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
 	///
@@ -361,7 +361,7 @@ pub trait CoinSelectionSource {
 /// provide a default implementation to [`CoinSelectionSource`].
 pub trait WalletSource {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
-	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()>;
+	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>>;
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
 	fn get_change_script(&self) -> Result<ScriptBuf, ()>;
@@ -482,40 +482,54 @@ where
 	}
 }
 
-impl<W: Deref, L: Deref> CoinSelectionSource for Wallet<W, L>
+impl<W: Deref + MaybeSync, L: Deref + MaybeSync> CoinSelectionSource for Wallet<W, L>
 where
 	W::Target: WalletSource,
-	L::Target: Logger
+	L::Target: Logger,
 {
-	fn select_confirmed_utxos(
-		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
+	fn select_confirmed_utxos<'a>(
+		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32,
-	) -> Result<CoinSelection, ()> {
-		let utxos = self.source.list_confirmed_utxos()?;
-		// TODO: Use fee estimation utils when we upgrade to bitcoin v0.30.0.
-		const BASE_TX_SIZE: u64 = 4 /* version */ + 1 /* input count */ + 1 /* output count */ + 4 /* locktime */;
-		let total_output_size: u64 = must_pay_to.iter().map(|output|
-			8 /* value */ + 1 /* script len */ + output.script_pubkey.len() as u64
-		).sum();
-		let total_satisfaction_weight: u64 = must_spend.iter().map(|input| input.satisfaction_weight).sum();
-		let total_input_weight = (BASE_INPUT_WEIGHT * must_spend.len() as u64) + total_satisfaction_weight;
+	) -> AsyncResult<'a, CoinSelection> {
+		Box::pin(async move {
+			let utxos = self.source.list_confirmed_utxos().await?;
+			// TODO: Use fee estimation utils when we upgrade to bitcoin v0.30.0.
+			const BASE_TX_SIZE: u64 = 4 /* version */ + 1 /* input count */ + 1 /* output count */ + 4 /* locktime */;
+			let total_output_size: u64 = must_pay_to
+				.iter()
+				.map(
+					|output| 8 /* value */ + 1 /* script len */ + output.script_pubkey.len() as u64,
+				)
+				.sum();
+			let total_satisfaction_weight: u64 =
+				must_spend.iter().map(|input| input.satisfaction_weight).sum();
+			let total_input_weight =
+				(BASE_INPUT_WEIGHT * must_spend.len() as u64) + total_satisfaction_weight;
 
-		let preexisting_tx_weight = 2 /* segwit marker & flag */ + total_input_weight +
-			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
-		let input_amount_sat = must_spend.iter().map(|input| input.previous_utxo.value).sum();
-		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
-		let do_coin_selection = |force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
-			log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
-				target_feerate_sat_per_1000_weight, force_conflicting_utxo_spend, tolerate_high_network_feerates);
-			self.select_confirmed_utxos_internal(
-				&utxos, claim_id, force_conflicting_utxo_spend, tolerate_high_network_feerates,
-				target_feerate_sat_per_1000_weight, preexisting_tx_weight, input_amount_sat, target_amount_sat,
-			)
-		};
-		do_coin_selection(false, false)
-			.or_else(|_| do_coin_selection(false, true))
-			.or_else(|_| do_coin_selection(true, false))
-			.or_else(|_| do_coin_selection(true, true))
+			let preexisting_tx_weight = 2 /* segwit marker & flag */ + total_input_weight +
+				((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
+			let input_amount_sat = must_spend.iter().map(|input| input.previous_utxo.value).sum();
+			let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
+			let do_coin_selection =
+				|force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
+					log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
+					target_feerate_sat_per_1000_weight, force_conflicting_utxo_spend, tolerate_high_network_feerates);
+					self.select_confirmed_utxos_internal(
+						&utxos,
+						claim_id,
+						force_conflicting_utxo_spend,
+						tolerate_high_network_feerates,
+						target_feerate_sat_per_1000_weight,
+						preexisting_tx_weight,
+						input_amount_sat,
+						target_amount_sat,
+					)
+				};
+			do_coin_selection(false, false)
+				.or_else(|_| do_coin_selection(false, true))
+				.or_else(|_| do_coin_selection(true, false))
+				.or_else(|_| do_coin_selection(true, true))
+		})
 	}
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
@@ -630,8 +644,11 @@ where
 			log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
 				package_target_feerate_sat_per_1000_weight);
 			let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
-				claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
-			)?;
+				claim_id,
+				must_spend,
+				&[],
+				package_target_feerate_sat_per_1000_weight,
+			).await?;
 
 			let mut anchor_tx = Transaction {
 				version: Version::TWO,
@@ -752,8 +769,11 @@ where
 		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value.to_sat()).sum::<u64>();
 
 		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
-			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
-		)?;
+			claim_id,
+			must_spend,
+			&htlc_tx.output,
+			target_feerate_sat_per_1000_weight,
+		).await?;
 
 		#[cfg(debug_assertions)]
 		let total_satisfaction_weight = must_spend_satisfaction_weight +
@@ -828,11 +848,17 @@ where
 				log_info!(self.logger, "Handling channel close bump (claim_id = {}, commitment_txid = {})",
 					log_bytes!(claim_id.0), commitment_tx.compute_txid());
 				if let Err(_) = self.handle_channel_close(
-					*claim_id, *package_target_feerate_sat_per_1000_weight, commitment_tx,
-					*commitment_tx_fee_satoshis, anchor_descriptor,
+					*claim_id,
+					*package_target_feerate_sat_per_1000_weight,
+					commitment_tx,
+					*commitment_tx_fee_satoshis,
+					anchor_descriptor,
 				).await {
-					log_error!(self.logger, "Failed bumping commitment transaction fee for {}",
-						commitment_tx.compute_txid());
+					log_error!(
+						self.logger,
+						"Failed bumping commitment transaction fee for {}",
+						commitment_tx.compute_txid()
+					);
 				}
 			}
 			BumpTransactionEvent::HTLCResolution {
@@ -841,10 +867,16 @@ where
 				log_info!(self.logger, "Handling HTLC bump (claim_id = {}, htlcs_to_claim = {})",
 					log_bytes!(claim_id.0), log_iter!(htlc_descriptors.iter().map(|d| d.outpoint())));
 				if let Err(_) = self.handle_htlc_resolution(
-					*claim_id, *target_feerate_sat_per_1000_weight, htlc_descriptors, *tx_lock_time,
+					*claim_id,
+					*target_feerate_sat_per_1000_weight,
+					htlc_descriptors,
+					*tx_lock_time,
 				).await {
-					log_error!(self.logger, "Failed bumping HTLC transaction fee for commitment {}",
-						htlc_descriptors[0].commitment_txid);
+					log_error!(
+						self.logger,
+						"Failed bumping HTLC transaction fee for commitment {}",
+						htlc_descriptors[0].commitment_txid
+					);
 				}
 			}
 		}
@@ -871,20 +903,19 @@ mod tests {
 		expected_selects: Mutex<Vec<(u64, u64, u32, CoinSelection)>>,
 	}
 	impl CoinSelectionSource for TestCoinSelectionSource {
-		fn select_confirmed_utxos(
-			&self,
-			_claim_id: ClaimId,
-			must_spend: Vec<Input>,
-			_must_pay_to: &[TxOut],
-			target_feerate_sat_per_1000_weight: u32
-		) -> Result<CoinSelection, ()> {
+		fn select_confirmed_utxos<'a>(
+			&'a self, _claim_id: ClaimId, must_spend: Vec<Input>, _must_pay_to: &'a [TxOut],
+			target_feerate_sat_per_1000_weight: u32,
+		) -> AsyncResult<'a, CoinSelection> {
 			let mut expected_selects = self.expected_selects.lock().unwrap();
 			let (weight, value, feerate, res) = expected_selects.remove(0);
 			assert_eq!(must_spend.len(), 1);
 			assert_eq!(must_spend[0].satisfaction_weight, weight);
 			assert_eq!(must_spend[0].previous_utxo.value.to_sat(), value);
 			assert_eq!(target_feerate_sat_per_1000_weight, feerate);
-			Ok(res)
+			Box::pin(async move {
+				Ok(res)
+			})
 		}
 		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
 			let mut tx = psbt.unsigned_tx;

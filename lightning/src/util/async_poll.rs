@@ -101,3 +101,12 @@ pub(crate) fn dummy_waker() -> Waker {
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;
 #[cfg(not(feature = "std"))]
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a>>;
+
+// Marker trait to optionally implement `Sync` under std.
+#[cfg(feature = "std")]
+pub use core::marker::Sync as MaybeSync;
+
+#[cfg(not(feature = "std"))]
+pub trait MaybeSync {}
+#[cfg(not(feature = "std"))]
+impl<T> MaybeSync for T where T: ?Sized {}
