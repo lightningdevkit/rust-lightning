@@ -19,7 +19,7 @@ use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM
 use crate::chain::transaction::OutPoint;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
-use crate::events::bump_transaction::WalletSource;
+use crate::events::bump_transaction::WalletSourceSync;
 use crate::events::{Event, FundingInfo, PathFailure, PaymentPurpose, ClosureReason, HTLCHandlingFailureType, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};

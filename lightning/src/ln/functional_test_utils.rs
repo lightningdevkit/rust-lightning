@@ -14,7 +14,7 @@ use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose};
-use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
+use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSourceSync, WalletSourceSyncWrapper};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
@@ -470,7 +470,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub wallet_source: Arc<test_utils::TestWalletSource>,
 	pub bump_tx_handler: BumpTransactionEventHandler<
 		&'chan_mon_cfg test_utils::TestBroadcaster,
-		Arc<Wallet<Arc<test_utils::TestWalletSource>, &'chan_mon_cfg test_utils::TestLogger>>,
+		Arc<Wallet<Arc<WalletSourceSyncWrapper<Arc<test_utils::TestWalletSource>>>, &'chan_mon_cfg test_utils::TestLogger>>,
 		&'chan_mon_cfg test_utils::TestKeysInterface,
 		&'chan_mon_cfg test_utils::TestLogger,
 	>,
@@ -3416,6 +3416,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));
+		let wallet_source_async = Arc::new(WalletSourceSyncWrapper::new(wallet_source.clone()));
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
 			fee_estimator: cfgs[i].fee_estimator, router: &cfgs[i].router,
@@ -3429,7 +3430,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 			override_init_features: Rc::clone(&cfgs[i].override_init_features),
 			wallet_source: Arc::clone(&wallet_source),
 			bump_tx_handler: BumpTransactionEventHandler::new(
-				cfgs[i].tx_broadcaster, Arc::new(Wallet::new(Arc::clone(&wallet_source), cfgs[i].logger)),
+				cfgs[i].tx_broadcaster, Arc::new(Wallet::new(wallet_source_async, cfgs[i].logger)),
 				&cfgs[i].keys_manager, cfgs[i].logger,
 			),
 		})
