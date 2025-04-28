@@ -2432,6 +2432,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					None => panic!("Outbound HTLCs should have a source"),
 					Some(&HTLCSource::PreviousHopData(_)) => false,
 					Some(&HTLCSource::OutboundRoute { .. }) => true,
+					Some(&HTLCSource::TrampolineForward { .. }) => false,
 				};
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					amount_satoshis: htlc.amount_msat / 1000,
@@ -2646,6 +2647,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						None => panic!("Outbound HTLCs should have a source"),
 						Some(HTLCSource::PreviousHopData(_)) => false,
 						Some(HTLCSource::OutboundRoute { .. }) => true,
+						Some(HTLCSource::TrampolineForward { .. }) => false,
 					};
 					if outbound_payment {
 						outbound_payment_htlc_rounded_msat += rounded_value_msat;
@@ -3171,7 +3173,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					} else { false }
 				}));
 			}
-			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
+			self.counterparty_fulfilled_htlcs.insert(claimed_htlc_id.clone(), *claimed_preimage);
 		}
 	}
 

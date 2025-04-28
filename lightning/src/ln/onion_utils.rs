@@ -992,8 +992,13 @@ pub fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 where
 	L::Target: Logger,
 {
+	let mut trampoline_forward_path_option = None;
 	let (path, primary_session_priv) = match htlc_source {
 		HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+		HTLCSource::TrampolineForward { ref hops, ref session_priv, .. } => {
+			trampoline_forward_path_option.replace(Path { hops: hops.clone(), blinded_tail: None });
+			(trampoline_forward_path_option.as_ref().unwrap(), session_priv)
+		},
 		_ => unreachable!(),
 	};
 
@@ -1606,6 +1611,13 @@ pub enum LocalHTLCFailureReason {
 	HTLCMaximum,
 	/// The HTLC was failed because our remote peer is offline.
 	PeerOffline,
+	/// We have been unable to forward a payment to the next Trampoline node, but may be able to
+	/// later.
+	TemporaryTrampolineFailure,
+	/// The amount or CLTV expiry were insufficient to route the payment to the next Trampoline node.
+	TrampolineFeeOrExpiryInsufficient,
+	/// The specified next Trampoline node cannot be reached from our node.
+	UnknownNextTrampoline,
 }
 
 impl LocalHTLCFailureReason {
@@ -1647,6 +1659,9 @@ impl LocalHTLCFailureReason {
 			Self::InvalidOnionPayload | Self::InvalidTrampolinePayload => PERM | 22,
 			Self::MPPTimeout => 23,
 			Self::InvalidOnionBlinding => BADONION | PERM | 24,
+			Self::TemporaryTrampolineFailure => NODE | 25,
+			Self::TrampolineFeeOrExpiryInsufficient => NODE | 26,
+			Self::UnknownNextTrampoline => PERM | 27,
 			Self::UnknownFailureCode { code } => *code,
 		}
 	}
@@ -1707,6 +1722,12 @@ impl From<u16> for LocalHTLCFailureReason {
 			LocalHTLCFailureReason::MPPTimeout
 		} else if value == (BADONION | PERM | 24) {
 			LocalHTLCFailureReason::InvalidOnionBlinding
+		} else if value == (NODE | 25) {
+			LocalHTLCFailureReason::TemporaryTrampolineFailure
+		} else if value == (NODE | 26) {
+			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient
+		} else if value == (PERM | 27) {
+			LocalHTLCFailureReason::UnknownNextTrampoline
 		} else {
 			LocalHTLCFailureReason::UnknownFailureCode { code: value }
 		}
@@ -1759,6 +1780,9 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(81, HTLCMinimum) => {},
 	(83, HTLCMaximum) => {},
 	(85, PeerOffline) => {},
+	(87, TemporaryTrampolineFailure) => {},
+	(89, TrampolineFeeOrExpiryInsufficient) => {},
+	(91, UnknownNextTrampoline) => {},
 );
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -1915,6 +1939,11 @@ impl HTLCFailReason {
 					debug_assert!(false, "Unknown failure code: {}", code)
 				}
 			},
+			LocalHTLCFailureReason::TemporaryTrampolineFailure => debug_assert!(data.is_empty()),
+			LocalHTLCFailureReason::TrampolineFeeOrExpiryInsufficient => {
+				debug_assert_eq!(data.len(), 10)
+			},
+			LocalHTLCFailureReason::UnknownNextTrampoline => debug_assert!(data.is_empty()),
 		}
 
 		Self(HTLCFailReasonRepr::Reason { data, failure_reason })
@@ -1998,8 +2027,8 @@ impl HTLCFailReason {
 				// failures here, but that would be insufficient as find_route
 				// generally ignores its view of our own channels as we provide them via
 				// ChannelDetails.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					DecodedOnionFailure {
+				match htlc_source {
+					HTLCSource::OutboundRoute { ref path, .. } => DecodedOnionFailure {
 						network_update: None,
 						payment_failed_permanently: false,
 						short_channel_id: Some(path.hops[0].short_channel_id),
@@ -2009,9 +2038,19 @@ impl HTLCFailReason {
 						onion_error_code: Some(failure_reason.failure_code()),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
-					}
-				} else {
-					unreachable!();
+					},
+					HTLCSource::TrampolineForward { ref hops, .. } => DecodedOnionFailure {
+						network_update: None,
+						payment_failed_permanently: false,
+						short_channel_id: hops.first().map(|h| h.short_channel_id),
+						failed_within_blinded_path: false,
+						hold_times: Vec::new(),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_code: Some(failure_reason.failure_code()),
+						#[cfg(any(test, feature = "_test_utils"))]
+						onion_error_data: Some(data.clone()),
+					},
+					_ => unreachable!(),
 				}
 			},
 		}
@@ -2232,6 +2271,12 @@ where
 				Ok(Hop::BlindedReceive { shared_secret, hop_data })
 			},
 			msgs::InboundOnionPayload::TrampolineEntrypoint(hop_data) => {
+				if blinding_point.is_some() {
+					return Err(OnionDecodeErr::Malformed {
+						err_msg: "UpdateAddHTLC messages cannot contain blinding points for TrampolineEntryPoint payloads.",
+						reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+					});
+				}
 				let incoming_trampoline_public_key = hop_data.trampoline_packet.public_key;
 				let trampoline_blinded_node_id_tweak = hop_data.current_path_key.map(|bp| {
 					let blinded_tlvs_ss =
@@ -2256,7 +2301,7 @@ where
 					&hop_data.trampoline_packet.hop_data,
 					hop_data.trampoline_packet.hmac,
 					Some(payment_hash),
-					(blinding_point, node_signer),
+					(hop_data.current_path_key, node_signer),
 				);
 				match decoded_trampoline_hop {
 					Ok((
