@@ -2145,11 +2145,10 @@ impl<'a> PaymentPath<'a> {
 			let (next_hops_aggregated_base, next_hops_aggregated_prop) =
 				crate::blinded_path::payment::compute_aggregated_base_prop_fee(next_hops_feerates_iter).unwrap();
 
-			// ceil(((hop_max_msat - agg_base) * 1_000_000) / (1_000_000 + agg_prop))
+			// floor(((hop_max_msat - agg_base) * 1_000_000) / (1_000_000 + agg_prop))
 			let hop_max_final_value_contribution = (hop_max_msat as u128)
 				.checked_sub(next_hops_aggregated_base as u128)
 				.and_then(|f| f.checked_mul(1_000_000))
-				.and_then(|f| f.checked_add(1_000_000 - 1))
 				.and_then(|f| f.checked_add(next_hops_aggregated_prop as u128))
 				.map(|f| f / ((next_hops_aggregated_prop as u128).saturating_add(1_000_000)));
 
@@ -8660,6 +8659,99 @@ mod tests {
 		assert_eq!(route.paths[0].hops[0].short_channel_id, 1);
 		assert_eq!(route.paths[0].hops[1].short_channel_id, 45);
 		assert_eq!(route.get_total_fees(), 123);
+	}
+
+	#[test]
+	fn test_max_final_contribution() {
+		// When `compute_max_final_value_contribution` was added, it had a bug where it would
+		// over-estimate the maximum value contribution of a hop by using `ceil` rather than
+		// `floor`. This tests that case by attempting to send 1 million sats over a channel where
+		// the remaining hops have a base fee of zero and a proportional fee of 1 millionth.
+
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::new();
+		let random_seed_bytes = [42; 32];
+
+		// Enable channel 1, setting max HTLC to 1M sats
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 1,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (1 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Set the fee on channel 3 to zero
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 3,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (3 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_000_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Set the fee on channel 6 to 1 millionth
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 6,
+			timestamp: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (6 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_000_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 1,
+			excess_data: Vec::new()
+		});
+
+		// Now attempt to pay over the channel 1 -> channel 3 -> channel 6 path
+		// This should fail as we need to send 1M + 1 sats to cover the fee but channel 1 only
+		// allows for 1M sats to flow over it.
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[4], 42)
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
+		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1_000_000);
+		get_route(&our_id, &route_params, &network_graph.read_only(), None,
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap_err();
+
+		// Now set channel 1 max HTLC to 1M + 1 sats
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id: 1,
+			timestamp: 3,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
+			cltv_expiry_delta: (1 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 1_000_001,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// And attempt the same payment again, but this time it should work.
+		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.paths[0].hops.len(), 3);
+		assert_eq!(route.paths[0].hops[0].short_channel_id, 1);
+		assert_eq!(route.paths[0].hops[1].short_channel_id, 3);
+		assert_eq!(route.paths[0].hops[2].short_channel_id, 6);
 	}
 
 	#[test]
