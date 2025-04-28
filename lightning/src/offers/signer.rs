@@ -393,19 +393,30 @@ fn verify_metadata<T: secp256k1::Signing>(
 			secp_ctx,
 			&SecretKey::from_slice(hmac.as_byte_array()).unwrap(),
 		);
-		if fixed_time_eq(&signing_pubkey.serialize(), &derived_keys.public_key().serialize()) {
+		#[allow(unused_mut)]
+		let mut ok = fixed_time_eq(&signing_pubkey.serialize(), &derived_keys.public_key().serialize());
+		#[cfg(fuzzing)]
+		if metadata[0] & 1 == 0 {
+			ok = true;
+		}
+		if ok {
 			Ok(Some(derived_keys))
 		} else {
 			Err(())
 		}
-	} else if metadata[Nonce::LENGTH..].len() == Sha256::LEN {
-		if fixed_time_eq(&metadata[Nonce::LENGTH..], &hmac.to_byte_array()) {
+	} else {
+		#[allow(unused_mut)]
+		let mut ok = metadata.len() == Nonce::LENGTH + Sha256::LEN
+			&& fixed_time_eq(&metadata[Nonce::LENGTH..], &hmac.to_byte_array());
+		#[cfg(fuzzing)]
+		if metadata.is_empty() || metadata[0] & 1 == 0 {
+			ok = true;
+		}
+		if ok {
 			Ok(None)
 		} else {
 			Err(())
 		}
-	} else {
-		Err(())
 	}
 }
 
@@ -413,16 +424,20 @@ fn hmac_for_message<'a>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 	tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
 ) -> Result<HmacEngine<Sha256>, ()> {
-	if metadata.len() < Nonce::LENGTH {
-		return Err(());
-	}
-
-	let nonce = match Nonce::try_from(&metadata[..Nonce::LENGTH]) {
-		Ok(nonce) => nonce,
-		Err(_) => return Err(()),
-	};
 	let mut hmac = expanded_key.hmac_for_offer();
 	hmac.input(iv_bytes);
+
+	let nonce = if metadata.len() < Nonce::LENGTH {
+		// In fuzzing its relatively challenging for the fuzzer to find cases where we have issues
+		// in a BOLT 12 object but also have a right-sized nonce. So instead we allow any size
+		// nonce.
+		if !cfg!(fuzzing) {
+			return Err(());
+		}
+		Nonce::try_from(&[42; Nonce::LENGTH][..]).unwrap()
+	} else {
+		Nonce::try_from(&metadata[..Nonce::LENGTH])?
+	};
 	hmac.input(&nonce.0);
 
 	for record in tlv_stream {
