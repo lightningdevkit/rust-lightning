@@ -97,4 +97,24 @@ pub(crate) fn dummy_waker() -> Waker {
 }
 
 /// A type alias for a future that returns a result of type T.
+#[cfg(feature = "std")]
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;
+#[cfg(not(feature = "std"))]
+pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a>>;
+
+// Marker trait to optionally implement `Sync` under std.
+#[cfg(feature = "std")]
+pub use core::marker::Sync as MaybeSync;
+
+#[cfg(not(feature = "std"))]
+pub trait MaybeSync {}
+#[cfg(not(feature = "std"))]
+impl<T> MaybeSync for T where T: ?Sized {}
+
+// Marker trait to optionally implement `Send` under std.
+#[cfg(feature = "std")]
+pub use core::marker::Send as MaybeSend;
+#[cfg(not(feature = "std"))]
+pub trait MaybeSend {}
+#[cfg(not(feature = "std"))]
+impl<T> MaybeSend for T where T: ?Sized {}
