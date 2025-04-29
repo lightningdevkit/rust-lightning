@@ -2279,6 +2279,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 				}
 
+				let route_handler = &self.message_handler.route_handler;
+				let chan_handler = &self.message_handler.chan_handler;
+				let onion_message_handler = &self.message_handler.onion_message_handler;
+				let custom_message_handler = &self.message_handler.custom_message_handler;
+
 				// Handles a `MessageSendEvent`, using `from_chan_handler` to decide if we should
 				// robustly gossip broadcast events even if a peer's message buffer is full.
 				let mut handle_event = |event, from_chan_handler| {
@@ -2485,7 +2490,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						},
 						MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 							log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-							match self.message_handler.route_handler.handle_channel_announcement(None, &msg) {
+							match route_handler.handle_channel_announcement(None, &msg) {
 								Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) => {
 									let forward = wire::Message::ChannelAnnouncement(msg);
 									self.forward_broadcast_msg(peers, &forward, None, from_chan_handler);
@@ -2493,7 +2498,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								_ => {},
 							}
 							if let Some(msg) = update_msg {
-								match self.message_handler.route_handler.handle_channel_update(None, &msg) {
+								match route_handler.handle_channel_update(None, &msg) {
 									Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) => {
 										let forward = wire::Message::ChannelUpdate(msg);
 										self.forward_broadcast_msg(peers, &forward, None, from_chan_handler);
@@ -2504,7 +2509,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						},
 						MessageSendEvent::BroadcastChannelUpdate { msg } => {
 							log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for contents {:?}", msg.contents);
-							match self.message_handler.route_handler.handle_channel_update(None, &msg) {
+							match route_handler.handle_channel_update(None, &msg) {
 								Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) => {
 									let forward = wire::Message::ChannelUpdate(msg);
 									self.forward_broadcast_msg(peers, &forward, None, from_chan_handler);
@@ -2514,7 +2519,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						},
 						MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
 							log_debug!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler for node {}", msg.contents.node_id);
-							match self.message_handler.route_handler.handle_node_announcement(None, &msg) {
+							match route_handler.handle_node_announcement(None, &msg) {
 								Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) => {
 									let forward = wire::Message::NodeAnnouncement(msg);
 									self.forward_broadcast_msg(peers, &forward, None, from_chan_handler);
@@ -2606,22 +2611,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					Some(())
 				};
 
-				let chan_events = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
+				let chan_events = chan_handler.get_and_clear_pending_msg_events();
 				for event in chan_events {
 					handle_event(event, true);
 				}
 
-				let route_events = self.message_handler.route_handler.get_and_clear_pending_msg_events();
+				let route_events = route_handler.get_and_clear_pending_msg_events();
 				for event in route_events {
 					handle_event(event, false);
 				}
 
-				let onion_msg_events = self.message_handler.onion_message_handler.get_and_clear_pending_msg_events();
+				let onion_msg_events = onion_message_handler.get_and_clear_pending_msg_events();
 				for event in onion_msg_events {
 					handle_event(event, false);
 				}
 
-				for (node_id, msg) in self.message_handler.custom_message_handler.get_and_clear_pending_msg() {
+				for (node_id, msg) in custom_message_handler.get_and_clear_pending_msg() {
 					if peers_to_disconnect.get(&node_id).is_some() { continue; }
 					let mut peer = if let Some(peer) = get_peer_for_forwarding!(&node_id) { peer } else { continue; };
 					self.enqueue_message(&mut peer, &msg);
