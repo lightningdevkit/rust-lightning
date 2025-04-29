@@ -8935,16 +8935,20 @@ pub(crate) mod bench_utils {
 		let payer = payer_pubkey();
 		let random_seed_bytes = [42; 32];
 
-		let nodes = graph.read_only().nodes().clone();
+		let mut nodes = graph.read_only().nodes().clone();
 		let mut route_endpoints = Vec::new();
 		for _ in 0..route_count {
 			loop {
 				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
-				let src = PublicKey::from_slice(nodes.unordered_keys()
-					.skip((seed as usize) % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let src_idx = (seed as usize) % nodes.len();
+				let src_key = nodes.range(..).skip(src_idx).next().unwrap().0;
+				let src = PublicKey::from_slice(src_key.as_slice()).unwrap();
+
 				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
-				let dst = PublicKey::from_slice(nodes.unordered_keys()
-					.skip((seed as usize) % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let dst_idx = (seed as usize) % nodes.len();
+				let dst_key = nodes.range(..).skip(dst_idx).next().unwrap().0;
+				let dst = PublicKey::from_slice(dst_key.as_slice()).unwrap();
+
 				let params = PaymentParameters::from_node_id(dst, 42)
 					.with_bolt11_features(features.clone()).unwrap();
 				let first_hop = first_hop(src);
