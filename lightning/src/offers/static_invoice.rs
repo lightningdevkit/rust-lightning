@@ -80,6 +80,12 @@ impl PartialEq for StaticInvoice {
 
 impl Eq for StaticInvoice {}
 
+impl core::hash::Hash for StaticInvoice {
+	fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+		self.bytes.hash(state);
+	}
+}
+
 /// The contents of a [`StaticInvoice`] for responding to an [`Offer`].
 ///
 /// [`Offer`]: crate::offers::offer::Offer
