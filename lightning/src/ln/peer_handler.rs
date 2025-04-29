@@ -2809,11 +2809,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						peer.received_message_since_timer_tick = false;
 						break;
 					}
-
-					if (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
-						|| peer.awaiting_pong_timer_tick_intervals as u64 >
-							MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peers_lock.len() as u64
-					{
+					let not_recently_active = peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick;
+					let reached_threshold_intervals = peer.awaiting_pong_timer_tick_intervals as u64 >
+							MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peers_lock.len() as u64;
+					if not_recently_active || reached_threshold_intervals {
 						descriptors_needing_disconnect.push(descriptor.clone());
 						break;
 					}
