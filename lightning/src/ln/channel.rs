@@ -2070,6 +2070,11 @@ impl FundingScope {
 		self.channel_transaction_parameters.funding_outpoint
 	}
 
+	#[cfg(splicing)]
+	fn get_funding_txid(&self) -> Option<Txid> {
+		self.channel_transaction_parameters.funding_outpoint.map(|txo| txo.txid)
+	}
+
 	fn get_holder_selected_contest_delay(&self) -> u16 {
 		self.channel_transaction_parameters.holder_selected_contest_delay
 	}
