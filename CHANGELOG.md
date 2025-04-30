@@ -1,3 +1,27 @@
+# 0.1.3 - Apr 30, 2025 - "Routing Unicode in 2025"
+
+## Bug Fixes
+ * `Event::InvoiceReceived` is now only generated once for each `Bolt12Invoice`
+   received matching a pending outbound payment. Previously it would be provided
+   each time we received an invoice, which may happen many times if the sender
+   sends redundant messages to improve success rates (#3658).
+ * LDK's router now more fully saturates paths which are subject to HTLC
+   maximum restrictions after the first hop. In some rare cases this can result
+   in finding paths when it would previously spuriously decide it cannot find
+   enough diverse paths (#3707, #3755).
+
+## Security
+0.1.3 fixes a denial-of-service vulnerability which cause a crash of an
+LDK-based node if an attacker has access to a valid `Bolt12Offer` which the
+LDK-based node created.
+ * A malicious payer which requests a BOLT 12 Invoice from an LDK-based node
+   (via the `Bolt12InvoiceRequest` message) can cause the panic of the
+   LDK-based node due to the way `String::truncate` handles UTF-8 codepoints.
+   The codepath can only be reached once the received `Botlt12InvoiceRequest`
+   has been authenticated to be based on a valid `Bolt12Offer` which the same
+   LDK-based node issued (#3747, #3750).
+
+
 # 0.1.2 - Apr 02, 2025 - "Foolishly Edgy Cases"
 
 ## API Updates
@@ -35,6 +59,7 @@
    vulnerable to pinning attacks if they are not yet claimable by our
    counterparty, potentially reducing our exposure to pinning attacks (#3564).
 
+
 # 0.1.1 - Jan 28, 2025 - "Onchain Matters"
 
 ## API Updates
@@ -70,6 +95,7 @@ cause force-closure of unrelated channels.
    that we'll receive, at a minimum, the malicious counterparty's reserve value
    when they broadcast the stale commitment (#3556). Thanks to Matt Morehouse for
    reporting this issue.
+
 
 # 0.1 - Jan 15, 2025 - "Human Readable Version Numbers"
 
