@@ -33,7 +33,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
-use crate::ln::our_peer_storage::OurPeerStorage;
+use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, PeerStorageKey};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
@@ -709,8 +709,8 @@ where C::Target: chain::Filter,
 
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
 		let serialised_channels = Vec::new();
-		let our_peer_storage = OurPeerStorage::DecryptedPeerStorage { data: serialised_channels };
-		let cipher = our_peer_storage.encrypt_peer_storage(&self.our_peerstorage_encryption_key, random_bytes);
+		let our_peer_storage = DecryptedOurPeerStorage::new(serialised_channels);
+		let cipher = our_peer_storage.encrypt(&self.our_peerstorage_encryption_key, random_bytes);
 
 		log_debug!(self.logger, "Sending Peer Storage to {}", log_pubkey!(their_node_id));
 		let send_peer_storage_event = MessageSendEvent::SendPeerStorage {
