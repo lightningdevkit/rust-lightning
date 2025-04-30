@@ -9640,6 +9640,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 						insert_short_channel_id!(short_to_chan_info, chan);
 
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push_back((events::Event::SpliceLocked {
+							channel_id: chan.context.channel_id(),
+							user_channel_id: chan.context.get_user_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+						}, None));
+
 						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
 						peer_state.pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
 							node_id: counterparty_node_id.clone(),
@@ -11784,6 +11791,13 @@ where
 										if announcement_sigs.is_some() {
 											let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
+
+											let mut pending_events = self.pending_events.lock().unwrap();
+											pending_events.push_back((events::Event::SpliceLocked {
+												channel_id: funded_channel.context.channel_id(),
+												user_channel_id: funded_channel.context.get_user_id(),
+												counterparty_node_id: funded_channel.context.get_counterparty_node_id(),
+											}, None));
 										}
 
 										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
