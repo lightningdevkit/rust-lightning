@@ -104,6 +104,7 @@ impl BlindedPaymentPath {
 		let htlc_maximum_msat = u64::max_value();
 		Self::new(
 			&[],
+			None,
 			payee_node_id,
 			payee_tlvs,
 			htlc_maximum_msat,
@@ -121,16 +122,16 @@ impl BlindedPaymentPath {
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		intermediate_nodes: &[PaymentForwardNode], introduction_node: Option<IntroductionNode>, payee_node_id: PublicKey,
 		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()>
 	where
 		ES::Target: EntropySource,
 	{
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
-		);
+		let introduction_node = introduction_node.unwrap_or_else(|| IntroductionNode::NodeId(
+			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
+		));
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret =
 			SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
