@@ -1353,10 +1353,13 @@ pub enum Event {
 		/// Will be `None` for channels created prior to LDK version 0.0.122.
 		channel_type: Option<ChannelTypeFeatures>,
 	},
-	/// Used to indicate that a channel with the given `channel_id` is ready to
-	/// be used. This event is emitted either when the funding transaction has been confirmed
-	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
-	/// establishment.
+	/// Used to indicate that a channel with the given `channel_id` is ready to be used. This event
+	/// is emitted when
+	/// - the initial funding transaction has been confirmed on-chain to an acceptable depth
+	///   according to both parties (i.e., `channel_ready` messages were exchanged),
+	/// - a splice funding transaction has been confirmed on-chain to an acceptable depth according
+	///   to both parties (i.e., `splice_locked` messages were exchanged), or,
+	/// - in case of a 0conf channel, when both parties have confirmed the channel establishment.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
