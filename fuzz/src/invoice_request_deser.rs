@@ -85,16 +85,26 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	let expanded_key = ExpandedKey::new([42; 32]);
 	let entropy_source = Randomness {};
 	let nonce = Nonce::from_entropy_source(&entropy_source);
+
+	let invoice_request_fields =
+		if let Ok(ver) = invoice_request.clone().verify_using_metadata(&expanded_key, secp_ctx) {
+			// Previously we had a panic where we'd truncate the payer note possibly cutting a
+			// Unicode character in two here, so try to fetch fields if we can validate.
+			ver.fields()
+		} else {
+			InvoiceRequestFields {
+				payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+				quantity: invoice_request.quantity(),
+				payer_note_truncated: invoice_request
+					.payer_note()
+					.map(|s| UntrustedString(s.to_string())),
+				human_readable_name: None,
+			}
+		};
+
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: OfferId([42; 32]),
-		invoice_request: InvoiceRequestFields {
-			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
-			quantity: invoice_request.quantity(),
-			payer_note_truncated: invoice_request
-				.payer_note()
-				.map(|s| UntrustedString(s.to_string())),
-			human_readable_name: None,
-		},
+		invoice_request: invoice_request_fields,
 	});
 	let payee_tlvs = UnauthenticatedReceiveTlvs {
 		payment_secret: PaymentSecret([42; 32]),
