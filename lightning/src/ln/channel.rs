@@ -2028,20 +2028,19 @@ impl FundingScope {
 	}
 }
 
-/// Info about a pending splice_init, used in the pre-splice channel
+/// Info about a pending splice
 #[cfg(splicing)]
-struct PendingSpliceInit {
+struct PendingSplice {
+	/// Intended contributions to the splice from our end
 	pub our_funding_contribution: i64,
 	pub funding_feerate_per_kw: u32,
 	pub locktime: u32,
 	/// The funding inputs that we plan to contributing to the splice.
+	/// Stored between [`splice_channel`] and [`splice_ack`]
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-}
-
-/// Info about a pending splice
-#[cfg(splicing)]
-struct PendingSplice {
-	pub pending_splice_init: Option<PendingSpliceInit>,
+	/// Set when splice_ack has been processed (on the initiator side),
+	/// used to prevent processing of multiple splice_ack's.
+	awaiting_splice_ack: bool,
 	pub refunding_scope: Option<RefundingScope>,
 }
 
@@ -9258,7 +9257,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(APIError::APIMisuseError { err: format!(
 				"Channel {} cannot be spliced, as it has already a splice pending (contribution {})",
 				self.context.channel_id(),
-				pending_splice.pending_splice_init.as_ref().map(|ps| ps.our_funding_contribution).unwrap_or_default(),
+				pending_splice.our_funding_contribution,
 			)});
 		}
 
@@ -9297,14 +9296,12 @@ impl<SP: Deref> FundedChannel<SP> where
 			funding_inputs.push((tx_in.clone(), tx16));
 		}
 
-		let pending_splice_init = Some(PendingSpliceInit {
+		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
 			funding_feerate_per_kw,
 			locktime,
 			our_funding_inputs: funding_inputs,
-		});
-		self.pending_splice = Some(PendingSplice {
-			pending_splice_init,
+			awaiting_splice_ack: true, // we await splice_ack
 			refunding_scope: None,
 		});
 
@@ -9342,7 +9339,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Warn(format!(
 				"Channel {} has already a splice pending, contribution {}",
 				self.context.channel_id(),
-				pending_splice.pending_splice_init.as_ref().map(|si| si.our_funding_contribution).unwrap_or_default(),
+				pending_splice.our_funding_contribution,
 			)));
 		}
 
@@ -9436,7 +9433,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			pending_interactive_tx_signing_session: None,
 		});
 		self.pending_splice = Some(PendingSplice {
-			pending_splice_init: None,
+			our_funding_contribution,
+			funding_feerate_per_kw: msg.funding_feerate_per_kw,
+			locktime: msg.locktime,
+			our_funding_inputs: Vec::new(), // inputs go directly to [`DualFundingChannelContext`] above
+			awaiting_splice_ack: false, // we don't need any additional message for the handshake
 			refunding_scope,
 		});
 		// TODO(splicing): Store msg.funding_pubkey
@@ -9475,17 +9476,17 @@ impl<SP: Deref> FundedChannel<SP> where
 		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> where ES::Target: EntropySource, L::Target: Logger {
 		// check if splice is pending
-		let pending_splice_init = if let Some(pending_splice) = &self.pending_splice {
-			if let Some(pending_splice_init) = &pending_splice.pending_splice_init {
-				pending_splice_init
-			} else {
-				return Err(ChannelError::Warn(format!("Channel is not in pending splice_init")));
-			}
+		let pending_splice = if let Some(pending_splice) = &self.pending_splice {
+			pending_splice
 		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
 		};
 
-		let our_funding_contribution = pending_splice_init.our_funding_contribution;
+		if !pending_splice.awaiting_splice_ack {
+			return Err(ChannelError::Warn(format!("Received unexpected splice_ack")));
+		}
+
+		let our_funding_contribution = pending_splice.our_funding_contribution;
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 
 		// TODO(splicing): Pre-check for reserve requirement
@@ -9520,12 +9521,15 @@ impl<SP: Deref> FundedChannel<SP> where
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 		};
 
-		let pending_dual_funding_context = DualFundingChannelContext {
+		let mut pending_dual_funding_context = DualFundingChannelContext {
 			our_funding_satoshis,
 			their_funding_satoshis: Some(their_funding_satoshis),
-			funding_tx_locktime: LockTime::from_consensus(pending_splice_init.locktime),
-			funding_feerate_sat_per_1000_weight: pending_splice_init.funding_feerate_per_kw,
-			our_funding_inputs: pending_splice_init.our_funding_inputs.clone(),
+			funding_tx_locktime: LockTime::from_consensus(pending_splice.locktime),
+			funding_feerate_sat_per_1000_weight: pending_splice.funding_feerate_per_kw,
+			our_funding_inputs: Vec::new(), // set below
+		};
+		if let Some(ref mut pending_splice_mut) = &mut self.pending_splice {
+			pending_dual_funding_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
 		};
 		let pending_unfunded_context = UnfundedChannelContext {
 			unfunded_channel_age_ticks: 0,
@@ -9545,6 +9549,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		let prev_funding_input = RefundingScope::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			pending_splice.refunding_scope = Some(refunding_scope);
+			debug_assert!(pending_splice.awaiting_splice_ack);
+			pending_splice.awaiting_splice_ack = false;
 		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
 		};
