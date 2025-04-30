@@ -3355,9 +3355,9 @@ macro_rules! emit_channel_pending_event {
 	};
 }
 
-macro_rules! emit_channel_ready_event {
+macro_rules! emit_initial_channel_ready_event {
 	($locked_events: expr, $channel: expr) => {
-		if $channel.context.should_emit_channel_ready_event() {
+		if $channel.context.should_emit_initial_channel_ready_event() {
 			debug_assert!($channel.context.channel_pending_event_emitted());
 			$locked_events.push_back((
 				events::Event::ChannelReady {
@@ -3368,7 +3368,7 @@ macro_rules! emit_channel_ready_event {
 				},
 				None,
 			));
-			$channel.context.set_channel_ready_event_emitted();
+			$channel.context.set_initial_channel_ready_event_emitted();
 		}
 	};
 }
@@ -8155,7 +8155,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
-			emit_channel_ready_event!(pending_events, channel);
+			emit_initial_channel_ready_event!(pending_events, channel);
 		}
 
 		(htlc_forwards, decode_update_add_htlcs)
@@ -9182,7 +9182,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 					{
 						let mut pending_events = self.pending_events.lock().unwrap();
-						emit_channel_ready_event!(pending_events, chan);
+						emit_initial_channel_ready_event!(pending_events, chan);
 					}
 
 					Ok(())
@@ -10161,6 +10161,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					if !chan.has_pending_splice() {
 						let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 						insert_short_channel_id!(short_to_chan_info, chan);
+
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push_back((events::Event::ChannelReady {
+							channel_id: chan.context.channel_id(),
+							user_channel_id: chan.context.get_user_id(),
+							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							channel_type: chan.funding.get_channel_type().clone(),
+						}, None));
 					}
 
 					if let Some(announcement_sigs) = announcement_sigs_opt {
@@ -12267,6 +12275,14 @@ where
 										if !funded_channel.has_pending_splice() {
 											let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 											insert_short_channel_id!(short_to_chan_info, funded_channel);
+
+											let mut pending_events = self.pending_events.lock().unwrap();
+											pending_events.push_back((events::Event::ChannelReady {
+												channel_id: funded_channel.context.channel_id(),
+												user_channel_id: funded_channel.context.get_user_id(),
+												counterparty_node_id: funded_channel.context.get_counterparty_node_id(),
+												channel_type: funded_channel.funding.get_channel_type().clone(),
+											}, None));
 										}
 
 										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
@@ -12279,7 +12295,7 @@ where
 
 								{
 									let mut pending_events = self.pending_events.lock().unwrap();
-									emit_channel_ready_event!(pending_events, funded_channel);
+									emit_initial_channel_ready_event!(pending_events, funded_channel);
 								}
 
 								if let Some(height) = height_opt {
