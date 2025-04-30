@@ -21,6 +21,9 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The addr2line v0.21 crate (a dependency of `backtrace` starting with 0.3.69) relies on rustc 1.65
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p backtrace --precise "0.3.68" --verbose
 
+# The once_cell v1.21.0 crate (a dependency of `proptest`) relies on rustc 1.70
+[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p once_cell --precise "1.20.3" --verbose
+
 # proptest 1.3.0 requires rustc 1.64.0
 [ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p proptest --precise "1.2.0" --verbose
 
