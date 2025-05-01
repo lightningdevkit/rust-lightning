@@ -630,7 +630,7 @@ mod test {
 	};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
-	use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
+	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::sign::PhantomKeysManager;
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::config::UserConfig;
@@ -680,6 +680,8 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 
+		let node_a_id = nodes[0].node.get_our_node_id();
+
 		let description =
 			Bolt11InvoiceDescription::Direct(Description::new("test".to_string()).unwrap());
 		let non_default_invoice_expiry_secs = 4200;
@@ -715,30 +717,18 @@ mod test {
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan.inbound_htlc_minimum_msat);
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan.inbound_htlc_maximum_msat);
 
-		let payment_event = {
-			nodes[0]
-				.node
-				.pay_for_bolt11_invoice(
-					&invoice,
-					PaymentId([42; 32]),
-					None,
-					RouteParametersConfig::default(),
-					Retry::Attempts(0),
-				)
-				.unwrap();
-			check_added_monitors(&nodes[0], 1);
-
-			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			SendEvent::from_event(events.remove(0))
-		};
-		nodes[1]
+		let retry = Retry::Attempts(0);
+		nodes[0]
 			.node
-			.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		nodes[1].node.handle_commitment_signed_batch_test(
-			nodes[0].node.get_our_node_id(),
-			&payment_event.commitment_msg,
-		);
+			.pay_for_bolt11_invoice(&invoice, PaymentId([42; 32]), None, Default::default(), retry)
+			.unwrap();
+		check_added_monitors(&nodes[0], 1);
+
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_event = SendEvent::from_event(events.remove(0));
+		nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
+		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &payment_event.commitment_msg);
 		check_added_monitors(&nodes[1], 1);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
@@ -892,6 +882,9 @@ mod test {
 			create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
 		// Create a private channel with lots of capacity and a lower value public channel (without
 		// confirming the funding tx yet).
 		let unannounced_scid =
@@ -907,40 +900,29 @@ mod test {
 		// channel we'll immediately switch to including it as a route hint, even though it isn't
 		// yet announced.
 		let pub_channel_scid = mine_transaction(&nodes[0], &conf_tx);
-		let node_a_pub_channel_ready = get_event_msg!(
-			nodes[0],
-			MessageSendEvent::SendChannelReady,
-			nodes[1].node.get_our_node_id()
-		);
-		nodes[1]
-			.node
-			.handle_channel_ready(nodes[0].node.get_our_node_id(), &node_a_pub_channel_ready);
+		let node_a_pub_channel_ready =
+			get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, node_b_id);
+		nodes[1].node.handle_channel_ready(node_a_id, &node_a_pub_channel_ready);
 
 		assert_eq!(mine_transaction(&nodes[1], &conf_tx), pub_channel_scid);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		if let MessageSendEvent::SendChannelReady { msg, .. } = &events[0] {
-			nodes[0].node.handle_channel_ready(nodes[1].node.get_our_node_id(), msg);
+			nodes[0].node.handle_channel_ready(node_b_id, msg);
 		} else {
 			panic!();
 		}
 		if let MessageSendEvent::SendChannelUpdate { msg, .. } = &events[1] {
-			nodes[0].node.handle_channel_update(nodes[1].node.get_our_node_id(), msg);
+			nodes[0].node.handle_channel_update(node_b_id, msg);
 		} else {
 			panic!();
 		}
 
-		nodes[1].node.handle_channel_update(
-			nodes[0].node.get_our_node_id(),
-			&get_event_msg!(
-				nodes[0],
-				MessageSendEvent::SendChannelUpdate,
-				nodes[1].node.get_our_node_id()
-			),
-		);
+		let as_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
+		nodes[1].node.handle_channel_update(node_a_id, &as_update);
 
-		expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
-		expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+		expect_channel_ready_event(&nodes[0], &node_b_id);
+		expect_channel_ready_event(&nodes[1], &node_a_id);
 
 		scid_aliases.clear();
 		scid_aliases.insert(node_a_pub_channel_ready.short_channel_id_alias.unwrap());
@@ -954,11 +936,7 @@ mod test {
 		connect_blocks(&nodes[1], 5);
 		match_invoice_routes(Some(5000), &nodes[1], scid_aliases.clone());
 		connect_blocks(&nodes[1], 1);
-		get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendAnnouncementSignatures,
-			nodes[0].node.get_our_node_id()
-		);
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_a_id);
 		match_invoice_routes(Some(5000), &nodes[1], HashSet::new());
 	}
 
@@ -1080,6 +1058,9 @@ mod test {
 		let chan_1_0 =
 			create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001);
 
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_c_id = nodes[2].node.get_our_node_id();
+
 		// Create an unannonced channel between `nodes[2]` and `nodes[0]`, for which the
 		// `msgs::ChannelUpdate` is never handled for the node(s). As the `msgs::ChannelUpdate`
 		// is never handled, the `channel.counterparty.forwarding_info` is never assigned.
@@ -1087,27 +1068,13 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[2]
 			.node
-			.create_channel(
-				nodes[0].node.get_our_node_id(),
-				1_000_000,
-				500_000_000,
-				42,
-				None,
-				Some(private_chan_cfg),
-			)
+			.create_channel(node_a_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
 			.unwrap();
-		let open_channel = get_event_msg!(
-			nodes[2],
-			MessageSendEvent::SendOpenChannel,
-			nodes[0].node.get_our_node_id()
-		);
-		nodes[0].node.handle_open_channel(nodes[2].node.get_our_node_id(), &open_channel);
-		let accept_channel = get_event_msg!(
-			nodes[0],
-			MessageSendEvent::SendAcceptChannel,
-			nodes[2].node.get_our_node_id()
-		);
-		nodes[2].node.handle_accept_channel(nodes[0].node.get_our_node_id(), &accept_channel);
+		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
+		nodes[0].node.handle_open_channel(node_c_id, &open_channel);
+		let accept_channel =
+			get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_c_id);
+		nodes[2].node.handle_accept_channel(node_a_id, &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[2], &nodes[0], 1_000_000, temporary_channel_id);
 
@@ -1117,32 +1084,16 @@ mod test {
 		connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
 		confirm_transaction_at(&nodes[0], &tx, conf_height);
 		connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
-		let as_channel_ready = get_event_msg!(
-			nodes[2],
-			MessageSendEvent::SendChannelReady,
-			nodes[0].node.get_our_node_id()
-		);
-		nodes[2].node.handle_channel_ready(
-			nodes[0].node.get_our_node_id(),
-			&get_event_msg!(
-				nodes[0],
-				MessageSendEvent::SendChannelReady,
-				nodes[2].node.get_our_node_id()
-			),
-		);
-		get_event_msg!(
-			nodes[2],
-			MessageSendEvent::SendChannelUpdate,
-			nodes[0].node.get_our_node_id()
-		);
-		nodes[0].node.handle_channel_ready(nodes[2].node.get_our_node_id(), &as_channel_ready);
-		get_event_msg!(
-			nodes[0],
-			MessageSendEvent::SendChannelUpdate,
-			nodes[2].node.get_our_node_id()
-		);
-		expect_channel_ready_event(&nodes[0], &nodes[2].node.get_our_node_id());
-		expect_channel_ready_event(&nodes[2], &nodes[0].node.get_our_node_id());
+		let as_channel_ready =
+			get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, node_c_id);
+		let cs_channel_ready =
+			get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, node_a_id);
+		nodes[2].node.handle_channel_ready(node_a_id, &as_channel_ready);
+		get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, node_a_id);
+		nodes[0].node.handle_channel_ready(node_c_id, &cs_channel_ready);
+		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_c_id);
+		expect_channel_ready_event(&nodes[0], &node_c_id);
+		expect_channel_ready_event(&nodes[2], &node_a_id);
 
 		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the second
 		// channel, the channel will never be assigned any `counterparty.forwarding_info`.
@@ -1348,20 +1299,14 @@ mod test {
 			payment_params,
 			invoice.amount_milli_satoshis().unwrap(),
 		);
-		let (payment_event, fwd_idx) = {
-			let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
-			nodes[0]
-				.node
-				.send_payment(
-					payment_hash,
-					RecipientOnionFields::secret_only(*invoice.payment_secret()),
-					PaymentId(payment_hash.0),
-					params,
-					Retry::Attempts(0),
-				)
-				.unwrap();
-			check_added_monitors(&nodes[0], 1);
 
+		let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
+		let id = PaymentId(payment_hash.0);
+		let onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
+		nodes[0].node.send_payment(payment_hash, onion, id, params, Retry::Attempts(0)).unwrap();
+		check_added_monitors(&nodes[0], 1);
+
+		let (send_event, fwd_idx) = {
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			let fwd_idx = match events[0] {
@@ -1378,14 +1323,8 @@ mod test {
 		};
 		nodes[fwd_idx]
 			.node
-			.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		commitment_signed_dance!(
-			nodes[fwd_idx],
-			nodes[0],
-			&payment_event.commitment_msg,
-			false,
-			true
-		);
+			.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+		commitment_signed_dance!(nodes[fwd_idx], nodes[0], &send_event.commitment_msg, false, true);
 
 		// Note that we have to "forward pending HTLCs" twice before we see the PaymentClaimable as
 		// this "emulates" the payment taking two hops, providing some privacy to make phantom node
@@ -1644,6 +1583,9 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
+		let node_b_id = nodes[1].node.get_our_node_id();
+		let node_d_id = nodes[3].node.get_our_node_id();
+
 		let chan_0_2 =
 			create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001);
 		let chan_0_3 =
@@ -1656,26 +1598,12 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[1]
 			.node
-			.create_channel(
-				nodes[3].node.get_our_node_id(),
-				1_000_000,
-				500_000_000,
-				42,
-				None,
-				Some(private_chan_cfg),
-			)
+			.create_channel(node_d_id, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg))
 			.unwrap();
-		let open_channel = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendOpenChannel,
-			nodes[3].node.get_our_node_id()
-		);
+		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_d_id);
 		nodes[3].node.handle_open_channel(nodes[1].node.get_our_node_id(), &open_channel);
-		let accept_channel = get_event_msg!(
-			nodes[3],
-			MessageSendEvent::SendAcceptChannel,
-			nodes[1].node.get_our_node_id()
-		);
+		let accept_channel =
+			get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, node_b_id);
 		nodes[1].node.handle_accept_channel(nodes[3].node.get_our_node_id(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[1], &nodes[3], 1_000_000, temporary_channel_id);
@@ -1686,30 +1614,15 @@ mod test {
 		connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
 		confirm_transaction_at(&nodes[3], &tx, conf_height);
 		connect_blocks(&nodes[3], CHAN_CONFIRM_DEPTH - 1);
-		let as_channel_ready = get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendChannelReady,
-			nodes[3].node.get_our_node_id()
-		);
-		nodes[1].node.handle_channel_ready(
-			nodes[3].node.get_our_node_id(),
-			&get_event_msg!(
-				nodes[3],
-				MessageSendEvent::SendChannelReady,
-				nodes[1].node.get_our_node_id()
-			),
-		);
-		get_event_msg!(
-			nodes[1],
-			MessageSendEvent::SendChannelUpdate,
-			nodes[3].node.get_our_node_id()
-		);
-		nodes[3].node.handle_channel_ready(nodes[1].node.get_our_node_id(), &as_channel_ready);
-		get_event_msg!(
-			nodes[3],
-			MessageSendEvent::SendChannelUpdate,
-			nodes[1].node.get_our_node_id()
-		);
+
+		let bs_channel_ready =
+			get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, node_d_id);
+		let ds_channel_ready =
+			get_event_msg!(nodes[3], MessageSendEvent::SendChannelReady, node_b_id);
+		nodes[1].node.handle_channel_ready(node_d_id, &ds_channel_ready);
+		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_d_id);
+		nodes[3].node.handle_channel_ready(nodes[1].node.get_our_node_id(), &bs_channel_ready);
+		get_event_msg!(nodes[3], MessageSendEvent::SendChannelUpdate, node_b_id);
 		expect_channel_ready_event(&nodes[1], &nodes[3].node.get_our_node_id());
 		expect_channel_ready_event(&nodes[3], &nodes[1].node.get_our_node_id());
 
