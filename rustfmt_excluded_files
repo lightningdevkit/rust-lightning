@@ -26,7 +26,6 @@ lightning/src/ln/onion_payment.rs
 lightning/src/ln/onion_route_tests.rs
 lightning/src/ln/outbound_payment.rs
 lightning/src/ln/payment_tests.rs
-lightning/src/ln/peer_channel_encryptor.rs
 lightning/src/ln/peer_handler.rs
 lightning/src/ln/priv_short_conf_tests.rs
 lightning/src/ln/reload_tests.rs
