@@ -611,7 +611,6 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 		*node.fee_estimator.sat_per_kw.lock().unwrap() = 2000;
 	}
 
-
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
