@@ -1805,11 +1805,6 @@ impl FundingScope {
 	pub fn get_channel_type(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
 	}
-
-	/// Returns the block hash in which our funding transaction was confirmed.
-	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
-		self.funding_tx_confirmed_in
-	}
 }
 
 /// Info about a pending splice, used in the pre-splice channel
@@ -9462,6 +9457,11 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	pub fn is_v2_established(&self) -> bool {
 		self.is_v2_established
+	}
+
+	/// Returns the block hash in which our funding transaction was confirmed.
+	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
+		self.funding.funding_tx_confirmed_in
 	}
 }
 
