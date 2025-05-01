@@ -6,7 +6,7 @@ use crate::ln::chan_utils::{self, CommitmentTransaction, htlc_success_tx_weight,
 use crate::ln::channel::{FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, Channel, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis};
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::outbound_payment::RecipientOnionFields;
-use crate::ln::onion_utils::self;
+use crate::ln::onion_utils;
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::UserConfig;
