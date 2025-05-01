@@ -930,6 +930,15 @@ impl ClaimablePayment {
 			self.htlcs.iter().map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id))
 		)
 	}
+
+	/// Returns the inbound `(channel_id, user_channel_id)` pairs for all HTLCs associated with the payment.
+	///
+	/// Note: The `user_channel_id` will be `None` for HTLCs created using LDK version 0.0.117 or prior.
+	fn inbound_channel_ids(&self) -> Vec<(ChannelId, Option<u128>)> {
+		self.htlcs.iter().map(|htlc| {
+			(htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id)
+		}).collect()
+	}
 }
 
 /// Represent the channel funding transaction type.
@@ -6353,8 +6362,7 @@ where
 												purpose: $purpose,
 												amount_msat,
 												counterparty_skimmed_fee_msat,
-												via_channel_id: Some(prev_channel_id),
-												via_user_channel_id: Some(prev_user_channel_id),
+												inbound_channel_ids: claimable_payment.inbound_channel_ids(),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
 												onion_fields: claimable_payment.onion_fields.clone(),
 												payment_id: Some(payment_id),
@@ -11032,7 +11040,18 @@ where
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
-		events.into_inner()
+		let collected_events = events.into_inner();
+
+		// To expand the coverage and make sure all events are properly serialised and deserialised,
+		// we test all generated events round-trip:
+		for event in &collected_events {
+			let ser = event.encode();
+			if let Some(deser) = events::Event::read(&mut &ser[..]).expect("event should deserialize") {
+				assert_eq!(&deser, event, "event should roundtrip correctly");
+			}
+		}
+
+		collected_events
 	}
 
 	#[cfg(feature = "_test_utils")]

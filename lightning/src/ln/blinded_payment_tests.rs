@@ -247,8 +247,26 @@ fn mpp_to_one_hop_blinded_path() {
 		Some(payment_secret), ev.clone(), false, None);
 
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
-	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
+	let event = pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, None);
+
+	match event.unwrap() {
+		Event::PaymentClaimable { mut inbound_channel_ids, .. } => {
+			let mut expected_inbound_channel_ids = nodes[3].node.list_channels()
+				.iter()
+				.map(|d| (d.channel_id, Some(d.user_channel_id)))
+				.collect::<Vec<(_, _)>>();
+
+			// `list_channels` returns channels in arbitrary order, so we sort both vectors
+			// to ensure the comparison is order-agnostic.
+			inbound_channel_ids.sort();
+			expected_inbound_channel_ids.sort();
+
+			assert_eq!(inbound_channel_ids, expected_inbound_channel_ids);
+		}
+		_ => panic!("Unexpected event"),
+	}
+
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
 	);
