@@ -30,7 +30,6 @@ jobs:
         with:
             package: lightning-background-processor
             feature-group: only-explicit-features
-            features: futures
       - name: Check lightning-block-sync SemVer
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:

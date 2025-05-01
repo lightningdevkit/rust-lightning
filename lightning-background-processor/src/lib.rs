@@ -4,7 +4,6 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
 #![deny(missing_docs)]
-#![cfg_attr(not(feature = "futures"), deny(unsafe_code))]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
@@ -25,7 +24,6 @@ use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::events::EventHandler;
 #[cfg(feature = "std")]
 use lightning::events::EventsProvider;
-#[cfg(feature = "futures")]
 use lightning::events::ReplayEvent;
 use lightning::events::{Event, PathFailure};
 
@@ -36,14 +34,12 @@ use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
-#[cfg(feature = "futures")]
 use lightning::sign::ChangeDestinationSource;
 #[cfg(feature = "std")]
 use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::OutputSpender;
 use lightning::util::logger::Logger;
 use lightning::util::persist::{KVStore, Persister};
-#[cfg(feature = "futures")]
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -146,7 +142,6 @@ const SWEEPER_TIMER: u64 = 30;
 #[cfg(test)]
 const SWEEPER_TIMER: u64 = 1;
 
-#[cfg(feature = "futures")]
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
 const fn min_u64(a: u64, b: u64) -> u64 {
 	if a < b {
@@ -155,7 +150,6 @@ const fn min_u64(a: u64, b: u64) -> u64 {
 		b
 	}
 }
-#[cfg(feature = "futures")]
 const FASTEST_TIMER: u64 = min_u64(
 	min_u64(FRESHNESS_TIMER, PING_TIMER),
 	min_u64(SCORER_PERSIST_TIMER, min_u64(FIRST_NETWORK_PRUNE_TIMER, REBROADCAST_TIMER)),
@@ -508,7 +502,6 @@ macro_rules! define_run_body {
 	} }
 }
 
-#[cfg(feature = "futures")]
 pub(crate) mod futures_util {
 	use core::future::Future;
 	use core::marker::Unpin;
@@ -622,9 +615,7 @@ pub(crate) mod futures_util {
 		unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 	}
 }
-#[cfg(feature = "futures")]
 use core::task;
-#[cfg(feature = "futures")]
 use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 
 /// Processes background events in a future.
@@ -634,8 +625,10 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// future which outputs `true`, the loop will exit and this function's future will complete.
 /// The `sleeper` future is free to return early after it has triggered the exit condition.
 ///
-/// See [`BackgroundProcessor::start`] for information on which actions this handles.
-///
+#[cfg_attr(
+	feature = "std",
+	doc = " See [`BackgroundProcessor::start`] for information on which actions this handles.\n"
+)]
 /// The `mobile_interruptable_platform` flag should be set if we're currently running on a
 /// mobile device, where we may need to check for interruption of the application regularly. If you
 /// are unsure, you should set the flag, as the performance impact of it is minimal unless there
@@ -775,7 +768,6 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 #[cfg_attr(feature = "std", doc = "	handle.await.unwrap()")]
 ///	# }
 ///```
-#[cfg(feature = "futures")]
 pub async fn process_events_async<
 	'a,
 	UL: 'static + Deref,
@@ -2096,7 +2088,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	#[cfg(feature = "futures")]
 	async fn test_channel_manager_persist_error_async() {
 		// Test that if we encounter an error during manager persistence, the thread panics.
 		let (_, nodes) = create_nodes(2, "test_persist_error_sync");
@@ -2605,7 +2596,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	#[cfg(feature = "futures")]
 	async fn test_not_pruning_network_graph_until_graph_sync_completion_async() {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 
@@ -2808,7 +2798,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	#[cfg(feature = "futures")]
 	async fn test_payment_path_scoring_async() {
 		let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
 		let event_handler = move |event: Event| {

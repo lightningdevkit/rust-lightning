@@ -122,7 +122,7 @@ jobs:
         run: |
           cargo install cargo-llvm-cov
           export RUSTFLAGS="-Coverflow-checks=off"
-          cargo llvm-cov --features rest-client,rpc-client,tokio,futures,serde --codecov --hide-instantiations --output-path=target/codecov.json
+          cargo llvm-cov --features rest-client,rpc-client,tokio,serde --codecov --hide-instantiations --output-path=target/codecov.json
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
@@ -232,13 +232,13 @@ jobs:
       - name: Run cargo check for release build.
         run: |
           cargo check --release
-          cargo check --no-default-features --features=futures,std --release
+          cargo check --no-default-features --features=std --release
           cargo doc --release
       - name: Run cargo check for Taproot build.
         run: |
           cargo check --release
           cargo check --no-default-features --release
-          cargo check --no-default-features --features=futures,std --release
+          cargo check --no-default-features --features=std --release
           cargo doc --release
           cargo doc --no-default-features --release
         env:
