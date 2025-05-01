@@ -6,16 +6,13 @@ use lightning_invoice::{Description, Bolt11InvoiceDescription, Sha256};
 use crate::prelude::*;
 
 use bitcoin::hashes::Hash;
-use crate::chain;
-use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use crate::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
+use crate::sign::{Recipient, NodeSigner, EntropySource};
 use crate::types::payment::PaymentHash;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{Bolt11InvoiceParameters, ChannelManager, PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::inbound_payment::{create, create_from_hash};
 use crate::routing::gossip::RoutingFees;
-use crate::routing::router::{RouteHint, RouteHintHop, Router};
-use crate::onion_message::messenger::MessageRouter;
+use crate::routing::router::{RouteHint, RouteHintHop};
 use crate::util::logger::{Logger, Record};
 use bitcoin::secp256k1::PublicKey;
 use alloc::collections::{btree_map, BTreeMap};
@@ -310,158 +307,6 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 			}
 		}
 	})
-}
-
-#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
-/// Utility to construct an invoice. Generally, unless you want to do something like a custom
-/// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
-/// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
-/// doesn't have to store preimage/payment secret information and (b) `ChannelManager` can verify
-/// that the payment secret is valid when the invoice is paid.
-///
-/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
-/// in excess of the current time.
-///
-/// You can specify a custom `min_final_cltv_expiry_delta`, or let LDK default it to
-/// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]. The provided expiry must be at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`].
-/// Note that LDK will add a buffer of 3 blocks to the delta to allow for up to a few new block
-/// confirmations during routing.
-///
-/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
-pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
-	description: String, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
-	let params = Bolt11InvoiceParameters {
-		amount_msats: amt_msat,
-		description: Bolt11InvoiceDescription::Direct(description),
-		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
-		min_final_cltv_expiry_delta,
-		payment_hash: None,
-	};
-	channelmanager.create_bolt11_invoice(params)
-}
-
-#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
-/// Utility to construct an invoice. Generally, unless you want to do something like a custom
-/// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
-/// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
-/// doesn't have to store preimage/payment secret information and (b) `ChannelManager` can verify
-/// that the payment secret is valid when the invoice is paid.
-/// Use this variant if you want to pass the `description_hash` to the invoice.
-///
-/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
-/// in excess of the current time.
-///
-/// You can specify a custom `min_final_cltv_expiry_delta`, or let LDK default it to
-/// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]. The provided expiry must be at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`].
-/// Note that LDK will add a buffer of 3 blocks to the delta to allow for up to a few new block
-/// confirmations during routing.
-///
-/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
-pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
-	description_hash: Sha256, invoice_expiry_delta_secs: u32,
-	min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	let params = Bolt11InvoiceParameters {
-		amount_msats: amt_msat,
-		description: Bolt11InvoiceDescription::Hash(description_hash),
-		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
-		min_final_cltv_expiry_delta,
-		payment_hash: None,
-	};
-	channelmanager.create_bolt11_invoice(params)
-}
-
-#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
-/// See [`create_invoice_from_channelmanager`].
-///
-/// This version allows for providing custom [`PaymentHash`] and description hash for the invoice.
-///
-/// This may be useful if you're building an on-chain swap or involving another protocol where
-/// the payment hash is also involved outside the scope of lightning and want to set the
-/// description hash.
-pub fn create_invoice_from_channelmanager_with_description_hash_and_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
-	description_hash: Sha256, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
-	min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	let params = Bolt11InvoiceParameters {
-		amount_msats: amt_msat,
-		description: Bolt11InvoiceDescription::Hash(description_hash),
-		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
-		min_final_cltv_expiry_delta,
-		payment_hash: Some(payment_hash),
-	};
-	channelmanager.create_bolt11_invoice(params)
-}
-
-#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
-/// See [`create_invoice_from_channelmanager`].
-///
-/// This version allows for providing a custom [`PaymentHash`] for the invoice.
-/// This may be useful if you're building an on-chain swap or involving another protocol where
-/// the payment hash is also involved outside the scope of lightning.
-pub fn create_invoice_from_channelmanager_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
-	description: String, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
-	min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
-	let params = Bolt11InvoiceParameters {
-		amount_msats: amt_msat,
-		description: Bolt11InvoiceDescription::Direct(description),
-		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
-		min_final_cltv_expiry_delta,
-		payment_hash: Some(payment_hash),
-	};
-	channelmanager.create_bolt11_invoice(params)
 }
 
 /// Sorts and filters the `channels` for an invoice, and returns the corresponding `RouteHint`s to include
