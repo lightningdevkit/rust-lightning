@@ -808,7 +808,7 @@ pub enum Event {
 		/// The `(channel_id, user_channel_id)` pairs over which the payment was received.
 		///
 		/// This will be an incomplete vector for MPP payment events created/serialized using LDK version 0.1.0 and prior.
-		inbound_channel_ids: Vec<(ChannelId, Option<u128>)>,
+		via_channel_ids: Vec<(ChannelId, Option<u128>)>,
 		/// The block height at which this payment will be failed back and will no longer be
 		/// eligible for claiming.
 		///
@@ -1553,7 +1553,7 @@ impl Writeable for Event {
 				// drop any channels which have not yet exchanged funding_signed.
 			},
 			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, counterparty_skimmed_fee_msat,
-				ref purpose, ref receiver_node_id, ref inbound_channel_ids,
+				ref purpose, ref receiver_node_id, ref via_channel_ids,
 				ref claim_deadline, ref onion_fields, ref payment_id,
 			} => {
 				1u8.write(writer)?;
@@ -1588,7 +1588,7 @@ impl Writeable for Event {
 				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 { None }
 					else { Some(counterparty_skimmed_fee_msat) };
 
-				let (via_channel_id_legacy, via_user_channel_id_legacy) = match inbound_channel_ids.last() {
+				let (via_channel_id_legacy, via_user_channel_id_legacy) = match via_channel_ids.last() {
 					Some((chan_id, user_chan_id)) => (Some(*chan_id), *user_chan_id),
 					None => (None, None),
 				};
@@ -1596,7 +1596,7 @@ impl Writeable for Event {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
 					(2, payment_secret, option),
-					// Marked as legacy in version 0.2.0; superseded by `inbound_channel_ids`, which
+					// Marked as legacy in version 0.2.0; superseded by `via_channel_ids`, which
 					// includes all channel IDs used in the payment instead of only the last one.
 					(3, via_channel_id_legacy, option),
 					(4, amount_msat, required),
@@ -1610,7 +1610,7 @@ impl Writeable for Event {
 					(10, skimmed_fee_opt, option),
 					(11, payment_context, option),
 					(13, payment_id, option),
-					(15, *inbound_channel_ids, optional_vec),
+					(15, *via_channel_ids, optional_vec),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref amount_msat, ref fee_paid_msat, ref bolt12_invoice } => {
@@ -1914,7 +1914,7 @@ impl MaybeReadable for Event {
 					let mut onion_fields = None;
 					let mut payment_context = None;
 					let mut payment_id = None;
-					let mut inbound_channel_ids_opt = None;
+					let mut via_channel_ids_opt = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1929,7 +1929,7 @@ impl MaybeReadable for Event {
 						(10, counterparty_skimmed_fee_msat_opt, option),
 						(11, payment_context, option),
 						(13, payment_id, option),
-						(15, inbound_channel_ids_opt, optional_vec),
+						(15, via_channel_ids_opt, optional_vec),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context)
@@ -1938,7 +1938,7 @@ impl MaybeReadable for Event {
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
 
-					let inbound_channel_ids = inbound_channel_ids_opt
+					let via_channel_ids = via_channel_ids_opt
 						.or_else(|| via_channel_id_legacy.map(|chan_id| vec![(chan_id, via_user_channel_id_legacy)]))
 						.unwrap_or_default();
 
@@ -1948,7 +1948,7 @@ impl MaybeReadable for Event {
 						amount_msat,
 						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt.unwrap_or(0),
 						purpose,
-						inbound_channel_ids,
+						via_channel_ids,
 						claim_deadline,
 						onion_fields,
 						payment_id,

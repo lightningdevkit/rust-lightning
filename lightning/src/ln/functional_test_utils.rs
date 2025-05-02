@@ -2770,7 +2770,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 				assert_eq!(events_2.len(), 1);
 				match &events_2[0] {
 					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat,
-						receiver_node_id, ref inbound_channel_ids,
+						receiver_node_id, ref via_channel_ids,
 						claim_deadline, onion_fields, ..
 					} => {
 						assert_eq!(our_payment_hash, *payment_hash);
@@ -2805,7 +2805,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 						}
 						assert_eq!(*amount_msat, recv_value);
 						let channels = node.node.list_channels();
-						for (chan_id, user_chan_id) in inbound_channel_ids {
+						for (chan_id, user_chan_id) in via_channel_ids {
 							let chan = channels.iter().find(|details| &details.channel_id == chan_id).unwrap();
 							assert_eq!(*user_chan_id, Some(chan.user_channel_id));
 						}
