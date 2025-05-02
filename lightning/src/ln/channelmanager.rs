@@ -940,7 +940,7 @@ impl ClaimablePayment {
 	/// Returns the inbound `(channel_id, user_channel_id)` pairs for all HTLCs associated with the payment.
 	///
 	/// Note: The `user_channel_id` will be `None` for HTLCs created using LDK version 0.0.117 or prior.
-	fn inbound_channel_ids(&self) -> Vec<(ChannelId, Option<u128>)> {
+	fn via_channel_ids(&self) -> Vec<(ChannelId, Option<u128>)> {
 		self.htlcs.iter().map(|htlc| {
 			(htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id)
 		}).collect()
@@ -6361,7 +6361,7 @@ where
 												purpose: $purpose,
 												amount_msat,
 												counterparty_skimmed_fee_msat,
-												inbound_channel_ids: claimable_payment.inbound_channel_ids(),
+												via_channel_ids: claimable_payment.via_channel_ids(),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
 												onion_fields: claimable_payment.onion_fields.clone(),
 												payment_id: Some(payment_id),
