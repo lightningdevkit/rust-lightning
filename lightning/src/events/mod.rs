@@ -2518,7 +2518,7 @@ impl<T: EventHandler> EventHandler for Arc<T> {
 }
 
 /// The BOLT 12 invoice that was paid, surfaced in [`Event::PaymentSent::bolt12_invoice`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PaidBolt12Invoice {
 	/// The BOLT 12 invoice specified by the BOLT 12 specification,
 	/// allowing the user to perform proof of payment.

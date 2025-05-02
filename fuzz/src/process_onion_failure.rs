@@ -114,8 +114,13 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	let path = Path { hops, blinded_tail };
 
-	let htlc_source =
-		HTLCSource::OutboundRoute { path, session_priv, first_hop_htlc_msat: 0, payment_id };
+	let htlc_source = HTLCSource::OutboundRoute {
+		path,
+		session_priv,
+		first_hop_htlc_msat: 0,
+		payment_id,
+		bolt12_invoice: None,
+	};
 
 	let failure_len = get_u16!();
 	let failure_data = get_slice!(failure_len);
