@@ -21,7 +21,7 @@ use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters, Tramp
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
-use crate::util::errors::{self, APIError};
+use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::ser::{
 	LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer,
@@ -976,7 +976,7 @@ mod fuzzy_onion_utils {
 		#[allow(dead_code)]
 		pub(crate) hold_times: Vec<u32>,
 		#[cfg(any(test, feature = "_test_utils"))]
-		pub(crate) onion_error_code: Option<u16>,
+		pub(crate) onion_error_code: Option<LocalHTLCFailureReason>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_data: Option<Vec<u8>>,
 	}
@@ -1127,7 +1127,7 @@ where
 			Some(hop) => hop,
 			None => {
 				// Got an error from within a blinded route.
-				_error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+				_error_code_ret = Some(LocalHTLCFailureReason::InvalidOnionBlinding);
 				_error_packet_ret = Some(vec![0; 32]);
 				res = Some(FailureLearnings {
 					network_update: None,
@@ -1155,7 +1155,7 @@ where
 					// The failing hop is within a multi-hop blinded path.
 					#[cfg(not(test))]
 					{
-						_error_code_ret = Some(BADONION | PERM | 24); // invalid_onion_blinding
+						_error_code_ret = Some(LocalHTLCFailureReason::InvalidOnionBlinding);
 						_error_packet_ret = Some(vec![0; 32]);
 					}
 					#[cfg(test)]
@@ -1167,9 +1167,12 @@ where
 							&encrypted_packet.data,
 						))
 						.unwrap();
-						_error_code_ret = Some(u16::from_be_bytes(
-							err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
-						));
+						_error_code_ret = Some(
+							u16::from_be_bytes(
+								err_packet.failuremsg.get(0..2).unwrap().try_into().unwrap(),
+							)
+							.into(),
+						);
 						_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
 					}
 
@@ -1280,22 +1283,19 @@ where
 			},
 		};
 
-		let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
+		let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2")).into();
 		_error_code_ret = Some(error_code);
 		_error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
 
-		let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
+		let (debug_field, debug_field_size) = error_code.get_onion_debug_field();
 
 		// indicate that payment parameter has failed and no need to update Route object
-		let payment_failed = match error_code & 0xff {
-			15 | 16 | 17 | 18 | 19 | 23 => true,
-			_ => false,
-		} && is_from_final_non_blinded_node; // PERM bit observed below even if this error is from the intermediate nodes
+		let payment_failed = error_code.is_recipient_failure() && is_from_final_non_blinded_node;
 
 		let mut network_update = None;
 		let mut short_channel_id = None;
 
-		if error_code & BADONION == BADONION {
+		if error_code.is_badonion() {
 			// If the error code has the BADONION bit set, always blame the channel from the node
 			// "originating" the error to its next hop. The "originator" is ultimately actually claiming
 			// that its counterparty is the one who is failing the HTLC.
@@ -1309,12 +1309,13 @@ where
 					is_permanent: true,
 				});
 			}
-		} else if error_code & NODE == NODE {
-			let is_permanent = error_code & PERM == PERM;
-			network_update =
-				Some(NetworkUpdate::NodeFailure { node_id: *route_hop.pubkey(), is_permanent });
+		} else if error_code.is_node() {
+			network_update = Some(NetworkUpdate::NodeFailure {
+				node_id: *route_hop.pubkey(),
+				is_permanent: error_code.is_permanent(),
+			});
 			short_channel_id = route_hop.short_channel_id();
-		} else if error_code & PERM == PERM {
+		} else if error_code.is_permanent() {
 			if !payment_failed {
 				if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
 					network_update = Some(NetworkUpdate::ChannelFailure {
@@ -1324,7 +1325,7 @@ where
 				}
 				short_channel_id = failing_route_hop.short_channel_id();
 			}
-		} else if error_code & UPDATE == UPDATE {
+		} else if error_code.is_temporary() {
 			if let Some(update_len_slice) =
 				err_packet.failuremsg.get(debug_field_size + 2..debug_field_size + 4)
 			{
@@ -1358,8 +1359,9 @@ where
 		} else if payment_failed {
 			// Only blame the hop when a value in the HTLC doesn't match the corresponding value in the
 			// onion.
-			short_channel_id = match error_code & 0xff {
-				18 | 19 => route_hop.short_channel_id(),
+			short_channel_id = match error_code {
+				LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
+				| LocalHTLCFailureReason::FinalIncorrectHTLCAmount => route_hop.short_channel_id(),
 				_ => None,
 			};
 		} else {
@@ -1375,30 +1377,27 @@ where
 		res = Some(FailureLearnings {
 			network_update,
 			short_channel_id,
-			payment_failed_permanently: error_code & PERM == PERM && is_from_final_non_blinded_node,
+			payment_failed_permanently: error_code.is_permanent() && is_from_final_non_blinded_node,
 			failed_within_blinded_path: false,
 		});
 
-		let (description, title) = errors::get_onion_error_description(error_code);
 		if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
 			log_info!(
 				logger,
-				"Onion Error[from {}: {}({:#x}) {}({})] {}",
+				"Onion Error[from {}: {:?}({:#x}) {}({})]",
 				route_hop.pubkey(),
-				title,
 				error_code,
+				error_code.failure_code(),
 				debug_field,
 				log_bytes!(&err_packet.failuremsg[4..4 + debug_field_size]),
-				description
 			);
 		} else {
 			log_info!(
 				logger,
-				"Onion Error[from {}: {}({:#x})] {}",
+				"Onion Error[from {}: {:?}({:#x})]",
 				route_hop.pubkey(),
-				title,
 				error_code,
-				description
+				error_code.failure_code(),
 			);
 		}
 
@@ -1459,6 +1458,9 @@ const UPDATE: u16 = 0x1000;
 /// [`Self::FeeInsufficient`] is a direct representation of its underlying BOLT04 error code.
 /// [`Self::PrivateChannelForward`] provides additional information that is not provided by its
 ///  BOLT04 error code.
+//
+// Note that variants that directly represent BOLT04 error codes must implement conversion from u16
+// values using [`impl_from_u16_for_htlc_reason`]
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub enum LocalHTLCFailureReason {
 	/// There has been a temporary processing failure on the node which may resolve on retry.
@@ -1652,67 +1654,90 @@ impl LocalHTLCFailureReason {
 		}
 	}
 
+	/// Returns the name of an error's data field and its expected length.
+	fn get_onion_debug_field(&self) -> (&'static str, usize) {
+		match self {
+			Self::InvalidOnionVersion | Self::InvalidOnionHMAC | Self::InvalidOnionKey => {
+				("sha256_of_onion", 32)
+			},
+			Self::AmountBelowMinimum | Self::FeeInsufficient => ("htlc_msat", 8),
+			Self::IncorrectCLTVExpiry | Self::FinalIncorrectCLTVExpiry => ("cltv_expiry", 4),
+			Self::FinalIncorrectHTLCAmount => ("incoming_htlc_msat", 8),
+			Self::ChannelDisabled => ("flags", 2),
+			_ => ("", 0),
+		}
+	}
+
 	pub(super) fn is_temporary(&self) -> bool {
 		self.failure_code() & UPDATE == UPDATE
 	}
 
-	#[cfg(test)]
 	pub(super) fn is_permanent(&self) -> bool {
 		self.failure_code() & PERM == PERM
 	}
-}
 
-impl From<u16> for LocalHTLCFailureReason {
-	fn from(value: u16) -> Self {
-		if value == (NODE | 2) {
-			LocalHTLCFailureReason::TemporaryNodeFailure
-		} else if value == (PERM | NODE | 2) {
-			LocalHTLCFailureReason::PermanentNodeFailure
-		} else if value == (PERM | NODE | 3) {
-			LocalHTLCFailureReason::RequiredNodeFeature
-		} else if value == (BADONION | PERM | 4) {
-			LocalHTLCFailureReason::InvalidOnionVersion
-		} else if value == (BADONION | PERM | 5) {
-			LocalHTLCFailureReason::InvalidOnionHMAC
-		} else if value == (BADONION | PERM | 6) {
-			LocalHTLCFailureReason::InvalidOnionKey
-		} else if value == (UPDATE | 7) {
-			LocalHTLCFailureReason::TemporaryChannelFailure
-		} else if value == (PERM | 8) {
-			LocalHTLCFailureReason::PermanentChannelFailure
-		} else if value == (PERM | 9) {
-			LocalHTLCFailureReason::RequiredChannelFeature
-		} else if value == (PERM | 10) {
-			LocalHTLCFailureReason::UnknownNextPeer
-		} else if value == (UPDATE | 11) {
-			LocalHTLCFailureReason::AmountBelowMinimum
-		} else if value == (UPDATE | 12) {
-			LocalHTLCFailureReason::FeeInsufficient
-		} else if value == (UPDATE | 13) {
-			LocalHTLCFailureReason::IncorrectCLTVExpiry
-		} else if value == (UPDATE | 14) {
-			LocalHTLCFailureReason::CLTVExpiryTooSoon
-		} else if value == (PERM | 15) {
-			LocalHTLCFailureReason::IncorrectPaymentDetails
-		} else if value == 18 {
-			LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
-		} else if value == 19 {
-			LocalHTLCFailureReason::FinalIncorrectHTLCAmount
-		} else if value == (UPDATE | 20) {
-			LocalHTLCFailureReason::ChannelDisabled
-		} else if value == 21 {
-			LocalHTLCFailureReason::CLTVExpiryTooFar
-		} else if value == (PERM | 22) {
-			LocalHTLCFailureReason::InvalidOnionPayload
-		} else if value == 23 {
-			LocalHTLCFailureReason::MPPTimeout
-		} else if value == (BADONION | PERM | 24) {
-			LocalHTLCFailureReason::InvalidOnionBlinding
-		} else {
-			LocalHTLCFailureReason::UnknownFailureCode { code: value }
-		}
+	fn is_badonion(&self) -> bool {
+		self.failure_code() & BADONION == BADONION
+	}
+
+	fn is_node(&self) -> bool {
+		self.failure_code() & NODE == NODE
+	}
+
+	/// Returns true if the failure is only sent by the final recipient. Note that this function
+	/// only checks [`LocalHTLCFailureReason`] variants that represent bolt 04 errors directly,
+	/// as it's intended to analyze errors we've received as a sender.
+	fn is_recipient_failure(&self) -> bool {
+		self.failure_code() == LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code()
+			|| *self == LocalHTLCFailureReason::FinalIncorrectCLTVExpiry
+			|| *self == LocalHTLCFailureReason::FinalIncorrectHTLCAmount
+			|| *self == LocalHTLCFailureReason::MPPTimeout
 	}
 }
+
+macro_rules! impl_from_u16_for_htlc_reason {
+    ($enum:ident, [$($variant:ident),* $(,)?]) => {
+        impl From<u16> for $enum {
+            fn from(value: u16) -> Self {
+                $(
+                    if value == $enum::$variant.failure_code() {
+                        return $enum::$variant;
+                    }
+                )*
+                $enum::UnknownFailureCode { code: value }
+            }
+        }
+    };
+}
+
+// Error codes that represent BOLT04 error codes must be included here.
+impl_from_u16_for_htlc_reason!(
+	LocalHTLCFailureReason,
+	[
+		TemporaryNodeFailure,
+		PermanentNodeFailure,
+		RequiredNodeFeature,
+		InvalidOnionVersion,
+		InvalidOnionHMAC,
+		InvalidOnionKey,
+		TemporaryChannelFailure,
+		PermanentChannelFailure,
+		RequiredChannelFeature,
+		UnknownNextPeer,
+		AmountBelowMinimum,
+		FeeInsufficient,
+		IncorrectCLTVExpiry,
+		CLTVExpiryTooSoon,
+		IncorrectPaymentDetails,
+		FinalIncorrectCLTVExpiry,
+		FinalIncorrectHTLCAmount,
+		ChannelDisabled,
+		CLTVExpiryTooFar,
+		InvalidOnionPayload,
+		MPPTimeout,
+		InvalidOnionBlinding,
+	]
+);
 
 impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(1, TemporaryNodeFailure) => {},
@@ -2018,7 +2043,7 @@ impl HTLCFailReason {
 						failed_within_blinded_path: false,
 						hold_times: Vec::new(),
 						#[cfg(any(test, feature = "_test_utils"))]
-						onion_error_code: Some(failure_reason.failure_code()),
+						onion_error_code: Some(*failure_reason),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
 					}
@@ -3105,7 +3130,7 @@ mod tests {
 					test_attributable_failure_packet_onion_with_mutation(Some(mutation));
 
 				if decrypted_failure.onion_error_code
-					== Some(LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code())
+					== Some(LocalHTLCFailureReason::IncorrectPaymentDetails)
 				{
 					continue;
 				}
@@ -3121,7 +3146,7 @@ mod tests {
 		let decrypted_failure = test_attributable_failure_packet_onion_with_mutation(None);
 		assert_eq!(
 			decrypted_failure.onion_error_code,
-			Some(LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code())
+			Some(LocalHTLCFailureReason::IncorrectPaymentDetails)
 		);
 		assert_eq!(decrypted_failure.hold_times, [5, 4, 3, 2, 1]);
 	}
@@ -3346,7 +3371,7 @@ mod tests {
 			);
 			assert_eq!(
 				decrypted_failure.onion_error_code,
-				Some(LocalHTLCFailureReason::IncorrectPaymentDetails.failure_code())
+				Some(LocalHTLCFailureReason::IncorrectPaymentDetails),
 			);
 		}
 
@@ -3392,7 +3417,7 @@ mod tests {
 
 				let decrypted_failure =
 					process_onion_failure(&secp_ctx, &logger, &htlc_source, first_hop_error_packet);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
 			};
 
 			{
@@ -3423,7 +3448,7 @@ mod tests {
 					&htlc_source,
 					trampoline_outer_hop_error_packet,
 				);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
 			};
 
 			{
@@ -3459,7 +3484,7 @@ mod tests {
 					&htlc_source,
 					trampoline_inner_hop_error_packet,
 				);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
 			}
 
 			{
@@ -3500,7 +3525,7 @@ mod tests {
 					&htlc_source,
 					trampoline_second_hop_error_packet,
 				);
-				assert_eq!(decrypted_failure.onion_error_code, Some(error_code.failure_code()));
+				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
 			}
 		}
 	}

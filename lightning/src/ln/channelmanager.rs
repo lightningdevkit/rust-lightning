@@ -4352,25 +4352,22 @@ where
 
 	fn can_forward_htlc_to_outgoing_channel(
 		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
-	) -> Result<(), (&'static str, LocalHTLCFailureReason)> {
+	) -> Result<(), LocalHTLCFailureReason> {
 		if !chan.context.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 			// Note that the behavior here should be identical to the above block - we
 			// should NOT reveal the existence or non-existence of a private channel if
 			// we don't allow forwards outbound over them.
-			return Err(("Refusing to forward to a private channel based on our config.",
-				LocalHTLCFailureReason::PrivateChannelForward));
+			return Err(LocalHTLCFailureReason::PrivateChannelForward);
 		}
 		if let HopConnector::ShortChannelId(outgoing_scid) = next_packet.outgoing_connector {
 			if chan.funding.get_channel_type().supports_scid_privacy() && outgoing_scid != chan.context.outbound_scid_alias() {
 				// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
 				// "refuse to forward unless the SCID alias was used", so we pretend
 				// we don't have the channel here.
-				return Err(("Refusing to forward over real channel SCID as our counterparty requested.",
-					LocalHTLCFailureReason::RealSCIDForward));
+				return Err(LocalHTLCFailureReason::RealSCIDForward);
 			}
 		} else {
-			return Err(("Cannot forward by Node ID without SCID.",
-				LocalHTLCFailureReason::InvalidTrampolineForward));
+			return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
 		}
 
 		// Note that we could technically not return an error yet here and just hope
@@ -4380,16 +4377,13 @@ where
 		// on a small/per-node/per-channel scale.
 		if !chan.context.is_live() {
 			if !chan.context.is_enabled() {
-				return Err(("Forwarding channel has been disconnected for some time.",
-					LocalHTLCFailureReason::ChannelDisabled));
+				return Err(LocalHTLCFailureReason::ChannelDisabled);
 			} else {
-				return Err(("Forwarding channel is not in a ready state.",
-					LocalHTLCFailureReason::ChannelNotReady));
+				return Err(LocalHTLCFailureReason::ChannelNotReady);
 			}
 		}
 		if next_packet.outgoing_amt_msat < chan.context.get_counterparty_htlc_minimum_msat() {
-			return Err(("HTLC amount was below the htlc_minimum_msat",
-				LocalHTLCFailureReason::AmountBelowMinimum));
+			return Err(LocalHTLCFailureReason::AmountBelowMinimum);
 		}
 		chan.htlc_satisfies_config(msg, next_packet.outgoing_amt_msat, next_packet.outgoing_cltv_value)?;
 
@@ -4420,12 +4414,11 @@ where
 
 	fn can_forward_htlc(
 		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
-	) -> Result<(), (&'static str, LocalHTLCFailureReason)> {
+	) -> Result<(), LocalHTLCFailureReason> {
 		let outgoing_scid = match next_packet_details.outgoing_connector {
 			HopConnector::ShortChannelId(scid) => scid,
 			HopConnector::Trampoline(_) => {
-				return Err(("Cannot forward by Node ID without SCID.",
-				LocalHTLCFailureReason::InvalidTrampolineForward));
+				return Err(LocalHTLCFailureReason::InvalidTrampolineForward);
 			}
 		};
 		match self.do_funded_channel_callback(outgoing_scid, |chan: &mut FundedChannel<SP>| {
@@ -4440,8 +4433,7 @@ where
 					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)) ||
 					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, outgoing_scid, &self.chain_hash)
 				{} else {
-					return Err(("Don't have available channel for forwarding as requested.",
-					LocalHTLCFailureReason::UnknownNextPeer));
+					return Err(LocalHTLCFailureReason::UnknownNextPeer);
 				}
 			}
 		}
@@ -4453,7 +4445,7 @@ where
 	}
 
 	fn htlc_failure_from_update_add_err(
-		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, err_msg: &'static str,
+		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
 		reason: LocalHTLCFailureReason, is_intro_node_blinded_forward: bool,
 		shared_secret: &[u8; 32]
 	) -> HTLCFailureMsg {
@@ -4477,7 +4469,7 @@ where
 
 		log_info!(
 			WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash)),
-			"Failed to accept/forward incoming HTLC: {}", err_msg
+			"Failed to accept/forward incoming HTLC: {:?}", reason,
 		);
 		// If `msg.blinding_point` is set, we must always fail with malformed.
 		if msg.blinding_point.is_some() {
@@ -5820,9 +5812,9 @@ where
 					)
 				}) {
 					Some(Ok(_)) => {},
-					Some(Err((err, reason))) => {
+					Some(Err(reason)) => {
 						let htlc_fail = self.htlc_failure_from_update_add_err(
-							&update_add_htlc, &incoming_counterparty_node_id, err, reason,
+							&update_add_htlc, &incoming_counterparty_node_id, reason,
 							is_intro_node_blinded_forward, &shared_secret,
 						);
 						let failure_type = get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);
@@ -5835,11 +5827,11 @@ where
 
 				// Now process the HTLC on the outgoing channel if it's a forward.
 				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
-					if let Err((err, reason)) = self.can_forward_htlc(
+					if let Err(reason) = self.can_forward_htlc(
 						&update_add_htlc, next_packet_details
 					) {
 						let htlc_fail = self.htlc_failure_from_update_add_err(
-							&update_add_htlc, &incoming_counterparty_node_id, err, reason,
+							&update_add_htlc, &incoming_counterparty_node_id, reason,
 							is_intro_node_blinded_forward, &shared_secret,
 						);
 						let failure_type = get_htlc_failure_type(outgoing_scid_opt, update_add_htlc.payment_hash);

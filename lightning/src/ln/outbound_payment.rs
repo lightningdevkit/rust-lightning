@@ -2316,7 +2316,7 @@ impl OutboundPayments {
 					path: path.clone(),
 					short_channel_id,
 					#[cfg(any(test, feature = "_test_utils"))]
-					error_code: onion_error_code,
+					error_code: onion_error_code.map(|f| f.failure_code()),
 					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: onion_error_data
 				}
