@@ -718,7 +718,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					let old_mon = prev_state.persisted_monitor;
 					prev_state.pending_monitors.pop().map(|(_, v)| v).unwrap_or(old_mon)
 				};
-				// Use a different value of `use_old_mons` if we have another monitor (only node B)
+				// Use a different value of `use_old_mons` if we have another monitor (only for
+				// node B) by shifting `use_old_mons` one in base-3.
 				use_old_mons /= 3;
 				let mon = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 					&mut &serialized_mon[..],
@@ -1514,65 +1515,6 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			0x26 => process_ev_noret!(2, true),
 			0x27 => process_ev_noret!(2, false),
 
-			0xb0 | 0xb1 | 0xb2 => {
-				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
-				// the value of `v` we're matching.
-				if !chan_a_disconnected {
-					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
-					chan_a_disconnected = true;
-					push_excess_b_events!(
-						nodes[1].get_and_clear_pending_msg_events().drain(..),
-						Some(0)
-					);
-					ab_events.clear();
-					ba_events.clear();
-				}
-				let (new_node_a, new_monitor_a) =
-					reload_node!(node_a_ser, 0, monitor_a, v, keys_manager_a, fee_est_a);
-				nodes[0] = new_node_a;
-				monitor_a = new_monitor_a;
-			},
-			0xb3..=0xbb => {
-				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
-				// the value of `v` we're matching.
-				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
-					chan_a_disconnected = true;
-					nodes[0].get_and_clear_pending_msg_events();
-					ab_events.clear();
-					ba_events.clear();
-				}
-				if !chan_b_disconnected {
-					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
-					chan_b_disconnected = true;
-					nodes[2].get_and_clear_pending_msg_events();
-					bc_events.clear();
-					cb_events.clear();
-				}
-				let (new_node_b, new_monitor_b) =
-					reload_node!(node_b_ser, 1, monitor_b, v, keys_manager_b, fee_est_b);
-				nodes[1] = new_node_b;
-				monitor_b = new_monitor_b;
-			},
-			0xbc | 0xbd | 0xbe => {
-				// Restart node C, picking among the in-flight `ChannelMonitor`s to use based on
-				// the value of `v` we're matching.
-				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
-					chan_b_disconnected = true;
-					push_excess_b_events!(
-						nodes[1].get_and_clear_pending_msg_events().drain(..),
-						Some(2)
-					);
-					bc_events.clear();
-					cb_events.clear();
-				}
-				let (new_node_c, new_monitor_c) =
-					reload_node!(node_c_ser, 2, monitor_c, v, keys_manager_c, fee_est_c);
-				nodes[2] = new_node_c;
-				monitor_c = new_monitor_c;
-			},
-
 			// 1/10th the channel size:
 			0x30 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx),
 			0x31 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx),
@@ -1718,6 +1660,65 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0xa3 => {
 				nodes[2].maybe_propose_quiescence(&nodes[1].get_our_node_id(), &chan_b_id).unwrap()
+			},
+
+			0xb0 | 0xb1 | 0xb2 => {
+				// Restart node A, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
+				if !chan_a_disconnected {
+					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
+					chan_a_disconnected = true;
+					push_excess_b_events!(
+						nodes[1].get_and_clear_pending_msg_events().drain(..),
+						Some(0)
+					);
+					ab_events.clear();
+					ba_events.clear();
+				}
+				let (new_node_a, new_monitor_a) =
+					reload_node!(node_a_ser, 0, monitor_a, v, keys_manager_a, fee_est_a);
+				nodes[0] = new_node_a;
+				monitor_a = new_monitor_a;
+			},
+			0xb3..=0xbb => {
+				// Restart node B, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
+				if !chan_a_disconnected {
+					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
+					chan_a_disconnected = true;
+					nodes[0].get_and_clear_pending_msg_events();
+					ab_events.clear();
+					ba_events.clear();
+				}
+				if !chan_b_disconnected {
+					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
+					chan_b_disconnected = true;
+					nodes[2].get_and_clear_pending_msg_events();
+					bc_events.clear();
+					cb_events.clear();
+				}
+				let (new_node_b, new_monitor_b) =
+					reload_node!(node_b_ser, 1, monitor_b, v, keys_manager_b, fee_est_b);
+				nodes[1] = new_node_b;
+				monitor_b = new_monitor_b;
+			},
+			0xbc | 0xbd | 0xbe => {
+				// Restart node C, picking among the in-flight `ChannelMonitor`s to use based on
+				// the value of `v` we're matching.
+				if !chan_b_disconnected {
+					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
+					chan_b_disconnected = true;
+					push_excess_b_events!(
+						nodes[1].get_and_clear_pending_msg_events().drain(..),
+						Some(2)
+					);
+					bc_events.clear();
+					cb_events.clear();
+				}
+				let (new_node_c, new_monitor_c) =
+					reload_node!(node_c_ser, 2, monitor_c, v, keys_manager_c, fee_est_c);
+				nodes[2] = new_node_c;
+				monitor_c = new_monitor_c;
 			},
 
 			0xf0 => complete_monitor_update(&monitor_a, &chan_1_id, &complete_first),
