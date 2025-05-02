@@ -202,10 +202,9 @@ impl PeerChannelEncryptor {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
-		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
-		let hmac = &cyphertext[cyphertext.len() - 16..];
+		let (data, hmac) = cyphertext.split_at(cyphertext.len() - 16);
 		let mac_check =
-			chacha.variable_time_decrypt(&cyphertext[0..cyphertext.len() - 16], res, hmac);
+			ChaCha20Poly1305RFC::new(key, &nonce, h).variable_time_decrypt(&data, res, hmac);
 		mac_check.map_err(|()| LightningError {
 			err: "Bad MAC".to_owned(),
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
