@@ -5313,7 +5313,8 @@ mod tests {
 			.unwrap(),
 		); // tx_hash (sha256) (big endian byte order)
 		target_value.append(&mut <Vec<u8>>::from_hex("0002").unwrap()); // num_witnesses (u16)
-																// Witness 1
+
+		// Witness 1
 		target_value.append(&mut <Vec<u8>>::from_hex("006b").unwrap()); // len of witness_data
 		target_value.append(&mut <Vec<u8>>::from_hex("02").unwrap()); // num_witness_elements (VarInt)
 		target_value.append(&mut <Vec<u8>>::from_hex("47").unwrap()); // len of witness element data (VarInt)
