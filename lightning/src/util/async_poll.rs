@@ -110,3 +110,10 @@ pub use core::marker::Sync as MaybeSync;
 pub trait MaybeSync {}
 #[cfg(not(feature = "std"))]
 impl<T> MaybeSync for T where T: ?Sized {}
+
+#[cfg(feature = "std")]
+pub use core::marker::Send as MaybeSend;
+#[cfg(not(feature = "std"))]
+pub trait MaybeSend {}
+#[cfg(not(feature = "std"))]
+impl<T> MaybeSend for T where T: ?Sized {}

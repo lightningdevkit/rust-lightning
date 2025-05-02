@@ -30,7 +30,7 @@ use crate::sign::{
 };
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sync::Mutex;
-use crate::util::async_poll::{AsyncResult, MaybeSync};
+use crate::util::async_poll::{AsyncResult, MaybeSync, MaybeSend};
 use crate::util::logger::Logger;
 
 use bitcoin::{OutPoint, Psbt, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
@@ -377,10 +377,10 @@ pub trait WalletSource {
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
 /// avoid conflicting double spends. If not enough UTXOs are available to do so, conflicting double
 /// spends may happen.
-pub struct Wallet<W: Deref, L: Deref>
+pub struct Wallet<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend>
 where
-	W::Target: WalletSource,
-	L::Target: Logger
+	W::Target: WalletSource + MaybeSend,
+	L::Target: Logger + MaybeSend
 {
 	source: W,
 	logger: L,
@@ -390,10 +390,10 @@ where
 	locked_utxos: Mutex<HashMap<OutPoint, ClaimId>>,
 }
 
-impl<W: Deref, L: Deref> Wallet<W, L>
+impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> Wallet<W, L>
 where
-	W::Target: WalletSource,
-	L::Target: Logger
+	W::Target: WalletSource + MaybeSend,
+	L::Target: Logger + MaybeSend
 {
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
@@ -482,10 +482,10 @@ where
 	}
 }
 
-impl<W: Deref + MaybeSync, L: Deref + MaybeSync> CoinSelectionSource for Wallet<W, L>
+impl<W: Deref + MaybeSync + MaybeSend, L: Deref + MaybeSync + MaybeSend> CoinSelectionSource for Wallet<W, L>
 where
-	W::Target: WalletSource,
-	L::Target: Logger,
+	W::Target: WalletSource + MaybeSend + MaybeSync,
+	L::Target: Logger + MaybeSend + MaybeSync,
 {
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
