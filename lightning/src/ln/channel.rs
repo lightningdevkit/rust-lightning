@@ -2598,17 +2598,11 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for FundedChannel<SP> where SP::Targe
 		).flatten().ok_or("Not re-funding")
 	}
 
-	fn swap_out_dual_funding_context_inputs(&mut self, funding_inputs: &mut Vec<(TxIn, TransactionU16LenLimited)>) -> Result<(), &'static str> {
-		if let Some(pending_splice) = &mut self.pending_splice {
-			if let Some(refunding) = &mut pending_splice.refunding_scope {
-				mem::swap(&mut refunding.pending_dual_funding_context.our_funding_inputs, funding_inputs);
-				Ok(())
-			} else {
-				Err("Not re-funding")
-			}
-		} else {
-			Err("Not re-funding")
-		}
+	#[inline]
+	fn dual_funding_context_mut(&mut self) -> Result<&mut DualFundingChannelContext, &'static str> {
+		self.pending_splice.as_mut().map(|splice|
+			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_dual_funding_context)
+		).flatten().ok_or("Not re-funding")
 	}
 
 	#[inline]
@@ -2649,7 +2643,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn pending_funding_mut(&mut self) -> Result<&mut FundingScope, &'static str>;
 	fn pending_funding_and_context_mut(&mut self) -> Result<(&FundingScope, &mut ChannelContext<SP>), &'static str>;
 	fn dual_funding_context(&self) -> Result<&DualFundingChannelContext, &'static str>;
-	fn swap_out_dual_funding_context_inputs(&mut self, funding_inputs: &mut Vec<(TxIn, TransactionU16LenLimited)>) -> Result<(), &'static str>;
+	fn dual_funding_context_mut(&mut self) -> Result<&mut DualFundingChannelContext, &'static str>;
 	fn unfunded_context(&self) -> Result<&UnfundedChannelContext, &'static str>;
 	fn interactive_tx_constructor(&self) -> Result<Option<&InteractiveTxConstructor>, &'static str>;
 	fn interactive_tx_constructor_mut(&mut self) -> Result<&mut Option<InteractiveTxConstructor>, &'static str>;
@@ -2676,8 +2670,9 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		debug_assert!(self.interactive_tx_constructor().unwrap_or(None).is_none());
 
 		let mut funding_inputs = Vec::new();
-		self.swap_out_dual_funding_context_inputs(&mut funding_inputs)
+		let dual_funding_context_mut = self.dual_funding_context_mut()
 			.map_err(|e| AbortReason::InternalError(e))?;
+		mem::swap(&mut dual_funding_context_mut.our_funding_inputs, &mut funding_inputs);
 
 		if let Some(prev_funding_input) = prev_funding_input {
 			funding_inputs.push(prev_funding_input);
@@ -2977,9 +2972,9 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 		Ok(&self.dual_funding_context)
 	}
 
-	fn swap_out_dual_funding_context_inputs(&mut self, funding_inputs: &mut Vec<(TxIn, TransactionU16LenLimited)>) -> Result<(), &'static str> {
-		mem::swap(&mut self.dual_funding_context.our_funding_inputs, funding_inputs);
-		Ok(())
+	#[inline]
+	fn dual_funding_context_mut(&mut self) -> Result<&mut DualFundingChannelContext, &'static str> {
+		Ok(&mut self.dual_funding_context)
 	}
 
 	#[inline]
