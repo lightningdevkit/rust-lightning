@@ -1464,4 +1464,27 @@ mod tests {
 		empty_features.hash(&mut empty_hash);
 		assert_eq!(zerod_hash.finish(), empty_hash.finish());
 	}
+
+	#[test]
+	fn test_feature_flags_transitions() {
+		// Tests transitions from stack to heap and back in `FeatureFlags`
+		let mut flags = FeatureFlags::empty();
+		assert!(matches!(flags, FeatureFlags::Held { .. }));
+
+		flags.resize(DIRECT_ALLOC_BYTES, 42);
+		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES);
+		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		assert!(matches!(flags, FeatureFlags::Held { .. }));
+
+		flags.resize(DIRECT_ALLOC_BYTES * 2, 43);
+		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES * 2);
+		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		assert!(flags.iter().skip(DIRECT_ALLOC_BYTES).all(|b| *b == 43));
+		assert!(matches!(flags, FeatureFlags::Heap(_)));
+
+		flags.resize(DIRECT_ALLOC_BYTES, 0);
+		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES);
+		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		assert!(matches!(flags, FeatureFlags::Held { .. }));
+	}
 }
