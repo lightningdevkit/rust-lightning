@@ -16,7 +16,9 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
+use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::types::features::InitFeatures;
 use crate::ln::msgs;
@@ -1102,6 +1104,10 @@ macro_rules! unwrap_send_err {
 			_ => panic!()
 		}
 	}
+}
+
+pub fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64, channel_type_features: &ChannelTypeFeatures) -> u64 {
+	(commitment_tx_base_weight(channel_type_features) + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate as u64 / 1000 * 1000
 }
 
 /// Check whether N channel monitor(s) have been added.
