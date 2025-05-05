@@ -23,6 +23,7 @@ fn check_eq(v: &Vec<u8>, feat: &FeatureFlags, old_v: &mut Vec<u8>, old_feat: &mu
 	let mut feat_clone = feat.clone();
 	assert!(feat_clone == *feat);
 
+	// Test iteration over the `FeatureFlags` with the base iterator
 	let mut feat_iter = feat.iter();
 	let mut vec_iter = v.iter();
 	assert_eq!(feat_iter.len(), vec_iter.len());
@@ -32,6 +33,7 @@ fn check_eq(v: &Vec<u8>, feat: &FeatureFlags, old_v: &mut Vec<u8>, old_feat: &mu
 	}
 	assert!(vec_iter.next().is_none());
 
+	// Do the same test of iteration over the `FeatureFlags` with the mutable iterator
 	let mut feat_iter = feat_clone.iter_mut();
 	let mut vec_iter = v.iter();
 	assert_eq!(feat_iter.len(), vec_iter.len());
