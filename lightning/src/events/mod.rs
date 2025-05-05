@@ -1340,6 +1340,8 @@ pub enum Event {
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
+		/// The features that this channel will operate with.
+		channel_type: ChannelTypeFeatures,
 	},
 	/// Used to indicate that a channel that got past the initial handshake with the given `channel_id` is in the
 	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
@@ -1865,12 +1867,13 @@ impl Writeable for Event {
 					(8, former_temporary_channel_id, required),
 				});
 			},
-			&Event::SpliceLocked { ref channel_id, ref user_channel_id, ref counterparty_node_id } => {
+			&Event::SpliceLocked { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
 				45u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
 					(2, user_channel_id, required),
 					(4, counterparty_node_id, required),
+					(6, channel_type, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -2394,16 +2397,19 @@ impl MaybeReadable for Event {
 					let mut channel_id = ChannelId::new_zero();
 					let mut user_channel_id: u128 = 0;
 					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut channel_type = RequiredWrapper(None);
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, user_channel_id, required),
 						(4, counterparty_node_id, required),
+						(6, channel_type, required),
 					});
 
 					Ok(Some(Event::SpliceLocked {
 						channel_id,
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						channel_type: channel_type.0.unwrap()
 					}))
 				};
 				f()
