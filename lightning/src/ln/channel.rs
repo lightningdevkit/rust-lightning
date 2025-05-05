@@ -1391,9 +1391,9 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::Funded(_) => { debug_assert!(false); None }
 			#[cfg(splicing)]
 			ChannelPhase::Funded(chan) => {
-				chan.pending_splice.as_mut().map(|splice|
+				chan.pending_splice.as_mut().and_then(|splice|
 					splice.refunding_scope.as_mut().map(|refunding_scope| &mut refunding_scope.pending_unfunded_context)
-				).flatten()
+				)
 			}
 			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
@@ -2571,66 +2571,66 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 impl<SP: Deref> FundingTxConstructorV2<SP> for FundedChannel<SP> where SP::Target: SignerProvider {
 	#[inline]
 	fn pending_funding(&self) -> Result<&FundingScope, &'static str> {
-		self.pending_splice.as_ref().map(|splice|
+		self.pending_splice.as_ref().and_then(|splice|
 			splice.refunding_scope.as_ref().map(|refunding| &refunding.pending_funding)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn pending_funding_mut(&mut self) -> Result<&mut FundingScope, &'static str> {
-		self.pending_splice.as_mut().map(|splice|
+		self.pending_splice.as_mut().and_then(|splice|
 			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_funding)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn pending_funding_and_context_mut(&mut self) -> Result<(&FundingScope, &mut ChannelContext<SP>), &'static str> {
 		let context_mut = &mut self.context;
-		self.pending_splice.as_ref().map(|splice|
+		self.pending_splice.as_ref().and_then(|splice|
 			splice.refunding_scope.as_ref().map(|refunding| (&refunding.pending_funding, context_mut))
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn dual_funding_context(&self) -> Result<&DualFundingChannelContext, &'static str> {
-		self.pending_splice.as_ref().map(|splice|
+		self.pending_splice.as_ref().and_then(|splice|
 			splice.refunding_scope.as_ref().map(|refunding| &refunding.pending_dual_funding_context)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn dual_funding_context_mut(&mut self) -> Result<&mut DualFundingChannelContext, &'static str> {
-		self.pending_splice.as_mut().map(|splice|
+		self.pending_splice.as_mut().and_then(|splice|
 			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_dual_funding_context)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn unfunded_context(&self) -> Result<&UnfundedChannelContext, &'static str> {
-		self.pending_splice.as_ref().map(|splice|
+		self.pending_splice.as_ref().and_then(|splice|
 			splice.refunding_scope.as_ref().map(|refunding| &refunding.pending_unfunded_context)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn interactive_tx_constructor(&self) -> Result<Option<&InteractiveTxConstructor>, &'static str> {
-		self.pending_splice.as_ref().map(|splice|
+		self.pending_splice.as_ref().and_then(|splice|
 			splice.refunding_scope.as_ref().map(|refunding| refunding.pending_interactive_tx_constructor.as_ref())
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn interactive_tx_constructor_mut(&mut self) -> Result<&mut Option<InteractiveTxConstructor>, &'static str> {
-		self.pending_splice.as_mut().map(|splice|
+		self.pending_splice.as_mut().and_then(|splice|
 			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_interactive_tx_constructor)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 
 	#[inline]
 	fn interactive_tx_signing_session_mut(&mut self) -> Result<&mut Option<InteractiveTxSigningSession>, &'static str> {
-		self.pending_splice.as_mut().map(|splice|
+		self.pending_splice.as_mut().and_then(|splice|
 			splice.refunding_scope.as_mut().map(|refunding| &mut refunding.pending_interactive_tx_signing_session)
-		).flatten().ok_or("Not re-funding")
+		).ok_or("Not re-funding")
 	}
 }
 
