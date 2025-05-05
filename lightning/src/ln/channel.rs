@@ -1591,48 +1591,48 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
+	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => chan.tx_add_input(msg),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_add_input(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => chan.tx_add_input(msg),
-			_ => panic!("Got tx_add_input in an invalid phase"),
+			ChannelPhase::Funded(chan) => Ok(chan.tx_add_input(msg)),
+			_ => Err("Got tx_add_input in an invalid phase"),
 		}
 	}
 
-	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> InteractiveTxMessageSendResult {
+	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => chan.tx_add_output(msg),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_add_output(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => chan.tx_add_output(msg),
-			_ => panic!("Got tx_add_output in an invalid phase"),
+			ChannelPhase::Funded(chan) => Ok(chan.tx_add_output(msg)),
+			_ => Err("Got tx_add_output in an invalid phase"),
 		}
 	}
 
-	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> InteractiveTxMessageSendResult {
+	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => chan.tx_remove_input(msg),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_remove_input(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => chan.tx_remove_input(msg),
-			_ => panic!("Got tx_remove_input in an invalid phase"),
+			ChannelPhase::Funded(chan) => Ok(chan.tx_remove_input(msg)),
+			_ => Err("Got tx_remove_input in an invalid phase"),
 		}
 	}
 
-	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> InteractiveTxMessageSendResult {
+	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => chan.tx_remove_output(msg),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_remove_output(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => chan.tx_remove_output(msg),
-			_ => panic!("Got tx_remove_output in an invalid phase"),
+			ChannelPhase::Funded(chan) => Ok(chan.tx_remove_output(msg)),
+			_ => Err("Got tx_remove_output in an invalid phase"),
 		}
 	}
 
-	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
+	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<HandleTxCompleteResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => chan.tx_complete(msg),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_complete(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => chan.tx_complete(msg),
-			_ => panic!("Got tx_complete in an invalid phase"),
+			ChannelPhase::Funded(chan) => Ok(chan.tx_complete(msg)),
+			_ => Err("Got tx_complete in an invalid phase"),
 		}
 	}
 
