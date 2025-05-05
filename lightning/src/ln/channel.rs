@@ -61,7 +61,7 @@ use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, TransactionU16LenLimited, Writeable, Writer};
-use crate::util::logger::{Logger, Record, WithContext};
+use crate::util::logger::{BoxedSpan, Logger, Record, Span, WithContext};
 use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
@@ -262,10 +262,43 @@ struct InboundHTLCOutput {
 	amount_msat: u64,
 	cltv_expiry: u32,
 	payment_hash: PaymentHash,
+	state_wrapper: InboundHTLCStateWrapper,
+	span: BoxedSpan,
+}
+
+struct InboundHTLCOutputParams {
+	htlc_id: u64,
+	amount_msat: u64,
+	cltv_expiry: u32,
+	payment_hash: PaymentHash,
 	state: InboundHTLCState,
 }
 
-impl InboundHTLCOutput {
+impl InboundHTLCOutput where {
+	fn new<L: Deref>(
+		channel_id: ChannelId, params: InboundHTLCOutputParams, logger: &L,
+	) -> InboundHTLCOutput where L::Target: Logger {
+		let htlc_span = logger.start(
+			Span::InboundHTLC {
+				channel_id: channel_id,
+				htlc_id: params.htlc_id,
+			},
+			None,
+		);
+		InboundHTLCOutput {
+			htlc_id: params.htlc_id,
+			amount_msat: params.amount_msat,
+			cltv_expiry: params.cltv_expiry,
+			payment_hash: params.payment_hash,
+			state_wrapper: InboundHTLCStateWrapper::new(
+				params.state,
+				Some(&htlc_span),
+				logger,
+			),
+			span: BoxedSpan::new(htlc_span),
+		}
+	}
+
 	fn is_dust(&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64, features: &ChannelTypeFeatures) -> bool {
 		let htlc_tx_fee_sat = if features.supports_anchors_zero_fee_htlc_tx() {
 			0
@@ -280,6 +313,41 @@ impl InboundHTLCOutput {
 			feerate_per_kw as u64 * htlc_tx_weight / 1000
 		};
 		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
+	}
+
+	fn state(&self) -> &InboundHTLCState {
+		&self.state_wrapper.state
+	}
+
+	fn set_state<L: Deref>(&mut self, state: InboundHTLCState, logger: &L) where L::Target: Logger {
+		mem::drop(self.state_wrapper.span.take());
+		self.state_wrapper = InboundHTLCStateWrapper::new(
+			state,
+			self.span.as_user_span_ref::<L>(),
+			logger,
+		);
+	}
+}
+
+struct InboundHTLCStateWrapper {
+	state: InboundHTLCState,
+	span: Option<BoxedSpan>,
+}
+
+impl InboundHTLCStateWrapper {
+	fn new<L: Deref>(
+		state: InboundHTLCState, parent_span: Option<&<<L as Deref>::Target as Logger>::UserSpan>, logger: &L,
+	) -> InboundHTLCStateWrapper where L::Target: Logger {
+		let state_span = logger.start(
+			Span::InboundHTLCState {
+				state: (&state).into(),
+			},
+			parent_span,
+		);
+		InboundHTLCStateWrapper {
+			state,
+			span: Some(BoxedSpan::new(state_span)),
+		}
 	}
 }
 
@@ -398,6 +466,20 @@ struct OutboundHTLCOutput {
 	amount_msat: u64,
 	cltv_expiry: u32,
 	payment_hash: PaymentHash,
+	state_wrapper: OutboundHTLCStateWrapper,
+	source: HTLCSource,
+	blinding_point: Option<PublicKey>,
+	skimmed_fee_msat: Option<u64>,
+	send_timestamp: Option<Duration>,
+	span: BoxedSpan,
+	_forward_span: Option<BoxedSpan>,
+}
+
+struct OutboundHTLCOutputParams {
+	htlc_id: u64,
+	amount_msat: u64,
+	cltv_expiry: u32,
+	payment_hash: PaymentHash,
 	state: OutboundHTLCState,
 	source: HTLCSource,
 	blinding_point: Option<PublicKey>,
@@ -406,6 +488,36 @@ struct OutboundHTLCOutput {
 }
 
 impl OutboundHTLCOutput {
+	fn new<L: Deref>(
+		channel_id: ChannelId, params: OutboundHTLCOutputParams,
+		forward_span: Option<BoxedSpan>, logger: &L,
+	) -> OutboundHTLCOutput where L::Target: Logger {
+		let htlc_span = logger.start(
+			Span::OutboundHTLC {
+				channel_id: channel_id,
+				htlc_id: params.htlc_id,
+			},
+			forward_span.as_ref().map(|s| s.as_user_span_ref::<L>()).flatten(),
+		);
+		OutboundHTLCOutput {
+			htlc_id: params.htlc_id,
+			amount_msat: params.amount_msat,
+			cltv_expiry: params.cltv_expiry,
+			payment_hash: params.payment_hash,
+			state_wrapper: OutboundHTLCStateWrapper::new(
+				params.state,
+				Some(&htlc_span),
+				logger,
+			),
+			source: params.source,
+			blinding_point: params.blinding_point,
+			skimmed_fee_msat: params.skimmed_fee_msat,
+			send_timestamp: params.send_timestamp,
+			span: BoxedSpan::new(htlc_span),
+			_forward_span: forward_span,
+		}
+	}
+
 	fn is_dust(&self, local: bool, feerate_per_kw: u32, broadcaster_dust_limit_sat: u64, features: &ChannelTypeFeatures) -> bool {
 		let htlc_tx_fee_sat = if features.supports_anchors_zero_fee_htlc_tx() {
 			0
@@ -420,6 +532,42 @@ impl OutboundHTLCOutput {
 			feerate_per_kw as u64 * htlc_tx_weight / 1000
 		};
 		self.amount_msat / 1000 < broadcaster_dust_limit_sat + htlc_tx_fee_sat
+	}
+
+	fn state(&self) -> &OutboundHTLCState {
+		&self.state_wrapper.state
+	}
+
+	fn set_state<L: Deref>(&mut self, state: OutboundHTLCState, logger: &L) where L::Target: Logger {
+		mem::drop(self.state_wrapper.span.take());
+		self.state_wrapper = OutboundHTLCStateWrapper::new(
+			state,
+			self.span.as_user_span_ref::<L>(),
+			logger,
+		);
+	}
+}
+
+#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+struct OutboundHTLCStateWrapper {
+	state: OutboundHTLCState,
+	span: Option<BoxedSpan>,
+}
+
+impl OutboundHTLCStateWrapper {
+	fn new<L: Deref>(
+		state: OutboundHTLCState, parent_span: Option<&<<L as Deref>::Target as Logger>::UserSpan>, logger: &L,
+	) -> OutboundHTLCStateWrapper where L::Target: Logger {
+		let state_span = logger.start(
+			Span::OutboundHTLCState {
+				state: (&state).into(),
+			},
+			parent_span,
+		);
+		OutboundHTLCStateWrapper {
+			state,
+			span: Some(BoxedSpan::new(state_span)),
+		}
 	}
 }
 
@@ -436,6 +584,7 @@ enum HTLCUpdateAwaitingACK {
 		// The extra fee we're skimming off the top of this HTLC.
 		skimmed_fee_msat: Option<u64>,
 		blinding_point: Option<PublicKey>,
+		forward_span: Option<BoxedSpan>,
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -885,11 +1034,17 @@ pub(super) struct WithChannelContext<'a, L: Deref> where L::Target: Logger {
 }
 
 impl<'a, L: Deref> Logger for WithChannelContext<'a, L> where L::Target: Logger {
+	type UserSpan = <<L as Deref>::Target as Logger>::UserSpan;
+
 	fn log(&self, mut record: Record) {
 		record.peer_id = self.peer_id;
 		record.channel_id = self.channel_id;
 		record.payment_hash = self.payment_hash;
 		self.logger.log(record)
+	}
+
+	fn start(&self, span: Span, parent: Option<&Self::UserSpan>) -> Self::UserSpan {
+		self.logger.start(span, parent)
 	}
 }
 
@@ -1044,7 +1199,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<HTLCSource>,
-	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
+	pub pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan)>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
@@ -1973,7 +2128,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
-	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
+	monitor_pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan)>,
 	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
 
 	/// If we went to send a revoke_and_ack but our signer was unable to give us a signature,
@@ -3338,7 +3493,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		if self.pending_inbound_htlcs.iter()
-			.any(|htlc| match htlc.state {
+			.any(|htlc| match htlc.state() {
 				InboundHTLCState::Committed => false,
 				// An HTLC removal from the local node is pending on the remote commitment.
 				InboundHTLCState::LocalRemoved(_) => true,
@@ -3352,7 +3507,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		self.pending_outbound_htlcs.iter()
-			.any(|htlc| match htlc.state {
+			.any(|htlc| match htlc.state() {
 				OutboundHTLCState::Committed => false,
 				// An HTLC add from the local node is pending on the remote commitment.
 				OutboundHTLCState::LocalAnnounced(_) => true,
@@ -3874,26 +4029,26 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		for htlc in self.pending_inbound_htlcs.iter() {
-			if htlc.state.included_in_commitment(generated_by_local) {
+			if htlc.state().included_in_commitment(generated_by_local) {
 				if !htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
 					non_dust_htlc_count += 1;
 				}
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
-				if htlc.state.preimage().is_some() {
+				if htlc.state().preimage().is_some() {
 					value_to_self_msat_offset += htlc.amount_msat as i64;
 				}
 			}
 		};
 
 		for htlc in self.pending_outbound_htlcs.iter() {
-			if htlc.state.included_in_commitment(generated_by_local) {
+			if htlc.state().included_in_commitment(generated_by_local) {
 				if !htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
 					non_dust_htlc_count += 1;
 				}
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
-				if htlc.state.preimage().is_some() {
+				if htlc.state().preimage().is_some() {
 					value_to_self_msat_offset -= htlc.amount_msat as i64;
 				}
 			}
@@ -3993,9 +4148,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				let htlc_in_tx = get_htlc_in_commitment!($htlc, $outbound == local);
 				htlcs_included.push((htlc_in_tx.clone(), $source));
 				if $htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
-					log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {} due to dust limit", if $outbound { "outbound" } else { "inbound" }, $htlc.state, $htlc.htlc_id, $htlc.payment_hash, $htlc.amount_msat);
+					log_trace!(logger, "   ...including {} {} dust HTLC {} (hash {}) with value {} due to dust limit", if $outbound { "outbound" } else { "inbound" }, $htlc.state(), $htlc.htlc_id, $htlc.payment_hash, $htlc.amount_msat);
 				} else {
-					log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $htlc.state, $htlc.htlc_id, $htlc.payment_hash, $htlc.amount_msat);
+					log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $htlc.state(), $htlc.htlc_id, $htlc.payment_hash, $htlc.amount_msat);
 					nondust_htlcs.push(htlc_in_tx);
 				}
 			}
@@ -4005,24 +4160,24 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let mut outbound_htlc_preimages: Vec<PaymentPreimage> = Vec::new();
 
 		for htlc in self.pending_inbound_htlcs.iter() {
-			if htlc.state.included_in_commitment(generated_by_local) {
+			if htlc.state().included_in_commitment(generated_by_local) {
 				add_htlc_output!(htlc, false, None);
 			} else {
-				log_trace!(logger, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, htlc.payment_hash, htlc.amount_msat, htlc.state);
-				if let Some(preimage) = htlc.state.preimage() {
+				log_trace!(logger, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, htlc.payment_hash, htlc.amount_msat, htlc.state());
+				if let Some(preimage) = htlc.state().preimage() {
 					inbound_htlc_preimages.push(preimage);
 				}
 			}
 		};
 
 		for htlc in self.pending_outbound_htlcs.iter() {
-			if let Some(preimage) = htlc.state.preimage() {
+			if let Some(preimage) = htlc.state().preimage() {
 				outbound_htlc_preimages.push(preimage);
 			}
-			if htlc.state.included_in_commitment(generated_by_local) {
+			if htlc.state().included_in_commitment(generated_by_local) {
 				add_htlc_output!(htlc, true, Some(&htlc.source));
 			} else {
-				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, htlc.payment_hash, htlc.amount_msat, htlc.state);
+				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, htlc.payment_hash, htlc.amount_msat, htlc.state());
 			}
 		};
 
@@ -4276,7 +4431,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		};
 		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
 		for htlc in self.pending_inbound_htlcs.iter() {
-			if let Some(state_details) = (&htlc.state).into() {
+			if let Some(state_details) = htlc.state().into() {
 				inbound_details.push(InboundHTLCDetails{
 					htlc_id: htlc.htlc_id,
 					amount_msat: htlc.amount_msat,
@@ -4307,7 +4462,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				cltv_expiry: htlc.cltv_expiry,
 				payment_hash: htlc.payment_hash,
 				skimmed_fee_msat: htlc.skimmed_fee_msat,
-				state: Some((&htlc.state).into()),
+				state: Some(htlc.state().into()),
 				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
 			});
 		}
@@ -4539,7 +4694,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			if htlc.amount_msat / 1000 < real_dust_limit_timeout_sat {
 				continue
 			}
-			match htlc.state {
+			match htlc.state() {
 				OutboundHTLCState::LocalAnnounced {..} => included_htlcs += 1,
 				OutboundHTLCState::Committed => included_htlcs += 1,
 				OutboundHTLCState::RemoteRemoved {..} => included_htlcs += 1,
@@ -4652,7 +4807,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 			// We only include outbound HTLCs if it will not be included in their next commitment_signed,
 			// i.e. if they've responded to us with an RAA after announcement.
-			match htlc.state {
+			match htlc.state() {
 				OutboundHTLCState::Committed => included_htlcs += 1,
 				OutboundHTLCState::RemoteRemoved {..} => included_htlcs += 1,
 				OutboundHTLCState::LocalAnnounced { .. } => included_htlcs += 1,
@@ -5377,7 +5532,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				debug_assert_eq!(htlc.payment_hash, PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).to_byte_array()));
 				log_debug!(logger, "Claiming inbound HTLC id {} with payment hash {} with preimage {}",
 					htlc.htlc_id, htlc.payment_hash, payment_preimage_arg);
-				match htlc.state {
+				match htlc.state() {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(ref reason) => {
 						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
@@ -5452,13 +5607,16 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			if let InboundHTLCState::Committed = htlc.state {
+			if let InboundHTLCState::Committed = htlc.state() {
 			} else {
 				debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
 				return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: None };
 			}
 			log_trace!(logger, "Upgrading HTLC {} to LocalRemoved with a Fulfill in channel {}!", &htlc.payment_hash, &self.context.channel_id);
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
+			htlc.set_state(
+				InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone())),
+				logger,
+			);
 		}
 
 		UpdateFulfillFetch::NewClaim {
@@ -5549,7 +5707,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let mut pending_idx = core::usize::MAX;
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
-				match htlc.state {
+				match htlc.state() {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(_) => {
 						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
@@ -5599,7 +5757,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			E::Message::name(), &self.context.channel_id());
 		{
 			let htlc = &mut self.context.pending_inbound_htlcs[pending_idx];
-			htlc.state = err_contents.clone().to_inbound_htlc_state();
+			htlc.set_state(err_contents.clone().to_inbound_htlc_state(), logger);
 		}
 
 		Ok(Some(err_contents.to_message(htlc_id_arg, self.context.channel_id())))
@@ -5708,9 +5866,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
 
-	pub fn update_add_htlc<F: Deref>(
-		&mut self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> Result<(), ChannelError> where F::Target: FeeEstimator {
+	pub fn update_add_htlc<F: Deref, L: Deref>(
+		&mut self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got add HTLC message while quiescent".to_owned()));
 		}
@@ -5757,9 +5915,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		// transaction).
 		let mut removed_outbound_total_msat = 0;
 		for ref htlc in self.context.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state() {
 				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state() {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
@@ -5814,21 +5972,28 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		// Now update local state:
 		self.context.next_counterparty_htlc_id += 1;
-		self.context.pending_inbound_htlcs.push(InboundHTLCOutput {
-			htlc_id: msg.htlc_id,
-			amount_msat: msg.amount_msat,
-			payment_hash: msg.payment_hash,
-			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
-				update_add_htlc: msg.clone(),
-			}),
-		});
+		self.context.pending_inbound_htlcs.push(InboundHTLCOutput::new(
+			self.context.channel_id(),
+			InboundHTLCOutputParams {
+				htlc_id: msg.htlc_id,
+				amount_msat: msg.amount_msat,
+				cltv_expiry: msg.cltv_expiry,
+				payment_hash: msg.payment_hash,
+				state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Pending {
+					update_add_htlc: msg.clone(),
+				}),
+			},
+			logger,
+		));
+
 		Ok(())
 	}
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome) -> Result<&OutboundHTLCOutput, ChannelError> {
+	fn mark_outbound_htlc_removed<L: Deref>(
+		&mut self, htlc_id: u64, outcome: OutboundHTLCOutcome, logger: &L
+	) -> Result<&OutboundHTLCOutput, ChannelError> where L::Target: Logger {
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				if let OutboundHTLCOutcome::Success(ref payment_preimage) = outcome {
@@ -5837,11 +6002,11 @@ impl<SP: Deref> FundedChannel<SP> where
 						return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
 					}
 				}
-				match htlc.state {
+				match htlc.state() {
 					OutboundHTLCState::LocalAnnounced(_) =>
 						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
 					OutboundHTLCState::Committed => {
-						htlc.state = OutboundHTLCState::RemoteRemoved(outcome);
+						htlc.set_state(OutboundHTLCState::RemoteRemoved(outcome), logger);
 					},
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) | OutboundHTLCState::RemoteRemoved(_) =>
 						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed", htlc_id))),
@@ -5852,7 +6017,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		Err(ChannelError::close("Remote tried to fulfill/fail an HTLC we couldn't find".to_owned()))
 	}
 
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> {
+	pub fn update_fulfill_htlc<L: Deref>(
+		&mut self, msg: &msgs::UpdateFulfillHTLC, logger: &L
+	) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> where L::Target: Logger {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fulfill HTLC message while quiescent".to_owned()));
 		}
@@ -5863,10 +6030,12 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Success(msg.payment_preimage)).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Success(msg.payment_preimage), logger).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
+	pub fn update_fail_htlc<L: Deref>(
+		&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason, logger: &L
+	) -> Result<(), ChannelError> where L::Target: Logger {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fail HTLC message while quiescent".to_owned()));
 		}
@@ -5877,11 +6046,13 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fail_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Failure(fail_reason))?;
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Failure(fail_reason), logger)?;
 		Ok(())
 	}
 
-	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
+	pub fn update_fail_malformed_htlc<L: Deref>(
+		&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason, logger: &L
+	) -> Result<(), ChannelError> where L::Target: Logger {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fail malformed HTLC message while quiescent".to_owned()));
 		}
@@ -5892,7 +6063,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Failure(fail_reason))?;
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Failure(fail_reason), logger)?;
 		Ok(())
 	}
 
@@ -5937,9 +6108,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(channel_monitor)
 	}
 
-	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-		where L::Target: Logger
-	{
+	pub fn commitment_signed<L: Deref>(
+		&mut self, msg: &msgs::CommitmentSigned, logger: &L
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
 		self.commitment_signed_check_state()?;
 
 		let updates = self
@@ -5954,9 +6125,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.commitment_signed_update_monitor(updates, logger)
 	}
 
-	pub fn commitment_signed_batch<L: Deref>(&mut self, batch: &BTreeMap<Txid, msgs::CommitmentSigned>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-		where L::Target: Logger
-	{
+	pub fn commitment_signed_batch<L: Deref>(
+		&mut self, batch: &BTreeMap<Txid, msgs::CommitmentSigned>, logger: &L
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
 		self.commitment_signed_check_state()?;
 
 		// Any commitment_signed not associated with a FundingScope is ignored below if a
@@ -5999,9 +6170,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(())
 	}
 
-	fn commitment_signed_update_monitor<L: Deref>(&mut self, mut updates: Vec<ChannelMonitorUpdateStep>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
-		where L::Target: Logger
-	{
+	fn commitment_signed_update_monitor<L: Deref>(
+		&mut self, mut updates: Vec<ChannelMonitorUpdateStep>, logger: &L
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> where L::Target: Logger {
 		if self.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
 			// We only fail to advance our commitment point/number if we're currently
 			// waiting for our signer to unblock and provide a commitment point.
@@ -6026,21 +6197,26 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			if let &InboundHTLCState::RemoteAnnounced(ref htlc_resolution) = &htlc.state {
+			if let InboundHTLCState::RemoteAnnounced(ref htlc_resolution) = htlc.state() {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone());
+				htlc.set_state(
+					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution.clone()),
+					logger,
+				);
 				need_commitment = true;
 			}
 		}
 		let mut claimed_htlcs = Vec::new();
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
-			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
+			if let OutboundHTLCState::RemoteRemoved(_) = htlc.state() {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
-				mem::swap(outcome, &mut reason);
+				if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state_wrapper.state {
+					mem::swap(outcome, &mut reason);
+				}
 				if let OutboundHTLCOutcome::Success(preimage) = reason {
 					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
 					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
@@ -6050,7 +6226,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					// claim anyway.
 					claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
 				}
-				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
+				htlc.set_state(OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason), logger);
 				need_commitment = true;
 			}
 		}
@@ -6161,14 +6337,14 @@ impl<SP: Deref> FundedChannel<SP> where
 				// the limit. In case it's less rare than I anticipate, we may want to revisit
 				// handling this case better and maybe fulfilling some of the HTLCs while attempting
 				// to rebalance channels.
-				let fail_htlc_res = match &htlc_update {
-					&HTLCUpdateAwaitingACK::AddHTLC {
+				let fail_htlc_res = match htlc_update {
+					HTLCUpdateAwaitingACK::AddHTLC {
 						amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
-						skimmed_fee_msat, blinding_point, ..
+						skimmed_fee_msat, blinding_point, forward_span, ..
 					} => {
 						match self.send_htlc(
 							amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone(),
-							false, skimmed_fee_msat, blinding_point, fee_estimator, logger
+							false, skimmed_fee_msat, blinding_point, fee_estimator, forward_span, logger
 						) {
 							Ok(update_add_msg_opt) => {
 								// `send_htlc` only returns `Ok(None)`, when an update goes into
@@ -6192,7 +6368,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						}
 						None
 					},
-					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
+					HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
 						// If an HTLC claim was previously added to the holding cell (via
 						// `get_update_fulfill_htlc`, then generating the claim message itself must
 						// not fail - any in between attempts to claim the HTLC will have resulted
@@ -6211,11 +6387,11 @@ impl<SP: Deref> FundedChannel<SP> where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
+					HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
 						Some(self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
 						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
 					},
-					&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
+					HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, failure_code, sha256_of_onion } => {
 						Some(self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
 						 .map(|fail_msg_opt| fail_msg_opt.map(|_| ())))
 					}
@@ -6352,7 +6528,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", &self.context.channel_id());
 		let mut to_forward_infos = Vec::new();
-		let mut pending_update_adds = Vec::new();
+		let mut pending_update_adds = Vec::<(msgs::UpdateAddHTLC, BoxedSpan)>::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
@@ -6368,7 +6544,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
-				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+				if let &InboundHTLCState::LocalRemoved(ref reason) = htlc.state() {
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
 					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
@@ -6379,7 +6555,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			});
 			let now = duration_since_epoch();
 			pending_outbound_htlcs.retain(|htlc| {
-				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
+				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = htlc.state() {
 					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", &htlc.payment_hash);
 					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
 						if let (Some(timestamp), Some(now)) = (htlc.send_timestamp, now) {
@@ -6397,18 +6573,18 @@ impl<SP: Deref> FundedChannel<SP> where
 				} else { true }
 			});
 			for htlc in pending_inbound_htlcs.iter_mut() {
-				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
+				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = htlc.state() {
 					true
-				} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = &htlc.state {
+				} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = htlc.state() {
 					true
 				} else { false };
 				if swap {
 					let mut state = InboundHTLCState::Committed;
-					mem::swap(&mut state, &mut htlc.state);
+					mem::swap(&mut state, &mut htlc.state_wrapper.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
+						htlc.set_state(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution), logger);
 						require_commitment = true;
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) = state {
 						match resolution {
@@ -6419,11 +6595,17 @@ impl<SP: Deref> FundedChannel<SP> where
 										require_commitment = true;
 										match fail_msg {
 											HTLCFailureMsg::Relay(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.clone().into()));
+												htlc.set_state(
+													InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.clone().into())),
+													logger,
+												);
 												update_fail_htlcs.push(msg)
 											},
 											HTLCFailureMsg::Malformed(msg) => {
-												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+												htlc.set_state(
+													InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code))),
+													logger,
+												);
 												update_fail_malformed_htlcs.push(msg)
 											},
 										}
@@ -6431,30 +6613,33 @@ impl<SP: Deref> FundedChannel<SP> where
 									PendingHTLCStatus::Forward(forward_info) => {
 										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
 										to_forward_infos.push((forward_info, htlc.htlc_id));
-										htlc.state = InboundHTLCState::Committed;
+										htlc.set_state(InboundHTLCState::Committed, logger);
 									}
 								}
 							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								pending_update_adds.push(update_add_htlc);
-								htlc.state = InboundHTLCState::Committed;
+								htlc.set_state(InboundHTLCState::Committed, logger);
+								let forward_span = logger.start(Span::Forward, htlc.span.as_user_span_ref::<L>());
+								pending_update_adds.push((update_add_htlc, BoxedSpan::new(forward_span)));
 							}
 						}
 					}
 				}
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
-				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
+				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state() {
 					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", &htlc.payment_hash);
-					htlc.state = OutboundHTLCState::Committed;
+					htlc.set_state(OutboundHTLCState::Committed, logger);
 					*expecting_peer_commitment_signed = true;
 				}
-				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
+				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) = htlc.state() {
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 					// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 					let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
-					mem::swap(outcome, &mut reason);
-					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
+					if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state_wrapper.state {
+						mem::swap(outcome, &mut reason);
+					}
+					htlc.set_state(OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason), logger);
 					require_commitment = true;
 				}
 			}
@@ -6737,7 +6922,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let mut inbound_drop_count = 0;
 		self.context.pending_inbound_htlcs.retain(|htlc| {
-			match htlc.state {
+			match htlc.state() {
 				InboundHTLCState::RemoteAnnounced(_) => {
 					// They sent us an update_add_htlc but we never got the commitment_signed.
 					// We'll tell them what commitment_signed we're expecting next and they'll drop
@@ -6771,11 +6956,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
-			if let OutboundHTLCState::RemoteRemoved(_) = htlc.state {
+			if let OutboundHTLCState::RemoteRemoved(_) = htlc.state() {
 				// They sent us an update to remove this but haven't yet sent the corresponding
 				// commitment_signed, we need to move it back to Committed and they can re-send
 				// the update upon reconnection.
-				htlc.state = OutboundHTLCState::Committed;
+				htlc.set_state(OutboundHTLCState::Committed, logger);
 			}
 		}
 
@@ -7110,7 +7295,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let mut update_fail_malformed_htlcs = Vec::new();
 
 		for htlc in self.context.pending_outbound_htlcs.iter() {
-			if let &OutboundHTLCState::LocalAnnounced(ref onion_packet) = &htlc.state {
+			if let &OutboundHTLCState::LocalAnnounced(ref onion_packet) = htlc.state() {
 				update_add_htlcs.push(msgs::UpdateAddHTLC {
 					channel_id: self.context.channel_id(),
 					htlc_id: htlc.htlc_id,
@@ -7125,7 +7310,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter() {
-			if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+			if let &InboundHTLCState::LocalRemoved(ref reason) = htlc.state() {
 				match reason {
 					&InboundHTLCRemovalReason::FailRelay(ref err_packet) => {
 						update_fail_htlcs.push(msgs::UpdateFailHTLC {
@@ -7553,7 +7738,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent shutdown pre-funding generation".to_owned()));
 		}
 		for htlc in self.context.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
+			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state() {
 				return Err(ChannelError::close("Got shutdown with remote pending HTLCs".to_owned()));
 			}
 		}
@@ -7955,9 +8140,9 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let mut removed_outbound_total_msat = 0;
 		for ref htlc in self.context.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state() {
 				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state() {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
@@ -8851,13 +9036,14 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn queue_add_htlc<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		blinding_point: Option<PublicKey>, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		blinding_point: Option<PublicKey>, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		forward_span: Option<BoxedSpan>, logger: &L
 	) -> Result<(), (LocalHTLCFailureReason, String)>
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
 		self
 			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true,
-				skimmed_fee_msat, blinding_point, fee_estimator, logger)
+				skimmed_fee_msat, blinding_point, fee_estimator, forward_span, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 			.map_err(|err| {
 				debug_assert!(err.0.is_temporary(), "Queuing HTLC should return temporary error");
@@ -8885,7 +9071,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool,
 		skimmed_fee_msat: Option<u64>, blinding_point: Option<PublicKey>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
+		forward_span: Option<BoxedSpan>, logger: &L
 	) -> Result<Option<msgs::UpdateAddHTLC>, (LocalHTLCFailureReason, String)>
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
@@ -8949,6 +9136,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				onion_routing_packet,
 				skimmed_fee_msat,
 				blinding_point,
+				forward_span,
 			});
 			return Ok(None);
 		}
@@ -8960,17 +9148,22 @@ impl<SP: Deref> FundedChannel<SP> where
 		// that are simple to implement, and we do it on the outgoing side because then the failure message that encodes
 		// the hold time still needs to be built in channel manager.
 		let send_timestamp = duration_since_epoch();
-		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
-			htlc_id: self.context.next_holder_htlc_id,
-			amount_msat,
-			payment_hash: payment_hash.clone(),
-			cltv_expiry,
-			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
-			source,
-			blinding_point,
-			skimmed_fee_msat,
-			send_timestamp,
-		});
+		self.context.pending_outbound_htlcs.push(OutboundHTLCOutput::new(
+			self.context.channel_id(),
+			OutboundHTLCOutputParams {
+				htlc_id: self.context.next_holder_htlc_id,
+				amount_msat,
+				cltv_expiry,
+				payment_hash: payment_hash.clone(),
+				state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
+				source,
+				blinding_point,
+				skimmed_fee_msat,
+				send_timestamp,
+			},
+			forward_span,
+			logger,
+		));
 
 		let res = msgs::UpdateAddHTLC {
 			channel_id: self.context.channel_id,
@@ -9013,21 +9206,23 @@ impl<SP: Deref> FundedChannel<SP> where
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			let new_state = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) = &htlc.state {
+			let new_state = if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) = htlc.state() {
 				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
 			} else { None };
 			if let Some(state) = new_state {
 				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-				htlc.state = state;
+				htlc.set_state(state, logger);
 			}
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
-			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) = htlc.state() {
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", &htlc.payment_hash);
 				// Swap against a dummy variant to avoid a potentially expensive clone of `OutboundHTLCOutcome::Failure(HTLCFailReason)`
 				let mut reason = OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32]));
-				mem::swap(outcome, &mut reason);
-				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
+				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state_wrapper.state {
+					mem::swap(outcome, &mut reason);
+				}
+				htlc.set_state(OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason), logger);
 			}
 		}
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
@@ -9208,12 +9403,12 @@ impl<SP: Deref> FundedChannel<SP> where
 	pub fn send_htlc_and_commit<F: Deref, L: Deref>(
 		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32,
 		source: HTLCSource, onion_routing_packet: msgs::OnionPacket, skimmed_fee_msat: Option<u64>,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		fee_estimator: &LowerBoundedFeeEstimator<F>, forward_span: Option<BoxedSpan>, logger: &L
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
 		let send_res = self.send_htlc(amount_msat, payment_hash, cltv_expiry, source,
-			onion_routing_packet, false, skimmed_fee_msat, None, fee_estimator, logger);
+			onion_routing_packet, false, skimmed_fee_msat, None, fee_estimator, forward_span, logger);
 		// All [`LocalHTLCFailureReason`] errors are temporary, so they are [`ChannelError::Ignore`].
 		match send_res.map_err(|(_, msg)| ChannelError::Ignore(msg))? {
 			Some(_) => {
@@ -9254,7 +9449,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(APIError::APIMisuseError { err: "Cannot begin shutdown while quiescent".to_owned() });
 		}
 		for htlc in self.context.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
+			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state() {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
 			}
 		}
@@ -10607,21 +10802,21 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 
 		let mut dropped_inbound_htlcs = 0;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
+			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state() {
 				dropped_inbound_htlcs += 1;
 			}
 		}
 		let mut removed_htlc_failure_attribution_data: Vec<&Option<AttributionData>> = Vec::new();
 		(self.context.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.context.pending_inbound_htlcs.iter() {
-			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
+			if let &InboundHTLCState::RemoteAnnounced(_) = htlc.state() {
 				continue; // Drop
 			}
 			htlc.htlc_id.write(writer)?;
 			htlc.amount_msat.write(writer)?;
 			htlc.cltv_expiry.write(writer)?;
 			htlc.payment_hash.write(writer)?;
-			match &htlc.state {
+			match htlc.state() {
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
 				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
 					1u8.write(writer)?;
@@ -10668,7 +10863,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			htlc.cltv_expiry.write(writer)?;
 			htlc.payment_hash.write(writer)?;
 			htlc.source.write(writer)?;
-			match &htlc.state {
+			match htlc.state() {
 				&OutboundHTLCState::LocalAnnounced(ref onion_packet) => {
 					0u8.write(writer)?;
 					onion_packet.write(writer)?;
@@ -10713,7 +10908,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			match update {
 				&HTLCUpdateAwaitingACK::AddHTLC {
 					ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet,
-					blinding_point, skimmed_fee_msat,
+					blinding_point, skimmed_fee_msat, forward_span: _
 				} => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
@@ -10875,7 +11070,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 
 		let mut monitor_pending_update_adds = None;
 		if !self.context.monitor_pending_update_adds.is_empty() {
-			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
+			monitor_pending_update_adds = Some(self.context.monitor_pending_update_adds.iter().map(|a| &a.0).collect::<Vec<_>>());
 		}
 		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
@@ -10933,13 +11128,14 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 	}
 }
 
-impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures)> for FundedChannel<SP>
+impl<'a, 'b, 'c, 'd, ES: Deref, SP: Deref, L: Deref> ReadableArgs<(&'a ES, &'b SP, &'c ChannelTypeFeatures, &'d L)> for FundedChannel<SP>
 		where
 			ES::Target: EntropySource,
-			SP::Target: SignerProvider
+			SP::Target: SignerProvider,
+			L::Target: Logger,
 {
-	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures)) -> Result<Self, DecodeError> {
-		let (entropy_source, signer_provider, our_supported_features) = args;
+	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, &'c ChannelTypeFeatures, &'d L)) -> Result<Self, DecodeError> {
+		let (entropy_source, signer_provider, our_supported_features, logger) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		if ver <= 2 {
 			return Err(DecodeError::UnknownVersion);
@@ -10977,91 +11173,111 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, DEFAULT_MAX_HTLCS as usize));
 		for _ in 0..pending_inbound_htlc_count {
-			pending_inbound_htlcs.push(InboundHTLCOutput {
-				htlc_id: Readable::read(reader)?,
-				amount_msat: Readable::read(reader)?,
-				cltv_expiry: Readable::read(reader)?,
-				payment_hash: Readable::read(reader)?,
-				state: match <u8 as Readable>::read(reader)? {
-					1 => {
-						let resolution = if ver <= 3 {
-							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
-						} else {
-							Readable::read(reader)?
-						};
-						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
-					},
-					2 => {
-						let resolution = if ver <= 3 {
-							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
-						} else {
-							Readable::read(reader)?
-						};
-						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
-					},
-					3 => InboundHTLCState::Committed,
-					4 => {
-						let reason = match <u8 as Readable>::read(reader)? {
-							0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
-								data: Readable::read(reader)?,
-								attribution_data: None,
-							}),
-							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
-							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
-							_ => return Err(DecodeError::InvalidValue),
-						};
-						InboundHTLCState::LocalRemoved(reason)
-					},
-					_ => return Err(DecodeError::InvalidValue),
+			let htlc_id = Readable::read(reader)?;
+			let amount_msat = Readable::read(reader)?;
+			let cltv_expiry = Readable::read(reader)?;
+			let payment_hash = Readable::read(reader)?;
+			let state = match <u8 as Readable>::read(reader)? {
+				1 => {
+					let resolution = if ver <= 3 {
+						InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+					} else {
+						Readable::read(reader)?
+					};
+					InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
 				},
-			});
+				2 => {
+					let resolution = if ver <= 3 {
+						InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+					} else {
+						Readable::read(reader)?
+					};
+					InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
+				},
+				3 => InboundHTLCState::Committed,
+				4 => {
+					let reason = match <u8 as Readable>::read(reader)? {
+						0 => InboundHTLCRemovalReason::FailRelay(msgs::OnionErrorPacket {
+							data: Readable::read(reader)?,
+							attribution_data: None,
+						}),
+						1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
+						2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
+						_ => return Err(DecodeError::InvalidValue),
+					};
+					InboundHTLCState::LocalRemoved(reason)
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			};
+			pending_inbound_htlcs.push(InboundHTLCOutput::new(
+				channel_id,
+				InboundHTLCOutputParams {
+					htlc_id,
+					amount_msat,
+					cltv_expiry,
+					payment_hash,
+					state,
+				},
+				logger,
+			));
 		}
 
 		let pending_outbound_htlc_count: u64 = Readable::read(reader)?;
 		let mut pending_outbound_htlcs = Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, DEFAULT_MAX_HTLCS as usize));
 		for _ in 0..pending_outbound_htlc_count {
-			pending_outbound_htlcs.push(OutboundHTLCOutput {
-				htlc_id: Readable::read(reader)?,
-				amount_msat: Readable::read(reader)?,
-				cltv_expiry: Readable::read(reader)?,
-				payment_hash: Readable::read(reader)?,
-				source: Readable::read(reader)?,
-				state: match <u8 as Readable>::read(reader)? {
-					0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
-					1 => OutboundHTLCState::Committed,
-					2 => {
-						let option: Option<HTLCFailReason> = Readable::read(reader)?;
-						let outcome = match option {
-							Some(r) => OutboundHTLCOutcome::Failure(r),
-							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
-						};
-						OutboundHTLCState::RemoteRemoved(outcome)
-					},
-					3 => {
-						let option: Option<HTLCFailReason> = Readable::read(reader)?;
-						let outcome = match option {
-							Some(r) => OutboundHTLCOutcome::Failure(r),
-							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
-						};
-						OutboundHTLCState::AwaitingRemoteRevokeToRemove(outcome)
-					},
-					4 => {
-						let option: Option<HTLCFailReason> = Readable::read(reader)?;
-						let outcome = match option {
-							Some(r) => OutboundHTLCOutcome::Failure(r),
-							// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
-							None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
-						};
-						OutboundHTLCState::AwaitingRemovedRemoteRevoke(outcome)
-					},
-					_ => return Err(DecodeError::InvalidValue),
+			let htlc_id = Readable::read(reader)?;
+			let amount_msat = Readable::read(reader)?;
+			let cltv_expiry = Readable::read(reader)?;
+			let payment_hash = Readable::read(reader)?;
+			let source = Readable::read(reader)?;
+			let state = match <u8 as Readable>::read(reader)? {
+				0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
+				1 => OutboundHTLCState::Committed,
+				2 => {
+					let option: Option<HTLCFailReason> = Readable::read(reader)?;
+					let outcome = match option {
+						Some(r) => OutboundHTLCOutcome::Failure(r),
+						// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
+						None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+					};
+					OutboundHTLCState::RemoteRemoved(outcome)
 				},
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-			});
+				3 => {
+					let option: Option<HTLCFailReason> = Readable::read(reader)?;
+					let outcome = match option {
+						Some(r) => OutboundHTLCOutcome::Failure(r),
+						// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
+						None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+					};
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(outcome)
+				},
+				4 => {
+					let option: Option<HTLCFailReason> = Readable::read(reader)?;
+					let outcome = match option {
+						Some(r) => OutboundHTLCOutcome::Failure(r),
+						// Initialize this variant with a dummy preimage, the actual preimage will be filled in further down
+						None => OutboundHTLCOutcome::Success(PaymentPreimage([0u8; 32])),
+					};
+					OutboundHTLCState::AwaitingRemovedRemoteRevoke(outcome)
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			};
+			pending_outbound_htlcs.push(OutboundHTLCOutput::new(
+				channel_id,
+				OutboundHTLCOutputParams {
+					htlc_id,
+					amount_msat,
+					cltv_expiry,
+					payment_hash,
+					state,
+					source,
+					blinding_point: None,
+					skimmed_fee_msat: None,
+					send_timestamp: None,
+				},
+				None,
+				logger,
+			));
 		}
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
@@ -11076,6 +11292,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 					onion_routing_packet: Readable::read(reader)?,
 					skimmed_fee_msat: None,
 					blinding_point: None,
+					forward_span: None,
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
@@ -11287,7 +11504,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		let mut iter = preimages.into_iter();
 		for htlc in pending_outbound_htlcs.iter_mut() {
-			match &mut htlc.state {
+			match &mut htlc.state_wrapper.state {
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(ref mut preimage)) => {
 					// This variant was initialized like this further above
 					debug_assert_eq!(preimage, &PaymentPreimage([0u8; 32]));
@@ -11369,7 +11586,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		if let Some(attribution_data_list) = removed_htlc_failure_attribution_data {
 			let mut removed_htlc_relay_failures =
 				pending_inbound_htlcs.iter_mut().filter_map(|status|
-					if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(ref mut packet)) = &mut status.state {
+					if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(ref mut packet)) = &mut status.state_wrapper.state {
 						Some(&mut packet.attribution_data)
 					} else {
 						None
@@ -11439,6 +11656,11 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			&channel_parameters.counterparty_parameters.as_ref()
 				.expect("Persisted channel must have counterparty parameters").pubkeys.revocation_basepoint);
 
+		let monitor_pending_update_adds = monitor_pending_update_adds.unwrap_or_default().into_iter().map(|msg| {
+			let span = BoxedSpan::new(logger.start(Span::Forward, None));
+			(msg, span)
+		}).collect::<Vec<_>>();
+
 		Ok(FundedChannel {
 			funding: FundingScope {
 				value_to_self_msat,
@@ -11497,7 +11719,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
-				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or_default(),
+				monitor_pending_update_adds,
 				monitor_pending_tx_signatures: None,
 
 				signer_pending_revoke_and_ack: false,
@@ -11618,7 +11840,7 @@ mod tests {
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{AwaitingChannelReadyFlags, ChannelState, FundedChannel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
+	use crate::ln::channel::{AwaitingChannelReadyFlags, ChannelState, FundedChannel, InboundHTLCOutput, InboundHTLCOutputParams, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, OutboundHTLCOutputParams, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
@@ -11813,31 +12035,40 @@ mod tests {
 
 		// Put some inbound and outbound HTLCs in A's channel.
 		let htlc_amount_msat = 11_092_000; // put an amount below A's effective dust limit but above B's.
-		node_a_chan.context.pending_inbound_htlcs.push(InboundHTLCOutput {
-			htlc_id: 0,
-			amount_msat: htlc_amount_msat,
-			payment_hash: PaymentHash(Sha256::hash(&[42; 32]).to_byte_array()),
-			cltv_expiry: 300000000,
-			state: InboundHTLCState::Committed,
-		});
-
-		node_a_chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput {
-			htlc_id: 1,
-			amount_msat: htlc_amount_msat, // put an amount below A's dust amount but above B's.
-			payment_hash: PaymentHash(Sha256::hash(&[43; 32]).to_byte_array()),
-			cltv_expiry: 200000000,
-			state: OutboundHTLCState::Committed,
-			source: HTLCSource::OutboundRoute {
-				path: Path { hops: Vec::new(), blinded_tail: None },
-				session_priv: SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-				first_hop_htlc_msat: 548,
-				payment_id: PaymentId([42; 32]),
-				bolt12_invoice: None,
+		node_a_chan.context.pending_inbound_htlcs.push(InboundHTLCOutput::new(
+			node_a_chan.context.channel_id(),
+			InboundHTLCOutputParams {
+				htlc_id: 0,
+				amount_msat: htlc_amount_msat,
+				cltv_expiry: 300000000,
+				payment_hash: PaymentHash(Sha256::hash(&[42; 32]).to_byte_array()),
+				state: InboundHTLCState::Committed,
 			},
-			skimmed_fee_msat: None,
-			blinding_point: None,
-			send_timestamp: None,
-		});
+			&&logger,
+		));
+
+		node_a_chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput::new(
+			node_a_chan.context.channel_id(),
+			OutboundHTLCOutputParams {
+				htlc_id: 1,
+				amount_msat: htlc_amount_msat, // put an amount below A's dust amount but above B's.
+				payment_hash: PaymentHash(Sha256::hash(&[43; 32]).to_byte_array()),
+				cltv_expiry: 200000000,
+				state: OutboundHTLCState::Committed,
+				source: HTLCSource::OutboundRoute {
+					path: Path { hops: Vec::new(), blinded_tail: None },
+					session_priv: SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
+					first_hop_htlc_msat: 548,
+					payment_id: PaymentId([42; 32]),
+					bolt12_invoice: None,
+				},
+				skimmed_fee_msat: None,
+				blinding_point: None,
+				send_timestamp: None,
+			},
+			None,
+			&&logger,
+		));
 
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
 		// the dust limit check.
@@ -12213,17 +12444,22 @@ mod tests {
 			payment_id: PaymentId([42; 32]),
 			bolt12_invoice: None,
 		};
-		let dummy_outbound_output = OutboundHTLCOutput {
-			htlc_id: 0,
-			amount_msat: 0,
-			payment_hash: PaymentHash([43; 32]),
-			cltv_expiry: 0,
-			state: OutboundHTLCState::Committed,
-			source: dummy_htlc_source.clone(),
-			skimmed_fee_msat: None,
-			blinding_point: None,
-			send_timestamp: None,
-		};
+		let dummy_outbound_output = OutboundHTLCOutput::new(
+			chan.context.channel_id(),
+			OutboundHTLCOutputParams {
+				htlc_id: 0,
+				amount_msat: 0,
+				payment_hash: PaymentHash([43; 32]),
+				cltv_expiry: 0,
+				state: OutboundHTLCState::Committed,
+				source: dummy_htlc_source.clone(),
+				skimmed_fee_msat: None,
+				blinding_point: None,
+				send_timestamp: None,
+			},
+			None,
+			&&logger,
+		);
 		let mut pending_outbound_htlcs = vec![dummy_outbound_output.clone(); 10];
 		for (idx, htlc) in pending_outbound_htlcs.iter_mut().enumerate() {
 			if idx % 2 == 0 {
@@ -12248,6 +12484,7 @@ mod tests {
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
+			forward_span: None,
 		};
 		let dummy_holding_cell_claim_htlc = HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),
@@ -12288,7 +12525,7 @@ mod tests {
 		let mut s = crate::io::Cursor::new(&encoded_chan);
 		let mut reader = crate::util::ser::FixedLengthReader::new(&mut s, encoded_chan.len() as u64);
 		let features = channelmanager::provided_channel_type_features(&config);
-		let decoded_chan = FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features)).unwrap();
+		let decoded_chan = FundedChannel::read(&mut reader, (&&keys_provider, &&keys_provider, &features, &&logger)).unwrap();
 		assert_eq!(decoded_chan.context.pending_outbound_htlcs, pending_outbound_htlcs);
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
@@ -12316,7 +12553,7 @@ mod tests {
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator{fee_est: 15000};
-		let logger : Arc<dyn Logger> = Arc::new(test_utils::TestLogger::new());
+		let logger : Arc<test_utils::TestLogger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
 		let signer = InMemorySigner::new(
@@ -12508,65 +12745,87 @@ mod tests {
 						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80044a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a508b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008266ac6db5ea71aac3c95d97b0e172ff596844851a3216eb88382a8dddfd33d2022050e240974cfd5d708708b4365574517c18e7ae535ef732a3484d43d0d82be9f701483045022100f89034eba16b2be0e5581f750a0a6309192b75cce0f202f0ee2b4ec0cc394850022076c65dc507fe42276152b7a3d90e961e678adbe966e916ecfe85e64d430e75f301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
 		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 0,
-				amount_msat: 1000000,
-				cltv_expiry: 500,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
+			let mut out = InboundHTLCOutput::new(
+				chan.context.channel_id(),
+				InboundHTLCOutputParams {
+					htlc_id: 0,
+					amount_msat: 1000000,
+					cltv_expiry: 500,
+					payment_hash: PaymentHash([0; 32]),
+					state: InboundHTLCState::Committed,
+				},
+				&logger,
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 1,
-				amount_msat: 2000000,
-				cltv_expiry: 501,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
+			let mut out = InboundHTLCOutput::new(
+				chan.context.channel_id(),
+					InboundHTLCOutputParams {
+					htlc_id: 1,
+					amount_msat: 2000000,
+					cltv_expiry: 501,
+					payment_hash: PaymentHash([0; 32]),
+					state: InboundHTLCState::Committed,
+				},
+				&logger
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 2,
-				amount_msat: 2000000,
-				cltv_expiry: 502,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-			};
+			let mut out = OutboundHTLCOutput::new(
+				chan.context.channel_id(),
+				OutboundHTLCOutputParams {
+					htlc_id: 2,
+					amount_msat: 2000000,
+					cltv_expiry: 502,
+					payment_hash: PaymentHash([0; 32]),
+					state: OutboundHTLCState::Committed,
+					source: HTLCSource::dummy(),
+					skimmed_fee_msat: None,
+					blinding_point: None,
+					send_timestamp: None,
+				},
+				None,
+				&logger
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 3,
-				amount_msat: 3000000,
-				cltv_expiry: 503,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-			};
+			let mut out = OutboundHTLCOutput::new(
+				chan.context.channel_id(),
+				OutboundHTLCOutputParams {
+					htlc_id: 3,
+					amount_msat: 3000000,
+					cltv_expiry: 503,
+					payment_hash: PaymentHash([0; 32]),
+					state: OutboundHTLCState::Committed,
+					source: HTLCSource::dummy(),
+					skimmed_fee_msat: None,
+					blinding_point: None,
+					send_timestamp: None,
+				},
+				None,
+				&logger,
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 4,
-				amount_msat: 4000000,
-				cltv_expiry: 504,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
+			let mut out = InboundHTLCOutput::new(
+				chan.context.channel_id(),
+				InboundHTLCOutputParams {
+					htlc_id: 4,
+					amount_msat: 4000000,
+					cltv_expiry: 504,
+					payment_hash: PaymentHash([0; 32]),
+					state: InboundHTLCState::Committed,
+				},
+				&logger,
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).to_byte_array();
 			out
 		});
@@ -12946,44 +13205,58 @@ mod tests {
 		chan.context.feerate_per_kw = 253;
 		chan.context.pending_inbound_htlcs.clear();
 		chan.context.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
-				htlc_id: 1,
-				amount_msat: 2000000,
-				cltv_expiry: 501,
-				payment_hash: PaymentHash([0; 32]),
-				state: InboundHTLCState::Committed,
-			};
+			let mut out = InboundHTLCOutput::new(
+				chan.context.channel_id(),
+				InboundHTLCOutputParams {
+					htlc_id: 1,
+					amount_msat: 2000000,
+					cltv_expiry: 501,
+					payment_hash: PaymentHash([0; 32]),
+					state: InboundHTLCState::Committed,
+				},
+				&logger,
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.clear();
 		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 6,
-				amount_msat: 5000001,
-				cltv_expiry: 506,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-			};
+			let mut out = OutboundHTLCOutput::new(
+				chan.context.channel_id(),
+				OutboundHTLCOutputParams {
+					htlc_id: 6,
+					amount_msat: 5000001,
+					cltv_expiry: 506,
+					payment_hash: PaymentHash([0; 32]),
+					state: OutboundHTLCState::Committed,
+					source: HTLCSource::dummy(),
+					skimmed_fee_msat: None,
+					blinding_point: None,
+					send_timestamp: None,
+				},
+				None,
+				&logger,
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
 		});
 		chan.context.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
-				htlc_id: 5,
-				amount_msat: 5000000,
-				cltv_expiry: 505,
-				payment_hash: PaymentHash([0; 32]),
-				state: OutboundHTLCState::Committed,
-				source: HTLCSource::dummy(),
-				skimmed_fee_msat: None,
-				blinding_point: None,
-				send_timestamp: None,
-			};
+			let mut out = OutboundHTLCOutput::new(
+				chan.context.channel_id(),
+				OutboundHTLCOutputParams {
+					htlc_id: 5,
+					amount_msat: 5000000,
+					cltv_expiry: 505,
+					payment_hash: PaymentHash([0; 32]),
+					state: OutboundHTLCState::Committed,
+					source: HTLCSource::dummy(),
+					skimmed_fee_msat: None,
+					blinding_point: None,
+					send_timestamp: None,
+				},
+				None,
+				&logger,
+			);
 			out.payment_hash.0 = Sha256::hash(&<Vec<u8>>::from_hex("0505050505050505050505050505050505050505050505050505050505050505").unwrap()).to_byte_array();
 			out
 		});

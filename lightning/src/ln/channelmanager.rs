@@ -85,7 +85,7 @@ use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
-use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::logger::{BoxedSpan, Level, Logger, Span, WithContext};
 use crate::util::errors::APIError;
 
 #[cfg(async_payments)] use {
@@ -308,7 +308,6 @@ impl PendingHTLCRouting {
 
 /// Information about an incoming HTLC, including the [`PendingHTLCRouting`] describing where it
 /// should go next.
-#[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct PendingHTLCInfo {
 	/// Further routing details based on whether the HTLC is being forwarded or received.
@@ -349,6 +348,23 @@ pub struct PendingHTLCInfo {
 	/// This is used to allow LSPs to take fees as a part of payments, without the sender having to
 	/// shoulder them.
 	pub skimmed_fee_msat: Option<u64>,
+	pub(crate) forward_span: Option<BoxedSpan>,
+}
+
+// See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
+impl Clone for PendingHTLCInfo {
+	fn clone(&self) -> Self {
+		Self {
+			routing: self.routing.clone(),
+			incoming_shared_secret: self.incoming_shared_secret.clone(),
+			payment_hash: self.payment_hash.clone(),
+			incoming_amt_msat: self.incoming_amt_msat.clone(),
+			outgoing_amt_msat: self.outgoing_amt_msat,
+			outgoing_cltv_value: self.outgoing_cltv_value,
+			skimmed_fee_msat: self.skimmed_fee_msat.clone(),
+			forward_span: None,
+		}
+	}
 }
 
 #[derive(Clone)] // See FundedChannel::revoke_and_ack for why, tl;dr: Rust bug
@@ -2512,7 +2528,7 @@ where
 	/// `short_channel_id` here, nor the `channel_id` in `UpdateAddHTLC`!
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	decode_update_add_htlcs: Mutex<HashMap<u64, Vec<msgs::UpdateAddHTLC>>>,
+	decode_update_add_htlcs: Mutex<HashMap<u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan)>>>,
 
 	/// The sets of payments which are claimable or currently being claimed. See
 	/// [`ClaimablePayments`]' individual field docs for more info.
@@ -4533,7 +4549,7 @@ where
 	fn get_pending_htlc_info<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32],
 		decoded_hop: onion_utils::Hop, allow_underpay: bool,
-		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>,
+		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>, forward_span: Option<BoxedSpan>,
 	) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 		match decoded_hop {
 			onion_utils::Hop::Receive { .. } | onion_utils::Hop::BlindedReceive { .. } |
@@ -4546,13 +4562,13 @@ where
 				let current_height: u32 = self.best_block.read().unwrap().height;
 				create_recv_pending_htlc_info(decoded_hop, shared_secret, msg.payment_hash,
 					msg.amount_msat, msg.cltv_expiry, None, allow_underpay, msg.skimmed_fee_msat,
-					current_height)
+					current_height, forward_span)
 			},
 			onion_utils::Hop::Forward { .. } | onion_utils::Hop::BlindedForward { .. } => {
-				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
+				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt, forward_span)
 			},
 			onion_utils::Hop::TrampolineForward { .. } | onion_utils::Hop::TrampolineBlindedForward { .. } => {
-				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt)
+				create_fwd_pending_htlc_info(msg, decoded_hop, shared_secret, next_packet_pubkey_opt, forward_span)
 			},
 		}
 	}
@@ -4694,7 +4710,7 @@ where
 								first_hop_htlc_msat: htlc_msat,
 								payment_id,
 								bolt12_invoice: bolt12_invoice.cloned(),
-							}, onion_packet, None, &self.fee_estimator, &&logger);
+							}, onion_packet, None, &self.fee_estimator, None, &&logger);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
 								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
@@ -5790,7 +5806,7 @@ where
 
 			let mut htlc_forwards = Vec::new();
 			let mut htlc_fails = Vec::new();
-			for update_add_htlc in &update_add_htlcs {
+			for (update_add_htlc, forward_span) in update_add_htlcs {
 				let (next_hop, next_packet_details_opt) = match decode_incoming_update_add_htlc_onion(
 					&update_add_htlc, &*self.node_signer, &*self.logger, &self.secp_ctx
 				) {
@@ -5815,7 +5831,7 @@ where
 				match self.do_funded_channel_callback(incoming_scid, |chan: &mut FundedChannel<SP>| {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, Some(update_add_htlc.payment_hash));
 					chan.can_accept_incoming_htlc(
-						update_add_htlc, &self.fee_estimator, &logger,
+						&update_add_htlc, &self.fee_estimator, &logger,
 					)
 				}) {
 					Some(Ok(_)) => {},
@@ -5849,7 +5865,7 @@ where
 
 				match self.get_pending_htlc_info(
 					&update_add_htlc, shared_secret, next_hop, incoming_accept_underpaying_htlcs,
-					next_packet_details_opt.map(|d| d.next_packet_pubkey),
+					next_packet_details_opt.map(|d| d.next_packet_pubkey), Some(forward_span)
 				) {
 					Ok(info) => htlc_forwards.push((info, update_add_htlc.htlc_id)),
 					Err(inbound_err) => {
@@ -5917,7 +5933,7 @@ where
 										prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
 										prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
-											outgoing_cltv_value, ..
+											outgoing_cltv_value, forward_span, ..
 										}
 									}) => {
 										let cltv_expiry = routing.incoming_cltv_expiry();
@@ -5992,7 +6008,7 @@ where
 												match create_recv_pending_htlc_info(next_hop,
 													incoming_shared_secret, payment_hash, outgoing_amt_msat,
 													outgoing_cltv_value, Some(phantom_shared_secret), false, None,
-													current_height)
+													current_height, forward_span)
 												{
 													Ok(info) => phantom_receives.push((
 														prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
@@ -6037,7 +6053,7 @@ where
 					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
 					let mut draining_pending_forwards = pending_forwards.drain(..);
-					while let Some(forward_info) = draining_pending_forwards.next() {
+					while let Some(mut forward_info) = draining_pending_forwards.next() {
 						let queue_fail_htlc_res = match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
@@ -6045,7 +6061,7 @@ where
 									incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 									routing: PendingHTLCRouting::Forward {
 										ref onion_packet, blinded, incoming_cltv_expiry, ..
-									}, skimmed_fee_msat, ..
+									}, skimmed_fee_msat, ref mut forward_span, ..
 								},
 							}) => {
 								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
@@ -6113,9 +6129,11 @@ where
 								};
 								log_trace!(logger, "Forwarding HTLC from SCID {} with payment_hash {} and next hop SCID {} over {} channel {} with corresponding peer {}",
 									prev_short_channel_id, &payment_hash, short_chan_id, channel_description, optimal_channel.context.channel_id(), &counterparty_node_id);
+								let mut swapped_span = None;
+								mem::swap(forward_span, &mut swapped_span);
 								if let Err((reason, msg)) = optimal_channel.queue_add_htlc(outgoing_amt_msat,
 										payment_hash, outgoing_cltv_value, htlc_source.clone(),
-										onion_packet.clone(), skimmed_fee_msat, next_blinding_point, &self.fee_estimator,
+										onion_packet.clone(), skimmed_fee_msat, next_blinding_point, &self.fee_estimator, swapped_span,
 										&&logger)
 								{
 									log_trace!(logger, "Failed to forward HTLC with payment_hash {} to peer {}: {}", &payment_hash, &counterparty_node_id, msg);
@@ -7644,11 +7662,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
 		channel: &mut FundedChannel<SP>, raa: Option<msgs::RevokeAndACK>,
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
-		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
+		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<(msgs::UpdateAddHTLC, BoxedSpan)>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		tx_signatures: Option<msgs::TxSignatures>
-	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
+	) -> (
+		Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>,
+		Option<(u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan)>)>
+	) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures",
 			&channel.context.channel_id(),
@@ -8864,7 +8885,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.update_add_htlc(&msg, &self.fee_estimator), chan_entry);
+					try_channel_entry!(self, peer_state, chan.update_add_htlc(&msg, &self.fee_estimator, &self.logger), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_entry);
@@ -8890,9 +8911,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-						let res = try_channel_entry!(self, peer_state, chan.update_fulfill_htlc(&msg), chan_entry);
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						let res = try_channel_entry!(self, peer_state, chan.update_fulfill_htlc(&msg, &&logger), chan_entry);
 						if let HTLCSource::PreviousHopData(prev_hop) = &res.0 {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 							log_trace!(logger,
 								"Holding the next revoke_and_ack from {} until the preimage is durably persisted in the inbound edge's ChannelMonitor",
 								msg.channel_id);
@@ -8939,7 +8960,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan_entry);
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					try_channel_entry!(self, peer_state, chan.update_fail_htlc(&msg, HTLCFailReason::from_msg(msg), &&logger), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 						"Got an update_fail_htlc message for an unfunded channel!".into())), chan_entry);
@@ -8968,7 +8990,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					try_channel_entry!(self, peer_state, Err(chan_err), chan_entry);
 				}
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code.into(), msg.sha256_of_onion.to_vec())), chan_entry);
+					try_channel_entry!(self, peer_state, chan.update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code.into(), msg.sha256_of_onion.to_vec()), &self.logger), chan_entry);
 				} else {
 					return try_channel_entry!(self, peer_state, Err(ChannelError::close(
 						"Got an update_fail_malformed_htlc message for an unfunded channel!".into())), chan_entry);
@@ -9057,7 +9079,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
+	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<(msgs::UpdateAddHTLC, BoxedSpan)>)) {
 		let mut push_forward_event = self.forward_htlcs.lock().unwrap().is_empty();
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
 		push_forward_event &= decode_update_add_htlcs.is_empty();
@@ -12975,6 +12997,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(8, outgoing_cltv_value, required),
 	(9, incoming_amt_msat, option),
 	(10, skimmed_fee_msat, option),
+	(_unused, forward_span, (static_value, None))
 });
 
 
@@ -13384,10 +13407,14 @@ where
 			}
 		}
 
-		let mut decode_update_add_htlcs_opt = None;
 		let decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
+		let mut decode_update_add_htlcs_opt = None;
 		if !decode_update_add_htlcs.is_empty() {
-			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
+			let mut without_spans = new_hash_map();
+			for (scid, htlcs) in decode_update_add_htlcs.iter() {
+				without_spans.insert(scid, htlcs.iter().map(|(msg, _span)| msg).collect::<Vec<_>>());
+			}
+			decode_update_add_htlcs_opt = Some(without_spans);
 		}
 
 		let claimable_payments = self.claimable_payments.lock().unwrap();
@@ -13796,7 +13823,7 @@ where
 		let mut close_background_events = Vec::new();
 		for _ in 0..channel_count {
 			let mut channel: FundedChannel<SP> = FundedChannel::read(reader, (
-				&args.entropy_source, &args.signer_provider, &provided_channel_type_features(&args.default_config)
+				&args.entropy_source, &args.signer_provider, &provided_channel_type_features(&args.default_config), &args.logger,
 			))?;
 			let logger = WithChannelContext::from(&args.logger, &channel.context, None);
 			let channel_id = channel.context.channel_id();
@@ -14733,6 +14760,14 @@ where
 				return Err(DecodeError::InvalidValue);
 			}
 		}
+
+		let decode_update_add_htlcs = decode_update_add_htlcs.into_iter().map(|(scid, htlcs)| (
+			scid,
+			htlcs.into_iter().map(|htlc| {
+				let span = BoxedSpan::new(args.logger.start(Span::Forward, None));
+				(htlc, span)
+			}).collect::<Vec<_>>()
+		)).collect::<HashMap<_, _>>();
 
 		let channel_manager = ChannelManager {
 			chain_hash,
@@ -15989,7 +16024,7 @@ mod tests {
 		if let Err(crate::ln::channelmanager::InboundHTLCErr { reason, .. }) =
 			create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 				sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat),
-				current_height)
+				current_height, None)
 		{
 			assert_eq!(reason, LocalHTLCFailureReason::FinalIncorrectHTLCAmount);
 		} else { panic!(); }
@@ -16012,7 +16047,7 @@ mod tests {
 		let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 		assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
-			current_height).is_ok());
+			current_height, None).is_ok());
 	}
 
 	#[test]
@@ -16036,7 +16071,7 @@ mod tests {
 				custom_tlvs: Vec::new(),
 			},
 			shared_secret: SharedSecret::from_bytes([0; 32]),
-		}, [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, current_height);
+		}, [0; 32], PaymentHash([0; 32]), 100, TEST_FINAL_CLTV + 1, None, true, None, current_height, None);
 
 		// Should not return an error as this condition:
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334

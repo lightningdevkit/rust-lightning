@@ -177,7 +177,7 @@ struct LatestMonitorState {
 }
 
 struct TestChainMonitor {
-	pub logger: Arc<dyn Logger>,
+	pub logger: Arc<dyn Logger<UserSpan = ()>>,
 	pub keys: Arc<KeyProvider>,
 	pub persister: Arc<TestPersister>,
 	pub chain_monitor: Arc<
@@ -186,7 +186,7 @@ struct TestChainMonitor {
 			Arc<dyn chain::Filter>,
 			Arc<TestBroadcaster>,
 			Arc<FuzzEstimator>,
-			Arc<dyn Logger>,
+			Arc<dyn Logger<UserSpan = ()>>,
 			Arc<TestPersister>,
 		>,
 	>,
@@ -194,8 +194,8 @@ struct TestChainMonitor {
 }
 impl TestChainMonitor {
 	pub fn new(
-		broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>,
-		persister: Arc<TestPersister>, keys: Arc<KeyProvider>,
+		broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger<UserSpan = ()>>,
+		feeest: Arc<FuzzEstimator>, persister: Arc<TestPersister>, keys: Arc<KeyProvider>,
 	) -> Self {
 		Self {
 			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(
@@ -445,7 +445,7 @@ type ChanMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
-	Arc<dyn Logger>,
+	Arc<dyn Logger<UserSpan = ()>>,
 >;
 
 #[inline]
@@ -621,7 +621,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => {{
-			let logger: Arc<dyn Logger> =
+			let logger: Arc<dyn Logger<UserSpan = ()>> =
 				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let node_secret = SecretKey::from_slice(&[
 				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -677,7 +677,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr, $fee_estimator: expr) => {{
 			let keys_manager = Arc::clone(&$keys_manager);
-			let logger: Arc<dyn Logger> =
+			let logger: Arc<dyn Logger<UserSpan = ()>> =
 				Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let chain_monitor = Arc::new(TestChainMonitor::new(
 				broadcast.clone(),

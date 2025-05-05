@@ -16,7 +16,7 @@ use crate::ln::inbound_payment::{create, create_from_hash};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{RouteHint, RouteHintHop, Router};
 use crate::onion_message::messenger::MessageRouter;
-use crate::util::logger::{Logger, Record};
+use crate::util::logger::{Logger, Record, Span};
 use bitcoin::secp256k1::PublicKey;
 use alloc::collections::{btree_map, BTreeMap};
 use core::ops::Deref;
@@ -689,10 +689,16 @@ struct WithChannelDetails<'a, 'b, L: Deref> where L::Target: Logger {
 }
 
 impl<'a, 'b, L: Deref> Logger for WithChannelDetails<'a, 'b, L> where L::Target: Logger {
+	type UserSpan = <<L as Deref>::Target as Logger>::UserSpan;
+
 	fn log(&self, mut record: Record) {
 		record.peer_id = Some(self.details.counterparty.node_id);
 		record.channel_id = Some(self.details.channel_id);
 		self.logger.log(record)
+	}
+
+	fn start(&self, span: Span, parent: Option<&Self::UserSpan>) -> Self::UserSpan {
+		self.logger.start(span, parent)
 	}
 }
 

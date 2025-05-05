@@ -221,7 +221,7 @@ type ChannelMan<'a> = ChannelManager<
 			Arc<dyn chain::Filter>,
 			Arc<TestBroadcaster>,
 			Arc<FuzzEstimator>,
-			Arc<dyn Logger>,
+			Arc<dyn Logger<UserSpan = ()>>,
 			Arc<TestPersister>,
 		>,
 	>,
@@ -232,14 +232,20 @@ type ChannelMan<'a> = ChannelManager<
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
 	&'a FuzzRouter,
-	Arc<dyn Logger>,
+	Arc<dyn Logger<UserSpan = ()>>,
 >;
 type PeerMan<'a> = PeerManager<
 	Peer<'a>,
 	Arc<ChannelMan<'a>>,
-	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn UtxoLookup>, Arc<dyn Logger>>>,
+	Arc<
+		P2PGossipSync<
+			Arc<NetworkGraph<Arc<dyn Logger<UserSpan = ()>>>>,
+			Arc<dyn UtxoLookup>,
+			Arc<dyn Logger<UserSpan = ()>>,
+		>,
+	>,
 	IgnoringMessageHandler,
-	Arc<dyn Logger>,
+	Arc<dyn Logger<UserSpan = ()>>,
 	IgnoringMessageHandler,
 	Arc<KeyProvider>,
 >;
@@ -252,7 +258,7 @@ struct MoneyLossDetector<'a> {
 			Arc<dyn chain::Filter>,
 			Arc<TestBroadcaster>,
 			Arc<FuzzEstimator>,
-			Arc<dyn Logger>,
+			Arc<dyn Logger<UserSpan = ()>>,
 			Arc<TestPersister>,
 		>,
 	>,
@@ -276,7 +282,7 @@ impl<'a> MoneyLossDetector<'a> {
 				Arc<dyn chain::Filter>,
 				Arc<TestBroadcaster>,
 				Arc<FuzzEstimator>,
-				Arc<dyn Logger>,
+				Arc<dyn Logger<UserSpan = ()>>,
 				Arc<TestPersister>,
 			>,
 		>,
@@ -556,7 +562,7 @@ impl SignerProvider for KeyProvider {
 }
 
 #[inline]
-pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
+pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger<UserSpan = ()>>) {
 	if data.len() < 32 {
 		return;
 	}
@@ -1060,13 +1066,14 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 }
 
 pub fn full_stack_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
+	let logger: Arc<dyn Logger<UserSpan = ()>> =
+		Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 	do_test(data, &logger);
 }
 
 #[no_mangle]
 pub extern "C" fn full_stack_run(data: *const u8, datalen: usize) {
-	let logger: Arc<dyn Logger> =
+	let logger: Arc<dyn Logger<UserSpan = ()>> =
 		Arc::new(test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {}));
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);
 }
@@ -1695,7 +1702,7 @@ pub fn write_fst_seeds(path: &str) {
 
 #[cfg(test)]
 mod tests {
-	use lightning::util::logger::{Logger, Record};
+	use lightning::util::logger::{Logger, Record, Span};
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};
 
@@ -1704,6 +1711,8 @@ mod tests {
 		pub lines: Mutex<HashMap<(String, String), usize>>,
 	}
 	impl Logger for TrackingLogger {
+		type UserSpan = ();
+
 		fn log(&self, record: Record) {
 			*self
 				.lines
@@ -1720,6 +1729,8 @@ mod tests {
 				record.args
 			);
 		}
+
+		fn start(&self, _span: Span, _parent: Option<&()>) -> () {}
 	}
 
 	#[test]
@@ -1733,7 +1744,7 @@ mod tests {
 		let test = super::two_peer_forwarding_seed();
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger<UserSpan = ()>>));
 
 		let log_entries = logger.lines.lock().unwrap();
 		// 1
@@ -1769,7 +1780,7 @@ mod tests {
 		let test = super::gossip_exchange_seed();
 
 		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
-		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
+		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger<UserSpan = ()>>));
 
 		let log_entries = logger.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Sending message to all peers except Some(PublicKey(0000000000000000000000000000000000000000000000000000000000000002ff00000000000000000000000000000000000000000000000000000000000002)) or the announced channel's counterparties: ChannelAnnouncement { node_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, node_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, bitcoin_signature_1: 3026020200b202200303030303030303030303030303030303030303030303030303030303030303, bitcoin_signature_2: 3026020200b202200202020202020202020202020202020202020202020202020202020202020202, contents: UnsignedChannelAnnouncement { features: [], chain_hash: 6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000, short_channel_id: 42, node_id_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), node_id_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), bitcoin_key_1: NodeId(030303030303030303030303030303030303030303030303030303030303030303), bitcoin_key_2: NodeId(020202020202020202020202020202020202020202020202020202020202020202), excess_data: [] } }".to_string())), Some(&1));
