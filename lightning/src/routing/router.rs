@@ -2122,13 +2122,14 @@ impl<'a> PaymentPath<'a> {
 		value_msat + extra_contribution_msat
 	}
 
-	// Returns the maximum contribution that this path can make to the final value of the payment. May
-	// be slightly lower than the actual max due to rounding errors when aggregating fees along the
-	// path.
-	fn compute_max_final_value_contribution(
+	/// Returns the hop which most limited our maximum contribution as well as the maximum
+	/// contribution this path can make to the final value of the payment.
+	/// May be slightly lower than the actual max due to rounding errors when aggregating fees
+	/// along the path.
+	fn max_final_value_msat(
 		&self, used_liquidities: &HashMap<CandidateHopId, u64>, channel_saturation_pow_half: u8
-	) -> u64 {
-		let mut max_path_contribution = u64::MAX;
+	) -> (usize, u64) {
+		let mut max_path_contribution = (0, u64::MAX);
 		for (idx, (hop, _)) in self.hops.iter().enumerate() {
 			let hop_effective_capacity_msat = hop.candidate.effective_capacity();
 			let hop_max_msat = max_htlc_from_capacity(
@@ -2154,7 +2155,9 @@ impl<'a> PaymentPath<'a> {
 
 			if let Some(hop_contribution) = hop_max_final_value_contribution {
 				let hop_contribution: u64 = hop_contribution.try_into().unwrap_or(u64::MAX);
-				max_path_contribution = core::cmp::min(hop_contribution, max_path_contribution);
+				if hop_contribution <= max_path_contribution.1 {
+					max_path_contribution = (idx, hop_contribution);
+				}
 			} else { debug_assert!(false); }
 		}
 
@@ -3310,9 +3313,8 @@ where L::Target: Logger {
 				// recompute the fees again, so that if that's the case, we match the currently
 				// underpaid htlc_minimum_msat with fees.
 				debug_assert_eq!(payment_path.get_value_msat(), value_contribution_msat);
-				let max_path_contribution_msat = payment_path.compute_max_final_value_contribution(
-					&used_liquidities, channel_saturation_pow_half
-				);
+				let (lowest_value_contrib_hop, max_path_contribution_msat) =
+					payment_path.max_final_value_msat(&used_liquidities, channel_saturation_pow_half);
 				let desired_value_contribution = cmp::min(max_path_contribution_msat, final_value_msat);
 				value_contribution_msat = payment_path.update_value_and_recompute_fees(desired_value_contribution);
 
@@ -3348,6 +3350,8 @@ where L::Target: Logger {
 						*used_liquidities.entry(CandidateHopId::Clear((scid, false))).or_default() = exhausted;
 						*used_liquidities.entry(CandidateHopId::Clear((scid, true))).or_default() = exhausted;
 					}
+				} else {
+					log_trace!(logger, "Path was limited to {}msat by hop {}", max_path_contribution_msat, lowest_value_contrib_hop);
 				}
 
 				// Track the total amount all our collected paths allow to send so that we know
