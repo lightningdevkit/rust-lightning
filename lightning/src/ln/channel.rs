@@ -2860,31 +2860,6 @@ struct RefundingScope {
 	pending_interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
-#[cfg(splicing)]
-impl RefundingScope {
-	/// Get a transaction input that is the previous funding transaction
-	fn get_input_of_previous_funding(pre_funding_transaction: &Option<Transaction>, pre_funding_txo: &Option<OutPoint>)
-	-> Result<(TxIn, TransactionU16LenLimited), ChannelError> {
-		if let Some(pre_funding_transaction) = pre_funding_transaction {
-			if let Some(pre_funding_txo) = pre_funding_txo {
-				Ok((
-					TxIn {
-						previous_output: pre_funding_txo.into_bitcoin_outpoint(),
-						script_sig: ScriptBuf::new(),
-						sequence: Sequence::ZERO,
-						witness: Witness::new(),
-					},
-					TransactionU16LenLimited::new(pre_funding_transaction.clone()).unwrap(), // TODO err?
-				))
-			} else {
-				Err(ChannelError::Warn("Internal error: Missing previous funding transaction outpoint".to_string()))
-			}
-		} else {
-			Err(ChannelError::Warn("Internal error: Missing previous funding transaction".to_string()))
-		}
-	}
-}
-
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
@@ -9266,7 +9241,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
 		// We need the current funding tx as an extra input
-		let prev_funding_input = RefundingScope::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
+		let prev_funding_input = Self::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			pending_splice.refunding_scope = Some(refunding_scope);
 			debug_assert!(pending_splice.awaiting_splice_ack);
@@ -9292,6 +9267,29 @@ impl<SP: Deref> FundedChannel<SP> where
 		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, true, Some(prev_funding_input))
 			.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
 		Ok(tx_msg_opt)
+	}
+
+	/// Get a transaction input that is the previous funding transaction
+	#[cfg(splicing)]
+	fn get_input_of_previous_funding(pre_funding_transaction: &Option<Transaction>, pre_funding_txo: &Option<OutPoint>)
+	-> Result<(TxIn, TransactionU16LenLimited), ChannelError> {
+		if let Some(pre_funding_transaction) = pre_funding_transaction {
+			if let Some(pre_funding_txo) = pre_funding_txo {
+				Ok((
+					TxIn {
+						previous_output: pre_funding_txo.into_bitcoin_outpoint(),
+						script_sig: ScriptBuf::new(),
+						sequence: Sequence::ZERO,
+						witness: Witness::new(),
+					},
+					TransactionU16LenLimited::new(pre_funding_transaction.clone()).unwrap(), // TODO err?
+				))
+			} else {
+				Err(ChannelError::Warn("Internal error: Missing previous funding transaction outpoint".to_string()))
+			}
+		} else {
+			Err(ChannelError::Warn("Internal error: Missing previous funding transaction".to_string()))
+		}
 	}
 
 	/// Splice process starting; update state, log, etc.
