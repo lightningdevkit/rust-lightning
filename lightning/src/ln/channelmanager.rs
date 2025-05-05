@@ -6039,6 +6039,7 @@ where
 					let mut draining_pending_forwards = pending_forwards.drain(..);
 					while let Some(forward_info) = draining_pending_forwards.next() {
 						let queue_fail_htlc_res = match forward_info {
+							#[rustfmt::skip]
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
 								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
@@ -6191,6 +6192,7 @@ where
 				} else {
 					'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
 						match forward_info {
+							#[rustfmt::skip]
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
 								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
