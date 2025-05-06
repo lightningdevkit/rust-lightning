@@ -1293,41 +1293,19 @@ pub enum Event {
 		/// Will be `None` for channels created prior to LDK version 0.0.122.
 		channel_type: Option<ChannelTypeFeatures>,
 	},
-	/// Used to indicate that a channel with the given `channel_id` is ready to
-	/// be used. This event is emitted either when the funding transaction has been confirmed
-	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
-	/// establishment.
+	/// Used to indicate that a channel with the given `channel_id` is ready to be used. This event
+	/// is emitted when
+	/// - the initial funding transaction has been confirmed on-chain to an acceptable depth
+	///   according to both parties (i.e., `channel_ready` messages were exchanged),
+	/// - a splice funding transaction has been confirmed on-chain to an acceptable depth according
+	///   to both parties (i.e., `splice_locked` messages were exchanged), or,
+	/// - in case of a 0conf channel, when both parties have confirmed the channel establishment.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	ChannelReady {
 		/// The `channel_id` of the channel that is ready.
-		channel_id: ChannelId,
-		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
-		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
-		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be randomized for an inbound channel.
-		///
-		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
-		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
-		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-		user_channel_id: u128,
-		/// The `node_id` of the channel counterparty.
-		counterparty_node_id: PublicKey,
-		/// The features that this channel will operate with.
-		channel_type: ChannelTypeFeatures,
-	},
-	/// Used to indicate that a channel with the given `channel_id` has had its funding spliced.
-	/// This event is emitted when the splice transaction has been confirmed on-chain to a
-	/// sufficient depth by both parties, or, in case of a 0-conf channel, when both parties have
-	/// completed negotiation of the splice transaction.
-	///
-	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	SpliceLocked {
-		/// The `channel_id` of the channel that had its funding spliced.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
@@ -1867,15 +1845,6 @@ impl Writeable for Event {
 					(8, former_temporary_channel_id, required),
 				});
 			},
-			&Event::SpliceLocked { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
-				45u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, channel_id, required),
-					(2, user_channel_id, required),
-					(4, counterparty_node_id, required),
-					(6, channel_type, required),
-				});
-			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -2391,28 +2360,6 @@ impl MaybeReadable for Event {
 					counterparty_node_id: counterparty_node_id.0.unwrap(),
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
-			},
-			45u8 => {
-				let mut f = || {
-					let mut channel_id = ChannelId::new_zero();
-					let mut user_channel_id: u128 = 0;
-					let mut counterparty_node_id = RequiredWrapper(None);
-					let mut channel_type = RequiredWrapper(None);
-					read_tlv_fields!(reader, {
-						(0, channel_id, required),
-						(2, user_channel_id, required),
-						(4, counterparty_node_id, required),
-						(6, channel_type, required),
-					});
-
-					Ok(Some(Event::SpliceLocked {
-						channel_id,
-						user_channel_id,
-						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						channel_type: channel_type.0.unwrap()
-					}))
-				};
-				f()
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt

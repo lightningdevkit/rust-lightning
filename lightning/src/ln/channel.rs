@@ -2135,8 +2135,8 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// We track whether we already emitted a `FundingTxBroadcastSafe` event.
 	funding_tx_broadcast_safe_event_emitted: bool,
 
-	// We track whether we already emitted a `ChannelReady` event.
-	channel_ready_event_emitted: bool,
+	// We track whether we already emitted an initial `ChannelReady` event.
+	initial_channel_ready_event_emitted: bool,
 
 	/// Some if we initiated to shut down the channel.
 	local_initiated_shutdown: Option<()>,
@@ -2944,7 +2944,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
-			channel_ready_event_emitted: false,
+			initial_channel_ready_event_emitted: false,
 
 			channel_keys_id,
 
@@ -3180,7 +3180,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
-			channel_ready_event_emitted: false,
+			initial_channel_ready_event_emitted: false,
 
 			channel_keys_id,
 
@@ -3590,14 +3590,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.channel_pending_event_emitted = true;
 	}
 
-	// Checks whether we should emit a `ChannelReady` event.
-	pub(crate) fn should_emit_channel_ready_event(&mut self) -> bool {
-		self.is_usable() && !self.channel_ready_event_emitted
+	// Checks whether we should emit an initial `ChannelReady` event.
+	pub(crate) fn should_emit_initial_channel_ready_event(&mut self) -> bool {
+		self.is_usable() && !self.initial_channel_ready_event_emitted
 	}
 
 	// Remembers that we already emitted a `ChannelReady` event.
-	pub(crate) fn set_channel_ready_event_emitted(&mut self) {
-		self.channel_ready_event_emitted = true;
+	pub(crate) fn set_initial_channel_ready_event_emitted(&mut self) {
+		self.initial_channel_ready_event_emitted = true;
 	}
 
 	// Remembers that we already emitted a `FundingTxBroadcastSafe` event.
@@ -11037,7 +11037,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			{ Some(self.context.holder_max_htlc_value_in_flight_msat) } else { None };
 
 		let channel_pending_event_emitted = Some(self.context.channel_pending_event_emitted);
-		let channel_ready_event_emitted = Some(self.context.channel_ready_event_emitted);
+		let initial_channel_ready_event_emitted = Some(self.context.initial_channel_ready_event_emitted);
 		let funding_tx_broadcast_safe_event_emitted = Some(self.context.funding_tx_broadcast_safe_event_emitted);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -11081,7 +11081,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(17, self.context.announcement_sigs_state, required),
 			(19, self.context.latest_inbound_scid_alias, option),
 			(21, self.context.outbound_scid_alias, required),
-			(23, channel_ready_event_emitted, option),
+			(23, initial_channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, self.context.channel_keys_id, required),
 			(28, holder_max_accepted_htlcs, option),
@@ -11368,7 +11368,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		let mut latest_inbound_scid_alias = None;
 		let mut outbound_scid_alias = 0u64;
 		let mut channel_pending_event_emitted = None;
-		let mut channel_ready_event_emitted = None;
+		let mut initial_channel_ready_event_emitted = None;
 		let mut funding_tx_broadcast_safe_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
@@ -11418,7 +11418,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(17, announcement_sigs_state, required),
 			(19, latest_inbound_scid_alias, option),
 			(21, outbound_scid_alias, required),
-			(23, channel_ready_event_emitted, option),
+			(23, initial_channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, channel_keys_id, required),
 			(28, holder_max_accepted_htlcs, option),
@@ -11713,7 +11713,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(false),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
-				channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
+				initial_channel_ready_event_emitted: initial_channel_ready_event_emitted.unwrap_or(true),
 
 				channel_keys_id,
 
