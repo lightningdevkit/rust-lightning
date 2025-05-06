@@ -3364,6 +3364,10 @@ macro_rules! emit_initial_channel_ready_event {
 					channel_id: $channel.context.channel_id(),
 					user_channel_id: $channel.context.get_user_id(),
 					counterparty_node_id: $channel.context.get_counterparty_node_id(),
+					funding_txo: $channel
+						.funding
+						.get_funding_txo()
+						.map(|outpoint| outpoint.into_bitcoin_outpoint()),
 					channel_type: $channel.funding.get_channel_type().clone(),
 				},
 				None,
@@ -10167,6 +10171,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							channel_id: chan.context.channel_id(),
 							user_channel_id: chan.context.get_user_id(),
 							counterparty_node_id: chan.context.get_counterparty_node_id(),
+							funding_txo: chan.funding.get_funding_txo().map(|outpoint| outpoint.into_bitcoin_outpoint()),
 							channel_type: chan.funding.get_channel_type().clone(),
 						}, None));
 					}
@@ -12281,6 +12286,7 @@ where
 												channel_id: funded_channel.context.channel_id(),
 												user_channel_id: funded_channel.context.get_user_id(),
 												counterparty_node_id: funded_channel.context.get_counterparty_node_id(),
+												funding_txo: funded_channel.funding.get_funding_txo().map(|outpoint| outpoint.into_bitcoin_outpoint()),
 												channel_type: funded_channel.funding.get_channel_type().clone(),
 											}, None));
 										}
