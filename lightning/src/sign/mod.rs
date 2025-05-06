@@ -794,6 +794,13 @@ pub trait ChannelSigner {
 	fn channel_keys_id(&self) -> [u8; 32];
 }
 
+/// Represents Secret Key used for encrypting Peer Storage.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PeerStorageKey {
+	/// Represents the key used to encrypt and decrypt Peer Storage.
+	pub inner: [u8; 32],
+}
+
 /// Specifies the recipient of an invoice.
 ///
 /// This indicates to [`NodeSigner::sign_invoice`] what node secret key should be used to sign
@@ -831,6 +838,15 @@ pub trait NodeSigner {
 	///
 	/// [phantom node payments]: PhantomKeysManager
 	fn get_inbound_payment_key(&self) -> ExpandedKey;
+
+	/// Defines a method to derive a 32-byte encryption key for peer storage.
+	///
+	/// Implementations of this method must derive a secure encryption key.
+	/// The key is used to encrypt or decrypt backups of our state stored with our peers.
+	///
+	/// Thus, if you wish to rely on recovery using this method, you should use a key which
+	/// can be re-derived from data which would be available after state loss (eg the wallet seed).
+	fn get_peer_storage_key(&self) -> PeerStorageKey;
 
 	/// Get node id based on the provided [`Recipient`].
 	///
@@ -1771,6 +1787,7 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: Xpriv,
 	channel_child_index: AtomicUsize,
+	peer_storage_key: PeerStorageKey,
 
 	#[cfg(test)]
 	pub(crate) entropy_source: RandomBytes,
@@ -1801,18 +1818,30 @@ impl KeysManager {
 	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
+		// Constants for key derivation path indices used in this function.
+		const NODE_SECRET_INDEX: u32 = 0;
+		const DESTINATION_SCRIPT_INDEX: u32 = 1;
+		const SHUTDOWN_PUBKEY_INDEX: u32 = 2;
+		const CHANNEL_MASTER_KEY_INDEX: u32 = 3;
+		const INBOUND_PAYMENT_KEY_INDEX: u32 = 5;
+		const PEER_STORAGE_KEY_INDEX: u32 = 6;
+
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
 		match Xpriv::new_master(Network::Testnet, seed) {
 			Ok(master_key) => {
 				let node_secret = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(0).unwrap())
+					.derive_priv(
+						&secp_ctx,
+						&ChildNumber::from_hardened_idx(NODE_SECRET_INDEX).unwrap(),
+					)
 					.expect("Your RNG is busted")
 					.private_key;
 				let node_id = PublicKey::from_secret_key(&secp_ctx, &node_secret);
-				let destination_script = match master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(1).unwrap())
-				{
+				let destination_script = match master_key.derive_priv(
+					&secp_ctx,
+					&ChildNumber::from_hardened_idx(DESTINATION_SCRIPT_INDEX).unwrap(),
+				) {
 					Ok(destination_key) => {
 						let wpubkey_hash = WPubkeyHash::hash(
 							&Xpub::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes(),
@@ -1824,21 +1853,35 @@ impl KeysManager {
 					},
 					Err(_) => panic!("Your RNG is busted"),
 				};
-				let shutdown_pubkey = match master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(2).unwrap())
-				{
+				let shutdown_pubkey = match master_key.derive_priv(
+					&secp_ctx,
+					&ChildNumber::from_hardened_idx(SHUTDOWN_PUBKEY_INDEX).unwrap(),
+				) {
 					Ok(shutdown_key) => Xpub::from_priv(&secp_ctx, &shutdown_key).public_key,
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let channel_master_key = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(3).unwrap())
+					.derive_priv(
+						&secp_ctx,
+						&ChildNumber::from_hardened_idx(CHANNEL_MASTER_KEY_INDEX).unwrap(),
+					)
 					.expect("Your RNG is busted");
 				let inbound_payment_key: SecretKey = master_key
-					.derive_priv(&secp_ctx, &ChildNumber::from_hardened_idx(5).unwrap())
+					.derive_priv(
+						&secp_ctx,
+						&ChildNumber::from_hardened_idx(INBOUND_PAYMENT_KEY_INDEX).unwrap(),
+					)
 					.expect("Your RNG is busted")
 					.private_key;
 				let mut inbound_pmt_key_bytes = [0; 32];
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
+				let peer_storage_key = master_key
+					.derive_priv(
+						&secp_ctx,
+						&ChildNumber::from_hardened_idx(PEER_STORAGE_KEY_INDEX).unwrap(),
+					)
+					.expect("Your RNG is busted")
+					.private_key;
 
 				let mut rand_bytes_engine = Sha256::engine();
 				rand_bytes_engine.input(&starting_time_secs.to_be_bytes());
@@ -1853,6 +1896,8 @@ impl KeysManager {
 					node_secret,
 					node_id,
 					inbound_payment_key: ExpandedKey::new(inbound_pmt_key_bytes),
+
+					peer_storage_key: PeerStorageKey { inner: peer_storage_key.secret_bytes() },
 
 					destination_script,
 					shutdown_pubkey,
@@ -2079,6 +2124,10 @@ impl NodeSigner for KeysManager {
 		self.inbound_payment_key.clone()
 	}
 
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.peer_storage_key.clone()
+	}
+
 	fn sign_invoice(
 		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
@@ -2238,6 +2287,10 @@ impl NodeSigner for PhantomKeysManager {
 
 	fn get_inbound_payment_key(&self) -> ExpandedKey {
 		self.inbound_payment_key.clone()
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.inner.peer_storage_key.clone()
 	}
 
 	fn sign_invoice(

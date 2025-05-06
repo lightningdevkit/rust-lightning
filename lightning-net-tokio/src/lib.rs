@@ -839,6 +839,7 @@ mod tests {
 			route_handler: Arc::clone(&a_handler),
 			onion_message_handler: Arc::new(IgnoringMessageHandler {}),
 			custom_message_handler: Arc::new(IgnoringMessageHandler {}),
+			send_only_message_handler: Arc::new(IgnoringMessageHandler {}),
 		};
 		let a_manager = Arc::new(PeerManager::new(
 			a_msg_handler,
@@ -862,6 +863,7 @@ mod tests {
 			route_handler: Arc::clone(&b_handler),
 			onion_message_handler: Arc::new(IgnoringMessageHandler {}),
 			custom_message_handler: Arc::new(IgnoringMessageHandler {}),
+			send_only_message_handler: Arc::new(IgnoringMessageHandler {}),
 		};
 		let b_manager = Arc::new(PeerManager::new(
 			b_msg_handler,
@@ -924,6 +926,7 @@ mod tests {
 			onion_message_handler: Arc::new(IgnoringMessageHandler {}),
 			route_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler {}),
 			custom_message_handler: Arc::new(IgnoringMessageHandler {}),
+			send_only_message_handler: Arc::new(IgnoringMessageHandler {}),
 		};
 		let a_manager = Arc::new(PeerManager::new(
 			a_msg_handler,
