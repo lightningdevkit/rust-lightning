@@ -172,6 +172,133 @@ impl AsyncReceiveOfferCache {
 #[cfg(async_payments)]
 const MAX_CACHED_OFFERS_TARGET: usize = 10;
 
+// The max number of times we'll attempt to request offer paths per timer tick.
+#[cfg(async_payments)]
+const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+// If we have an offer that is replaceable and its invoice was confirmed as persisted more than 2
+// hours ago, we can go ahead and refresh it because we always want to have the freshest offer
+// possible when a user goes to retrieve a cached offer.
+//
+// We avoid replacing unused offers too quickly -- this prevents the case where we send multiple
+// invoices from different offers competing for the same slot to the server, messages are received
+// delayed or out-of-order, and we end up providing an offer to the user that the server just
+// deleted and replaced.
+#[cfg(async_payments)]
+const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
+
+#[cfg(async_payments)]
+impl AsyncReceiveOfferCache {
+	/// Remove expired offers from the cache, returning whether new offers are needed.
+	pub(super) fn prune_expired_offers(
+		&mut self, duration_since_epoch: Duration, force_reset_request_attempts: bool,
+	) -> bool {
+		// Remove expired offers from the cache.
+		let mut offer_was_removed = false;
+		for offer_opt in self.offers.iter_mut() {
+			let offer_is_expired = offer_opt
+				.as_ref()
+				.map_or(false, |offer| offer.offer.is_expired_no_std(duration_since_epoch));
+			if offer_is_expired {
+				offer_opt.take();
+				offer_was_removed = true;
+			}
+		}
+
+		// Allow up to `MAX_UPDATE_ATTEMPTS` offer paths requests to be sent out roughly once per
+		// minute, or if an offer was removed.
+		if force_reset_request_attempts || offer_was_removed {
+			self.reset_offer_paths_request_attempts()
+		}
+
+		self.needs_new_offer_idx(duration_since_epoch).is_some()
+			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+	}
+
+	/// If we have any empty slots in the cache or offers that can and should be replaced with a fresh
+	/// offer, here we return the index of the slot that needs a new offer. The index is used for
+	/// setting [`ServeStaticInvoice::invoice_slot`] when sending the corresponding new static invoice
+	/// to the server, so the server knows which existing persisted invoice is being replaced, if any.
+	///
+	/// Returns `None` if the cache is full and no offers can currently be replaced.
+	///
+	/// [`ServeStaticInvoice::invoice_slot`]: crate::onion_message::async_payments::ServeStaticInvoice::invoice_slot
+	fn needs_new_offer_idx(&self, duration_since_epoch: Duration) -> Option<usize> {
+		// If we have any empty offer slots, return the first one we find
+		let empty_slot_idx_opt = self.offers.iter().position(|offer_opt| offer_opt.is_none());
+		if empty_slot_idx_opt.is_some() {
+			return empty_slot_idx_opt;
+		}
+
+		// If all of our offers are already used or pending, then none are available to be replaced
+		let no_replaceable_offers = self
+			.offers_with_idx()
+			.all(|(_, offer)| matches!(offer.status, OfferStatus::Used | OfferStatus::Pending));
+		if no_replaceable_offers {
+			return None;
+		}
+
+		// All offers are pending except for one, so we shouldn't request an update of the only usable
+		// offer
+		let num_payable_offers = self
+			.offers_with_idx()
+			.filter(|(_, offer)| {
+				matches!(offer.status, OfferStatus::Used | OfferStatus::Ready { .. })
+			})
+			.count();
+		if num_payable_offers <= 1 {
+			return None;
+		}
+
+		// Filter for unused offers where longer than OFFER_REFRESH_THRESHOLD time has passed since they
+		// were last updated, so they are stale enough to warrant replacement.
+		let awhile_ago = duration_since_epoch.saturating_sub(OFFER_REFRESH_THRESHOLD);
+		self.unused_offers()
+			.filter(|(_, _, invoice_confirmed_persisted_at)| {
+				*invoice_confirmed_persisted_at < awhile_ago
+			})
+			// Get the stalest offer and return its index
+			.min_by(|(_, _, persisted_at_a), (_, _, persisted_at_b)| {
+				persisted_at_a.cmp(&persisted_at_b)
+			})
+			.map(|(idx, _, _)| idx)
+	}
+
+	/// Returns an iterator over (offer_idx, offer)
+	fn offers_with_idx(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer)> {
+		self.offers.iter().enumerate().filter_map(|(idx, offer_opt)| {
+			if let Some(offer) = offer_opt {
+				Some((idx, offer))
+			} else {
+				None
+			}
+		})
+	}
+
+	/// Returns an iterator over (offer_idx, offer, invoice_confirmed_persisted_at)
+	/// where all returned offers are [`OfferStatus::Ready`]
+	fn unused_offers(&self) -> impl Iterator<Item = (usize, &AsyncReceiveOffer, Duration)> {
+		self.offers_with_idx().filter_map(|(idx, offer)| match offer.status {
+			OfferStatus::Ready { invoice_confirmed_persisted_at } => {
+				Some((idx, offer, invoice_confirmed_persisted_at))
+			},
+			_ => None,
+		})
+	}
+
+	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
+	// server. Calling this method allows the cache to self-limit how many requests are sent.
+	pub(super) fn new_offers_requested(&mut self) {
+		self.offer_paths_request_attempts += 1;
+	}
+
+	/// Called on timer tick (roughly once per minute) to allow another [`MAX_UPDATE_ATTEMPTS`] offer
+	/// paths requests to go out.
+	fn reset_offer_paths_request_attempts(&mut self) {
+		self.offer_paths_request_attempts = 0;
+	}
+}
+
 impl Writeable for AsyncReceiveOfferCache {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {

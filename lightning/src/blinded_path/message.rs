@@ -404,6 +404,21 @@ pub enum OffersContext {
 /// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 #[derive(Clone, Debug)]
 pub enum AsyncPaymentsContext {
+	/// Context used by a reply path to an [`OfferPathsRequest`], provided back to us as an async
+	/// recipient in corresponding [`OfferPaths`] messages from the static invoice server.
+	///
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+	OfferPaths {
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// This avoids the situation where the [`OfferPaths`] message is very delayed and thus
+		/// outdated.
+		///
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -485,6 +500,9 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, nonce, required),
 		(2, hmac, required),
 		(4, path_absolute_expiry, required),
+	},
+	(2, OfferPaths) => {
+		(0, path_absolute_expiry, required),
 	},
 );
 
