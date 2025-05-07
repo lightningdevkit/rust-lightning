@@ -66,7 +66,7 @@ use {
 	crate::offers::offer::Amount,
 	crate::offers::signer,
 	crate::offers::static_invoice::{StaticInvoice, StaticInvoiceBuilder},
-	crate::onion_message::async_payments::HeldHtlcAvailable,
+	crate::onion_message::async_payments::{HeldHtlcAvailable, OfferPathsRequest},
 };
 
 #[cfg(feature = "dnssec")]
@@ -213,6 +213,11 @@ where
 /// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
 /// even if multiple invoices are received.
 pub(crate) const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
+
+/// The default relative expiry for reply paths where a quick response is expected and the reply
+/// path is single-use.
+#[cfg(async_payments)]
+const TEMP_REPLY_PATH_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
 impl<MR: Deref> OffersMessageFlow<MR>
 where
@@ -1128,5 +1133,63 @@ where
 		&self,
 	) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
+	}
+
+	/// Sends out [`OfferPathsRequest`] onion messages if we are an often-offline recipient and are
+	/// configured to interactively build offers and static invoices with a static invoice server.
+	///
+	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
+	#[cfg(async_payments)]
+	pub(crate) fn check_refresh_async_receive_offers<ES: Deref>(
+		&self, peers: Vec<MessageForwardNode>, entropy: ES,
+	) -> Result<(), ()>
+	where
+		ES::Target: EntropySource,
+	{
+		// Terminate early if this node does not intend to receive async payments.
+		if self.paths_to_static_invoice_server.is_empty() {
+			return Ok(());
+		}
+
+		let expanded_key = &self.inbound_payment_key;
+		let duration_since_epoch = self.duration_since_epoch();
+
+		// Check with the cache to see whether we need new offers to be interactively built with the
+		// static invoice server.
+		let mut async_receive_offer_cache = self.async_receive_offer_cache.lock().unwrap();
+		async_receive_offer_cache.prune_expired_offers(duration_since_epoch);
+		let needs_new_offers =
+			async_receive_offer_cache.should_request_offer_paths(duration_since_epoch);
+
+		// If we need new offers, send out offer paths request messages to the static invoice server.
+		if needs_new_offers {
+			let nonce = Nonce::from_entropy_source(&*entropy);
+			let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
+				nonce,
+				hmac: signer::hmac_for_offer_paths_context(nonce, expanded_key),
+				path_absolute_expiry: duration_since_epoch
+					.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
+			});
+			let reply_paths = match self.create_blinded_paths(peers, context) {
+				Ok(paths) => paths,
+				Err(()) => {
+					return Err(());
+				},
+			};
+
+			// We can't fail past this point, so indicate to the cache that we've requested new offers.
+			async_receive_offer_cache.new_offers_requested(duration_since_epoch);
+			core::mem::drop(async_receive_offer_cache);
+
+			let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
+			enqueue_onion_message_with_reply_paths(
+				message,
+				&self.paths_to_static_invoice_server[..],
+				reply_paths,
+				&mut self.pending_async_payments_messages.lock().unwrap(),
+			);
+		}
+
+		Ok(())
 	}
 }
