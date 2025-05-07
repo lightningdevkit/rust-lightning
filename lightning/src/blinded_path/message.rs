@@ -404,6 +404,32 @@ pub enum OffersContext {
 /// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 #[derive(Clone, Debug)]
 pub enum AsyncPaymentsContext {
+	/// Context used by a reply path to an [`OfferPathsRequest`], provided back to us in corresponding
+	/// [`OfferPaths`] messages.
+	///
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+	OfferPaths {
+		/// A nonce used for authenticating that an [`OfferPaths`] message is valid for a preceding
+		/// [`OfferPathsRequest`].
+		///
+		/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		nonce: Nonce,
+		/// Authentication code for the [`OfferPaths`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to cache an
+		/// unintended async receive offer.
+		///
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Used to time out a static invoice server from providing offer paths if the async recipient
+		/// is no longer configured to accept paths from them.
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -482,6 +508,11 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(4, hmac, required),
 	},
 	(1, InboundPayment) => {
+		(0, nonce, required),
+		(2, hmac, required),
+		(4, path_absolute_expiry, required),
+	},
+	(2, OfferPaths) => {
 		(0, nonce, required),
 		(2, hmac, required),
 		(4, path_absolute_expiry, required),

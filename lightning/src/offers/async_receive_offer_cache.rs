@@ -78,6 +78,92 @@ impl AsyncReceiveOfferCache {
 	}
 }
 
+#[cfg(async_payments)]
+impl AsyncReceiveOfferCache {
+	// The target number of offers we want to have cached at any given time, to mitigate too much
+	// reuse of the same offer.
+	const NUM_CACHED_OFFERS_TARGET: usize = 3;
+
+	// The max number of times we'll attempt to request offer paths or attempt to refresh a static
+	// invoice before giving up.
+	const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+	/// Remove expired offers from the cache.
+	pub(super) fn prune_expired_offers(&mut self, duration_since_epoch: Duration) {
+		// Remove expired offers from the cache.
+		let mut offer_was_removed = false;
+		self.offers.retain(|offer| {
+			if offer.offer.is_expired_no_std(duration_since_epoch) {
+				offer_was_removed = true;
+				return false;
+			}
+			true
+		});
+
+		// If we just removed a newly expired offer, force allowing more paths request attempts.
+		if offer_was_removed {
+			self.reset_offer_paths_request_attempts();
+		}
+
+		// If we haven't attempted to request new paths in a long time, allow more requests to go out
+		// if/when needed.
+		self.check_reset_offer_paths_request_attempts(duration_since_epoch);
+	}
+
+	/// Checks whether we should request new offer paths from the always-online static invoice server.
+	pub(super) fn should_request_offer_paths(&self, duration_since_epoch: Duration) -> bool {
+		self.needs_new_offers(duration_since_epoch)
+			&& self.offer_paths_request_attempts < Self::MAX_UPDATE_ATTEMPTS
+	}
+
+	/// Returns a bool indicating whether new offers are needed in the cache.
+	fn needs_new_offers(&self, duration_since_epoch: Duration) -> bool {
+		// If we have fewer than NUM_CACHED_OFFERS_TARGET offers that aren't expiring soon, indicate
+		// that new offers should be interactively built.
+		let num_unexpiring_offers = self
+			.offers
+			.iter()
+			.filter(|offer| {
+				let offer_absolute_expiry = offer.offer.absolute_expiry().unwrap_or(Duration::MAX);
+				let offer_created_at = offer.offer_created_at;
+				let offer_lifespan =
+					offer_absolute_expiry.saturating_sub(offer_created_at).as_secs();
+				let elapsed = duration_since_epoch.saturating_sub(offer_created_at).as_secs();
+
+				// If an offer is in the last 10% of its lifespan, it's expiring soon.
+				elapsed.saturating_mul(10) >= offer_lifespan.saturating_mul(9)
+			})
+			.count();
+
+		num_unexpiring_offers < Self::NUM_CACHED_OFFERS_TARGET
+	}
+
+	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
+	// server. Calling this method allows the cache to self-limit how many requests are sent, in case
+	// the server goes unresponsive.
+	pub(super) fn new_offers_requested(&mut self, duration_since_epoch: Duration) {
+		self.offer_paths_request_attempts += 1;
+		self.last_offer_paths_request_timestamp = duration_since_epoch;
+	}
+
+	/// If we haven't sent an offer paths request in a long time, reset the limit to allow more
+	/// requests to be sent out if/when needed.
+	fn check_reset_offer_paths_request_attempts(&mut self, duration_since_epoch: Duration) {
+		const REQUESTS_TIME_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
+		let should_reset =
+			self.last_offer_paths_request_timestamp.saturating_add(REQUESTS_TIME_BUFFER)
+				< duration_since_epoch;
+		if should_reset {
+			self.reset_offer_paths_request_attempts();
+		}
+	}
+
+	fn reset_offer_paths_request_attempts(&mut self) {
+		self.offer_paths_request_attempts = 0;
+		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+}
+
 impl Writeable for AsyncReceiveOfferCache {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
