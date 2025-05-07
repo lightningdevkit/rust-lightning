@@ -74,17 +74,17 @@
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 mod esplora;
 
-#[cfg(any(feature = "electrum"))]
+#[cfg(any(feature = "_electrum"))]
 mod electrum;
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
 mod common;
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
 mod error;
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
 pub use error::TxSyncError;
 
-#[cfg(feature = "electrum")]
+#[cfg(feature = "_electrum")]
 pub use electrum::ElectrumSyncClient;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 pub use esplora::EsploraSyncClient;
