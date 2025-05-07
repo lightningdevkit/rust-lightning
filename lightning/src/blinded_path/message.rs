@@ -23,6 +23,8 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::Offer;
+use crate::onion_message::messenger::Responder;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -430,6 +432,58 @@ pub enum AsyncPaymentsContext {
 		/// offer paths if we are no longer configured to accept paths from them.
 		path_absolute_expiry: core::time::Duration,
 	},
+	/// Context used by a reply path to a [`ServeStaticInvoice`] message, provided back to us in
+	/// corresponding [`StaticInvoicePersisted`] messages.
+	///
+	/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	StaticInvoicePersisted {
+		/// The offer corresponding to the [`StaticInvoice`] that has been persisted. This invoice is
+		/// now ready to be provided by the static invoice server in response to [`InvoiceRequest`]s.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		offer: Offer,
+		/// A [`Nonce`] useful for updating the [`StaticInvoice`] that corresponds to the
+		/// [`AsyncPaymentsContext::StaticInvoicePersisted::offer`], since the offer may be much longer
+		/// lived than the invoice.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		offer_nonce: Nonce,
+		/// Useful to determine how far an offer is into its lifespan, to decide whether the offer is
+		/// expiring soon and we should start building a new one.
+		offer_created_at: core::time::Duration,
+		/// A [`Responder`] useful for updating the [`StaticInvoice`] that corresponds to the
+		/// [`AsyncPaymentsContext::StaticInvoicePersisted::offer`], since the offer may be much longer
+		/// lived than the invoice.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		update_static_invoice_path: Responder,
+		/// The time as duration since the Unix epoch at which the [`StaticInvoice`] expires, used to track
+		/// when we need to generate and persist a new invoice with the static invoice server.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		static_invoice_absolute_expiry: core::time::Duration,
+		/// A nonce used for authenticating that a [`StaticInvoicePersisted`] message is valid for a
+		/// preceding [`ServeStaticInvoice`] message.
+		///
+		/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		nonce: Nonce,
+		/// Authentication code for the [`StaticInvoicePersisted`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to cache an
+		/// unintended async receive offer.
+		///
+		/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Prevents a static invoice server from causing an async recipient to cache an old offer if
+		/// the recipient is no longer configured to use that server.
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -516,6 +570,16 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, nonce, required),
 		(2, hmac, required),
 		(4, path_absolute_expiry, required),
+	},
+	(3, StaticInvoicePersisted) => {
+		(0, offer, required),
+		(2, offer_nonce, required),
+		(4, offer_created_at, required),
+		(6, update_static_invoice_path, required),
+		(8, static_invoice_absolute_expiry, required),
+		(10, nonce, required),
+		(12, hmac, required),
+		(14, path_absolute_expiry, required),
 	},
 );
 

@@ -16,6 +16,8 @@ use crate::io::Read;
 use crate::ln::msgs::DecodeError;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::Offer;
+#[cfg(async_payments)]
+use crate::onion_message::async_payments::OfferPaths;
 use crate::onion_message::messenger::Responder;
 use crate::prelude::*;
 use crate::util::ser::{Readable, Writeable, Writer};
@@ -104,6 +106,9 @@ const PATHS_REQUESTS_RESET_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60)
 const OFFER_EXPIRES_SOON_THRESHOLD_PERCENT: u64 = 90;
 
 #[cfg(async_payments)]
+const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 60 * 60;
+
+#[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
 	/// Remove expired offers from the cache, returning whether new offers are needed.
 	pub(super) fn prune_expired_offers(&mut self, duration_since_epoch: Duration) -> bool {
@@ -128,6 +133,28 @@ impl AsyncReceiveOfferCache {
 
 		self.needs_new_offers(duration_since_epoch)
 			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+	}
+
+	/// Returns whether the new paths we've just received from the static invoice server should be used
+	/// to build a new offer.
+	pub(super) fn should_build_offer_with_paths(
+		&self, message: &OfferPaths, duration_since_epoch: Duration,
+	) -> bool {
+		if !self.needs_new_offers(duration_since_epoch) {
+			return false;
+		}
+
+		// Require the offer that would be built using these paths to last at least a few hours.
+		let min_offer_paths_absolute_expiry =
+			duration_since_epoch.as_secs().saturating_add(MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS);
+		let offer_paths_absolute_expiry =
+			message.paths_absolute_expiry.map(|exp| exp.as_secs()).unwrap_or(u64::MAX);
+		if offer_paths_absolute_expiry < min_offer_paths_absolute_expiry {
+			return false;
+		}
+
+		// Check that we don't have any current offers that already contain these paths
+		self.offers.iter().all(|offer| offer.offer.paths() != message.paths)
 	}
 
 	/// Returns a bool indicating whether new offers are needed in the cache.
