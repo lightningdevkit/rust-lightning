@@ -214,7 +214,7 @@ pub fn create_from_hash(
 }
 
 #[cfg(async_payments)]
-pub(super) fn create_for_spontaneous_payment(
+pub(crate) fn create_for_spontaneous_payment(
 	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 	current_time: u64, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<PaymentSecret, ()> {

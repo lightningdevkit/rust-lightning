@@ -13426,7 +13426,34 @@ where
 	fn handle_offer_paths(
 		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
 	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
-		None
+		#[cfg(async_payments)]
+		{
+			let responder = match _responder {
+				Some(responder) => responder,
+				None => return None,
+			};
+			let (serve_static_invoice, reply_context) = match self.flow.handle_offer_paths(
+				_message,
+				_context,
+				responder.clone(),
+				self.get_peers_for_blinded_path(),
+				self.list_usable_channels(),
+				&*self.entropy_source,
+				&*self.router,
+			) {
+				Some((msg, ctx)) => (msg, ctx),
+				None => return None,
+			};
+
+			// We cached a new pending offer, so persist the cache.
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+			let response_instructions = responder.respond_with_reply_path(reply_context);
+			return Some((serve_static_invoice, response_instructions));
+		}
+
+		#[cfg(not(async_payments))]
+		return None;
 	}
 
 	fn handle_serve_static_invoice(

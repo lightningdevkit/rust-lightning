@@ -187,6 +187,10 @@ const MAX_UPDATE_ATTEMPTS: u8 = 3;
 #[cfg(async_payments)]
 const OFFER_REFRESH_THRESHOLD: Duration = Duration::from_secs(2 * 60 * 60);
 
+// Require offer paths that we receive to last at least 3 months.
+#[cfg(async_payments)]
+const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 30 * 24 * 60 * 60;
+
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
 	/// Remove expired offers from the cache, returning whether new offers are needed.
@@ -213,6 +217,66 @@ impl AsyncReceiveOfferCache {
 
 		self.needs_new_offer_idx(duration_since_epoch).is_some()
 			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+	}
+
+	/// Returns whether the new paths we've just received from the static invoice server should be used
+	/// to build a new offer.
+	pub(super) fn should_build_offer_with_paths(
+		&self, offer_paths: &[BlindedMessagePath], offer_paths_absolute_expiry_secs: Option<u64>,
+		duration_since_epoch: Duration,
+	) -> bool {
+		if self.needs_new_offer_idx(duration_since_epoch).is_none() {
+			return false;
+		}
+
+		// Require the offer that would be built using these paths to last at least
+		// `MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS`.
+		let min_offer_paths_absolute_expiry =
+			duration_since_epoch.as_secs().saturating_add(MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS);
+		let offer_paths_absolute_expiry = offer_paths_absolute_expiry_secs.unwrap_or(u64::MAX);
+		if offer_paths_absolute_expiry < min_offer_paths_absolute_expiry {
+			return false;
+		}
+
+		// Check that we don't have any current offers that already contain these paths
+		self.offers_with_idx().all(|(_, offer)| offer.offer.paths() != offer_paths)
+	}
+
+	/// We've sent a static invoice to the static invoice server for persistence. Cache the
+	/// corresponding pending offer so we can retry persisting a corresponding invoice with the server
+	/// until it succeeds, see [`AsyncReceiveOfferCache`] docs.
+	pub(super) fn cache_pending_offer(
+		&mut self, offer: Offer, offer_paths_absolute_expiry_secs: Option<u64>, offer_nonce: Nonce,
+		update_static_invoice_path: Responder, duration_since_epoch: Duration,
+	) -> Result<u16, ()> {
+		self.prune_expired_offers(duration_since_epoch, false);
+
+		if !self.should_build_offer_with_paths(
+			offer.paths(),
+			offer_paths_absolute_expiry_secs,
+			duration_since_epoch,
+		) {
+			return Err(());
+		}
+
+		let idx = match self.needs_new_offer_idx(duration_since_epoch) {
+			Some(idx) => idx,
+			None => return Err(()),
+		};
+
+		match self.offers.get_mut(idx) {
+			Some(offer_opt) => {
+				*offer_opt = Some(AsyncReceiveOffer {
+					offer,
+					offer_nonce,
+					status: OfferStatus::Pending,
+					update_static_invoice_path,
+				});
+			},
+			None => return Err(()),
+		}
+
+		Ok(idx.try_into().map_err(|_| ())?)
 	}
 
 	/// If we have any empty slots in the cache or offers that can and should be replaced with a fresh

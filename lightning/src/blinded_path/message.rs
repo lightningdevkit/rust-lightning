@@ -23,6 +23,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::OfferId;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -419,6 +420,25 @@ pub enum AsyncPaymentsContext {
 		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
 		path_absolute_expiry: core::time::Duration,
 	},
+	/// Context used by a reply path to a [`ServeStaticInvoice`] message, provided back to us in
+	/// corresponding [`StaticInvoicePersisted`] messages.
+	///
+	/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	StaticInvoicePersisted {
+		/// The id of the offer in the cache corresponding to the [`StaticInvoice`] that has been
+		/// persisted. This invoice is now ready to be provided by the static invoice server in response
+		/// to [`InvoiceRequest`]s, so the corresponding offer can be marked as ready to receive
+		/// payments.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		offer_id: OfferId,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored. If we receive confirmation of an invoice over this path after its
+		/// expiry, it may be outdated and a new invoice update should be sent instead.
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -503,6 +523,10 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	},
 	(2, OfferPaths) => {
 		(0, path_absolute_expiry, required),
+	},
+	(3, StaticInvoicePersisted) => {
+		(0, offer_id, required),
+		(2, path_absolute_expiry, required),
 	},
 );
 
