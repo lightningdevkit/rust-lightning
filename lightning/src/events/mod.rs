@@ -1798,7 +1798,7 @@ impl Writeable for Event {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
-					(1, funding_txo, required),
+					(1, funding_txo, option),
 					(2, user_channel_id, required),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
