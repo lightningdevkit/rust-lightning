@@ -317,31 +317,30 @@ impl HolderCommitment {
 		let delayed_payment_key = &tx_keys.broadcaster_delayed_payment_key;
 		let per_commitment_point = &tx_keys.per_commitment_point;
 
-		let mut nondust_htlcs = self.tx.nondust_htlcs().iter().zip(self.tx.counterparty_htlc_sigs.iter());
-		let mut sources = self.nondust_htlc_sources.iter();
+		debug_assert!(
+			self.htlcs.iter().map(|(htlc, _)| htlc).zip(self.tx.nondust_htlcs().iter())
+				.all(|(htlc_a, htlc_b)| htlc_a == htlc_b)
+		);
 
-		// Use an iterator to write `htlc_outputs` to avoid allocations.
-		let nondust_htlcs = core::iter::from_fn(move || {
-			let (htlc, counterparty_htlc_sig) = if let Some(nondust_htlc) = nondust_htlcs.next() {
-				nondust_htlc
-			} else {
-				debug_assert!(sources.next().is_none());
-				return None;
-			};
-
-			let mut source = None;
-			if htlc.offered {
-				source = sources.next();
-				if source.is_none() {
-					panic!("Every offered non-dust HTLC should have a corresponding source");
+		let mut htlcs = self.htlcs.iter();
+		let mut counterparty_htlc_sigs = self.tx.counterparty_htlc_sigs.iter();
+		let htlc_outputs = core::iter::from_fn(move || {
+			if let Some((htlc, source)) = htlcs.next() {
+				let mut counterparty_htlc_sig = None;
+				if htlc.transaction_output_index.is_some() {
+					counterparty_htlc_sig = Some(counterparty_htlc_sigs.next()
+						.expect("Every non-dust HTLC must have a counterparty signature"));
+				} else {
+					// Once we see a dust HTLC, we should not expect to see any non-dust ones.
+					debug_assert!(counterparty_htlc_sigs.next().is_none());
 				}
+				Some((htlc, counterparty_htlc_sig, source.as_ref()))
+			} else {
+				debug_assert!(counterparty_htlc_sigs.next().is_none());
+				None
 			}
-			Some((htlc, Some(counterparty_htlc_sig), source))
 		});
-
-		// Dust HTLCs go last.
-		let dust_htlcs = self.dust_htlcs.iter().map(|(htlc, source)| (htlc, None::<&Signature>, source.as_ref()));
-		let htlc_outputs = crate::util::ser::IterableOwned(nondust_htlcs.chain(dust_htlcs));
+		let htlc_outputs = crate::util::ser::IterableOwned(htlc_outputs);
 
 		write_tlv_fields!(writer, {
 			(0, txid, required),
@@ -572,15 +571,11 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	// Update LatestHolderCommitmentTXInfo in channel.rs if adding new fields to this variant.
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
-		/// Note that LDK after 0.0.115 supports this only containing dust HTLCs (implying the
-		/// `Signature` field is never filled in). At that point, non-dust HTLCs are implied by the
-		/// HTLC fields in `commitment_tx` and the sources passed via `nondust_htlc_sources`.
-		/// Starting with 0.2, the non-dust HTLC sources will always be provided separately, and
-		/// `htlc_outputs` will only include dust HTLCs. We still have to track the
-		/// `Option<Signature>` for backwards compatibility.
+		// Includes both dust and non-dust HTLCs. The `Option<Signature>` must be `Some` for
+		// non-dust HTLCs due to backwards compatibility, even though they are already tracked
+		// within the `HolderCommitmentTransaction` above.
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
-		nondust_htlc_sources: Vec<HTLCSource>,
 	},
 	LatestCounterpartyCommitmentTXInfo {
 		commitment_txid: Txid,
@@ -638,7 +633,6 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(0, commitment_tx, required),
 		(1, claimed_htlcs, optional_vec),
 		(2, htlc_outputs, required_vec),
-		(4, nondust_htlc_sources, optional_vec),
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
@@ -920,10 +914,7 @@ impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: 
 #[derive(Clone, PartialEq)]
 struct HolderCommitment {
 	tx: HolderCommitmentTransaction,
-	// These must be sorted in increasing output index order to match the expected order of the
-	// HTLCs in the `CommitmentTransaction`.
-	nondust_htlc_sources: Vec<HTLCSource>,
-	dust_htlcs: Vec<(HTLCOutputInCommitment, Option<HTLCSource>)>,
+	htlcs: Vec<(HTLCOutputInCommitment, Option<HTLCSource>)>,
 }
 
 impl TryFrom<(HolderCommitmentTransaction, HolderSignedTx)> for HolderCommitment {
@@ -931,63 +922,26 @@ impl TryFrom<(HolderCommitmentTransaction, HolderSignedTx)> for HolderCommitment
 	fn try_from(value: (HolderCommitmentTransaction, HolderSignedTx)) -> Result<Self, Self::Error> {
 		let holder_commitment_tx = value.0;
 		let holder_signed_tx = value.1;
-
-		// HolderSignedTx tracks all HTLCs included in the commitment (dust included). For
-		// `HolderCommitment`, we'll need to extract the dust HTLCs and their sources, and non-dust
-		// HTLC sources, separately. All offered, non-dust HTLCs must have a source available.
-
-		let mut missing_nondust_source = false;
-		let mut nondust_htlc_sources = Vec::with_capacity(holder_commitment_tx.nondust_htlcs().len());
-		let dust_htlcs = holder_signed_tx.htlc_outputs.into_iter().filter_map(|(htlc, _, source)| {
-			// Filter our non-dust HTLCs, while at the same time pushing their sources into
-			// `nondust_htlc_sources`.
-			if htlc.transaction_output_index.is_none() {
-				return Some((htlc, source))
-			}
-			if htlc.offered {
-				if let Some(source) = source {
-					nondust_htlc_sources.push(source);
-				} else {
-					missing_nondust_source = true;
-				}
-			}
-			None
-		}).collect();
-		if missing_nondust_source {
-			return Err(());
-		}
-
 		Ok(Self {
 			tx: holder_commitment_tx,
-			nondust_htlc_sources,
-			dust_htlcs,
+			htlcs: holder_signed_tx.htlc_outputs.into_iter()
+				.map(|(htlc, _, source)| (htlc, source))
+				.collect(),
 		})
 	}
 }
 
 impl HolderCommitment {
 	fn has_htlcs(&self) -> bool {
-		self.tx.nondust_htlcs().len() > 0 || self.dust_htlcs.len() > 0
+		!self.htlcs.is_empty()
 	}
 
 	fn htlcs(&self) -> impl Iterator<Item = &HTLCOutputInCommitment> {
-		self.tx.nondust_htlcs().iter().chain(self.dust_htlcs.iter().map(|(htlc, _)| htlc))
+		self.htlcs.iter().map(|(htlc, _)| htlc)
 	}
 
 	fn htlcs_with_sources(&self) -> impl Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> {
-		let mut sources = self.nondust_htlc_sources.iter();
-		let nondust_htlcs = self.tx.nondust_htlcs().iter().map(move |htlc| {
-			let mut source = None;
-			if htlc.offered && htlc.transaction_output_index.is_some() {
-				source = sources.next();
-				if source.is_none() {
-					panic!("Every offered non-dust HTLC should have a corresponding source");
-				}
-			}
-			(htlc, source)
-		});
-		let dust_htlcs = self.dust_htlcs.iter().map(|(htlc, source)| (htlc, source.as_ref()));
-		nondust_htlcs.chain(dust_htlcs)
+		self.htlcs.iter().map(|(htlc, source)| (htlc, source.as_ref()))
 	}
 }
 
@@ -1554,8 +1508,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				current_holder_commitment: HolderCommitment {
 					tx: initial_holder_commitment_tx,
 					// There are never any HTLCs in the initial commitment transactions
-					nondust_htlc_sources: Vec::new(),
-					dust_htlcs: Vec::new(),
+					htlcs: Vec::new(),
 				},
 				prev_holder_commitment: None,
 			},
@@ -1680,7 +1633,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		&self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 	) {
-		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new())
+		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs, &Vec::new())
 	}
 
 	/// This is used to provide payment preimage(s) out-of-band during startup without updating the
@@ -3092,72 +3045,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn provide_latest_holder_commitment_tx(
 		&mut self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
-		claimed_htlcs: &[(SentHTLCId, PaymentPreimage)], mut nondust_htlc_sources: Vec<HTLCSource>,
+		claimed_htlcs: &[(SentHTLCId, PaymentPreimage)],
 	) {
-		let dust_htlcs: Vec<_> = if htlc_outputs.iter().any(|(_, s, _)| s.is_some()) {
-			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
-			// `holder_commitment_tx`. In the future, we'll no longer provide the redundant data
-			// and just pass in source data via `nondust_htlc_sources`.
-			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.trust().nondust_htlcs().len());
-			for (a, b) in htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).map(|(h, _, _)| h).zip(holder_commitment_tx.trust().nondust_htlcs().iter()) {
-				debug_assert_eq!(a, b);
-			}
-			debug_assert_eq!(htlc_outputs.iter().filter(|(_, s, _)| s.is_some()).count(), holder_commitment_tx.counterparty_htlc_sigs.len());
-			for (a, b) in htlc_outputs.iter().filter_map(|(_, s, _)| s.as_ref()).zip(holder_commitment_tx.counterparty_htlc_sigs.iter()) {
-				debug_assert_eq!(a, b);
-			}
-
-			// Backfill the non-dust HTLC sources.
-			debug_assert!(nondust_htlc_sources.is_empty());
-			nondust_htlc_sources.reserve_exact(holder_commitment_tx.nondust_htlcs().len());
-			let dust_htlcs = htlc_outputs.into_iter().filter_map(|(htlc, _, source)| {
-				// Filter our non-dust HTLCs, while at the same time pushing their sources into
-				// `nondust_htlc_sources`.
-				if htlc.transaction_output_index.is_none() {
-					return Some((htlc, source));
-				}
-				if htlc.offered {
-					nondust_htlc_sources.push(source.expect("Outbound HTLCs should have a source"));
-				}
-				None
-			}).collect();
-
-			dust_htlcs
-		} else {
-			// If we don't have any non-dust HTLCs in htlc_outputs, assume they were all passed via
-			// `nondust_htlc_sources`, building up the final htlc_outputs by combining
-			// `nondust_htlc_sources` and the `holder_commitment_tx`
-			{
-				let mut prev = -1;
-				for htlc in holder_commitment_tx.trust().nondust_htlcs().iter() {
-					assert!(htlc.transaction_output_index.unwrap() as i32 > prev);
-					prev = htlc.transaction_output_index.unwrap() as i32;
-				}
-			}
-
-			debug_assert!(htlc_outputs.iter().all(|(htlc, _, _)| htlc.transaction_output_index.is_none()));
-			debug_assert!(htlc_outputs.iter().all(|(_, sig_opt, _)| sig_opt.is_none()));
-			debug_assert_eq!(holder_commitment_tx.trust().nondust_htlcs().len(), holder_commitment_tx.counterparty_htlc_sigs.len());
-
-			let mut sources = nondust_htlc_sources.iter();
-			for htlc in holder_commitment_tx.trust().nondust_htlcs().iter() {
-				if htlc.offered {
-					let source = sources.next().expect("Non-dust HTLC sources didn't match commitment tx");
-					assert!(source.possibly_matches_output(htlc));
-				}
-			}
-			assert!(sources.next().is_none(), "All HTLC sources should have been exhausted");
-
-			// This only includes dust HTLCs as checked above.
-			htlc_outputs.into_iter().map(|(htlc, _, source)| (htlc, source)).collect()
-		};
-
 		self.current_holder_commitment_number = holder_commitment_tx.trust().commitment_number();
 		self.onchain_tx_handler.provide_latest_holder_tx(holder_commitment_tx.clone());
 		let mut holder_commitment = HolderCommitment {
 			tx: holder_commitment_tx,
-			nondust_htlc_sources,
-			dust_htlcs,
+			htlcs: htlc_outputs.into_iter().map(|(htlc, _, source)| (htlc, source)).collect(),
 		};
 		mem::swap(&mut holder_commitment, &mut self.funding.current_holder_commitment);
 		self.funding.prev_holder_commitment = Some(holder_commitment);
@@ -3387,10 +3281,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
 		for update in updates.updates.iter() {
 			match update {
-				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, nondust_htlc_sources } => {
+				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs, nondust_htlc_sources.clone());
+					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs);
 				}
 				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitmentTX`.
 				// For now we just add the code to handle the new updates.

@@ -3802,9 +3802,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		let holder_keys = commitment_data.tx.trust().keys();
-		let mut nondust_htlc_sources = Vec::with_capacity(commitment_data.tx.nondust_htlcs().len());
-		let mut dust_htlcs = Vec::with_capacity(commitment_data.htlcs_included.len() - commitment_data.tx.nondust_htlcs().len());
-		for (idx, (htlc, mut source_opt)) in commitment_data.htlcs_included.into_iter().enumerate() {
+		let mut htlc_outputs = Vec::with_capacity(commitment_data.htlcs_included.len());
+		for (idx, (htlc, source_opt)) in commitment_data.htlcs_included.into_iter().enumerate() {
+			let mut counterparty_htlc_sig = None;
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_data.tx.feerate_per_kw(),
 					funding.get_counterparty_selected_contest_delay().unwrap(), &htlc, funding.get_channel_type(),
@@ -3819,17 +3819,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &holder_keys.countersignatory_htlc_key.to_public_key()) {
 					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 				}
-				if htlc.offered {
-					if let Some(source) = source_opt.take() {
-						nondust_htlc_sources.push(source.clone());
-					} else {
-						panic!("Missing outbound HTLC source");
-					}
-				}
-			} else {
-				dust_htlcs.push((htlc, None, source_opt.take().cloned()));
+
+				counterparty_htlc_sig = Some(msg.htlc_signatures[idx]);
 			}
-			debug_assert!(source_opt.is_none(), "HTLCSource should have been put somewhere");
+			htlc_outputs.push((htlc, counterparty_htlc_sig, source_opt.cloned()));
 		}
 
 		let holder_commitment_tx = HolderCommitmentTransaction::new(
@@ -3845,8 +3838,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		Ok(LatestHolderCommitmentTXInfo {
 			commitment_tx: holder_commitment_tx,
-			htlc_outputs: dust_htlcs,
-			nondust_htlc_sources,
+			htlc_outputs,
 		})
 	}
 
@@ -5155,7 +5147,6 @@ struct CommitmentTxInfoCached {
 struct LatestHolderCommitmentTXInfo {
 	pub commitment_tx: HolderCommitmentTransaction,
 	pub htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
-	pub nondust_htlc_sources: Vec<HTLCSource>,
 }
 
 /// Contents of a wire message that fails an HTLC backwards. Useful for [`FundedChannel::fail_htlc`] to
@@ -5945,9 +5936,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		let updates = self
 			.context
 			.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
-			.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+			.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs }|
 				vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-					commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+					commitment_tx, htlc_outputs, claimed_htlcs: vec![],
 				}]
 			)?;
 
@@ -5970,9 +5961,9 @@ impl<SP: Deref> FundedChannel<SP> where
 					.ok_or_else(|| ChannelError::close(format!("Peer did not send a commitment_signed for pending splice transaction: {}", funding_txid)))?;
 				self.context
 					.validate_commitment_signed(funding, &self.holder_commitment_point, msg, logger)
-					.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, nondust_htlc_sources }|
+					.map(|LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs }|
 						ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-							commitment_tx, htlc_outputs, claimed_htlcs: vec![], nondust_htlc_sources,
+							commitment_tx, htlc_outputs, claimed_htlcs: vec![],
 						}
 					)
 				}
