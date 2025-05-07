@@ -1783,7 +1783,8 @@ impl FundingScope {
 		self.channel_transaction_parameters.funding_outpoint
 	}
 
-	pub fn get_funding_txid(&self) -> Option<Txid> {
+	#[cfg(splicing)]
+	fn get_funding_txid(&self) -> Option<Txid> {
 		self.channel_transaction_parameters.funding_outpoint.map(|txo| txo.txid)
 	}
 
