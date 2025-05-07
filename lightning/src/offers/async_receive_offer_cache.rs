@@ -81,6 +81,103 @@ impl AsyncReceiveOfferCache {
 	}
 }
 
+// The target number of offers we want to have cached at any given time, to mitigate too much
+// reuse of the same offer.
+#[cfg(async_payments)]
+const NUM_CACHED_OFFERS_TARGET: usize = 3;
+
+// The max number of times we'll attempt to request offer paths or attempt to refresh a static
+// invoice before giving up.
+#[cfg(async_payments)]
+const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+// If we run out of attempts to request offer paths from the static invoice server, we'll stop
+// sending requests for some time. After this amount of time has passed, more requests are allowed
+// to be sent out.
+#[cfg(async_payments)]
+const PATHS_REQUESTS_RESET_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
+
+// If an offer is 90% of the way through its lifespan, it's expiring soon. This allows us to be
+// flexible for various offer lifespans, i.e. an offer that lasts 10 days expires soon after 9 days
+// and an offer that lasts 10 years expires soon after 9 years.
+#[cfg(async_payments)]
+const OFFER_EXPIRES_SOON_THRESHOLD_PERCENT: u64 = 90;
+
+#[cfg(async_payments)]
+impl AsyncReceiveOfferCache {
+	/// Remove expired offers from the cache, returning whether new offers are needed.
+	pub(super) fn prune_expired_offers(&mut self, duration_since_epoch: Duration) -> bool {
+		// Remove expired offers from the cache.
+		let mut offer_was_removed = false;
+		self.offers.retain(|offer| {
+			if offer.offer.is_expired_no_std(duration_since_epoch) {
+				offer_was_removed = true;
+				return false;
+			}
+			true
+		});
+
+		// If we just removed a newly expired offer, force allowing more paths request attempts.
+		if offer_was_removed {
+			self.reset_offer_paths_request_attempts();
+		} else {
+			// If we haven't attempted to request new paths in a long time, allow more requests to go out
+			// if/when needed.
+			self.check_reset_offer_paths_request_attempts(duration_since_epoch);
+		}
+
+		self.needs_new_offers(duration_since_epoch)
+			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
+	}
+
+	/// Returns a bool indicating whether new offers are needed in the cache.
+	fn needs_new_offers(&self, duration_since_epoch: Duration) -> bool {
+		// If we have fewer than NUM_CACHED_OFFERS_TARGET offers that aren't expiring soon, indicate
+		// that new offers should be interactively built.
+		let num_unexpiring_offers = self
+			.offers
+			.iter()
+			.filter(|offer| {
+				let offer_absolute_expiry = offer.offer.absolute_expiry().unwrap_or(Duration::MAX);
+				let offer_created_at = offer.offer_created_at;
+				let offer_lifespan =
+					offer_absolute_expiry.saturating_sub(offer_created_at).as_secs();
+				let elapsed = duration_since_epoch.saturating_sub(offer_created_at).as_secs();
+
+				// If an offer is in the last 10% of its lifespan, it's expiring soon.
+				elapsed.saturating_mul(100)
+					< offer_lifespan.saturating_mul(OFFER_EXPIRES_SOON_THRESHOLD_PERCENT)
+			})
+			.count();
+
+		num_unexpiring_offers < NUM_CACHED_OFFERS_TARGET
+	}
+
+	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
+	// server. Calling this method allows the cache to self-limit how many requests are sent, in case
+	// the server goes unresponsive.
+	pub(super) fn new_offers_requested(&mut self, duration_since_epoch: Duration) {
+		self.offer_paths_request_attempts += 1;
+		self.last_offer_paths_request_timestamp = duration_since_epoch;
+	}
+
+	/// If we haven't sent an offer paths request in a long time, reset the limit to allow more
+	/// requests to be sent out if/when needed.
+	fn check_reset_offer_paths_request_attempts(&mut self, duration_since_epoch: Duration) {
+		let should_reset =
+			self.last_offer_paths_request_timestamp.saturating_add(PATHS_REQUESTS_RESET_INTERVAL)
+				< duration_since_epoch;
+		if should_reset {
+			self.reset_offer_paths_request_attempts();
+		}
+	}
+
+	fn reset_offer_paths_request_attempts(&mut self) {
+		self.offer_paths_request_attempts = 0;
+		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+}
+
 impl Writeable for AsyncReceiveOfferCache {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
