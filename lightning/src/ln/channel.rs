@@ -4882,13 +4882,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	}
 
 	#[cfg(splicing)]
-	fn check_get_splice_locked<L: Deref>(
+	fn check_get_splice_locked(
 		&mut self, pending_splice: &PendingSplice, funding: &mut FundingScope, height: u32,
-		logger: &L,
-	) -> Option<msgs::SpliceLocked>
-	where
-		L::Target: Logger,
-	{
+	) -> Option<msgs::SpliceLocked> {
 		if !self.check_funding_confirmations(funding, height) {
 			return None;
 		}
@@ -4949,13 +4945,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		return true;
 	}
 
-	fn check_for_funding_tx_confirmed<L: Deref>(
+	fn check_for_funding_tx_confirmed(
 		&mut self, funding: &mut FundingScope, block_hash: &BlockHash, height: u32,
-		index_in_block: usize, tx: &mut ConfirmedTransaction, logger: &L,
-	) -> Result<bool, ClosureReason>
-	where
-		L::Target: Logger
-	{
+		index_in_block: usize, tx: &mut ConfirmedTransaction,
+	) -> Result<bool, ClosureReason> {
 		let funding_txo = match funding.get_funding_txo() {
 			Some(funding_txo) => funding_txo,
 			None => {
@@ -8376,7 +8369,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			// and send it immediately instead of waiting for a best_block_updated call (which may have
 			// already happened for this block).
 			let is_funding_tx_confirmed = self.context.check_for_funding_tx_confirmed(
-				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx,
 			)?;
 
 			if is_funding_tx_confirmed {
@@ -8396,7 +8389,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			#[cfg(splicing)]
 			for funding in self.pending_funding.iter_mut() {
 				if self.context.check_for_funding_tx_confirmed(
-					funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+					funding, block_hash, height, index_in_block, &mut confirmed_tx,
 				)? {
 					if confirmed_funding.is_some() {
 						let err_reason = "splice tx of another pending funding already confirmed";
@@ -8423,7 +8416,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					self.context.check_for_funding_tx_spent(funding, tx, logger)?;
 				}
 
-				if let Some(splice_locked) = self.context.check_get_splice_locked(pending_splice, funding, height, logger) {
+				if let Some(splice_locked) = self.context.check_get_splice_locked(pending_splice, funding, height) {
 					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
 					pending_splice.sent_funding_txid = Some(splice_locked.splice_txid);
@@ -8559,7 +8552,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				},
 			};
 
-			if let Some(splice_locked) = self.context.check_get_splice_locked(pending_splice, funding, height, logger) {
+			if let Some(splice_locked) = self.context.check_get_splice_locked(pending_splice, funding, height) {
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
 				pending_splice.sent_funding_txid = Some(splice_locked.splice_txid);
