@@ -27,7 +27,7 @@ use crate::onion_message::messenger::OnionMessenger;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
-use crate::sign::{EntropySource, RandomBytes};
+use crate::sign::{EntropySource, NodeSigner, RandomBytes};
 use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
@@ -723,7 +723,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					signer_provider: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator::new(253),
 					router: &test_utils::TestRouter::new(Arc::clone(&network_graph), &self.logger, &scorer),
-					message_router: &test_utils::TestMessageRouter::new(network_graph, self.keys_manager),
+					message_router: &test_utils::TestMessageRouter::new(network_graph, self.keys_manager, self.keys_manager.get_inbound_payment_key()),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -3347,7 +3347,7 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
 			fee_estimator: &chanmon_cfgs[i].fee_estimator,
 			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
-			message_router: test_utils::TestMessageRouter::new(network_graph.clone(), &chanmon_cfgs[i].keys_manager),
+			message_router: test_utils::TestMessageRouter::new(network_graph.clone(), &chanmon_cfgs[i].keys_manager, chanmon_cfgs[i].keys_manager.get_inbound_payment_key()),
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,

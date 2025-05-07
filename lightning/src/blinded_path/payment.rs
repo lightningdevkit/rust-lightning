@@ -351,10 +351,7 @@ impl UnauthenticatedReceiveTlvs {
 	/// Creates an authenticated [`ReceiveTlvs`], which includes an HMAC and the provide [`Nonce`]
 	/// that can be use later to verify it authenticity.
 	pub fn authenticate(self, nonce: Nonce, expanded_key: &ExpandedKey) -> ReceiveTlvs {
-		ReceiveTlvs {
-			authentication: (self.hmac_for_offer_payment(nonce, expanded_key), nonce),
-			tlvs: self,
-		}
+		ReceiveTlvs { authentication: (self.hmac_data(nonce, expanded_key), nonce), tlvs: self }
 	}
 }
 

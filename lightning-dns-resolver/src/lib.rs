@@ -232,7 +232,14 @@ mod test {
 			secp_ctx: &Secp256k1<T>,
 		) -> Result<Vec<BlindedMessagePath>, ()> {
 			let keys = KeysManager::new(&[0; 32], 42, 43);
-			Ok(vec![BlindedMessagePath::one_hop(recipient, context, &keys, secp_ctx).unwrap()])
+			Ok(vec![BlindedMessagePath::one_hop(
+				recipient,
+				context,
+				keys.get_inbound_payment_key(),
+				&keys,
+				secp_ctx,
+			)
+			.unwrap()])
 		}
 	}
 	impl Deref for DirectlyConnectedRouter {
@@ -334,8 +341,14 @@ mod test {
 		let (msg, context) =
 			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
 		let query_context = MessageContext::DNSResolver(context);
-		let reply_path =
-			BlindedMessagePath::one_hop(payer_id, query_context, &*payer_keys, &secp_ctx).unwrap();
+		let reply_path = BlindedMessagePath::one_hop(
+			payer_id,
+			query_context,
+			payer_keys.get_inbound_payment_key(),
+			&*payer_keys,
+			&secp_ctx,
+		)
+		.unwrap();
 		payer.pending_messages.lock().unwrap().push((
 			DNSResolverMessage::DNSSECQuery(msg),
 			MessageSendInstructions::WithSpecifiedReplyPath {

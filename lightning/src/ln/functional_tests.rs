@@ -18,7 +18,7 @@ use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE};
 use crate::chain::transaction::OutPoint;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
+use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, NodeSigner, OutputSpender, SignerProvider};
 use crate::events::bump_transaction::WalletSource;
 use crate::events::{Event, FundingInfo, PathFailure, PaymentPurpose, ClosureReason, HTLCHandlingFailureType, PaymentFailureReason};
 use crate::ln::types::ChannelId;
@@ -5992,7 +5992,7 @@ pub fn test_key_derivation_params() {
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[0].logger));
 	let scorer = RwLock::new(test_utils::TestScorer::new());
 	let router = test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[0].logger, &scorer);
-	let message_router = test_utils::TestMessageRouter::new(network_graph.clone(), &keys_manager);
+	let message_router = test_utils::TestMessageRouter::new(network_graph.clone(), &keys_manager, keys_manager.get_inbound_payment_key());
 	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, router, message_router, chain_monitor, keys_manager: &keys_manager, network_graph, node_seed: seed, override_init_features: alloc::rc::Rc::new(core::cell::RefCell::new(None)) };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);

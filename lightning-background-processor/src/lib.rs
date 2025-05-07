@@ -1127,7 +1127,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager, NodeSigner};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1603,6 +1603,7 @@ mod tests {
 			let msg_router = Arc::new(DefaultMessageRouter::new(
 				network_graph.clone(),
 				Arc::clone(&keys_manager),
+				keys_manager.get_inbound_payment_key(),
 			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store =
