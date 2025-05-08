@@ -22,8 +22,11 @@ use crate::prelude::*;
 use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
 
+#[cfg(async_payments)]
+use crate::blinded_path::message::AsyncPaymentsContext;
+
 /// The status of this offer in the cache.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum OfferStatus {
 	/// This offer has been returned to the user from the cache, so it needs to be stored until it
 	/// expires and its invoice needs to be kept updated.
@@ -360,6 +363,44 @@ impl AsyncReceiveOfferCache {
 	/// paths requests to go out.
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
+	}
+
+	/// Should be called when we receive a [`StaticInvoicePersisted`] message from the static invoice
+	/// server, which indicates that a new offer was persisted by the server and they are ready to
+	/// serve the corresponding static invoice to payers on our behalf.
+	///
+	/// Returns a bool indicating whether an offer was added/updated and re-persistence of the cache
+	/// is needed.
+	///
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	pub(super) fn static_invoice_persisted(
+		&mut self, context: AsyncPaymentsContext, duration_since_epoch: Duration,
+	) -> bool {
+		let offer_id = match context {
+			AsyncPaymentsContext::StaticInvoicePersisted { path_absolute_expiry, offer_id } => {
+				if duration_since_epoch > path_absolute_expiry {
+					return false;
+				}
+				offer_id
+			},
+			_ => return false,
+		};
+
+		let mut offers = self.offers.iter_mut();
+		let offer_entry = offers.find(|o| o.as_ref().map_or(false, |o| o.offer.id() == offer_id));
+		if let Some(Some(ref mut offer)) = offer_entry {
+			if offer.status == OfferStatus::Used {
+				// We succeeded in updating the invoice for a used offer, no re-persistence of the cache
+				// needed
+				return false;
+			}
+
+			offer.status =
+				OfferStatus::Ready { invoice_confirmed_persisted_at: duration_since_epoch };
+			return true;
+		}
+
+		false
 	}
 }
 

@@ -1343,6 +1343,16 @@ where
 		Ok((invoice, forward_invoice_request_path))
 	}
 
+	/// Handles an incoming [`StaticInvoicePersisted`] onion message from the static invoice server.
+	/// Returns a bool indicating whether the async receive offer cache needs to be re-persisted.
+	///
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	#[cfg(async_payments)]
+	pub(crate) fn handle_static_invoice_persisted(&self, context: AsyncPaymentsContext) -> bool {
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
+		cache.static_invoice_persisted(context, self.duration_since_epoch())
+	}
+
 	/// Get the `AsyncReceiveOfferCache` for persistence.
 	pub(crate) fn writeable_async_receive_offer_cache(&self) -> impl Writeable + '_ {
 		&self.async_receive_offer_cache
