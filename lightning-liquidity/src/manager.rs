@@ -10,6 +10,11 @@ use crate::lsps0::ser::{
 	LSPS_MESSAGE_TYPE_ID,
 };
 use crate::lsps0::service::LSPS0ServiceHandler;
+use crate::lsps5::client::{LSPS5ClientConfig, LSPS5ClientHandler};
+use crate::lsps5::msgs::LSPS5Message;
+#[cfg(feature = "time")]
+use crate::lsps5::service::DefaultTimeProvider;
+use crate::lsps5::service::{LSPS5ServiceConfig, LSPS5ServiceHandler, TimeProvider};
 use crate::message_queue::MessageQueue;
 
 use crate::lsps1::client::{LSPS1ClientConfig, LSPS1ClientHandler};
@@ -52,6 +57,8 @@ pub struct LiquidityServiceConfig {
 	/// Optional server-side configuration for JIT channels
 	/// should you want to support them.
 	pub lsps2_service_config: Option<LSPS2ServiceConfig>,
+	/// Optional server-side configuration for LSPS5 webhook service.
+	pub lsps5_service_config: Option<LSPS5ServiceConfig>,
 	/// Controls whether the liquidity service should be advertised via setting the feature bit in
 	/// node announcment and the init message.
 	pub advertise_service: bool,
@@ -66,6 +73,8 @@ pub struct LiquidityClientConfig {
 	pub lsps1_client_config: Option<LSPS1ClientConfig>,
 	/// Optional client-side configuration for JIT channels.
 	pub lsps2_client_config: Option<LSPS2ClientConfig>,
+	/// Optional client-side configuration for LSPS5 webhook service.
+	pub lsps5_client_config: Option<LSPS5ClientConfig>,
 }
 
 /// A trivial trait which describes any [`LiquidityManager`].
@@ -144,6 +153,8 @@ where
 	lsps1_client_handler: Option<LSPS1ClientHandler<ES>>,
 	lsps2_service_handler: Option<LSPS2ServiceHandler<CM>>,
 	lsps2_client_handler: Option<LSPS2ClientHandler<ES>>,
+	lsps5_service_handler: Option<LSPS5ServiceHandler<CM>>,
+	lsps5_client_handler: Option<LSPS5ClientHandler<ES>>,
 	service_config: Option<LiquidityServiceConfig>,
 	_client_config: Option<LiquidityClientConfig>,
 	best_block: RwLock<Option<BestBlock>>,
@@ -160,10 +171,34 @@ where
 	///
 	/// Sets up the required protocol message handlers based on the given
 	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
+	#[cfg(feature = "time")]
 	pub fn new(
 		entropy_source: ES, channel_manager: CM, chain_source: Option<C>,
 		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
 		client_config: Option<LiquidityClientConfig>,
+	) -> Self {
+		let time_provider = Arc::new(DefaultTimeProvider);
+		Self::new_with_custom_time_provider(
+			entropy_source,
+			channel_manager,
+			chain_source,
+			chain_params,
+			service_config,
+			client_config,
+			time_provider,
+		)
+	}
+
+	/// Constructor for the [`LiquidityManager`] with a custom time provider.
+	///
+	/// This should be used on non-std platforms where access to the system time is not
+	/// available.
+	/// Sets up the required protocol message handlers based on the given
+	/// [`LiquidityClientConfig`] and [`LiquidityServiceConfig`].
+	pub fn new_with_custom_time_provider(
+		entropy_source: ES, channel_manager: CM, chain_source: Option<C>,
+		chain_params: Option<ChainParameters>, service_config: Option<LiquidityServiceConfig>,
+		client_config: Option<LiquidityClientConfig>, time_provider: Arc<dyn TimeProvider>,
 	) -> Self
 where {
 		let pending_messages = Arc::new(MessageQueue::new());
@@ -195,6 +230,36 @@ where {
 					channel_manager.clone(),
 					config.clone(),
 				)
+			})
+		});
+
+		let lsps5_client_handler = client_config.as_ref().and_then(|config| {
+			config.lsps5_client_config.as_ref().map(|config| {
+				LSPS5ClientHandler::new(
+					entropy_source.clone(),
+					Arc::clone(&pending_messages),
+					Arc::clone(&pending_events),
+					config.clone(),
+					time_provider.clone(),
+				)
+			})
+		});
+
+		let lsps5_service_handler = service_config.as_ref().and_then(|config| {
+			config.lsps5_service_config.as_ref().map(|config| {
+				if let Some(number) =
+					<LSPS5ServiceHandler<CM> as LSPSProtocolMessageHandler>::PROTOCOL_NUMBER
+				{
+					supported_protocols.push(number);
+				}
+
+				return LSPS5ServiceHandler::new(
+					Arc::clone(&pending_events),
+					Arc::clone(&pending_messages),
+					channel_manager.clone(),
+					config.clone(),
+					time_provider,
+				);
 			})
 		});
 
@@ -252,6 +317,8 @@ where {
 			lsps1_service_handler,
 			lsps2_client_handler,
 			lsps2_service_handler,
+			lsps5_client_handler,
+			lsps5_service_handler,
 			service_config,
 			_client_config: client_config,
 			best_block: RwLock::new(chain_params.map(|chain_params| chain_params.best_block)),
@@ -297,6 +364,20 @@ where {
 	/// The returned hendler allows to initiate the LSPS2 service-side flow.
 	pub fn lsps2_service_handler(&self) -> Option<&LSPS2ServiceHandler<CM>> {
 		self.lsps2_service_handler.as_ref()
+	}
+
+	/// Returns a reference to the LSPS5 client-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS5 client-side flow. That is, it allows to
+	pub fn lsps5_client_handler(&self) -> Option<&LSPS5ClientHandler<ES>> {
+		self.lsps5_client_handler.as_ref()
+	}
+
+	/// Returns a reference to the LSPS5 server-side handler.
+	///
+	/// The returned hendler allows to initiate the LSPS5 service-side flow.
+	pub fn lsps5_service_handler(&self) -> Option<&LSPS5ServiceHandler<CM>> {
+		self.lsps5_service_handler.as_ref()
 	}
 
 	/// Returns a [`Future`] that will complete when the next batch of pending messages is ready to
@@ -421,6 +502,26 @@ where {
 					},
 					None => {
 						return Err(LightningError { err: format!("Received LSPS2 request message without LSPS2 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
+					},
+				}
+			},
+			LSPSMessage::LSPS5(msg @ LSPS5Message::Response(..)) => {
+				match &self.lsps5_client_handler {
+					Some(lsps5_client_handler) => {
+						lsps5_client_handler.handle_message(msg, sender_node_id)?;
+					},
+					None => {
+						return Err(LightningError { err: format!("Received LSPS5 response message without LSPS5 client handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
+					},
+				}
+			},
+			LSPSMessage::LSPS5(msg @ LSPS5Message::Request(..)) => {
+				match &self.lsps5_service_handler {
+					Some(lsps5_service_handler) => {
+						lsps5_service_handler.handle_message(msg, sender_node_id)?;
+					},
+					None => {
+						return Err(LightningError { err: format!("Received LSPS5 request message without LSPS5 service handler configured. From node = {:?}", sender_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
 					},
 				}
 			},
