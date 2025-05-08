@@ -16,12 +16,15 @@ use crate::io::Read;
 use crate::ln::msgs::DecodeError;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::Offer;
-#[cfg(async_payments)]
-use crate::onion_message::async_payments::OfferPaths;
 use crate::onion_message::messenger::Responder;
 use crate::prelude::*;
 use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
+#[cfg(async_payments)]
+use {
+	crate::blinded_path::message::AsyncPaymentsContext,
+	crate::onion_message::async_payments::OfferPaths,
+};
 
 struct AsyncReceiveOffer {
 	offer: Offer,
@@ -84,6 +87,13 @@ impl AsyncReceiveOfferCache {
 // reuse of the same offer.
 #[cfg(async_payments)]
 const NUM_CACHED_OFFERS_TARGET: usize = 3;
+
+// Refuse to store offers if they will exceed the maximum cache size or the maximum number of
+// offers.
+#[cfg(async_payments)]
+const MAX_CACHE_SIZE: usize = (1 << 10) * 70; // 70KiB
+#[cfg(async_payments)]
+const MAX_OFFERS: usize = 100;
 
 // The max number of times we'll attempt to request offer paths or attempt to refresh a static
 // invoice before giving up.
@@ -192,6 +202,110 @@ impl AsyncReceiveOfferCache {
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+
+	/// Should be called when we receive a [`StaticInvoicePersisted`] message from the static invoice
+	/// server, which indicates that a new offer was persisted by the server and they are ready to
+	/// serve the corresponding static invoice to payers on our behalf.
+	///
+	/// Returns a bool indicating whether an offer was added/updated and re-persistence of the cache
+	/// is needed.
+	pub(super) fn static_invoice_persisted(
+		&mut self, context: AsyncPaymentsContext, duration_since_epoch: Duration,
+	) -> bool {
+		let (
+			candidate_offer,
+			candidate_offer_nonce,
+			offer_created_at,
+			update_static_invoice_path,
+			static_invoice_absolute_expiry,
+		) = match context {
+			AsyncPaymentsContext::StaticInvoicePersisted {
+				offer,
+				offer_nonce,
+				offer_created_at,
+				update_static_invoice_path,
+				static_invoice_absolute_expiry,
+				..
+			} => (
+				offer,
+				offer_nonce,
+				offer_created_at,
+				update_static_invoice_path,
+				static_invoice_absolute_expiry,
+			),
+			_ => return false,
+		};
+
+		if candidate_offer.is_expired_no_std(duration_since_epoch) {
+			return false;
+		}
+		if static_invoice_absolute_expiry < duration_since_epoch {
+			return false;
+		}
+
+		// If the candidate offer is known, either this is a duplicate message or we updated the
+		// corresponding static invoice that is stored with the server.
+		if let Some(existing_offer) =
+			self.offers.iter_mut().find(|cached_offer| cached_offer.offer == candidate_offer)
+		{
+			// The blinded path used to update the static invoice corresponding to an offer should never
+			// change because we reuse the same path every time we update.
+			debug_assert_eq!(existing_offer.update_static_invoice_path, update_static_invoice_path);
+			debug_assert_eq!(existing_offer.offer_nonce, candidate_offer_nonce);
+
+			let needs_persist =
+				existing_offer.static_invoice_absolute_expiry != static_invoice_absolute_expiry;
+
+			// Since this is the most recent update we've received from the static invoice server, assume
+			// that the invoice that was just persisted is the only invoice that the server has stored
+			// corresponding to this offer.
+			existing_offer.static_invoice_absolute_expiry = static_invoice_absolute_expiry;
+			existing_offer.invoice_update_attempts = 0;
+
+			return needs_persist;
+		}
+
+		let candidate_offer = AsyncReceiveOffer {
+			offer: candidate_offer,
+			offer_nonce: candidate_offer_nonce,
+			offer_created_at,
+			update_static_invoice_path,
+			static_invoice_absolute_expiry,
+			invoice_update_attempts: 0,
+		};
+
+		// If we have room in the cache, go ahead and add this new offer so we have more options. We
+		// should generally never get close to the cache limit because we limit the number of requests
+		// for offer persistence that are sent to begin with.
+		let candidate_cache_size =
+			self.serialized_length().saturating_add(candidate_offer.serialized_length());
+		if self.offers.len() < MAX_OFFERS && candidate_cache_size <= MAX_CACHE_SIZE {
+			self.offers.push(candidate_offer);
+			return true;
+		}
+
+		// Swap out our lowest expiring offer for this candidate offer if needed. Otherwise we'd be
+		// risking a situation where all of our existing offers expire soon but we still ignore this one
+		// even though it's fresh.
+		const NEVER_EXPIRES: Duration = Duration::from_secs(u64::MAX);
+		let (soonest_expiring_offer_idx, soonest_offer_expiry) = self
+			.offers
+			.iter()
+			.map(|offer| offer.offer.absolute_expiry().unwrap_or(NEVER_EXPIRES))
+			.enumerate()
+			.min_by(|(_, offer_exp_a), (_, offer_exp_b)| offer_exp_a.cmp(offer_exp_b))
+			.unwrap_or_else(|| {
+				debug_assert!(false);
+				(0, NEVER_EXPIRES)
+			});
+
+		if soonest_offer_expiry < candidate_offer.offer.absolute_expiry().unwrap_or(NEVER_EXPIRES) {
+			self.offers[soonest_expiring_offer_idx] = candidate_offer;
+			return true;
+		}
+
+		false
 	}
 }
 

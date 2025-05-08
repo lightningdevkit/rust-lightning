@@ -1330,6 +1330,39 @@ where
 		Ok((ServeStaticInvoice { invoice: static_invoice }, reply_path_context))
 	}
 
+	/// Handles an incoming [`StaticInvoicePersisted`] onion message from the static invoice server.
+	/// Returns a bool indicating whether the async receive offer cache needs to be re-persisted.
+	///
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	#[cfg(async_payments)]
+	pub(crate) fn handle_static_invoice_persisted(&self, context: AsyncPaymentsContext) -> bool {
+		let expanded_key = &self.inbound_payment_key;
+		let duration_since_epoch = self.duration_since_epoch();
+
+		if let AsyncPaymentsContext::StaticInvoicePersisted {
+			nonce,
+			hmac,
+			path_absolute_expiry,
+			..
+		} = context
+		{
+			if let Err(()) =
+				signer::verify_static_invoice_persisted_context(nonce, hmac, expanded_key)
+			{
+				return false;
+			}
+
+			if duration_since_epoch > path_absolute_expiry {
+				return false;
+			}
+		} else {
+			return false;
+		}
+
+		let mut cache = self.async_receive_offer_cache.lock().unwrap();
+		cache.static_invoice_persisted(context, duration_since_epoch)
+	}
+
 	/// Get the `AsyncReceiveOfferCache` for persistence.
 	pub(crate) fn writeable_async_receive_offer_cache(&self) -> impl Writeable + '_ {
 		&self.async_receive_offer_cache
