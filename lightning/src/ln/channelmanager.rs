@@ -12465,7 +12465,17 @@ where
 
 	fn handle_static_invoice_persisted(
 		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
-	) {}
+	) {
+		#[cfg(async_payments)] {
+			let should_persist = self.flow.handle_static_invoice_persisted(_context);
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				match should_persist {
+					true => NotifyOption::DoPersist,
+					false => NotifyOption::SkipPersistNoEvents,
+				}
+			});
+		}
+	}
 
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
