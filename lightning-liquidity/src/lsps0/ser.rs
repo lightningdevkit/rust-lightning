@@ -8,6 +8,7 @@ use alloc::string::String;
 
 use core::fmt::{self, Display};
 use core::str::FromStr;
+use core::time::Duration;
 
 use crate::lsps0::msgs::{
 	LSPS0ListProtocolsRequest, LSPS0Message, LSPS0Request, LSPS0Response,
@@ -29,8 +30,7 @@ use lightning::util::ser::{LengthLimitedRead, LengthReadable, WithoutLength};
 
 use bitcoin::secp256k1::PublicKey;
 
-#[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::sync::Arc;
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -204,12 +204,8 @@ impl LSPSDateTime {
 	}
 
 	/// Returns if the given time is in the past.
-	#[cfg(feature = "std")]
-	pub fn is_past(&self) -> bool {
-		let now_seconds_since_epoch = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.expect("system clock to be ahead of the unix epoch")
-			.as_secs();
+	pub fn is_past(&self, time_provider: Arc<dyn TimeProvider>) -> bool {
+		let now_seconds_since_epoch = time_provider.duration_since_epoch().as_secs();
 		let datetime_seconds_since_epoch =
 			self.0.timestamp().try_into().expect("expiration to be ahead of unix epoch");
 		now_seconds_since_epoch > datetime_seconds_since_epoch
@@ -782,5 +778,26 @@ pub(crate) mod u32_fee_rate {
 		let fee_rate_sat_kwu = u32::deserialize(deserializer)?;
 
 		Ok(FeeRate::from_sat_per_kwu(fee_rate_sat_kwu as u64))
+	}
+}
+
+/// Trait defining a time provider
+///
+/// This trait is used to provide the current time service operations and to convert between timestamps and durations.
+pub trait TimeProvider {
+	/// Get the current time as a duration since the Unix epoch.
+	fn duration_since_epoch(&self) -> Duration;
+}
+
+/// Default time provider using the system clock.
+#[derive(Clone, Debug)]
+#[cfg(feature = "time")]
+pub struct DefaultTimeProvider;
+
+#[cfg(feature = "time")]
+impl TimeProvider for DefaultTimeProvider {
+	fn duration_since_epoch(&self) -> Duration {
+		use std::time::{SystemTime, UNIX_EPOCH};
+		SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
 	}
 }

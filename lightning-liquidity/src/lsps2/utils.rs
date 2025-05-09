@@ -1,5 +1,8 @@
 //! Utilities for implementing the bLIP-52 / LSPS2 standard.
 
+use crate::sync::Arc;
+
+use crate::lsps0::ser::TimeProvider;
 use crate::lsps2::msgs::LSPS2OpeningFeeParams;
 use crate::utils;
 
@@ -10,8 +13,9 @@ use bitcoin::hashes::{Hash, HashEngine};
 /// Determines if the given parameters are valid given the secret used to generate the promise.
 pub fn is_valid_opening_fee_params(
 	fee_params: &LSPS2OpeningFeeParams, promise_secret: &[u8; 32],
+	time_provider: Arc<dyn TimeProvider>,
 ) -> bool {
-	if is_expired_opening_fee_params(fee_params) {
+	if is_expired_opening_fee_params(fee_params, time_provider) {
 		return false;
 	}
 	let mut hmac = HmacEngine::<Sha256>::new(promise_secret);
@@ -28,17 +32,10 @@ pub fn is_valid_opening_fee_params(
 }
 
 /// Determines if the given parameters are expired, or still valid.
-#[cfg_attr(not(feature = "std"), allow(unused_variables))]
-pub fn is_expired_opening_fee_params(fee_params: &LSPS2OpeningFeeParams) -> bool {
-	#[cfg(feature = "std")]
-	{
-		fee_params.valid_until.is_past()
-	}
-	#[cfg(not(feature = "std"))]
-	{
-		// TODO: We need to find a way to check expiry times in no-std builds.
-		false
-	}
+pub fn is_expired_opening_fee_params(
+	fee_params: &LSPS2OpeningFeeParams, time_provider: Arc<dyn TimeProvider>,
+) -> bool {
+	fee_params.valid_until.is_past(time_provider)
 }
 
 /// Computes the opening fee given a payment size and the fee parameters.

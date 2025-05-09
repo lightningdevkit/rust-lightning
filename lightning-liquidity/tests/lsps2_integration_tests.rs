@@ -5,7 +5,7 @@ mod common;
 use common::{create_service_and_client_nodes, get_lsps_message, Node};
 
 use lightning_liquidity::events::LiquidityEvent;
-use lightning_liquidity::lsps0::ser::LSPSDateTime;
+use lightning_liquidity::lsps0::ser::{DefaultTimeProvider, LSPSDateTime, TimeProvider};
 use lightning_liquidity::lsps2::client::LSPS2ClientConfig;
 use lightning_liquidity::lsps2::event::{LSPS2ClientEvent, LSPS2ServiceEvent};
 use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
@@ -26,6 +26,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Network;
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn create_jit_invoice(
@@ -148,7 +149,7 @@ fn invoice_generation_flow() {
 		.liquidity_manager
 		.handle_custom_message(get_info_response, service_node_id)
 		.unwrap();
-
+	let time_provider: Arc<(dyn TimeProvider + 'static)> = Arc::new(DefaultTimeProvider);
 	let opening_params_event = client_node.liquidity_manager.next_event().unwrap();
 	let opening_fee_params = match opening_params_event {
 		LiquidityEvent::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
@@ -159,7 +160,11 @@ fn invoice_generation_flow() {
 			assert_eq!(request_id, get_info_request_id);
 			assert_eq!(counterparty_node_id, service_node_id);
 			let opening_fee_params = opening_fee_params_menu.first().unwrap().clone();
-			assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+			assert!(is_valid_opening_fee_params(
+				&opening_fee_params,
+				&promise_secret,
+				time_provider
+			));
 			opening_fee_params
 		},
 		_ => panic!("Unexpected event"),

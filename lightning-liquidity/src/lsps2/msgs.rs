@@ -218,12 +218,32 @@ mod tests {
 	use super::*;
 
 	use crate::alloc::string::ToString;
+	use crate::lsps0::ser::TimeProvider;
 	use crate::lsps2::utils::is_valid_opening_fee_params;
-
+	use crate::sync::Arc;
+	use core::cell::RefCell;
 	use core::str::FromStr;
+	use core::time::Duration;
+
+	struct MockTimeProvider {
+		current_time: RefCell<Duration>,
+	}
+
+	impl MockTimeProvider {
+		fn new(seconds_since_epoch: u64) -> Self {
+			Self { current_time: RefCell::new(Duration::from_secs(seconds_since_epoch)) }
+		}
+	}
+
+	impl TimeProvider for MockTimeProvider {
+		fn duration_since_epoch(&self) -> Duration {
+			*self.current_time.borrow()
+		}
+	}
 
 	#[test]
 	fn into_opening_fee_params_produces_valid_promise() {
+		let time_provider = Arc::new(MockTimeProvider::new(1000));
 		let min_fee_msat = 100;
 		let proportional = 21;
 		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
@@ -254,11 +274,12 @@ mod tests {
 		assert_eq!(opening_fee_params.min_payment_size_msat, min_payment_size_msat);
 		assert_eq!(opening_fee_params.max_payment_size_msat, max_payment_size_msat);
 
-		assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+		assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret, time_provider));
 	}
 
 	#[test]
 	fn changing_single_field_produced_invalid_params() {
+		let time_provider = Arc::new(MockTimeProvider::new(1000));
 		let min_fee_msat = 100;
 		let proportional = 21;
 		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
@@ -281,11 +302,12 @@ mod tests {
 
 		let mut opening_fee_params = raw.into_opening_fee_params(&promise_secret);
 		opening_fee_params.min_fee_msat = min_fee_msat + 1;
-		assert!(!is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+		assert!(!is_valid_opening_fee_params(&opening_fee_params, &promise_secret, time_provider));
 	}
 
 	#[test]
 	fn wrong_secret_produced_invalid_params() {
+		let time_provider = Arc::new(MockTimeProvider::new(1000));
 		let min_fee_msat = 100;
 		let proportional = 21;
 		let valid_until = LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap();
@@ -308,13 +330,13 @@ mod tests {
 		let other_secret = [2u8; 32];
 
 		let opening_fee_params = raw.into_opening_fee_params(&promise_secret);
-		assert!(!is_valid_opening_fee_params(&opening_fee_params, &other_secret));
+		assert!(!is_valid_opening_fee_params(&opening_fee_params, &other_secret, time_provider));
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
-	// TODO: We need to find a way to check expiry times in no-std builds.
 	fn expired_params_produces_invalid_params() {
+		// 70 years since epoch
+		let time_provider = Arc::new(MockTimeProvider::new(70 * 365 * 24 * 60 * 60)); // 1970 + 70 years
 		let min_fee_msat = 100;
 		let proportional = 21;
 		let valid_until = LSPSDateTime::from_str("2023-05-20T08:30:45Z").unwrap();
@@ -336,7 +358,7 @@ mod tests {
 		let promise_secret = [1u8; 32];
 
 		let opening_fee_params = raw.into_opening_fee_params(&promise_secret);
-		assert!(!is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
+		assert!(!is_valid_opening_fee_params(&opening_fee_params, &promise_secret, time_provider));
 	}
 
 	#[test]
