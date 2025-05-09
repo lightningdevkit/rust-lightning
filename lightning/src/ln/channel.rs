@@ -1130,10 +1130,8 @@ struct CommitmentData<'a> {
 
 /// A struct gathering stats on a commitment transaction, either local or remote.
 struct CommitmentStats {
-	feerate_per_kw: u32,             // the feerate of the commitment transaction
-	total_fee_sat: u64,              // the total fee included in the transaction
-	total_anchors_sat: u64,          // the sum of the anchors' amounts
-	broadcaster_dust_limit_sat: u64, // the broadcaster's dust limit
+	total_fee_sat: u64,     // the total fee included in the transaction
+	total_anchors_sat: u64, // the sum of the anchors' amounts
 	local_balance_before_fee_anchors_msat: u64, // local balance before fees and anchors *not* considering dust limits
 	remote_balance_before_fee_anchors_msat: u64, // remote balance before fees and anchors *not* considering dust limits
 }
@@ -4424,6 +4422,25 @@ where
 		Ok(())
 	}
 
+	#[inline]
+	#[rustfmt::skip]
+	fn get_commitment_feerate(&self, funding: &FundingScope, generated_by_local: bool) -> u32 {
+		let mut feerate_per_kw = self.feerate_per_kw;
+		if let Some((feerate, update_state)) = self.pending_update_fee {
+			if match update_state {
+				// Note that these match the inclusion criteria when scanning
+				// pending_inbound_htlcs below.
+				FeeUpdateState::RemoteAnnounced => { debug_assert!(!funding.is_outbound()); !generated_by_local },
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => { debug_assert!(!funding.is_outbound()); !generated_by_local },
+				FeeUpdateState::Outbound => { assert!(funding.is_outbound()); generated_by_local },
+			} {
+				feerate_per_kw = feerate;
+			}
+		}
+
+		feerate_per_kw
+	}
+
 	/// Builds stats on a potential commitment transaction build, without actually building the
 	/// commitment transaction. See `build_commitment_transaction` for further docs.
 	#[inline]
@@ -4436,18 +4453,7 @@ where
 		let mut value_to_self_claimed_msat = 0;
 		let mut value_to_remote_claimed_msat = 0;
 
-		let mut feerate_per_kw = self.feerate_per_kw;
-		if let Some((feerate, update_state)) = self.pending_update_fee {
-			if match update_state {
-				// Note that these match the inclusion criteria when scanning
-				// pending_inbound_htlcs below.
-				FeeUpdateState::RemoteAnnounced => { debug_assert!(!funding.is_outbound()); !generated_by_local },
-				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => { debug_assert!(!funding.is_outbound()); !generated_by_local },
-				FeeUpdateState::Outbound => { assert!(funding.is_outbound());  generated_by_local },
-			} {
-				feerate_per_kw = feerate;
-			}
-		}
+		let feerate_per_kw = self.get_commitment_feerate(funding, generated_by_local);
 
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if htlc.state.included_in_commitment(generated_by_local) {
@@ -4504,10 +4510,8 @@ where
 		let total_anchors_sat = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 
 		CommitmentStats {
-			feerate_per_kw,
 			total_fee_sat,
 			total_anchors_sat,
-			broadcaster_dust_limit_sat,
 			local_balance_before_fee_anchors_msat: value_to_self_msat,
 			remote_balance_before_fee_anchors_msat: value_to_remote_msat,
 		}
@@ -4531,12 +4535,13 @@ where
 	fn build_commitment_transaction<L: Deref>(&self, funding: &FundingScope, commitment_number: u64, per_commitment_point: &PublicKey, local: bool, generated_by_local: bool, logger: &L) -> CommitmentData
 		where L::Target: Logger
 	{
+		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
+		let feerate_per_kw = self.get_commitment_feerate(funding, generated_by_local);
+
 		let stats = self.build_commitment_stats(funding, local, generated_by_local);
 		let CommitmentStats {
-			feerate_per_kw,
 			total_fee_sat,
 			total_anchors_sat,
-			broadcaster_dust_limit_sat,
 			local_balance_before_fee_anchors_msat,
 			remote_balance_before_fee_anchors_msat
 		} = stats;
