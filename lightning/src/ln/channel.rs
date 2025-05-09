@@ -59,14 +59,13 @@ use crate::ln::channelmanager::{
 use crate::ln::funding::FundingTxInput;
 #[cfg(splicing)]
 use crate::ln::funding::SpliceContribution;
+use crate::ln::interactivetxs::{
+	calculate_change_output_value, get_output_weight, InteractiveTxConstructor,
+	InteractiveTxConstructorArgs, InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput,
+	TX_COMMON_FIELDS_WEIGHT,
+};
 #[cfg(splicing)]
-use crate::ln::interactivetxs::{
-	calculate_change_output_value, AbortReason, InteractiveTxMessageSend,
-};
-use crate::ln::interactivetxs::{
-	get_output_weight, InteractiveTxConstructor, InteractiveTxConstructorArgs,
-	InteractiveTxSigningSession, SharedOwnedInput, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
-};
+use crate::ln::interactivetxs::{AbortReason, InteractiveTxMessageSend};
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
 use crate::ln::onion_utils::{
@@ -10120,7 +10119,7 @@ where
 	#[rustfmt::skip]
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
-		if matches!(
+		if self.context.channel_state.is_interactive_signing() || matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
 			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
@@ -13135,6 +13134,30 @@ where
 			})
 			.collect();
 
+		// Optionally add change output
+		let change_script = signer_provider.get_destination_script(context.channel_keys_id)
+			.map_err(|_| ChannelError::close("Error getting change destination script".to_string()))?;
+		let change_value_opt = if our_funding_contribution > SignedAmount::ZERO {
+			calculate_change_output_value(
+				&funding_negotiation_context, false, &shared_funding_output.script_pubkey, context.holder_dust_limit_satoshis).map_err(|_| ChannelError::close("Error calculating change output value".to_string()))? } else {
+			None
+		};
+		let mut our_funding_outputs = vec![];
+		if let Some(change_value) = change_value_opt {
+			let mut change_output = TxOut {
+				value: Amount::from_sat(change_value),
+				script_pubkey: change_script,
+			};
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee = fee_for_weight(funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				our_funding_outputs.push(change_output);
+			}
+		}
+
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
 				entropy_source,
@@ -13147,7 +13170,7 @@ where
 				inputs_to_contribute,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
-				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
+				outputs_to_contribute: our_funding_outputs,
 			}
 		).map_err(|err| {
 			let reason = ClosureReason::ProcessingError { err: err.to_string() };
