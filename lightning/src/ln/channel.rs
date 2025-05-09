@@ -56,6 +56,7 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::{ClosureReason, Event};
 use crate::events::bump_transaction::BASE_INPUT_WEIGHT;
@@ -3869,7 +3870,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	#[inline]
 	fn build_commitment_stats(&self, funding: &FundingScope, local: bool, generated_by_local: bool) -> CommitmentStats {
 		let broadcaster_dust_limit_sat = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
-		let mut non_dust_htlc_count = 0;
+		let mut nondust_htlc_count = 0;
 		let mut remote_htlc_total_msat = 0;
 		let mut local_htlc_total_msat = 0;
 		let mut value_to_self_msat_offset = 0;
@@ -3879,7 +3880,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if htlc.state.included_in_commitment(generated_by_local) {
 				if !htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
-					non_dust_htlc_count += 1;
+					nondust_htlc_count += 1;
 				}
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
@@ -3892,7 +3893,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if htlc.state.included_in_commitment(generated_by_local) {
 				if !htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_sat, funding.get_channel_type()) {
-					non_dust_htlc_count += 1;
+					nondust_htlc_count += 1;
 				}
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
@@ -3928,20 +3929,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat || value_to_remote_msat / 1000 >= funding.holder_selected_channel_reserve_satoshis);
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat);
 		}
-
-		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count, &funding.channel_transaction_parameters.channel_type_features);
-		let total_anchors_sat = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
-
-		if funding.is_outbound() {
-			value_to_self_msat = value_to_self_msat.saturating_sub(total_anchors_sat * 1000);
-		} else {
-			value_to_remote_msat = value_to_remote_msat.saturating_sub(total_anchors_sat * 1000);
-		}
+		let builder = SpecTxBuilder {};
+		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = builder.balances_excluding_tx_fee(
+			funding.is_outbound(),
+			&funding.channel_transaction_parameters.channel_type_features,
+			value_to_self_msat,
+			value_to_remote_msat,
+		);
 
 		CommitmentStats {
-			total_fee_sat,
-			local_balance_before_fee_msat: value_to_self_msat,
-			remote_balance_before_fee_msat: value_to_remote_msat,
+			total_fee_sat: builder.commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count, &funding.channel_transaction_parameters.channel_type_features),
+			local_balance_before_fee_msat,
+			remote_balance_before_fee_msat,
 		}
 	}
 
