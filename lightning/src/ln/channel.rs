@@ -8254,6 +8254,20 @@ where
 		self.context.channel_state.clear_monitor_update_in_progress();
 		assert_eq!(self.blocked_monitor_updates_pending(), 0);
 
+		// For channels established with V2 establishment we won't send a `tx_signatures` when we're in
+		// MonitorUpdateInProgress (and we assume the user will never directly broadcast the funding
+		// transaction and waits for us to do it).
+		let tx_signatures_ready = self.context.monitor_pending_tx_signatures;
+		self.context.monitor_pending_tx_signatures = false;
+		let tx_signatures = if tx_signatures_ready {
+			if self.context.channel_state.is_their_tx_signatures_sent() {
+				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+			} else {
+				self.context.channel_state.set_our_tx_signatures_ready();
+			}
+			self.interactive_tx_signing_session.as_ref().and_then(|session| session.holder_tx_signatures().clone())
+		} else { None };
+
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound (or V2-established) channel,
 		// try to (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
@@ -9714,7 +9728,7 @@ where
 	#[rustfmt::skip]
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
-		if matches!(
+		if self.context.channel_state.is_interactive_signing() || matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
 			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
@@ -12615,6 +12629,31 @@ where
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
+		// Optionally add change output
+		let change_script = signer_provider.get_destination_script(context.channel_keys_id)
+			.map_err(|_| ChannelError::close("Error getting change destination script".to_string()))?;
+		let change_value_opt = calculate_change_output_value(
+			funding.is_outbound(), dual_funding_context.our_funding_satoshis,
+			&our_funding_inputs, None, &shared_funding_output.script_pubkey, &vec![],
+			dual_funding_context.funding_feerate_sat_per_1000_weight,
+			change_script.minimal_non_dust().to_sat(),
+		).map_err(|_| ChannelError::close("Error calculating change output value".to_string()))?;
+		let mut our_funding_outputs = vec![];
+		if let Some(change_value) = change_value_opt {
+			let mut change_output = TxOut {
+				value: Amount::from_sat(change_value),
+				script_pubkey: change_script,
+			};
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee = fee_for_weight(dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				our_funding_outputs.push(change_output);
+			}
+		}
+
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
 				entropy_source,
@@ -12627,7 +12666,7 @@ where
 				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_satoshis),
-				outputs_to_contribute: Vec::new(),
+				outputs_to_contribute: our_funding_outputs,
 			}
 		).map_err(|err| {
 			let reason = ClosureReason::ProcessingError { err: err.to_string() };
