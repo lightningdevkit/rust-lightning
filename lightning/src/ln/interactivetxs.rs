@@ -1793,12 +1793,15 @@ pub(super) fn calculate_change_output_value(
 	let fees_sats = fee_for_weight(funding_feerate_sat_per_1000_weight, weight);
 	// Note: in case of additional outputs, they will have to be subtracted here
 
+	dbg!(total_input_satoshis);
 	let total_inputs_less_fees = total_input_satoshis.saturating_sub(fees_sats);
 	if total_inputs_less_fees < our_contribution {
 		// Not enough to cover contribution plus fees
 		return Err(AbortReason::InsufficientFees);
 	}
 	let remaining_value = total_inputs_less_fees.saturating_sub(our_contribution);
+	dbg!(remaining_value);
+	dbg!(change_output_dust_limit);
 	if remaining_value < change_output_dust_limit {
 		// Enough to cover contribution plus fees, but leftover is below dust limit; no change
 		Ok(None)
