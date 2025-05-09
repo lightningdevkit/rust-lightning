@@ -2475,6 +2475,10 @@ impl MaybeReadable for Event {
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
 			},
+			45u8 => {
+				// Value 45 is used for `Event::FundingTransactionReadyForSigning`.
+				Ok(None)
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
