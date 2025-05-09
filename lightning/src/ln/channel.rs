@@ -6314,6 +6314,19 @@ where
 		}
 	}
 
+	#[cfg(all(test))]
+	pub fn get_initial_counterparty_commitment_signatures_for_test<L: Deref>(
+		&mut self, funding: &mut FundingScope, logger: &L,
+		counterparty_next_commitment_point_override: PublicKey,
+	) -> Option<(Signature, Vec<Signature>)>
+	where
+		SP::Target: SignerProvider,
+		L::Target: Logger,
+	{
+		self.counterparty_next_commitment_point = Some(counterparty_next_commitment_point_override);
+		self.get_initial_counterparty_commitment_signatures(funding, logger)
+	}
+
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
 		let minimum_depth = self
 			.minimum_depth(funding)
@@ -10955,7 +10968,7 @@ where
 	#[rustfmt::skip]
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
-		if matches!(
+		if self.context.interactive_tx_signing_session.is_some() || matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
 			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
@@ -14176,6 +14189,30 @@ where
 			script_pubkey: funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
+		// Optionally add change output
+		let change_script = signer_provider.get_destination_script(context.channel_keys_id)
+			.map_err(|_| ChannelError::close("Error getting change destination script".to_string()))?;
+		let change_value_opt = if our_funding_contribution > SignedAmount::ZERO {
+			calculate_change_output_value(
+				&funding_negotiation_context, false, &shared_funding_output.script_pubkey, context.holder_dust_limit_satoshis).map_err(|_| ChannelError::close("Error calculating change output value".to_string()))? } else {
+			None
+		};
+		let mut our_funding_outputs = vec![];
+		if let Some(change_value) = change_value_opt {
+			let mut change_output = TxOut {
+				value: Amount::from_sat(change_value),
+				script_pubkey: change_script,
+			};
+			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
+			let change_output_fee = fee_for_weight(funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
+			// Check dust limit again
+			if change_value_decreased_with_fee > context.holder_dust_limit_satoshis {
+				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
+				our_funding_outputs.push(change_output);
+			}
+		}
+
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
 				entropy_source,
@@ -14188,7 +14225,7 @@ where
 				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
 				shared_funding_output: SharedOwnedOutput::new(shared_funding_output, our_funding_contribution_sats),
-				outputs_to_contribute: funding_negotiation_context.our_funding_outputs.clone(),
+				outputs_to_contribute: our_funding_outputs,
 			}
 		).map_err(|err| {
 			let reason = ClosureReason::ProcessingError { err: err.reason.to_string() };
