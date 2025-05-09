@@ -987,9 +987,8 @@ struct CommitmentData<'a> {
 /// A struct gathering stats on a commitment transaction, either local or remote.
 struct CommitmentStats {
 	total_fee_sat: u64, // the total fee included in the transaction
-	total_anchors_sat: u64, // the sum of the anchors' amounts
-	local_balance_before_fee_anchors_msat: u64, // local balance before fees and anchors *not* considering dust limits
-	remote_balance_before_fee_anchors_msat: u64, // remote balance before fees and anchors *not* considering dust limits
+	local_balance_before_fee_msat: u64, // local balance before fees *not* considering dust limits
+	remote_balance_before_fee_msat: u64, // remote balance before fees *not* considering dust limits
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -3773,7 +3772,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if update_fee {
 			debug_assert!(!funding.is_outbound());
 			let counterparty_reserve_we_require_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_data.stats.remote_balance_before_fee_anchors_msat < commitment_data.stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
+			if commitment_data.stats.remote_balance_before_fee_msat < commitment_data.stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
 				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
 			}
 		}
@@ -3933,11 +3932,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let total_fee_sat = commit_tx_fee_sat(feerate_per_kw, non_dust_htlc_count, &funding.channel_transaction_parameters.channel_type_features);
 		let total_anchors_sat = if funding.channel_transaction_parameters.channel_type_features.supports_anchors_zero_fee_htlc_tx() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 };
 
+		if funding.is_outbound() {
+			value_to_self_msat = value_to_self_msat.saturating_sub(total_anchors_sat * 1000);
+		} else {
+			value_to_remote_msat = value_to_remote_msat.saturating_sub(total_anchors_sat * 1000);
+		}
+
 		CommitmentStats {
 			total_fee_sat,
-			total_anchors_sat,
-			local_balance_before_fee_anchors_msat: value_to_self_msat,
-			remote_balance_before_fee_anchors_msat: value_to_remote_msat,
+			local_balance_before_fee_msat: value_to_self_msat,
+			remote_balance_before_fee_msat: value_to_remote_msat,
 		}
 	}
 
@@ -3964,9 +3968,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let stats = self.build_commitment_stats(funding, local, generated_by_local);
 		let CommitmentStats {
 			total_fee_sat,
-			total_anchors_sat,
-			local_balance_before_fee_anchors_msat,
-			remote_balance_before_fee_anchors_msat
+			local_balance_before_fee_msat,
+			remote_balance_before_fee_msat
 		} = stats;
 
 		let num_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
@@ -4037,9 +4040,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// cover the total fee and the anchors.
 
 		let (value_to_self, value_to_remote) = if funding.is_outbound() {
-			((local_balance_before_fee_anchors_msat / 1000).saturating_sub(total_anchors_sat).saturating_sub(total_fee_sat), remote_balance_before_fee_anchors_msat / 1000)
+			((local_balance_before_fee_msat / 1000).saturating_sub(total_fee_sat), remote_balance_before_fee_msat / 1000)
 		} else {
-			(local_balance_before_fee_anchors_msat / 1000, (remote_balance_before_fee_anchors_msat / 1000).saturating_sub(total_anchors_sat).saturating_sub(total_fee_sat))
+			(local_balance_before_fee_msat / 1000, (remote_balance_before_fee_msat / 1000).saturating_sub(total_fee_sat))
 		};
 
 		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
@@ -6667,7 +6670,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			&self.holder_commitment_point.current_point(), true, true, logger,
 		);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.funding.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
+		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_msat - htlc_stats.outbound_holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
