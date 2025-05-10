@@ -446,6 +446,14 @@ pub enum AsyncPaymentsContext {
 	},
 }
 
+/// Contains verified data specific to an [`AsyncPaymentsContext`].
+pub enum VerifiedAsyncPaymentContext {
+	/// Verified data corresponding to [`AsyncPaymentsContext::OutboundPayment`].
+	OutboundPayment(PaymentId),
+	/// Verified data corresponding to [`AsyncPaymentsContext::OutboundPayment`].
+	InboundPayment,
+}
+
 impl_writeable_tlv_based_enum!(MessageContext,
 	{0, Offers} => (),
 	{1, Custom} => (),
