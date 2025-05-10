@@ -57,6 +57,7 @@ use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::types::payment::PaymentPreimage;
+use crate::util::async_poll::AsyncResult;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 
@@ -67,6 +68,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
 use core::convert::TryInto;
+use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(taproot)]
 use musig2::types::{PartialSignature, PublicNonce};
@@ -983,7 +985,43 @@ pub trait ChangeDestinationSource {
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds controlled to the same user.
+	fn get_change_destination_script<'a>(&self) -> AsyncResult<'a, ScriptBuf>;
+}
+
+/// A synchronous helper trait that describes an on-chain wallet capable of returning a (change) destination script.
+pub trait ChangeDestinationSourceSync {
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds controlled to the same user.
 	fn get_change_destination_script(&self) -> Result<ScriptBuf, ()>;
+}
+
+/// A wrapper around [`ChangeDestinationSource`] to allow for async calls.
+#[cfg(any(test, feature = "_test_utils"))]
+pub struct ChangeDestinationSourceSyncWrapper<T: Deref>(T)
+where
+	T::Target: ChangeDestinationSourceSync;
+#[cfg(not(any(test, feature = "_test_utils")))]
+pub(crate) struct ChangeDestinationSourceSyncWrapper<T: Deref>(T)
+where
+	T::Target: ChangeDestinationSourceSync;
+
+impl<T: Deref> ChangeDestinationSourceSyncWrapper<T>
+where
+	T::Target: ChangeDestinationSourceSync,
+{
+	/// Creates a new [`ChangeDestinationSourceSyncWrapper`].
+	pub fn new(source: T) -> Self {
+		Self(source)
+	}
+}
+impl<T: Deref> ChangeDestinationSource for ChangeDestinationSourceSyncWrapper<T>
+where
+	T::Target: ChangeDestinationSourceSync,
+{
+	fn get_change_destination_script<'a>(&self) -> AsyncResult<'a, ScriptBuf> {
+		let script = self.0.get_change_destination_script();
+		Box::pin(async move { script })
+	}
 }
 
 mod sealed {
