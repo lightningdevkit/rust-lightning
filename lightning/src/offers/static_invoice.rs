@@ -68,7 +68,7 @@ pub const SIGNATURE_TAG: &'static str = concat!("lightning", "static_invoice", "
 #[derive(Clone, Debug)]
 pub struct StaticInvoice {
 	bytes: Vec<u8>,
-	contents: InvoiceContents,
+	contents: Box<InvoiceContents>,
 	signature: Signature,
 }
 
@@ -110,7 +110,7 @@ struct InvoiceContents {
 // TODO: add module-level docs and link here
 pub struct StaticInvoiceBuilder<'a> {
 	offer_bytes: &'a Vec<u8>,
-	invoice: InvoiceContents,
+	invoice: Box<InvoiceContents>,
 	keys: Keypair,
 }
 
@@ -147,7 +147,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 		}
 
 		let invoice =
-			InvoiceContents::new(offer, payment_paths, message_paths, created_at, signing_pubkey);
+			Box::new(InvoiceContents::new(offer, payment_paths, message_paths, created_at, signing_pubkey));
 
 		Ok(Self { offer_bytes: &offer.bytes, invoice, keys })
 	}
@@ -196,7 +196,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 pub struct UnsignedStaticInvoice {
 	bytes: Vec<u8>,
 	experimental_bytes: Vec<u8>,
-	contents: InvoiceContents,
+	contents: Box<InvoiceContents>,
 	tagged_hash: TaggedHash,
 }
 
@@ -300,7 +300,7 @@ macro_rules! invoice_accessors_signing_pubkey {
 } }
 
 impl UnsignedStaticInvoice {
-	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
+	fn new(offer_bytes: &Vec<u8>, contents: Box<InvoiceContents>) -> Self {
 		let (_, invoice_tlv_stream, _, experimental_invoice_tlv_stream) = contents.as_tlv_stream();
 
 		const INVOICE_ALLOCATION_SIZE: usize = 1024;
@@ -608,12 +608,12 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 			experimental_offer_tlv_stream,
 			experimental_invoice_tlv_stream,
 		) = tlv_stream;
-		let contents = InvoiceContents::try_from((
+		let contents = Box::new(InvoiceContents::try_from((
 			offer_tlv_stream,
 			invoice_tlv_stream,
 			experimental_offer_tlv_stream,
 			experimental_invoice_tlv_stream,
-		))?;
+		))?);
 
 		let signature = match signature {
 			None => {
