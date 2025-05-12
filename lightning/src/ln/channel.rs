@@ -5755,20 +5755,27 @@ impl<SP: Deref> FundedChannel<SP> where
 		// violate the reserve value if we do not do this (as we forget inbound HTLCs from the
 		// Channel state once they will not be present in the next received commitment
 		// transaction).
-		let mut removed_outbound_total_msat = 0;
-		for ref htlc in self.context.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
-				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
-				removed_outbound_total_msat += htlc.amount_msat;
+		let (local_balance_before_fee_msat, remote_balance_before_fee_msat) = {
+			let mut removed_outbound_total_msat = 0;
+			for ref htlc in self.context.pending_outbound_htlcs.iter() {
+				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+					removed_outbound_total_msat += htlc.amount_msat;
+				} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+					removed_outbound_total_msat += htlc.amount_msat;
+				}
 			}
-		}
-
-		let pending_value_to_self_msat =
-			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
-		let pending_remote_value_msat =
-			self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
-		if pending_remote_value_msat < msg.amount_msat {
+			let pending_value_to_self_msat =
+				self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			let pending_remote_value_msat =
+				self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
+			SpecTxBuilder {}.balances_excluding_tx_fee(
+				self.funding.is_outbound(),
+				self.funding.get_channel_type(),
+				self.funding.value_to_self_msat,
+				pending_remote_value_msat,
+			)
+		};
+		if remote_balance_before_fee_msat < msg.amount_msat {
 			return Err(ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()));
 		}
 
@@ -5779,29 +5786,19 @@ impl<SP: Deref> FundedChannel<SP> where
 				let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 				self.context.next_remote_commit_tx_fee_msat(&self.funding, Some(htlc_candidate), None) // Don't include the extra fee spike buffer HTLC in calculations
 			};
-			let anchor_outputs_value_msat = if !self.funding.is_outbound() && self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
-			} else {
-				0
-			};
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(anchor_outputs_value_msat) < remote_commit_tx_fee_msat {
+			if remote_balance_before_fee_msat.saturating_sub(msg.amount_msat) < remote_commit_tx_fee_msat {
 				return Err(ChannelError::close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
 			};
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < self.funding.holder_selected_channel_reserve_satoshis * 1000 {
+			if remote_balance_before_fee_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat) < self.funding.holder_selected_channel_reserve_satoshis * 1000 {
 				return Err(ChannelError::close("Remote HTLC add would put them under remote reserve value".to_owned()));
 			}
 		}
 
-		let anchor_outputs_value_msat = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
-		} else {
-			0
-		};
 		if self.funding.is_outbound() {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(&self.funding, htlc_candidate, None);
-			if self.funding.value_to_self_msat < self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
+			if local_balance_before_fee_msat < self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat {
 				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
