@@ -2432,7 +2432,7 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 	}
 }
 
-/// A temporaty internal struct, used to return something from FundedChannel
+/// A temporary internal struct, used to return something from FundedChannel
 /// that implements [`FundingTxConstructorV2`], but only when it has the parts for it.
 #[cfg(splicing)]
 struct FundedChannelRefundingWrapper<'a, SP: Deref> where SP::Target: SignerProvider {
@@ -9088,8 +9088,23 @@ impl<SP: Deref> FundedChannel<SP> where
 		)?;
 
 		let post_value_to_self_msat = self.funding().value_to_self_msat.saturating_add(our_funding_satoshis);
+
 		let mut post_channel_transaction_parameters = self.funding().channel_transaction_parameters.clone();
 		post_channel_transaction_parameters.channel_value_satoshis = post_channel_value;
+		// Update the splicing 'tweak', this will rotate the keys in the signer
+		let prev_funding_txid = self.funding.funding_transaction.as_ref()
+			.map(|tx| tx.compute_txid());
+		post_channel_transaction_parameters.splice_parent_funding_txid = prev_funding_txid;
+		match &self.context.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				post_channel_transaction_parameters.holder_pubkeys =
+					ecdsa.pubkeys(prev_funding_txid, &self.context.secp_ctx);
+			}
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!()
+		}
+
 		let pending_funding = FundingScope {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
@@ -9198,8 +9213,23 @@ impl<SP: Deref> FundedChannel<SP> where
 		)?;
 
 		let post_value_to_self_msat = self.funding().value_to_self_msat.saturating_add(our_funding_satoshis);
+
 		let mut post_channel_transaction_parameters = self.funding().channel_transaction_parameters.clone();
 		post_channel_transaction_parameters.channel_value_satoshis = post_channel_value;
+		// Update the splicing 'tweak', this will rotate the keys in the signer
+		let prev_funding_txid = self.funding.funding_transaction.as_ref()
+			.map(|tx| tx.compute_txid());
+		post_channel_transaction_parameters.splice_parent_funding_txid = prev_funding_txid;
+		match &self.context.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				post_channel_transaction_parameters.holder_pubkeys =
+					ecdsa.pubkeys(prev_funding_txid, &self.context.secp_ctx);
+			}
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!()
+		}
+
 		let pending_funding = FundingScope {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
