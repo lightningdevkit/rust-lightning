@@ -528,11 +528,17 @@ where
 			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
 		let input_amount_sat = must_spend.iter().map(|input| input.previous_utxo.value).sum();
 		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
-		let do_coin_selection = |force_conflicting_utxo_spend: bool,
-		                         tolerate_high_network_feerates: bool| {
-			log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
-				target_feerate_sat_per_1000_weight, force_conflicting_utxo_spend, tolerate_high_network_feerates);
-			self.select_confirmed_utxos_internal(
+
+		let configs = [(false, false), (false, true), (true, false), (true, true)];
+		for (force_conflicting_utxo_spend, tolerate_high_network_feerates) in configs {
+			log_debug!(
+				self.logger,
+				"Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
+				target_feerate_sat_per_1000_weight,
+				force_conflicting_utxo_spend,
+				tolerate_high_network_feerates
+			);
+			let attempt = self.select_confirmed_utxos_internal(
 				&utxos,
 				claim_id,
 				force_conflicting_utxo_spend,
@@ -541,12 +547,12 @@ where
 				preexisting_tx_weight,
 				input_amount_sat,
 				target_amount_sat,
-			)
-		};
-		do_coin_selection(false, false)
-			.or_else(|_| do_coin_selection(false, true))
-			.or_else(|_| do_coin_selection(true, false))
-			.or_else(|_| do_coin_selection(true, true))
+			);
+			if attempt.is_ok() {
+				return attempt;
+			}
+		}
+		Err(())
 	}
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
