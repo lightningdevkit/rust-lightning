@@ -805,7 +805,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
-fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
+async fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	// Ensures that we can obtain holder signatures for commitment and HTLC transactions
 	// asynchronously by allowing their retrieval to fail and retrying via
 	// `ChannelMonitor::signer_unblocked`.
@@ -909,7 +909,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 
 	// No HTLC transaction should be broadcast as the signer is not available yet.
 	if anchors && !remote_commitment {
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 	}
 	let txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert!(txn.is_empty(), "expected no transaction to be broadcast, got {:?}", txn);
@@ -920,7 +920,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	get_monitor!(nodes[0], chan_id).signer_unblocked(nodes[0].tx_broadcaster, nodes[0].fee_estimator, &nodes[0].logger);
 
 	if anchors && !remote_commitment {
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 	}
 	{
 		let txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -929,24 +929,24 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	}
 }
 
-#[test]
-fn test_async_holder_signatures_no_anchors() {
-	do_test_async_holder_signatures(false, false);
+#[tokio::test]
+async fn test_async_holder_signatures_no_anchors() {
+	do_test_async_holder_signatures(false, false).await;
 }
 
-#[test]
-fn test_async_holder_signatures_remote_commitment_no_anchors() {
-	do_test_async_holder_signatures(false, true);
+#[tokio::test]
+async fn test_async_holder_signatures_remote_commitment_no_anchors() {
+	do_test_async_holder_signatures(false, true).await;
 }
 
-#[test]
-fn test_async_holder_signatures_anchors() {
-	do_test_async_holder_signatures(true, false);
+#[tokio::test]
+async fn test_async_holder_signatures_anchors() {
+	do_test_async_holder_signatures(true, false).await;
 }
 
-#[test]
-fn test_async_holder_signatures_remote_commitment_anchors() {
-	do_test_async_holder_signatures(true, true);
+#[tokio::test]
+async fn test_async_holder_signatures_remote_commitment_anchors() {
+	do_test_async_holder_signatures(true, true).await;
 }
 
 #[test]
