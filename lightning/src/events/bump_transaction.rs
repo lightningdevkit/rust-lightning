@@ -415,69 +415,73 @@ where
 		tolerate_high_network_feerates: bool, target_feerate_sat_per_1000_weight: u32,
 		preexisting_tx_weight: u64, input_amount_sat: Amount, target_amount_sat: Amount,
 	) -> Result<CoinSelection, ()> {
-		let mut locked_utxos = self.locked_utxos.lock().unwrap();
-		let mut eligible_utxos = utxos
-			.iter()
-			.filter_map(|utxo| {
-				if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
-					if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+		let mut selected_amount;
+		let mut total_fees;
+		let mut selected_utxos;
+		{
+			let mut locked_utxos = self.locked_utxos.lock().unwrap();
+			let mut eligible_utxos = utxos
+				.iter()
+				.filter_map(|utxo| {
+					if let Some(utxo_claim_id) = locked_utxos.get(&utxo.outpoint) {
+						if *utxo_claim_id != claim_id && !force_conflicting_utxo_spend {
+							log_trace!(
+								self.logger,
+								"Skipping UTXO {} to prevent conflicting spend",
+								utxo.outpoint
+							);
+							return None;
+						}
+					}
+					let fee_to_spend_utxo = Amount::from_sat(fee_for_weight(
+						target_feerate_sat_per_1000_weight,
+						BASE_INPUT_WEIGHT + utxo.satisfaction_weight,
+					));
+					let should_spend = if tolerate_high_network_feerates {
+						utxo.output.value > fee_to_spend_utxo
+					} else {
+						utxo.output.value >= fee_to_spend_utxo * 2
+					};
+					if should_spend {
+						Some((utxo, fee_to_spend_utxo))
+					} else {
 						log_trace!(
 							self.logger,
-							"Skipping UTXO {} to prevent conflicting spend",
+							"Skipping UTXO {} due to dust proximity after spend",
 							utxo.outpoint
 						);
-						return None;
+						None
 					}
-				}
-				let fee_to_spend_utxo = Amount::from_sat(fee_for_weight(
-					target_feerate_sat_per_1000_weight,
-					BASE_INPUT_WEIGHT + utxo.satisfaction_weight,
-				));
-				let should_spend = if tolerate_high_network_feerates {
-					utxo.output.value > fee_to_spend_utxo
-				} else {
-					utxo.output.value >= fee_to_spend_utxo * 2
-				};
-				if should_spend {
-					Some((utxo, fee_to_spend_utxo))
-				} else {
-					log_trace!(
-						self.logger,
-						"Skipping UTXO {} due to dust proximity after spend",
-						utxo.outpoint
-					);
-					None
-				}
-			})
-			.collect::<Vec<_>>();
-		eligible_utxos.sort_unstable_by_key(|(utxo, _)| utxo.output.value);
+				})
+				.collect::<Vec<_>>();
+			eligible_utxos.sort_unstable_by_key(|(utxo, _)| utxo.output.value);
 
-		let mut selected_amount = input_amount_sat;
-		let mut total_fees = Amount::from_sat(fee_for_weight(
-			target_feerate_sat_per_1000_weight,
-			preexisting_tx_weight,
-		));
-		let mut selected_utxos = Vec::new();
-		for (utxo, fee_to_spend_utxo) in eligible_utxos {
-			if selected_amount >= target_amount_sat + total_fees {
-				break;
+			selected_amount = input_amount_sat;
+			total_fees = Amount::from_sat(fee_for_weight(
+				target_feerate_sat_per_1000_weight,
+				preexisting_tx_weight,
+			));
+			selected_utxos = Vec::new();
+			for (utxo, fee_to_spend_utxo) in eligible_utxos {
+				if selected_amount >= target_amount_sat + total_fees {
+					break;
+				}
+				selected_amount += utxo.output.value;
+				total_fees += fee_to_spend_utxo;
+				selected_utxos.push(utxo.clone());
 			}
-			selected_amount += utxo.output.value;
-			total_fees += fee_to_spend_utxo;
-			selected_utxos.push(utxo.clone());
+			if selected_amount < target_amount_sat + total_fees {
+				log_debug!(
+					self.logger,
+					"Insufficient funds to meet target feerate {} sat/kW",
+					target_feerate_sat_per_1000_weight
+				);
+				return Err(());
+			}
+			for utxo in &selected_utxos {
+				locked_utxos.insert(utxo.outpoint, claim_id);
+			}
 		}
-		if selected_amount < target_amount_sat + total_fees {
-			log_debug!(
-				self.logger,
-				"Insufficient funds to meet target feerate {} sat/kW",
-				target_feerate_sat_per_1000_weight
-			);
-			return Err(());
-		}
-		for utxo in &selected_utxos {
-			locked_utxos.insert(utxo.outpoint, claim_id);
-		}
-		core::mem::drop(locked_utxos);
 
 		let remaining_amount = selected_amount - target_amount_sat - total_fees;
 		let change_script = self.source.get_change_script()?;
