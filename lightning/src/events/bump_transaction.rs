@@ -666,13 +666,10 @@ where
 				output: vec![],
 			};
 
-			let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT
-				+ EMPTY_SCRIPT_SIG_WEIGHT
-				+ coin_selection
-					.confirmed_utxos
-					.iter()
-					.map(|utxo| utxo.satisfaction_weight)
-					.sum::<u64>();
+			let input_satisfaction_weight: u64 =
+				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
+			let total_satisfaction_weight =
+				ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + input_satisfaction_weight;
 			let total_input_amount = must_spend_amount
 				+ coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
 
@@ -748,11 +745,8 @@ where
 					unsigned_tx_weight + 2 /* wit marker */ + total_satisfaction_weight;
 				// Our estimate should be within a 1% error margin of the actual weight and we should
 				// never underestimate.
-				assert!(
-					expected_signed_tx_weight >= signed_tx_weight
-						&& expected_signed_tx_weight - (expected_signed_tx_weight / 100)
-							<= signed_tx_weight
-				);
+				assert!(expected_signed_tx_weight >= signed_tx_weight);
+				assert!(expected_signed_tx_weight * 99 / 100 <= signed_tx_weight);
 
 				let expected_package_fee = Amount::from_sat(fee_for_weight(
 					package_target_feerate_sat_per_1000_weight,
@@ -825,19 +819,15 @@ where
 		)?;
 
 		#[cfg(debug_assertions)]
-		let total_satisfaction_weight = must_spend_satisfaction_weight
-			+ coin_selection
-				.confirmed_utxos
-				.iter()
-				.map(|utxo| utxo.satisfaction_weight)
-				.sum::<u64>();
+		let input_satisfaction_weight: u64 =
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum();
 		#[cfg(debug_assertions)]
-		let total_input_amount = must_spend_amount
-			+ coin_selection
-				.confirmed_utxos
-				.iter()
-				.map(|utxo| utxo.output.value.to_sat())
-				.sum::<u64>();
+		let total_satisfaction_weight = must_spend_satisfaction_weight + input_satisfaction_weight;
+		#[cfg(debug_assertions)]
+		let input_value: u64 =
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value.to_sat()).sum();
+		#[cfg(debug_assertions)]
+		let total_input_amount = must_spend_amount + input_value;
 
 		self.process_coin_selection(&mut htlc_tx, &coin_selection);
 
@@ -891,11 +881,8 @@ where
 			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
 			// Our estimate should be within a 1% error margin of the actual weight and we should
 			// never underestimate.
-			assert!(
-				expected_signed_tx_weight >= signed_tx_weight
-					&& expected_signed_tx_weight - (expected_signed_tx_weight / 100)
-						<= signed_tx_weight
-			);
+			assert!(expected_signed_tx_weight >= signed_tx_weight);
+			assert!(expected_signed_tx_weight * 99 / 100 <= signed_tx_weight);
 
 			let expected_signed_tx_fee =
 				fee_for_weight(target_feerate_sat_per_1000_weight, signed_tx_weight);
