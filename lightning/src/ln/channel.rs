@@ -9103,12 +9103,17 @@ impl<SP: Deref> FundedChannel<SP> where
 			_ => todo!()
 		}
 
+		// New reserve values are based on the new channel value, and v2-specific
+		let counterparty_selected_channel_reserve_satoshis = Some(get_v2_channel_reserve_satoshis(
+			post_channel_value, self.context.counterparty_dust_limit_satoshis));
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 		let pending_funding = FundingScope {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
-			counterparty_selected_channel_reserve_satoshis: self.funding.counterparty_selected_channel_reserve_satoshis, // TODO check
-			holder_selected_channel_reserve_satoshis: self.funding.holder_selected_channel_reserve_satoshis, // TODO check
+			counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis,
 			#[cfg(debug_assertions)]
 			holder_max_commitment_tx_output: Mutex::new((post_value_to_self_msat, (post_channel_value * 1000).saturating_sub(post_value_to_self_msat))),
 			#[cfg(debug_assertions)]
