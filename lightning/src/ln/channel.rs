@@ -9101,8 +9101,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, counterparty_commitment_tx.nondust_htlcs().len(), self.funding.get_channel_type()) * 1000;
-							assert_eq!(actual_fee, info.fee);
+							assert_eq!(commitment_data.stats.total_fee_sat, info.fee);
 						}
 				}
 			}
