@@ -1,9 +1,16 @@
 //! Defines the `TxBuilder` trait, and the `SpecTxBuilder` type
 
-use crate::ln::chan_utils::commit_tx_fee_sat;
+use core::ops::Deref;
+
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
+
+use crate::ln::chan_utils::{
+	commit_tx_fee_sat, ChannelTransactionParameters, CommitmentTransaction, HTLCOutputInCommitment,
+};
 use crate::ln::channel::{CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;
+use crate::util::logger::Logger;
 
 pub(crate) trait TxBuilder {
 	fn build_commitment_stats(
@@ -11,6 +18,14 @@ pub(crate) trait TxBuilder {
 		value_to_self_after_htlcs: u64, value_to_remote_after_htlcs: u64,
 		channel_type: &ChannelTypeFeatures,
 	) -> CommitmentStats;
+	fn build_commitment_transaction<L: Deref>(
+		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
+		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
+		value_to_self_msat: u64, htlcs_in_tx: Vec<HTLCOutputInCommitment>, feerate_per_kw: u32,
+		broadcaster_dust_limit_satoshis: u64, logger: &L,
+	) -> (CommitmentTransaction, CommitmentStats)
+	where
+		L::Target: Logger;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -53,5 +68,125 @@ impl TxBuilder for SpecTxBuilder {
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
 		}
+	}
+	fn build_commitment_transaction<L: Deref>(
+		&self, local: bool, commitment_number: u64, per_commitment_point: &PublicKey,
+		channel_parameters: &ChannelTransactionParameters, secp_ctx: &Secp256k1<secp256k1::All>,
+		value_to_self_msat: u64, mut htlcs_in_tx: Vec<HTLCOutputInCommitment>, feerate_per_kw: u32,
+		broadcaster_dust_limit_satoshis: u64, logger: &L,
+	) -> (CommitmentTransaction, CommitmentStats)
+	where
+		L::Target: Logger,
+	{
+		let mut local_htlc_total_msat = 0;
+		let mut remote_htlc_total_msat = 0;
+
+		// Trim dust htlcs
+		htlcs_in_tx.retain(|htlc| {
+			if htlc.offered == local {
+				// This is an outbound htlc
+				local_htlc_total_msat += htlc.amount_msat;
+			} else {
+				remote_htlc_total_msat += htlc.amount_msat;
+			}
+			if htlc.is_dust(
+				feerate_per_kw,
+				broadcaster_dust_limit_satoshis,
+				&channel_parameters.channel_type_features,
+			) {
+				log_trace!(
+					logger,
+					"   ...trimming {} HTLC with value {}sat, hash {}, due to dust limit {}",
+					if htlc.offered == local { "outbound" } else { "inbound" },
+					htlc.amount_msat / 1000,
+					htlc.payment_hash,
+					broadcaster_dust_limit_satoshis
+				);
+				false
+			} else {
+				true
+			}
+		});
+
+		// # Panics
+		//
+		// The value going to each party MUST be 0 or positive, even if all HTLCs pending in the
+		// commitment clear by failure.
+
+		let stats = self.build_commitment_stats(
+			channel_parameters.is_outbound_from_holder,
+			feerate_per_kw,
+			htlcs_in_tx.len(),
+			value_to_self_msat.checked_sub(local_htlc_total_msat).unwrap(),
+			(channel_parameters.channel_value_satoshis * 1000)
+				.checked_sub(value_to_self_msat)
+				.unwrap()
+				.checked_sub(remote_htlc_total_msat)
+				.unwrap(),
+			&channel_parameters.channel_type_features,
+		);
+
+		// We MUST use saturating subs here, as the funder's balance is not guaranteed to be greater
+		// than or equal to `total_fee_sat`.
+		//
+		// This is because when the remote party sends an `update_fee` message, we build the new
+		// commitment transaction *before* checking whether the remote party's balance is enough to
+		// cover the total fee.
+
+		let (value_to_self, value_to_remote) = if channel_parameters.is_outbound_from_holder {
+			(
+				(stats.local_balance_before_fee_msat / 1000).saturating_sub(stats.total_fee_sat),
+				stats.remote_balance_before_fee_msat / 1000,
+			)
+		} else {
+			(
+				stats.local_balance_before_fee_msat / 1000,
+				(stats.remote_balance_before_fee_msat / 1000).saturating_sub(stats.total_fee_sat),
+			)
+		};
+
+		let mut to_broadcaster_value_sat = if local { value_to_self } else { value_to_remote };
+		let mut to_countersignatory_value_sat = if local { value_to_remote } else { value_to_self };
+
+		if to_broadcaster_value_sat >= broadcaster_dust_limit_satoshis {
+			log_trace!(
+				logger,
+				"   ...including {} output with value {}",
+				if local { "to_local" } else { "to_remote" },
+				to_broadcaster_value_sat
+			);
+		} else {
+			to_broadcaster_value_sat = 0;
+		}
+
+		if to_countersignatory_value_sat >= broadcaster_dust_limit_satoshis {
+			log_trace!(
+				logger,
+				"   ...including {} output with value {}",
+				if local { "to_remote" } else { "to_local" },
+				to_countersignatory_value_sat
+			);
+		} else {
+			to_countersignatory_value_sat = 0;
+		}
+
+		let directed_parameters = if local {
+			channel_parameters.as_holder_broadcastable()
+		} else {
+			channel_parameters.as_counterparty_broadcastable()
+		};
+
+		let tx = CommitmentTransaction::new(
+			commitment_number,
+			per_commitment_point,
+			to_broadcaster_value_sat,
+			to_countersignatory_value_sat,
+			feerate_per_kw,
+			htlcs_in_tx,
+			&directed_parameters,
+			secp_ctx,
+		);
+
+		(tx, stats)
 	}
 }
