@@ -1258,10 +1258,9 @@ impl<SP: Deref> Channel<SP> where
 			#[cfg(not(splicing))]
 			ChannelPhase::Funded(_) => { debug_assert!(false); None }
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => {
-				chan.pending_splice.as_mut().and_then(|splice|
-					splice.refunding_scope.as_mut().map(|refunding_scope| &mut refunding_scope.pending_unfunded_context)
-				)
+			ChannelPhase::Funded(_chan) => {
+				debug_assert!(false, "FundedChannel is not unfunded!");
+				None
 			}
 			ChannelPhase::UnfundedOutboundV1(chan) => Some(&mut chan.unfunded_context),
 			ChannelPhase::UnfundedInboundV1(chan) => Some(&mut chan.unfunded_context),
@@ -2438,6 +2437,8 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 struct FundedChannelRefundingWrapper<'a, SP: Deref> where SP::Target: SignerProvider {
 	channel_context: &'a mut ChannelContext<SP>,
 	refunding_scope: &'a mut RefundingScope,
+	/// For accessing commitment transaction number
+	holder_commitment_point: &'a HolderCommitmentPoint,
 }
 
 #[cfg(splicing)]
@@ -2480,9 +2481,8 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 		&mut self.refunding_scope.pending_dual_funding_context
 	}
 
-	#[inline]
-	fn unfunded_context(&self) -> &UnfundedChannelContext {
-		&self.refunding_scope.pending_unfunded_context
+	fn transaction_number(&self) -> u64 {
+		self.holder_commitment_point.transaction_number()
 	}
 
 	#[inline]
@@ -2509,7 +2509,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn pending_funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>);
 	fn dual_funding_context(&self) -> &DualFundingChannelContext;
 	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext;
-	fn unfunded_context(&self) -> &UnfundedChannelContext;
+	fn transaction_number(&self) -> u64;
 	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor>;
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
 	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession>;
@@ -2694,8 +2694,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	{
 		let our_funding_satoshis = self.dual_funding_context()
 			.our_funding_satoshis;
-		let transaction_number = self.unfunded_context()
-			.transaction_number();
+		let transaction_number = self.transaction_number();
 		let pending_funding = self.pending_funding();
 
 		let mut output_index = None;
@@ -2826,9 +2825,8 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 		&mut self.dual_funding_context
 	}
 
-	#[inline]
-	fn unfunded_context(&self) -> &UnfundedChannelContext {
-		&self.unfunded_context
+	fn transaction_number(&self) -> u64 {
+		self.unfunded_context.transaction_number()
 	}
 
 	#[inline]
@@ -2853,7 +2851,6 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 struct RefundingScope {
 	// Fields belonging for [`PendingV2Channel`], except the context
 	pending_funding: FundingScope,
-	pending_unfunded_context: UnfundedChannelContext,
 	pending_dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	pending_interactive_tx_constructor: Option<InteractiveTxConstructor>,
@@ -5422,6 +5419,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				Ok(FundedChannelRefundingWrapper {
 					channel_context: &mut self.context,
 					refunding_scope,
+					holder_commitment_point: &self.holder_commitment_point,
 				})
 			} else {
 				Err("Channel is not refunding")
@@ -9128,14 +9126,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			funding_feerate_sat_per_1000_weight: msg.funding_feerate_per_kw,
 			our_funding_inputs: Vec::new(),
 		};
-		let pending_unfunded_context = UnfundedChannelContext {
-			unfunded_channel_age_ticks: 0,
-			holder_commitment_point: HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx),
-		};
 
 		let refunding_scope = Some(RefundingScope {
 			pending_funding,
-			pending_unfunded_context,
 			pending_dual_funding_context,
 			pending_interactive_tx_constructor: None,
 			pending_interactive_tx_signing_session: None,
@@ -9256,14 +9249,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		if let Some(ref mut pending_splice_mut) = &mut self.pending_splice {
 			pending_dual_funding_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
 		};
-		let pending_unfunded_context = UnfundedChannelContext {
-			unfunded_channel_age_ticks: 0,
-			holder_commitment_point: HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx),
-		};
 
 		let refunding_scope = RefundingScope {
 			pending_funding,
-			pending_unfunded_context,
 			pending_dual_funding_context,
 			pending_interactive_tx_constructor: None,
 			pending_interactive_tx_signing_session: None,
