@@ -7944,27 +7944,27 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		let anchor_outputs_value_msat = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
-		} else {
-			0
-		};
-
-		let mut removed_outbound_total_msat = 0;
-		for ref htlc in self.context.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
-				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
-				removed_outbound_total_msat += htlc.amount_msat;
-			}
-		}
-
-		let pending_value_to_self_msat =
-			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
-		let pending_remote_value_msat =
-			self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
-
 		if !self.funding.is_outbound() {
+			let mut removed_outbound_total_msat = 0;
+			for ref htlc in self.context.pending_outbound_htlcs.iter() {
+				if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+					removed_outbound_total_msat += htlc.amount_msat;
+				} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+					removed_outbound_total_msat += htlc.amount_msat;
+				}
+			}
+
+			let pending_value_to_self_msat =
+				self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			let pending_remote_value_msat =
+				self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
+			let (_local_balance_before_fee_msat, remote_balance_before_fee_msat) = SpecTxBuilder {}.balances_excluding_tx_fee(
+				self.funding.is_outbound(), // ie. false
+				self.funding.get_channel_type(),
+				pending_value_to_self_msat,
+				pending_remote_value_msat,
+			);
+
 			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
 			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
 			// side, only on the sender's. Note that with anchor outputs we are no longer as
@@ -7976,7 +7976,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if !self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
-			if pending_remote_value_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+			if remote_balance_before_fee_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
