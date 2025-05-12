@@ -625,7 +625,7 @@ where
 	/// Handles a [`BumpTransactionEvent::ChannelClose`] event variant by producing a fully-signed
 	/// transaction spending an anchor output of the commitment transaction to bump its fee and
 	/// broadcasts them to the network as a package.
-	fn handle_channel_close(
+	async fn handle_channel_close(
 		&self, claim_id: ClaimId, package_target_feerate_sat_per_1000_weight: u32,
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64,
 		anchor_descriptor: &AnchorDescriptor,
@@ -770,7 +770,7 @@ where
 
 	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
 	/// fully-signed, fee-bumped HTLC transaction that is broadcast to the network.
-	fn handle_htlc_resolution(
+	async fn handle_htlc_resolution(
 		&self, claim_id: ClaimId, target_feerate_sat_per_1000_weight: u32,
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
 	) -> Result<(), ()> {
@@ -899,7 +899,7 @@ where
 	}
 
 	/// Handles all variants of [`BumpTransactionEvent`].
-	pub fn handle_event(&self, event: &BumpTransactionEvent) {
+	pub async fn handle_event(&self, event: &BumpTransactionEvent) {
 		match event {
 			BumpTransactionEvent::ChannelClose {
 				claim_id,
@@ -915,19 +915,21 @@ where
 					log_bytes!(claim_id.0),
 					commitment_tx.compute_txid()
 				);
-				if let Err(_) = self.handle_channel_close(
+				self.handle_channel_close(
 					*claim_id,
 					*package_target_feerate_sat_per_1000_weight,
 					commitment_tx,
 					*commitment_tx_fee_satoshis,
 					anchor_descriptor,
-				) {
+				)
+				.await
+				.unwrap_or_else(|_| {
 					log_error!(
 						self.logger,
 						"Failed bumping commitment transaction fee for {}",
 						commitment_tx.compute_txid()
 					);
-				}
+				});
 			},
 			BumpTransactionEvent::HTLCResolution {
 				claim_id,
@@ -942,18 +944,20 @@ where
 					log_bytes!(claim_id.0),
 					log_iter!(htlc_descriptors.iter().map(|d| d.outpoint()))
 				);
-				if let Err(_) = self.handle_htlc_resolution(
+				self.handle_htlc_resolution(
 					*claim_id,
 					*target_feerate_sat_per_1000_weight,
 					htlc_descriptors,
 					*tx_lock_time,
-				) {
+				)
+				.await
+				.unwrap_or_else(|_| {
 					log_error!(
 						self.logger,
 						"Failed bumping HTLC transaction fee for commitment {}",
 						htlc_descriptors[0].commitment_txid
 					);
-				}
+				});
 			},
 		}
 	}
@@ -1009,8 +1013,8 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn test_op_return_under_funds() {
+	#[tokio::test]
+	async fn test_op_return_under_funds() {
 		// Test what happens if we have to select coins but the anchor output value itself suffices
 		// to pay the required fee.
 		//
@@ -1069,7 +1073,7 @@ mod tests {
 		transaction_parameters.channel_type_features =
 			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 
-		handler.handle_event(&BumpTransactionEvent::ChannelClose {
+		let channel_close_event = &BumpTransactionEvent::ChannelClose {
 			channel_id: ChannelId([42; 32]),
 			counterparty_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
 			claim_id: ClaimId([42; 32]),
@@ -1085,6 +1089,7 @@ mod tests {
 				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
 			},
 			pending_htlcs: Vec::new(),
-		});
+		};
+		handler.handle_event(channel_close_event).await;
 	}
 }
