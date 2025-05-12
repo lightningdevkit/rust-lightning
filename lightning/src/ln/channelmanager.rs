@@ -14835,6 +14835,22 @@ where
 						if payment_claim.mpp_parts.is_empty() {
 							return Err(DecodeError::InvalidValue);
 						}
+						{
+							let payments = channel_manager.claimable_payments.lock().unwrap();
+							if !payments.claimable_payments.contains_key(&payment_hash) {
+								if let Some(payment) = payments.pending_claiming_payments.get(&payment_hash) {
+									if payment.payment_id == payment_claim.claiming_payment.payment_id {
+										// If this payment already exists and was marked as
+										// being-claimed then the serialized state must contain all
+										// of the pending `ChannelMonitorUpdate`s required to get
+										// the preimage on disk in all MPP parts. Thus we can skip
+										// the replay below.
+										continue;
+									}
+								}
+							}
+						}
+
 						let mut channels_without_preimage = payment_claim.mpp_parts.iter()
 							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.funding_txo, htlc_info.channel_id))
 							.collect::<Vec<_>>();
