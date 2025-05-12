@@ -2437,81 +2437,86 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// bumps if fees have not increased after a block has been connected (assuming the height timer
 	// re-evaluates at every block) or after `ChainMonitor::rebroadcast_pending_claims` is called.
 	let mut prev_htlc_tx_feerate = None;
-	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
-		let (htlc_tx, htlc_tx_feerate) = if anchors {
-			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
-			let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
-			if !should_retry {
-				return None;
-			}
-			match &events[0] {
-				Event::BumpTransaction(event) => {
-					nodes[0].bump_tx_handler.handle_event(&event);
-					let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-					assert_eq!(txn.len(), 1);
-					let htlc_tx = txn.pop().unwrap();
-					check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
-					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value.to_sat() -
-						htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
-					let htlc_tx_weight = htlc_tx.weight().to_wu();
-					(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
-				}
-				_ => panic!("Unexpected event"),
-			}
-		} else {
-			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
-			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
-			assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
-			if !should_retry {
-				return None;
-			}
-			let htlc_tx = txn.pop().unwrap();
-			check_spends!(htlc_tx, commitment_txn[0]);
-			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value.to_sat();
-			let htlc_tx_weight = htlc_tx.weight().to_wu();
-			(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
-		};
-		if should_bump {
-			assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
-		} else if let Some(prev_feerate) = prev_htlc_tx_feerate.take() {
-			assert_eq!(htlc_tx_feerate, prev_feerate);
-		}
-		prev_htlc_tx_feerate = Some(htlc_tx_feerate);
-		Some(htlc_tx)
-	};
 
 	// Connect blocks up to one before the HTLC expires. This should not result in a claim/retry.
 	connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1 - 1);
-	check_htlc_retry(false, false);
+	check_htlc_retry(&nodes[0], anchors, false, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT);
 
 	// Connect one more block, producing our first claim.
 	connect_blocks(&nodes[0], 1);
-	check_htlc_retry(true, false);
+	check_htlc_retry(&nodes[0], anchors, true, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT);
 
 	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
 	// HTLC transactions pre-anchors.
 	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
-	check_htlc_retry(true, anchors);
+	check_htlc_retry(&nodes[0], anchors, true, anchors, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT);
 
 	// Trigger a call and we should have another retry, but without a bump.
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(true, false);
+	check_htlc_retry(&nodes[0], anchors, true, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT);
 
 	// Double the feerate and trigger a call, expecting a fee-bumped retry.
 	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(true, anchors);
+	check_htlc_retry(&nodes[0], anchors, true, anchors, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT);
 
 	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
 	// HTLC transactions pre-anchors.
 	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
-	let htlc_tx = check_htlc_retry(true, anchors).unwrap();
+	let htlc_tx = check_htlc_retry(&nodes[0], anchors, true, anchors, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).unwrap();
 
 	// Mine the HTLC transaction to ensure we don't retry claims while they're confirmed.
 	mine_transaction(&nodes[0], &htlc_tx);
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(false, false);
+	check_htlc_retry(&nodes[0], anchors, false, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT);
+}
+
+fn check_htlc_retry(
+	node: &Node<'_, '_, '_>, anchors: bool, should_retry: bool, should_bump: bool,
+	commitment_txn: &[Transaction], coinbase_tx: &Transaction,
+	prev_htlc_tx_feerate: &mut Option<u32>, htlc_amt_sat: u64,
+) -> Option<Transaction> {
+	let (htlc_tx, htlc_tx_feerate) = if anchors {
+		assert!(node.tx_broadcaster.txn_broadcast().is_empty());
+		let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), if should_retry { 1 } else { 0 });
+		if !should_retry {
+			return None;
+		}
+		match &events[0] {
+			Event::BumpTransaction(event) => {
+				node.bump_tx_handler.handle_event(&event);
+				let mut txn = node.tx_broadcaster.unique_txn_broadcast();
+				assert_eq!(txn.len(), 1);
+				let htlc_tx = txn.pop().unwrap();
+				check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
+				let htlc_tx_fee = htlc_amt_sat + coinbase_tx.output[0].value.to_sat()
+					- htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
+				let htlc_tx_weight = htlc_tx.weight().to_wu();
+				(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
+			},
+			_ => panic!("Unexpected event"),
+		}
+	} else {
+		assert!(node.chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+		let mut txn = node.tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
+		if !should_retry {
+			return None;
+		}
+		let htlc_tx = txn.pop().unwrap();
+		check_spends!(htlc_tx, commitment_txn[0]);
+		let htlc_tx_fee = htlc_amt_sat - htlc_tx.output[0].value.to_sat();
+		let htlc_tx_weight = htlc_tx.weight().to_wu();
+		(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
+	};
+	if should_bump {
+		assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
+	} else if let Some(prev_feerate) = prev_htlc_tx_feerate.take() {
+		assert_eq!(htlc_tx_feerate, prev_feerate);
+	}
+	*prev_htlc_tx_feerate = Some(htlc_tx_feerate);
+	Some(htlc_tx)
 }
 
 #[test]
