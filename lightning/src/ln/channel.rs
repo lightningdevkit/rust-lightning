@@ -4564,12 +4564,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
+		let res = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
+				fee = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
 				+ context.holding_cell_htlc_updates.len();
@@ -4661,12 +4661,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
+		let res = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, funding.get_channel_type()) * 1000;
 		#[cfg(any(test, fuzzing))]
 		if let Some(htlc) = &htlc {
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
+				fee = SpecTxBuilder {}.commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, funding.get_channel_type()) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
