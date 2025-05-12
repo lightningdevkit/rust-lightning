@@ -10,28 +10,35 @@
 //! Tests that test the creation of dual-funded channels in ChannelManager.
 
 use {
-	crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator},
-	crate::events::Event,
-	crate::ln::chan_utils::{
-		make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
-		CounterpartyChannelTransactionParameters,
+	crate::{
+		chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator},
+		events::{Event, InboundChannelFunds},
+		ln::{
+			chan_utils::{
+				make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
+				CounterpartyChannelTransactionParameters,
+			},
+			channel::PendingV2Channel,
+			channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
+			functional_test_utils::*,
+			msgs::{
+				BaseMessageHandler, ChannelMessageHandler, CommitmentSigned, MessageSendEvent,
+				TxAddInput, TxAddOutput, TxComplete, TxSignatures,
+			},
+			types::ChannelId,
+		},
+		prelude::*,
+		util::{ser::TransactionU16LenLimited, test_utils},
 	},
-	crate::ln::channel::PendingV2Channel,
-	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
-	crate::ln::functional_test_utils::*,
-	crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent},
-	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete, TxSignatures},
-	crate::ln::types::ChannelId,
-	crate::prelude::*,
-	crate::util::ser::TransactionU16LenLimited,
-	crate::util::test_utils,
 	bitcoin::Witness,
 };
 
 // Dual-funding: V2 Channel Establishment Tests
 struct V2ChannelEstablishmentTestSession {
-	funding_input_sats: u64,
+	initiator_funding_satoshis: u64,
 	initiator_input_value_satoshis: u64,
+	acceptor_funding_satoshis: u64,
+	acceptor_input_value_satoshis: u64,
 }
 
 // TODO(dual_funding): Use real node and API for creating V2 channels as initiator when available,
@@ -39,28 +46,40 @@ struct V2ChannelEstablishmentTestSession {
 fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut node_1_user_config = test_default_channel_config();
+	node_1_user_config.enable_dual_funded_channels = true;
+	node_1_user_config.manually_accept_inbound_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(node_1_user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 
-	// Create a funding input for the new channel along with its previous transaction.
+	// Create initiator funding input for the new channel along with its previous transaction.
 	let initiator_funding_inputs: Vec<_> = create_dual_funding_utxos_with_prev_txs(
 		&nodes[0],
 		&[session.initiator_input_value_satoshis],
 	)
 	.into_iter()
-	.map(|(txin, tx, _)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
+	.map(|(txin, tx, weight)| (txin, TransactionU16LenLimited::new(tx).unwrap(), weight))
 	.collect();
+	let initiator_funding_inputs_count = initiator_funding_inputs.len();
+
+	// Create acceptor funding input for the new channel along with its previous transaction.
+	let acceptor_funding_inputs: Vec<_> = if session.acceptor_input_value_satoshis == 0 {
+		vec![]
+	} else {
+		create_dual_funding_utxos_with_prev_txs(&nodes[1], &[session.acceptor_input_value_satoshis])
+	};
+	let acceptor_funding_inputs_count = acceptor_funding_inputs.len();
 
 	// Alice creates a dual-funded channel as initiator.
-	let funding_satoshis = session.funding_input_sats;
+	let initiator_funding_satoshis = session.initiator_funding_satoshis;
 	let mut channel = PendingV2Channel::new_outbound(
 		&LowerBoundedFeeEstimator(node_cfgs[0].fee_estimator),
 		&nodes[0].node.entropy_source,
 		&nodes[0].node.signer_provider,
 		nodes[1].node.get_our_node_id(),
 		&nodes[1].node.init_features(),
-		funding_satoshis,
+		initiator_funding_satoshis,
 		initiator_funding_inputs.clone(),
 		42, /* user_channel_id */
 		nodes[0].node.get_current_default_configuration(),
@@ -74,11 +93,35 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 
 	nodes[1].node.handle_open_channel_v2(nodes[0].node.get_our_node_id(), &open_channel_v2_msg);
 
-	let accept_channel_v2_msg = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendAcceptChannelV2,
-		nodes[0].node.get_our_node_id()
-	);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	let accept_channel_v2_msg = match &events[0] {
+		Event::OpenChannelRequest {
+			temporary_channel_id,
+			counterparty_node_id,
+			channel_negotiation_type,
+			..
+		} => {
+			assert!(matches!(channel_negotiation_type, &InboundChannelFunds::DualFunded));
+			let _ = nodes[1]
+				.node
+				.accept_inbound_channel_with_contribution(
+					temporary_channel_id,
+					counterparty_node_id,
+					u128::MAX - 2,
+					None,
+					session.acceptor_funding_satoshis,
+					acceptor_funding_inputs.clone(),
+				)
+				.unwrap();
+			get_event_msg!(
+				nodes[1],
+				MessageSendEvent::SendAcceptChannelV2,
+				nodes[0].node.get_our_node_id()
+			)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
 	let channel_id = ChannelId::v2_from_revocation_basepoints(
 		&RevocationBasepoint::from(accept_channel_v2_msg.common_fields.revocation_basepoint),
 		&RevocationBasepoint::from(open_channel_v2_msg.common_fields.revocation_basepoint),
@@ -98,13 +141,24 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 
 	nodes[1].node.handle_tx_add_input(nodes[0].node.get_our_node_id(), &tx_add_input_msg);
 
-	let _tx_complete_msg =
-		get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
+	if acceptor_funding_inputs_count > 0 {
+		let _tx_add_input_msg = get_event_msg!(
+			nodes[1],
+			MessageSendEvent::SendTxAddInput,
+			nodes[0].node.get_our_node_id()
+		);
+	} else {
+		let _tx_complete_msg = get_event_msg!(
+			nodes[1],
+			MessageSendEvent::SendTxComplete,
+			nodes[0].node.get_our_node_id()
+		);
+	}
 
 	let tx_add_output_msg = TxAddOutput {
 		channel_id,
 		serial_id: 4,
-		sats: funding_satoshis,
+		sats: initiator_funding_satoshis.saturating_add(session.acceptor_funding_satoshis),
 		script: make_funding_redeemscript(
 			&open_channel_v2_msg.common_fields.funding_pubkey,
 			&accept_channel_v2_msg.common_fields.funding_pubkey,
@@ -113,16 +167,44 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	};
 	nodes[1].node.handle_tx_add_output(nodes[0].node.get_our_node_id(), &tx_add_output_msg);
 
-	let _tx_complete_msg =
-		get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
+	let acceptor_change_value_satoshis =
+		session.initiator_input_value_satoshis.saturating_sub(session.initiator_funding_satoshis);
+	if acceptor_funding_inputs_count > 0
+		&& acceptor_change_value_satoshis > accept_channel_v2_msg.common_fields.dust_limit_satoshis
+	{
+		println!("Change: {acceptor_change_value_satoshis} satoshis");
+		let _tx_add_output_msg = get_event_msg!(
+			nodes[1],
+			MessageSendEvent::SendTxAddOutput,
+			nodes[0].node.get_our_node_id()
+		);
+	} else {
+		let _tx_complete_msg = get_event_msg!(
+			nodes[1],
+			MessageSendEvent::SendTxComplete,
+			nodes[0].node.get_our_node_id()
+		);
+	}
 
 	let tx_complete_msg = TxComplete { channel_id };
 
 	nodes[1].node.handle_tx_complete(nodes[0].node.get_our_node_id(), &tx_complete_msg);
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	let _msg_commitment_signed_from_1 = match msg_events[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, channel_id: _, ref updates } => {
+	let update_htlcs_msg_event = if acceptor_funding_inputs_count > 0 {
+		assert_eq!(msg_events.len(), 2);
+		let _msg_commitment_signed_from_1 = match msg_events[0] {
+			MessageSendEvent::SendTxComplete { ref node_id, .. } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		};
+		&msg_events[1]
+	} else {
+		assert_eq!(msg_events.len(), 1);
+		&msg_events[0]
+	};
+	let _msg_commitment_signed_from_1 = match update_htlcs_msg_event {
+		MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, updates } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			updates.commitment_signed.clone()
 		},
@@ -169,7 +251,8 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		funding_outpoint,
 		splice_parent_funding_txid: None,
 		channel_type_features,
-		channel_value_satoshis: funding_satoshis,
+		channel_value_satoshis: initiator_funding_satoshis
+			.saturating_add(session.acceptor_funding_satoshis),
 	};
 
 	let msg_commitment_signed_from_0 = CommitmentSigned {
@@ -199,12 +282,85 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	// The funding transaction should not have been broadcast before persisting initial monitor has
 	// been completed.
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcast().len(), 0);
-	assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
+
+	if acceptor_funding_inputs_count > 0 {
+		let events = nodes[1].node.get_and_clear_pending_events();
+		match &events[0] {
+			Event::FundingTransactionReadyForSigning {
+				counterparty_node_id,
+				unsigned_transaction,
+				..
+			} => {
+				assert_eq!(counterparty_node_id, &nodes[0].node.get_our_node_id());
+				let mut transaction = unsigned_transaction.clone();
+				for input in transaction.input.iter_mut() {
+					if input.previous_output.txid
+						== acceptor_funding_inputs[0].0.previous_output.txid
+					{
+						let mut witness = Witness::new();
+						witness.push([0x0]);
+						input.witness = witness;
+					}
+				}
+				nodes[1]
+					.node
+					.funding_transaction_signed(&channel_id, counterparty_node_id, transaction)
+					.unwrap();
+			},
+			_ => panic!("Unexpected event"),
+		};
+	} else {
+		assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
+	}
 
 	// Complete the persistence of the monitor.
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+
+	if session.acceptor_input_value_satoshis < session.initiator_input_value_satoshis {
+		let tx_signatures_msg = get_event_msg!(
+			nodes[1],
+			MessageSendEvent::SendTxSignatures,
+			nodes[0].node.get_our_node_id()
+		);
+
+		assert_eq!(tx_signatures_msg.channel_id, channel_id);
+
+		let mut witness = Witness::new();
+		witness.push([0x0]);
+		// Receive tx_signatures from channel initiator.
+		nodes[1].node.handle_tx_signatures(
+			nodes[0].node.get_our_node_id(),
+			&TxSignatures {
+				channel_id,
+				tx_hash: funding_outpoint.unwrap().txid,
+				witnesses: vec![witness],
+				shared_input_signature: None,
+			},
+		);
+	} else {
+		let mut witness = Witness::new();
+		witness.push([0x0]);
+		// Receive tx_signatures from channel initiator.
+		nodes[1].node.handle_tx_signatures(
+			nodes[0].node.get_our_node_id(),
+			&TxSignatures {
+				channel_id,
+				tx_hash: funding_outpoint.unwrap().txid,
+				witnesses: vec![witness],
+				shared_input_signature: None,
+			},
+		);
+
+		let tx_signatures_msg = get_event_msg!(
+			nodes[1],
+			MessageSendEvent::SendTxSignatures,
+			nodes[0].node.get_our_node_id()
+		);
+
+		assert_eq!(tx_signatures_msg.channel_id, channel_id);
+	}
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -212,27 +368,6 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		Event::ChannelPending { channel_id: chan_id, .. } => assert_eq!(chan_id, channel_id),
 		_ => panic!("Unexpected event"),
 	};
-
-	let tx_signatures_msg = get_event_msg!(
-		nodes[1],
-		MessageSendEvent::SendTxSignatures,
-		nodes[0].node.get_our_node_id()
-	);
-
-	assert_eq!(tx_signatures_msg.channel_id, channel_id);
-
-	let mut witness = Witness::new();
-	witness.push([0x0]);
-	// Receive tx_signatures from channel initiator.
-	nodes[1].node.handle_tx_signatures(
-		nodes[0].node.get_our_node_id(),
-		&TxSignatures {
-			channel_id,
-			tx_hash: funding_outpoint.unwrap().txid,
-			witnesses: vec![witness],
-			shared_input_signature: None,
-		},
-	);
 
 	// For an inbound channel V2 channel the transaction should be broadcast once receiving a
 	// tx_signature and applying local tx_signatures:
@@ -242,8 +377,35 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 
 #[test]
 fn test_v2_channel_establishment() {
+	// Initiator contributes inputs, acceptor does not.
 	do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
-		funding_input_sats: 100_00,
+		initiator_funding_satoshis: 100_00,
 		initiator_input_value_satoshis: 150_000,
+		acceptor_funding_satoshis: 0,
+		acceptor_input_value_satoshis: 0,
+	});
+	// Initiator contributes more input value than acceptor.
+	do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+		initiator_funding_satoshis: 100_00,
+		initiator_input_value_satoshis: 150_000,
+		acceptor_funding_satoshis: 50_00,
+		acceptor_input_value_satoshis: 100_000,
+	});
+	// Initiator contributes less input value than acceptor.
+	do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+		initiator_funding_satoshis: 100_00,
+		initiator_input_value_satoshis: 150_000,
+		acceptor_funding_satoshis: 125_00,
+		acceptor_input_value_satoshis: 200_000,
+	});
+	// Initiator contributes the same input value as acceptor.
+	// nodes[0] node_id: 88ce8f35acfc...
+	// nodes[1] node_id: 236cdaa42692...
+	// Since nodes[1] has a node_id in earlier lexicographical order, it should send tx_signatures first.
+	do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+		initiator_funding_satoshis: 100_00,
+		initiator_input_value_satoshis: 150_000,
+		acceptor_funding_satoshis: 125_00,
+		acceptor_input_value_satoshis: 150_000,
 	});
 }
