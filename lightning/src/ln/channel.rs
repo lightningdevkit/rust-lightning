@@ -2765,18 +2765,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
-		let anchor_outputs_value = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
-		} else {
-			0
-		};
 		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
-		let commitment_tx_fee = commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commitment_tx_fee {
-			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
+		let (_, remote_balance_before_fee_msat) = SpecTxBuilder {}.balances_excluding_tx_fee(false, &channel_type, msg_push_msat, funders_amount_msat);
+		let total_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		if remote_balance_before_fee_msat / 1000 < total_fee_sat {
+			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", remote_balance_before_fee_msat / 1000, total_fee_sat)));
 		}
 
-		let to_remote_satoshis = funders_amount_msat / 1000 - commitment_tx_fee - anchor_outputs_value;
+		let to_remote_satoshis = remote_balance_before_fee_msat / 1000 - total_fee_sat;
 		// While it's reasonable for us to not meet the channel reserve initially (if they don't
 		// want to push much to us), our counterparty should always have more than our reserve.
 		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
@@ -3034,17 +3030,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		debug_assert!(!channel_type.supports_any_optional_bits());
 		debug_assert!(!channel_type.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
 
-		let (commitment_conf_target, anchor_outputs_value_msat)  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			(ConfirmationTarget::AnchorChannelFee, ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000)
+		let commitment_conf_target  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			ConfirmationTarget::AnchorChannelFee
 		} else {
-			(ConfirmationTarget::NonAnchorChannelFee, 0)
+			ConfirmationTarget::NonAnchorChannelFee
 		};
 		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) * 1000;
-		if value_to_self_msat.saturating_sub(anchor_outputs_value_msat) < commitment_tx_fee {
-			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
+		let (local_balance_before_fee_msat, _) = SpecTxBuilder {}.balances_excluding_tx_fee(true, &channel_type, value_to_self_msat, push_msat);
+		let total_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		if local_balance_before_fee_msat / 1000 < total_fee_sat {
+			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", local_balance_before_fee_msat / 1000, total_fee_sat) });
 		}
 
 		let mut secp_ctx = Secp256k1::new();
