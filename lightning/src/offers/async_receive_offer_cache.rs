@@ -22,7 +22,7 @@ use crate::util::ser::{Readable, Writeable, Writer};
 use core::time::Duration;
 #[cfg(async_payments)]
 use {
-	crate::blinded_path::message::AsyncPaymentsContext,
+	crate::blinded_path::message::AsyncPaymentsContext, crate::offers::offer::OfferId,
 	crate::onion_message::async_payments::OfferPaths,
 };
 
@@ -188,6 +188,63 @@ impl AsyncReceiveOfferCache {
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+
+	/// Returns an iterator over the list of cached offers where the invoice is expiring soon and we
+	/// need to send an updated one to the static invoice server.
+	pub(super) fn offers_needing_invoice_refresh(
+		&self, duration_since_epoch: Duration,
+	) -> impl Iterator<Item = (&Offer, Nonce, Duration, &Responder)> {
+		self.offers.iter().filter_map(move |offer| {
+			const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+			if offer.offer.is_expired_no_std(duration_since_epoch) {
+				return None;
+			}
+			if offer.invoice_update_attempts >= Self::MAX_UPDATE_ATTEMPTS {
+				return None;
+			}
+
+			let time_until_invoice_expiry =
+				offer.static_invoice_absolute_expiry.saturating_sub(duration_since_epoch);
+			let time_until_offer_expiry = offer
+				.offer
+				.absolute_expiry()
+				.unwrap_or_else(|| Duration::from_secs(u64::MAX))
+				.saturating_sub(duration_since_epoch);
+
+			// Update the invoice if it expires in less than a day, as long as the offer has a longer
+			// expiry than that.
+			let needs_update = time_until_invoice_expiry < ONE_DAY
+				&& time_until_offer_expiry > time_until_invoice_expiry;
+			if needs_update {
+				Some((
+					&offer.offer,
+					offer.offer_nonce,
+					offer.offer_created_at,
+					&offer.update_static_invoice_path,
+				))
+			} else {
+				None
+			}
+		})
+	}
+
+	/// Indicates that we've sent onion messages attempting to update the static invoice corresponding
+	/// to the provided offer_id. Calling this method allows the cache to self-limit how many invoice
+	/// update requests are sent.
+	///
+	/// Errors if the offer corresponding to the provided offer_id could not be found.
+	pub(super) fn increment_invoice_update_attempts(
+		&mut self, offer_id: OfferId,
+	) -> Result<(), ()> {
+		match self.offers.iter_mut().find(|offer| offer.offer.id() == offer_id) {
+			Some(offer) => {
+				offer.invoice_update_attempts += 1;
+				Ok(())
+			},
+			None => return Err(()),
+		}
 	}
 
 	/// Should be called when we receive a [`StaticInvoicePersisted`] message from the static invoice
