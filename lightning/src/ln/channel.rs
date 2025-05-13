@@ -8703,6 +8703,25 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
 
+	pub fn get_relevant_txids(&self) -> impl Iterator<Item=(Txid, u32, Option<BlockHash>)> + '_ {
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.map(|funding|
+				(
+					funding.get_funding_txid(),
+					funding.get_funding_tx_confirmation_height(),
+					funding.funding_tx_confirmed_in,
+				)
+			)
+			.filter_map(|(txid_opt, height_opt, hash_opt)|
+				if let (Some(funding_txid), Some(conf_height), Some(block_hash)) = (txid_opt, height_opt, hash_opt) {
+					Some((funding_txid, conf_height, Some(block_hash)))
+				} else {
+					None
+				}
+			)
+	}
+
 	/// Checks if any funding transaction is no longer confirmed in the main chain. This may
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
 	/// before the channel has reached channel_ready or splice_locked, and we can just wait for more
@@ -9858,11 +9877,6 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	pub fn is_v2_established(&self) -> bool {
 		self.is_v2_established
-	}
-
-	/// Returns the block hash in which our funding transaction was confirmed.
-	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
-		self.funding.funding_tx_confirmed_in
 	}
 }
 
