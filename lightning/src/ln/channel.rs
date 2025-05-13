@@ -2074,7 +2074,6 @@ impl FundingScope {
 		self.channel_transaction_parameters.funding_outpoint
 	}
 
-	#[cfg(splicing)]
 	fn get_funding_txid(&self) -> Option<Txid> {
 		self.channel_transaction_parameters.funding_outpoint.map(|txo| txo.txid)
 	}
@@ -9315,7 +9314,7 @@ where
 
 		#[cfg(splicing)]
 		if let Some(confirmed_funding_index) = confirmed_funding_index {
-			let pending_splice = match self.pending_splice.as_ref() {
+			let pending_splice = match self.pending_splice.as_mut() {
 				Some(pending_splice) => pending_splice,
 				None => {
 					// TODO: Move pending_funding into pending_splice
@@ -9324,8 +9323,26 @@ where
 					return Err(ClosureReason::ProcessingError { err });
 				},
 			};
-			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
+			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
 
+			// Check if the splice funding transaction was unconfirmed
+			if funding.get_funding_tx_confirmations(height) == 0 {
+				funding.funding_tx_confirmation_height = 0;
+				if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+					if Some(sent_funding_txid) == funding.get_funding_txid() {
+						log_warn!(
+							logger,
+							"Unconfirming sent splice_locked txid {} for channel {}",
+							sent_funding_txid,
+							&self.context.channel_id,
+						);
+						pending_splice.sent_funding_txid = None;
+					}
+				}
+			}
+
+			let pending_splice = self.pending_splice.as_ref().unwrap();
+			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
 			if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
@@ -9348,31 +9365,45 @@ where
 		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
 
-	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
+	/// Checks if any funding transaction is no longer confirmed in the main chain. This may
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
-	/// before the channel has reached channel_ready and we can just wait for more blocks.
+	/// before the channel has reached channel_ready or splice_locked, and we can just wait for more
+	/// blocks.
 	#[rustfmt::skip]
-	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), ClosureReason> where L::Target: Logger {
-		if self.funding.funding_tx_confirmation_height != 0 {
-			// We handle the funding disconnection by calling best_block_updated with a height one
-			// below where our funding was connected, implying a reorg back to conf_height - 1.
-			let reorg_height = self.funding.funding_tx_confirmation_height - 1;
-			// We use the time field to bump the current time we set on channel updates if its
-			// larger. If we don't know that time has moved forward, we can just set it to the last
-			// time we saw and it will be ignored.
-			let best_time = self.context.update_time_counter;
+	pub fn transaction_unconfirmed<L: Deref>(
+		&mut self, txid: &Txid, logger: &L,
+	) -> Result<(), ClosureReason>
+	where
+		L::Target: Logger,
+	{
+		let unconfirmed_funding = core::iter::once(&mut self.funding)
+			.chain(self.pending_funding.iter_mut())
+			.find(|funding| funding.get_funding_txid() == Some(*txid));
 
-			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
-				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
-					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
-					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
-					assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
-					Ok(())
-				},
-				Err(e) => Err(e)
+		if let Some(funding) = unconfirmed_funding {
+			if funding.funding_tx_confirmation_height != 0 {
+				// We handle the funding disconnection by calling best_block_updated with a height one
+				// below where our funding was connected, implying a reorg back to conf_height - 1.
+				let reorg_height = funding.funding_tx_confirmation_height - 1;
+				// We use the time field to bump the current time we set on channel updates if its
+				// larger. If we don't know that time has moved forward, we can just set it to the last
+				// time we saw and it will be ignored.
+				let best_time = self.context.update_time_counter;
+
+				match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
+					Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
+						assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
+						assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
+						assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
+						Ok(())
+					},
+					Err(e) => Err(e),
+				}
+			} else {
+				// We never learned about the funding confirmation anyway, just ignore
+				Ok(())
 			}
 		} else {
-			// We never learned about the funding confirmation anyway, just ignore
 			Ok(())
 		}
 	}

@@ -12115,18 +12115,8 @@ where
 				|| -> NotifyOption { NotifyOption::DoPersist },
 			);
 		self.do_chain_event(None, |channel| {
-			if let Some(funding_txo) = channel.funding.get_funding_txo() {
-				if funding_txo.txid == *txid {
-					let chan_context =
-						WithChannelContext::from(&self.logger, &channel.context, None);
-					let res = channel.funding_transaction_unconfirmed(&&chan_context);
-					res.map(|()| (None, Vec::new(), None))
-				} else {
-					Ok((None, Vec::new(), None))
-				}
-			} else {
-				Ok((None, Vec::new(), None))
-			}
+			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None))
 		});
 	}
 }
