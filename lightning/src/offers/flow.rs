@@ -1116,8 +1116,9 @@ where
 		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
 	}
 
-	/// Sends out [`OfferPathsRequest`] onion messages if we are an often-offline recipient and are
-	/// configured to interactively build offers and static invoices with a static invoice server.
+	/// Sends out [`OfferPathsRequest`] and [`ServeStaticInvoice`] onion messages if we are an
+	/// often-offline recipient and are configured to interactively build offers and static invoices
+	/// with a static invoice server.
 	///
 	/// # Usage
 	///
@@ -1126,11 +1127,13 @@ where
 	///
 	/// Errors if we failed to create blinded reply paths when sending an [`OfferPathsRequest`] message.
 	#[cfg(async_payments)]
-	pub(crate) fn check_refresh_async_receive_offers<ES: Deref>(
-		&self, peers: Vec<MessageForwardNode>, entropy: ES,
+	pub(crate) fn check_refresh_async_receive_offers<ES: Deref, R: Deref>(
+		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
+		router: R,
 	) -> Result<(), ()>
 	where
 		ES::Target: EntropySource,
+		R::Target: Router,
 	{
 		// Terminate early if this node does not intend to receive async payments.
 		if self.paths_to_static_invoice_server.is_empty() {
@@ -1157,7 +1160,7 @@ where
 				path_absolute_expiry: duration_since_epoch
 					.saturating_add(TEMP_REPLY_PATH_RELATIVE_EXPIRY),
 			});
-			let reply_paths = match self.create_blinded_paths(peers, context) {
+			let reply_paths = match self.create_blinded_paths(peers.clone(), context) {
 				Ok(paths) => paths,
 				Err(()) => {
 					return Err(());
@@ -1179,7 +1182,83 @@ where
 			);
 		}
 
+		self.check_refresh_static_invoices(peers, usable_channels, entropy, router);
+
 		Ok(())
+	}
+
+	/// If a static invoice server has persisted an offer for us but the corresponding invoice is
+	/// expiring soon, we need to refresh that invoice. Here we enqueue the onion messages that will
+	/// be used to request invoice refresh, based on the offers provided by the cache.
+	#[cfg(async_payments)]
+	fn check_refresh_static_invoices<ES: Deref, R: Deref>(
+		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
+		router: R,
+	) where
+		ES::Target: EntropySource,
+		R::Target: Router,
+	{
+		let duration_since_epoch = self.duration_since_epoch();
+
+		let mut serve_static_invoice_messages = Vec::new();
+		{
+			let cache = self.async_receive_offer_cache.lock().unwrap();
+			for offer_and_metadata in cache.offers_needing_invoice_refresh(duration_since_epoch) {
+				let (offer, offer_nonce, offer_created_at, update_static_invoice_path) =
+					offer_and_metadata;
+				let offer_id = offer.id();
+
+				let (serve_invoice_msg, reply_path_ctx) = match self
+					.create_serve_static_invoice_message(
+						offer.clone(),
+						offer_nonce,
+						offer_created_at,
+						peers.clone(),
+						usable_channels.clone(),
+						update_static_invoice_path.clone(),
+						&*entropy,
+						&*router,
+					) {
+					Ok((msg, ctx)) => (msg, ctx),
+					Err(()) => continue,
+				};
+				serve_static_invoice_messages.push((
+					serve_invoice_msg,
+					update_static_invoice_path.clone(),
+					reply_path_ctx,
+					offer_id,
+				));
+			}
+		}
+
+		// Enqueue the new serve_static_invoice messages in a separate loop to avoid holding the offer
+		// cache lock and the pending_async_payments_messages lock at the same time.
+		for (serve_invoice_msg, serve_invoice_path, reply_path_ctx, offer_id) in
+			serve_static_invoice_messages
+		{
+			let context = MessageContext::AsyncPayments(reply_path_ctx);
+			let reply_paths = match self.create_blinded_paths(peers.clone(), context) {
+				Ok(paths) => paths,
+				Err(()) => continue,
+			};
+
+			{
+				// We can't fail past this point, so indicate to the cache that we've requested an invoice
+				// update.
+				let mut cache = self.async_receive_offer_cache.lock().unwrap();
+				if cache.increment_invoice_update_attempts(offer_id).is_err() {
+					continue;
+				}
+			}
+
+			let message = AsyncPaymentsMessage::ServeStaticInvoice(serve_invoice_msg);
+			enqueue_onion_message_with_reply_paths(
+				message,
+				&[serve_invoice_path.into_reply_path()],
+				reply_paths,
+				&mut self.pending_async_payments_messages.lock().unwrap(),
+			);
+		}
 	}
 
 	/// Handles an incoming [`OfferPaths`] message from the static invoice server, sending out
