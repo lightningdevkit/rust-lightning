@@ -365,6 +365,30 @@ impl AsyncReceiveOfferCache {
 		self.offer_paths_request_attempts = 0;
 	}
 
+	/// Returns an iterator over the list of cached offers where we need to send an updated invoice to
+	/// the static invoice server.
+	pub(super) fn offers_needing_invoice_refresh(
+		&self,
+	) -> impl Iterator<Item = (&Offer, Nonce, u16, &Responder)> {
+		// For any offers which are either in use or pending confirmation by the server, we should send
+		// them a fresh invoice on each timer tick.
+		self.offers_with_idx().filter_map(|(idx, offer)| {
+			let needs_invoice_update =
+				offer.status == OfferStatus::Used || offer.status == OfferStatus::Pending;
+			if needs_invoice_update {
+				let offer_slot = idx.try_into().unwrap_or(u16::MAX);
+				Some((
+					&offer.offer,
+					offer.offer_nonce,
+					offer_slot,
+					&offer.update_static_invoice_path,
+				))
+			} else {
+				None
+			}
+		})
+	}
+
 	/// Should be called when we receive a [`StaticInvoicePersisted`] message from the static invoice
 	/// server, which indicates that a new offer was persisted by the server and they are ready to
 	/// serve the corresponding static invoice to payers on our behalf.

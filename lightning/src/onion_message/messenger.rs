@@ -432,6 +432,12 @@ impl Responder {
 			context: Some(context),
 		}
 	}
+
+	/// Converts a [`Responder`] into its inner [`BlindedMessagePath`].
+	#[cfg(async_payments)]
+	pub(crate) fn into_blinded_path(self) -> BlindedMessagePath {
+		self.reply_path
+	}
 }
 
 /// Instructions for how and where to send the response to an onion message.
