@@ -11966,11 +11966,8 @@ where
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(None, |channel| {
-			if let Some(funding_txo) = channel.funding.get_funding_txo() {
-				if funding_txo.txid == *txid {
-					channel.funding_transaction_unconfirmed(&&WithChannelContext::from(&self.logger, &channel.context, None)).map(|()| (None, Vec::new(), None))
-				} else { Ok((None, Vec::new(), None)) }
-			} else { Ok((None, Vec::new(), None)) }
+			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None))
 		});
 	}
 }
