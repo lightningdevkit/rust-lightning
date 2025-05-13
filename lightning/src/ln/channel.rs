@@ -5019,7 +5019,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
 
-	fn check_funding_meets_minimum_depth(&self, funding: &mut FundingScope, height: u32) -> bool {
+	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
 		let minimum_depth = funding.minimum_depth_override.or(self.minimum_depth);
 
 		if funding.funding_tx_confirmation_height == 0 && minimum_depth != Some(0) {
@@ -5027,10 +5027,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 
 		let funding_tx_confirmations = height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations <= 0 {
-			funding.funding_tx_confirmation_height = 0;
-		}
-
 		if funding_tx_confirmations < minimum_depth.unwrap_or(0) as i64 {
 			return false;
 		}
@@ -8374,7 +8370,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
-		if !self.context.check_funding_meets_minimum_depth(&mut self.funding, height) {
+		if !self.context.check_funding_meets_minimum_depth(&self.funding, height) {
 			return None;
 		}
 
@@ -8586,8 +8582,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.channel_state.is_our_channel_ready() {
 			let mut funding_tx_confirmations = height as i64 - self.funding.funding_tx_confirmation_height as i64 + 1;
 			if self.funding.funding_tx_confirmation_height == 0 {
-				// Note that check_get_channel_ready may reset funding_tx_confirmation_height to
-				// zero if it has been reorged out, however in either case, our state flags
+				// Note that transaction_unconfirmed may have reset funding_tx_confirmation_height
+				// to zero if it has been reorged out, however in either case, our state flags
 				// indicate we've already sent a channel_ready
 				funding_tx_confirmations = 0;
 			}
@@ -8633,6 +8629,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
 			let best_time = self.context.update_time_counter;
+
+			self.funding.funding_tx_confirmation_height = 0;
+
 			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
 				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
 					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
