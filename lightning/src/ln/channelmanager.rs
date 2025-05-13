@@ -12095,13 +12095,8 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				let txid_opt = chan.funding.get_funding_txo();
-				let height_opt = chan.funding.get_funding_tx_confirmation_height();
-				let hash_opt = chan.get_funding_tx_confirmed_in();
-				if let (Some(funding_txo), Some(conf_height), Some(block_hash)) =
-					(txid_opt, height_opt, hash_opt)
-				{
-					res.push((funding_txo.txid, conf_height, Some(block_hash)));
+				for (funding_txid, conf_height, block_hash) in chan.get_relevant_txids() {
+					res.push((funding_txid, conf_height, block_hash));
 				}
 			}
 		}
