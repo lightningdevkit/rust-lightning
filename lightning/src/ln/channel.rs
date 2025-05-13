@@ -2472,13 +2472,13 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 	}
 
 	#[inline]
-	fn dual_funding_context(&self) -> &DualFundingChannelContext {
-		&self.refunding_scope.pending_dual_funding_context
+	fn funding_negotiation_context(&self) -> &FundingNegotiationContext {
+		&self.refunding_scope.pending_funding_negotiation_context
 	}
 
 	#[inline]
-	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
-		&mut self.refunding_scope.pending_dual_funding_context
+	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext {
+		&mut self.refunding_scope.pending_funding_negotiation_context
 	}
 
 	fn transaction_number(&self) -> u64 {
@@ -2507,8 +2507,8 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn pending_funding(&self) -> &FundingScope;
 	fn pending_funding_mut(&mut self) -> &mut FundingScope;
 	fn pending_funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>);
-	fn dual_funding_context(&self) -> &DualFundingChannelContext;
-	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext;
+	fn funding_negotiation_context(&self) -> &FundingNegotiationContext;
+	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext;
 	fn transaction_number(&self) -> u64;
 	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor>;
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
@@ -2535,8 +2535,8 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		debug_assert!(self.interactive_tx_constructor().is_none());
 
 		let mut funding_inputs = Vec::new();
-		let dual_funding_context_mut = self.dual_funding_context_mut();
-		mem::swap(&mut dual_funding_context_mut.our_funding_inputs, &mut funding_inputs);
+		let funding_negotiation_context_mut = self.funding_negotiation_context_mut();
+		mem::swap(&mut funding_negotiation_context_mut.our_funding_inputs, &mut funding_inputs);
 
 		if let Some(prev_funding_input) = prev_funding_input {
 			funding_inputs.push(prev_funding_input);
@@ -2555,11 +2555,11 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 			script_pubkey: pending_funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		let dual_funding_context = &self.dual_funding_context();
+		let funding_negotiation_context = &self.funding_negotiation_context();
 		if pending_funding.is_outbound() {
 			funding_outputs.push(
 				OutputOwned::Shared(SharedOwnedOutput::new(
-					shared_funding_output, dual_funding_context.our_funding_satoshis,
+					shared_funding_output, funding_negotiation_context.our_funding_satoshis,
 				))
 			);
 		} else {
@@ -2575,9 +2575,9 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
 		};
 		let change_value_opt = calculate_change_output_value(
-			pending_funding.is_outbound(), dual_funding_context.our_funding_satoshis,
+			pending_funding.is_outbound(), funding_negotiation_context.our_funding_satoshis,
 			&funding_inputs, &funding_outputs,
-			dual_funding_context.funding_feerate_sat_per_1000_weight,
+			funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
 		)?;
 		if let Some(change_value) = change_value_opt {
@@ -2586,7 +2586,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 				script_pubkey: change_script,
 			};
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-			let change_output_fee = fee_for_weight(dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_output_fee = fee_for_weight(funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
 			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
 			// Check dust limit again
 			if change_value_decreased_with_fee > self.context().holder_dust_limit_satoshis {
@@ -2600,9 +2600,9 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 			holder_node_id,
 			counterparty_node_id: self.context().counterparty_node_id,
 			channel_id: self.context().channel_id(),
-			feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
+			feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			is_initiator: pending_funding.is_outbound(),
-			funding_tx_locktime: dual_funding_context.funding_tx_locktime,
+			funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
 			expected_remote_shared_funding_output,
@@ -2692,7 +2692,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	where
 		L::Target: Logger
 	{
-		let our_funding_satoshis = self.dual_funding_context()
+		let our_funding_satoshis = self.funding_negotiation_context()
 			.our_funding_satoshis;
 		let transaction_number = self.transaction_number();
 		let pending_funding = self.pending_funding();
@@ -2816,13 +2816,13 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 	}
 
 	#[inline]
-	fn dual_funding_context(&self) -> &DualFundingChannelContext {
-		&self.dual_funding_context
+	fn funding_negotiation_context(&self) -> &FundingNegotiationContext {
+		&self.funding_negotiation_context
 	}
 
 	#[inline]
-	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
-		&mut self.dual_funding_context
+	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext {
+		&mut self.funding_negotiation_context
 	}
 
 	fn transaction_number(&self) -> u64 {
@@ -2851,7 +2851,7 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 struct RefundingScope {
 	// Fields belonging for [`PendingV2Channel`], except the context
 	pending_funding: FundingScope,
-	pending_dual_funding_context: DualFundingChannelContext,
+	pending_funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
 	pending_interactive_tx_constructor: Option<InteractiveTxConstructor>,
 	pending_interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
@@ -5293,7 +5293,7 @@ fn check_v2_funding_inputs_sufficient(
 }
 
 /// Context for dual-funded channels.
-pub(super) struct DualFundingChannelContext {
+pub(super) struct FundingNegotiationContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
 	/// The amount in satoshis our counterparty will be contributing to the channel.
@@ -9124,7 +9124,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 		};
 
-		let pending_dual_funding_context = DualFundingChannelContext {
+		let pending_funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
 			their_funding_satoshis: Some(their_funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
@@ -9134,7 +9134,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let refunding_scope = Some(RefundingScope {
 			pending_funding,
-			pending_dual_funding_context,
+			pending_funding_negotiation_context,
 			pending_interactive_tx_constructor: None,
 			pending_interactive_tx_signing_session: None,
 		});
@@ -9142,7 +9142,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			our_funding_contribution,
 			funding_feerate_per_kw: msg.funding_feerate_per_kw,
 			locktime: msg.locktime,
-			our_funding_inputs: Vec::new(), // inputs go directly to [`DualFundingChannelContext`] above
+			our_funding_inputs: Vec::new(), // inputs go directly to [`FundingNegotiationContext`] above
 			awaiting_splice_ack: false, // we don't need any additional message for the handshake
 			refunding_scope,
 		});
@@ -9244,7 +9244,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 		};
 
-		let mut pending_dual_funding_context = DualFundingChannelContext {
+		let mut pending_funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
 			their_funding_satoshis: Some(their_funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(pending_splice.locktime),
@@ -9252,12 +9252,12 @@ impl<SP: Deref> FundedChannel<SP> where
 			our_funding_inputs: Vec::new(), // set below
 		};
 		if let Some(ref mut pending_splice_mut) = &mut self.pending_splice {
-			pending_dual_funding_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
+			pending_funding_negotiation_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
 		};
 
 		let refunding_scope = RefundingScope {
 			pending_funding,
-			pending_dual_funding_context,
+			pending_funding_negotiation_context,
 			pending_interactive_tx_constructor: None,
 			pending_interactive_tx_signing_session: None,
 		};
@@ -10659,7 +10659,7 @@ pub(super) struct PendingV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	pub dual_funding_context: DualFundingChannelContext,
+	pub funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 	/// The signing session created after `tx_complete` handling
@@ -10718,7 +10718,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
-		let dual_funding_context = DualFundingChannelContext {
+		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis: funding_satoshis,
 			// TODO(dual_funding) TODO(splicing) Include counterparty contribution, once that's enabled
 			their_funding_satoshis: None,
@@ -10730,7 +10730,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			funding,
 			context,
 			unfunded_context,
-			dual_funding_context,
+			funding_negotiation_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
 		};
@@ -10799,7 +10799,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.dual_funding_context.funding_tx_locktime.to_consensus_u32(),
+			locktime: self.funding_negotiation_context.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
 	}
@@ -10870,7 +10870,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			&funding.get_counterparty_pubkeys().revocation_basepoint);
 		context.channel_id = channel_id;
 
-		let dual_funding_context = DualFundingChannelContext {
+		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis: our_funding_satoshis,
 			their_funding_satoshis: Some(msg.common_fields.funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
@@ -10884,8 +10884,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				holder_node_id,
 				counterparty_node_id,
 				channel_id: context.channel_id,
-				feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
-				funding_tx_locktime: dual_funding_context.funding_tx_locktime,
+				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
+				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
 				inputs_to_contribute: our_funding_inputs,
 				outputs_to_contribute: Vec::new(),
@@ -10903,7 +10903,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(Self {
 			funding,
 			context,
-			dual_funding_context,
+			funding_negotiation_context,
 			interactive_tx_constructor,
 			interactive_tx_signing_session: None,
 			unfunded_context,
@@ -10968,7 +10968,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				}),
 				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
-			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
+			funding_satoshis: self.funding_negotiation_context.our_funding_satoshis,
 			second_per_commitment_point,
 			require_confirmed_inputs: None,
 		}
