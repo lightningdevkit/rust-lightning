@@ -807,7 +807,7 @@ pub async fn process_events_async<
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
-	CF::Target: 'static + chain::Filter + Sync + Send,
+	CF::Target: 'static + chain::Filter,
 	T::Target: 'static + BroadcasterInterface,
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
@@ -991,7 +991,7 @@ impl BackgroundProcessor {
 		D: 'static + Deref,
 		O: 'static + Deref,
 		K: 'static + Deref,
-		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send + Sync,
+		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
@@ -999,7 +999,7 @@ impl BackgroundProcessor {
 	) -> Self
 	where
 		UL::Target: 'static + UtxoLookup,
-		CF::Target: 'static + chain::Filter + Sync + Send,
+		CF::Target: 'static + chain::Filter,
 		T::Target: 'static + BroadcasterInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
