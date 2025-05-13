@@ -783,7 +783,7 @@ fn test_forwardable_regen() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
 }
 
-fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
+fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_restart: bool) {
 	// Test what happens if a node receives an MPP payment, claims it, but crashes before
 	// persisting the ChannelManager. If `persist_both_monitors` is false, also crash after only
 	// updating one of the two channels' ChannelMonitors. As a result, on startup, we'll (a) still
@@ -799,11 +799,11 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// definitely claimed.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let persister;
-	let new_chain_monitor;
+	let (persist_d_1, persist_d_2);
+	let (chain_d_1, chain_d_2);
 
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let nodes_3_deserialized;
+	let (node_d_1, node_d_2);
 
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
@@ -878,7 +878,14 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	}
 
 	// Now restart nodes[3].
-	reload_node!(nodes[3], original_manager, &[&updated_monitor.0, &original_monitor.0], persister, new_chain_monitor, nodes_3_deserialized);
+	reload_node!(nodes[3], original_manager.clone(), &[&updated_monitor.0, &original_monitor.0], persist_d_1, chain_d_1, node_d_1);
+
+	if double_restart {
+		// Previously, we had a bug where we'd fail to reload if we re-persist the `ChannelManager`
+		// without updating any `ChannelMonitor`s as we'd fail to double-initiate the claim replay.
+		// We test that here ensuring that we can reload again.
+		reload_node!(nodes[3], node_d_1.encode(), &[&updated_monitor.0, &original_monitor.0], persist_d_2, chain_d_2, node_d_2);
+	}
 
 	// Until the startup background events are processed (in `get_and_clear_pending_events`,
 	// below), the preimage is not copied to the non-persisted monitor...
@@ -973,8 +980,10 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 
 #[test]
 fn test_partial_claim_before_restart() {
-	do_test_partial_claim_before_restart(false);
-	do_test_partial_claim_before_restart(true);
+	do_test_partial_claim_before_restart(false, false);
+	do_test_partial_claim_before_restart(false, true);
+	do_test_partial_claim_before_restart(true, false);
+	do_test_partial_claim_before_restart(true, true);
 }
 
 fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_htlc: bool, use_intercept: bool) {
