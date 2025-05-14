@@ -5482,15 +5482,23 @@ where
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
-		let minimum_depth = funding.minimum_depth_override.or(self.minimum_depth);
+		let minimum_depth = funding
+			.minimum_depth_override
+			.or(self.minimum_depth)
+			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
 
-		if funding.funding_tx_confirmation_height == 0 && minimum_depth != Some(0) {
+		// Zero-conf channels always meet the minimum depth.
+		if minimum_depth == 0 {
+			return true;
+		}
+
+		if funding.funding_tx_confirmation_height == 0 {
 			return false;
 		}
 
 		let funding_tx_confirmations =
 			height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations < minimum_depth.unwrap_or(0) as i64 {
+		if funding_tx_confirmations < minimum_depth as i64 {
 			return false;
 		}
 
