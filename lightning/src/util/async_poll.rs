@@ -13,7 +13,7 @@ use crate::prelude::*;
 use core::future::Future;
 use core::marker::Unpin;
 use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 pub(crate) enum ResultFuture<F: Future<Output = Result<(), E>>, E: Copy + Unpin> {
 	Pending(F),
@@ -74,3 +74,27 @@ impl<F: Future<Output = Result<(), E>> + Unpin, E: Copy + Unpin> Future
 		}
 	}
 }
+
+// If we want to poll a future without an async context to figure out if it has completed or
+// not without awaiting, we need a Waker, which needs a vtable...we fill it with dummy values
+// but sadly there's a good bit of boilerplate here.
+//
+// Waker::noop() would be preferable, but requires an MSRV of 1.85.
+fn dummy_waker_clone(_: *const ()) -> RawWaker {
+	RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)
+}
+fn dummy_waker_action(_: *const ()) {}
+
+const DUMMY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+	dummy_waker_clone,
+	dummy_waker_action,
+	dummy_waker_action,
+	dummy_waker_action,
+);
+
+pub(crate) fn dummy_waker() -> Waker {
+	unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
+}
+
+/// A type alias for a future that returns a result of type T.
+pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;

@@ -30,7 +30,6 @@
 //! * `grind_signatures`
 
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
-#![cfg_attr(not(any(test, feature = "_test_utils")), forbid(unsafe_code))]
 
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
