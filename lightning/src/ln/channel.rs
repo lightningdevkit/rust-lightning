@@ -4975,6 +4975,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
+		let minimum_depth = self.minimum_depth
+			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+
+		// Zero-conf channels always meet the minimum depth.
+		if minimum_depth == 0 {
+			return true;
+		}
+
 		let is_coinbase = funding
 			.funding_transaction
 			.as_ref()
@@ -4983,21 +4991,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let minimum_depth = {
 			// If the funding transaction is a coinbase transaction, we need to set the minimum
-			// depth to 100. We can skip this if it is a zero-conf channel.
-			let minimum_depth = self.minimum_depth.unwrap_or(0);
-			if is_coinbase && minimum_depth > 0 && minimum_depth < COINBASE_MATURITY {
-				Some(COINBASE_MATURITY)
+			// depth to 100.
+			if is_coinbase && minimum_depth < COINBASE_MATURITY {
+				COINBASE_MATURITY
 			} else {
-				self.minimum_depth
+				minimum_depth
 			}
 		};
 
-		if funding.funding_tx_confirmation_height == 0 && minimum_depth != Some(0) {
+		if funding.funding_tx_confirmation_height == 0 {
 			return false;
 		}
 
 		let funding_tx_confirmations = height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations < minimum_depth.unwrap_or(0) as i64 {
+		if funding_tx_confirmations < minimum_depth as i64 {
 			return false;
 		}
 
