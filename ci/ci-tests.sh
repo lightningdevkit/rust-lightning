@@ -68,10 +68,6 @@ cargo check -p lightning-block-sync --verbose --color always --features rpc-clie
 cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 
-echo -e "\n\nTest futures builds"
-cargo test -p lightning-background-processor --verbose --color always --features futures
-cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features
-
 echo -e "\n\nTest Custom Message Macros"
 cargo test -p lightning-custom-message --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
@@ -85,6 +81,7 @@ for DIR in lightning-invoice lightning-rapid-gossip-sync lightning-liquidity; do
 done
 
 cargo test -p lightning --verbose --color always --no-default-features
+cargo test -p lightning-background-processor --verbose --color always --no-default-features
 
 echo -e "\n\nTesting c_bindings builds"
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
@@ -98,7 +95,7 @@ done
 
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
 # disable doctests in `c_bindings` so we skip doctests entirely here.
-RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features --lib --bins --tests
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --no-default-features --lib --bins --tests
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --lib --bins --tests
 
 echo -e "\n\nTesting other crate-specific builds"
