@@ -1913,7 +1913,11 @@ struct PendingSplice {
 	/// Set when splice_ack has been processed (on the initiator side),
 	/// used to prevent processing of multiple splice_ack's.
 	awaiting_splice_ack: bool,
-	pub refunding_scope: Option<RefundingScope>,
+	funding_scope: Option<FundingScope>,
+	funding_negotiation_context: Option<FundingNegotiationContext>,
+	/// The current interactive transaction construction session under negotiation.
+	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 #[cfg(splicing)]
@@ -2433,7 +2437,10 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 #[cfg(splicing)]
 struct FundedChannelRefundingWrapper<'a, SP: Deref> where SP::Target: SignerProvider {
 	channel_context: &'a mut ChannelContext<SP>,
-	refunding_scope: &'a mut RefundingScope,
+	funding_scope: &'a mut FundingScope,
+	funding_negotiation_context: &'a mut FundingNegotiationContext,
+	interactive_tx_constructor: &'a mut Option<InteractiveTxConstructor>,
+	interactive_tx_signing_session: &'a mut Option<InteractiveTxSigningSession>,
 	/// For accessing commitment transaction number
 	holder_commitment_point: &'a HolderCommitmentPoint,
 }
@@ -2454,28 +2461,28 @@ impl<'a, SP: Deref> ChannelContextProvider<SP> for FundedChannelRefundingWrapper
 #[cfg(splicing)]
 impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper<'a, SP> where SP::Target: SignerProvider {
 	#[inline]
-	fn pending_funding(&self) -> &FundingScope {
-		&self.refunding_scope.pending_funding
+	fn funding_scope(&self) -> &FundingScope {
+		&self.funding_scope
 	}
 
 	#[inline]
-	fn pending_funding_mut(&mut self) -> &mut FundingScope {
-		&mut self.refunding_scope.pending_funding
+	fn funding_context_mut(&mut self) -> &mut FundingScope {
+		&mut self.funding_scope
 	}
 
 	#[inline]
-	fn pending_funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
-		(&self.refunding_scope.pending_funding, &mut self.channel_context)
+	fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
+		(&self.funding_scope, &mut self.channel_context)
 	}
 
 	#[inline]
 	fn funding_negotiation_context(&self) -> &FundingNegotiationContext {
-		&self.refunding_scope.pending_funding_negotiation_context
+		&self.funding_negotiation_context
 	}
 
 	#[inline]
 	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext {
-		&mut self.refunding_scope.pending_funding_negotiation_context
+		&mut self.funding_negotiation_context
 	}
 
 	fn current_holder_transaction_number(&self) -> u64 {
@@ -2484,17 +2491,17 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 
 	#[inline]
 	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor> {
-		self.refunding_scope.pending_interactive_tx_constructor.as_ref()
+		self.interactive_tx_constructor.as_ref()
 	}
 
 	#[inline]
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
-		&mut self.refunding_scope.pending_interactive_tx_constructor
+		&mut self.interactive_tx_constructor
 	}
 
 	#[inline]
 	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
-		&mut self.refunding_scope.pending_interactive_tx_signing_session
+		&mut self.interactive_tx_signing_session
 	}
 
 	fn is_splice(&self) -> bool { true }
@@ -2503,9 +2510,9 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 /// A channel struct implementing this trait can perform V2 transaction negotiation,
 /// either at channel open or during splicing.
 pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> where SP::Target: SignerProvider {
-	fn pending_funding(&self) -> &FundingScope;
-	fn pending_funding_mut(&mut self) -> &mut FundingScope;
-	fn pending_funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>);
+	fn funding_scope(&self) -> &FundingScope;
+	fn funding_context_mut(&mut self) -> &mut FundingScope;
+	fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>);
 	fn funding_negotiation_context(&self) -> &FundingNegotiationContext;
 	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext;
 	fn current_holder_transaction_number(&self) -> u64;
@@ -2548,15 +2555,15 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		let mut funding_outputs = Vec::new();
 		let mut expected_remote_shared_funding_output = None;
 
-		let pending_funding = self.pending_funding();
+		let funding_scope = self.funding_scope();
 
 		let shared_funding_output = TxOut {
-			value: Amount::from_sat(pending_funding.get_value_satoshis()),
-			script_pubkey: pending_funding.get_funding_redeemscript().to_p2wsh(),
+			value: Amount::from_sat(funding_scope.get_value_satoshis()),
+			script_pubkey: funding_scope.get_funding_redeemscript().to_p2wsh(),
 		};
 
 		let funding_negotiation_context = &self.funding_negotiation_context();
-		if pending_funding.is_outbound() {
+		if funding_scope.is_outbound() {
 			funding_outputs.push(
 				OutputOwned::Shared(SharedOwnedOutput::new(
 					shared_funding_output, funding_negotiation_context.our_funding_satoshis,
@@ -2575,7 +2582,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
 		};
 		let change_value_opt = calculate_change_output_value(
-			pending_funding.is_outbound(), funding_negotiation_context.our_funding_satoshis,
+			funding_scope.is_outbound(), funding_negotiation_context.our_funding_satoshis,
 			&funding_inputs, &funding_outputs,
 			funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
@@ -2601,7 +2608,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 			counterparty_node_id: self.context().counterparty_node_id,
 			channel_id: self.context().channel_id(),
 			feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
-			is_initiator: pending_funding.is_outbound(),
+			is_initiator: funding_scope.is_outbound(),
 			funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
@@ -2695,12 +2702,12 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		let our_funding_satoshis = self.funding_negotiation_context()
 			.our_funding_satoshis;
 		let transaction_number = self.current_holder_transaction_number();
-		let pending_funding = self.pending_funding();
+		let funding_scope = self.funding_scope();
 
 		let mut output_index = None;
-		let expected_spk = pending_funding.get_funding_redeemscript().to_p2wsh();
+		let expected_spk = funding_scope.get_funding_redeemscript().to_p2wsh();
 		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == pending_funding.get_value_satoshis() {
+			if outp.script_pubkey() == &expected_spk && outp.value() == funding_scope.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(ChannelError::Close(
 						(
@@ -2720,7 +2727,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
 		};
-		self.pending_funding_mut()
+		self.funding_context_mut()
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
 		if self.is_splice() {
@@ -2732,16 +2739,16 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		}
 
 		self.context().assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
-		let (funding, context_mut) = self.pending_funding_and_context_mut();
+		let (funding, context_mut) = self.funding_and_context_mut();
 		let commitment_signed = context_mut.get_initial_commitment_signed(&funding, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.pending_funding_mut()
+				self.funding_context_mut()
 					.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
-				self.pending_funding_mut()
+				self.funding_context_mut()
 					.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
 			},
@@ -2809,17 +2816,17 @@ impl<SP: Deref> ChannelContextProvider<SP> for PendingV2Channel<SP> where SP::Ta
 
 impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[inline]
-	fn pending_funding(&self) -> &FundingScope {
+	fn funding_scope(&self) -> &FundingScope {
 		&self.funding
 	}
 
 	#[inline]
-	fn pending_funding_mut(&mut self) -> &mut FundingScope {
+	fn funding_context_mut(&mut self) -> &mut FundingScope {
 		&mut self.funding
 	}
 
 	#[inline]
-	fn pending_funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
+	fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
 		(&self.funding, &mut self.context)
 	}
 
@@ -2853,18 +2860,6 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 	}
 
 	fn is_splice(&self) -> bool { false }
-}
-
-/// Data needed during splicing --
-/// when the funding transaction is being renegotiated in a funded channel.
-#[cfg(splicing)]
-struct RefundingScope {
-	// Fields belonging for [`PendingV2Channel`], except the context
-	pending_funding: FundingScope,
-	pending_funding_negotiation_context: FundingNegotiationContext,
-	/// The current interactive transaction construction session under negotiation.
-	pending_interactive_tx_constructor: Option<InteractiveTxConstructor>,
-	pending_interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
@@ -5425,12 +5420,19 @@ impl<SP: Deref> FundedChannel<SP> where
 	#[cfg(splicing)]
 	fn as_renegotiating_funding<'a>(&'a mut self) -> Result<impl FundingTxConstructorV2<SP> + 'a, &'static str> {
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			if let Some(ref mut refunding_scope) = &mut pending_splice.refunding_scope {
-				Ok(FundedChannelRefundingWrapper {
-					channel_context: &mut self.context,
-					refunding_scope,
-					holder_commitment_point: &self.holder_commitment_point,
-				})
+			if let Some(ref mut funding_scope) = &mut pending_splice.funding_scope {
+				if let Some(ref mut funding_negotiation_context) = &mut pending_splice.funding_negotiation_context {
+					Ok(FundedChannelRefundingWrapper {
+						channel_context: &mut self.context,
+						funding_scope,
+						funding_negotiation_context,
+						interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
+						interactive_tx_signing_session: &mut pending_splice.interactive_tx_signing_session,
+						holder_commitment_point: &self.holder_commitment_point,
+					})
+				} else {
+					Err("Channel is not refunding")
+				}
 			} else {
 				Err("Channel is not refunding")
 			}
@@ -9003,7 +9005,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			locktime,
 			our_funding_inputs: funding_inputs,
 			awaiting_splice_ack: true, // we await splice_ack
-			refunding_scope: None,
+			funding_scope: None,
+			funding_negotiation_context: None,
+			interactive_tx_constructor: None,
+			interactive_tx_signing_session: None,
 		});
 
 		let msg = self.get_splice_init(our_funding_contribution_satoshis, funding_feerate_per_kw, locktime);
@@ -9137,9 +9142,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			false, // is_outbound
 		)?;
 
-		let pending_funding = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value);
+		let funding_scope = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value);
 
-		let pending_funding_negotiation_context = FundingNegotiationContext {
+		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
 			their_funding_satoshis: Some(their_funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
@@ -9147,19 +9152,16 @@ impl<SP: Deref> FundedChannel<SP> where
 			our_funding_inputs: Vec::new(),
 		};
 
-		let refunding_scope = Some(RefundingScope {
-			pending_funding,
-			pending_funding_negotiation_context,
-			pending_interactive_tx_constructor: None,
-			pending_interactive_tx_signing_session: None,
-		});
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution,
 			funding_feerate_per_kw: msg.funding_feerate_per_kw,
 			locktime: msg.locktime,
 			our_funding_inputs: Vec::new(), // inputs go directly to [`FundingNegotiationContext`] above
 			awaiting_splice_ack: false, // we don't need any additional message for the handshake
-			refunding_scope,
+			funding_scope: Some(funding_scope),
+			funding_negotiation_context: Some(funding_negotiation_context),
+			interactive_tx_constructor: None,
+			interactive_tx_signing_session: None,
 		});
 		// TODO(splicing): Store msg.funding_pubkey
 
@@ -9225,9 +9227,9 @@ impl<SP: Deref> FundedChannel<SP> where
 			true, // is_outbound
 		)?;
 
-		let pending_funding = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value);
+		let funding_scope = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value);
 
-		let mut pending_funding_negotiation_context = FundingNegotiationContext {
+		let mut funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
 			their_funding_satoshis: Some(their_funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(pending_splice.locktime),
@@ -9235,21 +9237,18 @@ impl<SP: Deref> FundedChannel<SP> where
 			our_funding_inputs: Vec::new(), // set below
 		};
 		if let Some(ref mut pending_splice_mut) = &mut self.pending_splice {
-			pending_funding_negotiation_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
+			funding_negotiation_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
 		};
 
-		let refunding_scope = RefundingScope {
-			pending_funding,
-			pending_funding_negotiation_context,
-			pending_interactive_tx_constructor: None,
-			pending_interactive_tx_signing_session: None,
-		};
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
 		// We need the current funding tx as an extra input
 		let prev_funding_input = Self::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			pending_splice.refunding_scope = Some(refunding_scope);
+			pending_splice.funding_scope = Some(funding_scope);
+			pending_splice.funding_negotiation_context = Some(funding_negotiation_context);
+			pending_splice.interactive_tx_constructor = None;
+			pending_splice.interactive_tx_signing_session = None;
 			debug_assert!(pending_splice.awaiting_splice_ack);
 			pending_splice.awaiting_splice_ack = false;
 		} else {
@@ -9307,10 +9306,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		// 	NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
 		// );
 		if let Some(pending_splice) = &self.pending_splice {
-			if let Some(refund) = &pending_splice.refunding_scope {
+			if let Some(funding_scope) = &pending_splice.funding_scope {
 				let old_value = self.funding.get_value_satoshis();
 				log_info!(logger, "Splicing process started, new channel value {}, old {}, outgoing {}, channel_id {}",
-					refund.pending_funding.get_value_satoshis(), old_value, is_outgoing, self.context().channel_id);
+					funding_scope.get_value_satoshis(), old_value, is_outgoing, self.context().channel_id);
 			}
 		}
 	}
