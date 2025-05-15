@@ -1589,9 +1589,9 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_add_input(msg)),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_add_input(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_funding()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
 				.tx_add_input(msg)),
 			_ => Err("Got tx_add_input in an invalid phase"),
 		}
@@ -1599,9 +1599,9 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_add_output(msg)),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_add_output(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_funding()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
 				.tx_add_output(msg)),
 			_ => Err("Got tx_add_output in an invalid phase"),
 		}
@@ -1609,9 +1609,9 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_remove_input(msg)),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_remove_input(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_funding()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
 				.tx_remove_input(msg)),
 			_ => Err("Got tx_remove_input in an invalid phase"),
 		}
@@ -1619,9 +1619,9 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<InteractiveTxMessageSendResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_remove_output(msg)),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_remove_output(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_funding()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
 				.tx_remove_output(msg)),
 			_ => Err("Got tx_remove_output in an invalid phase"),
 		}
@@ -1629,9 +1629,9 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<HandleTxCompleteResult, &'static str> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.tx_complete(msg)),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_complete(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_funding()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
 				.tx_complete(msg)),
 			_ => Err("Got tx_complete in an invalid phase"),
 		}
@@ -1677,13 +1677,13 @@ impl<SP: Deref> Channel<SP> where
 		match self.phase {
 			ChannelPhase::UnfundedV2(ref mut chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let (commitment_signed, event) = chan.funding_tx_constructed(signing_session, &&logger)?;
+				let (commitment_signed, event) = chan.as_negotiating_channel().funding_tx_constructed(signing_session, &&logger)?;
 				Ok((commitment_signed, event))
 			}
 			#[cfg(splicing)]
 			ChannelPhase::Funded(ref mut chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let (commitment_signed, event) = chan.as_renegotiating_funding()
+				let (commitment_signed, event) = chan.as_renegotiating_channel()
 					.map_err(|err| ChannelError::Warn(err.into()))?
 					.funding_tx_constructed(signing_session, &&logger)?;
 				Ok((commitment_signed, event))
@@ -2572,21 +2572,22 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 	}
 }
 
-/// A temporary internal struct, used to return something from FundedChannel
-/// that implements [`FundingTxConstructorV2`], but only when it has the parts for it.
+/// A short-lived subset view of a channel, used for V2 funding negotiation or re-negotiation.
+/// Can be produced by:
+/// - [`PendingV2Channel`], at V2 channel open, and
+/// - [`FundedChannel`], when splicing.
 #[cfg(splicing)]
-struct FundedChannelRefundingWrapper<'a, SP: Deref> where SP::Target: SignerProvider {
+struct NegotiatingV2ChannelView<'a, SP: Deref> where SP::Target: SignerProvider {
 	channel_context: &'a mut ChannelContext<SP>,
 	funding_scope: &'a mut FundingScope,
 	funding_negotiation_context: &'a mut FundingNegotiationContext,
 	interactive_tx_constructor: &'a mut Option<InteractiveTxConstructor>,
 	interactive_tx_signing_session: &'a mut Option<InteractiveTxSigningSession>,
-	/// For accessing commitment transaction number
-	holder_commitment_point: &'a HolderCommitmentPoint,
+	holder_commitment_transaction_number: u64,
 }
 
 #[cfg(splicing)]
-impl<'a, SP: Deref> ChannelContextProvider<SP> for FundedChannelRefundingWrapper<'a, SP> where SP::Target: SignerProvider {
+impl<'a, SP: Deref> ChannelContextProvider<SP> for NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerProvider {
 	#[inline]
 	fn context(&self) -> &ChannelContext<SP> {
 		&self.channel_context
@@ -2599,7 +2600,7 @@ impl<'a, SP: Deref> ChannelContextProvider<SP> for FundedChannelRefundingWrapper
 }
 
 #[cfg(splicing)]
-impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper<'a, SP> where SP::Target: SignerProvider {
+impl<'a, SP: Deref> FundingTxConstructorV2<SP> for NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerProvider {
 	#[inline]
 	fn funding_scope(&self) -> &FundingScope {
 		&self.funding_scope
@@ -2626,7 +2627,7 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 	}
 
 	fn current_holder_transaction_number(&self) -> u64 {
-		self.holder_commitment_point.transaction_number()
+		self.holder_commitment_transaction_number
 	}
 
 	#[inline]
@@ -2950,54 +2951,6 @@ impl<SP: Deref> ChannelContextProvider<SP> for PendingV2Channel<SP> where SP::Ta
 	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		&mut self.context
 	}
-}
-
-impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Target: SignerProvider {
-	#[inline]
-	fn funding_scope(&self) -> &FundingScope {
-		&self.funding
-	}
-
-	#[inline]
-	fn funding_context_mut(&mut self) -> &mut FundingScope {
-		&mut self.funding
-	}
-
-	#[inline]
-	fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
-		(&self.funding, &mut self.context)
-	}
-
-	#[inline]
-	fn funding_negotiation_context(&self) -> &FundingNegotiationContext {
-		&self.funding_negotiation_context
-	}
-
-	#[inline]
-	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext {
-		&mut self.funding_negotiation_context
-	}
-
-	fn current_holder_transaction_number(&self) -> u64 {
-		self.unfunded_context.transaction_number()
-	}
-
-	#[inline]
-	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor> {
-		self.interactive_tx_constructor.as_ref()
-	}
-
-	#[inline]
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
-		&mut self.interactive_tx_constructor
-	}
-
-	#[inline]
-	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
-		&mut self.interactive_tx_signing_session
-	}
-
-	fn is_splice(&self) -> bool { false }
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
@@ -5575,21 +5528,19 @@ impl<SP: Deref> FundedChannel<SP> where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner
 {
-	/// If we are in splicing/refunding, return something that implements [`FundingTxConstructorV2`],
-	/// or err otherwise.
-	/// A [`FundedChannelRefundingWrapper`] is returned.
+	/// If we are in splicing/refunding, return a short-lived [`NegotiatingV2ChannelView`].
 	#[cfg(splicing)]
-	fn as_renegotiating_funding<'a>(&'a mut self) -> Result<impl FundingTxConstructorV2<SP> + 'a, &'static str> {
+	fn as_renegotiating_channel<'a>(&'a mut self) -> Result<impl FundingTxConstructorV2<SP> + 'a, &'static str> {
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			if let Some(ref mut funding_scope) = &mut pending_splice.funding_scope {
 				if let Some(ref mut funding_negotiation_context) = &mut pending_splice.funding_negotiation_context {
-					Ok(FundedChannelRefundingWrapper {
+					Ok(NegotiatingV2ChannelView {
 						channel_context: &mut self.context,
 						funding_scope,
 						funding_negotiation_context,
 						interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
 						interactive_tx_signing_session: &mut pending_splice.interactive_tx_signing_session,
-						holder_commitment_point: &self.holder_commitment_point,
+						holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
 					})
 				} else {
 					Err("Channel is not refunding")
@@ -9361,6 +9312,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(())
 	}
 
+	/// Helper to build the FundingScope for the splicing channel
 	#[cfg(splicing)]
 	fn funding_scope_for_splice(&self, our_funding_satoshis: u64, post_channel_value: u64) -> FundingScope {
 		let post_value_to_self_msat = self.funding.value_to_self_msat.saturating_add(our_funding_satoshis);
@@ -9454,7 +9406,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		let splice_ack_msg = self.get_splice_ack(our_funding_contribution);
 
 		// Start interactive funding negotiation. No extra input, as we are not the splice initiator
-		let mut refunding = self.as_renegotiating_funding()
+		let mut refunding = self.as_renegotiating_channel()
 			.map_err(|err| ChannelError::Warn(err.into()))?;
 		let _msg = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, None)
 			.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
@@ -9550,7 +9502,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.splice_start(true, logger);
 
 		// Start interactive funding negotiation, with the previous funding transaction as an extra shared input
-		let mut refunding = self.as_renegotiating_funding()
+		let mut refunding = self.as_renegotiating_channel()
 			.map_err(|err| ChannelError::Warn(err.into()))?;
 		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, Some(prev_funding_input))
 			.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
@@ -11246,6 +11198,19 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
+	}
+
+	/// Return a short-lived [`NegotiatingV2ChannelView`].
+	#[cfg(splicing)]
+	fn as_negotiating_channel<'a>(&'a mut self) -> impl FundingTxConstructorV2<SP> + 'a {
+		NegotiatingV2ChannelView {
+			channel_context: &mut self.context,
+			funding_scope: &mut self.funding,
+			funding_negotiation_context: &mut self.funding_negotiation_context,
+			interactive_tx_constructor: &mut self.interactive_tx_constructor,
+			interactive_tx_signing_session: &mut self.interactive_tx_signing_session,
+			holder_commitment_transaction_number: self.unfunded_context.transaction_number(),
+		}
 	}
 }
 

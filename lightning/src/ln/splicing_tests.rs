@@ -231,7 +231,9 @@ fn test_v1_splice_in() {
 	);
 
 	// TODO(splicing) This is the last tx_complete, which triggers the commitment flow, which is not yet fully implemented
-	let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	let _res = initiator_node
+		.node
+		.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	let events = initiator_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
