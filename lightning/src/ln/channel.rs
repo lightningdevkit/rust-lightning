@@ -2859,6 +2859,14 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		self.pending_funding_mut()
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
+		if self.is_splice() {
+			// TODO(splicing) Forced error, as the use case is not complete
+			return Err(ChannelError::Close((
+				"TODO Forced error, incomplete implementation".into(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+			)));
+		}
+
 		self.context().assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
 		let (funding, context_mut) = self.pending_funding_and_context_mut();
 		let commitment_signed = context_mut.get_initial_commitment_signed(&funding, logger);

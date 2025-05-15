@@ -230,11 +230,21 @@ fn test_v1_splice_in() {
 		initiator_node.node.get_our_node_id()
 	);
 
-	// TODO(splicing) This is the last tx_complete, which triggers the commitment flow, which is not yet implemented
-	// let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	// TODO(splicing) This is the last tx_complete, which triggers the commitment flow, which is not yet fully implemented
+	let _res = initiator_node.node.handle_tx_complete(acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+	let events = initiator_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		MessageSendEvent::SendTxComplete { .. } => {},
+		_ => panic!("Unexpected event {:?}", events[0]),
+	}
+	match events[1] {
+		MessageSendEvent::HandleError { .. } => {},
+		_ => panic!("Unexpected event {:?}", events[1]),
+	}
 
 	// TODO(splicing): Continue with commitment flow, new tx confirmation
-
+	/*
 	// === Close channel, cooperatively
 	initiator_node.node.close_channel(&channel_id, &acceptor_node.node.get_our_node_id()).unwrap();
 	let node0_shutdown_message = get_event_msg!(
@@ -256,6 +266,7 @@ fn test_v1_splice_in() {
 		MessageSendEvent::SendClosingSigned,
 		acceptor_node.node.get_our_node_id()
 	);
+	*/
 }
 
 #[test]
