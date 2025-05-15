@@ -96,6 +96,9 @@ pub(crate) fn dummy_waker() -> Waker {
 	unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 }
 
+pub type AsyncResultError<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a + Send>>;
+pub type AsyncResultNo<'a> = Pin<Box<dyn Future<Output = ()> + 'a + Send>>;
+
 /// A type alias for a future that returns a result of type T.
 #[cfg(feature = "std")]
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;

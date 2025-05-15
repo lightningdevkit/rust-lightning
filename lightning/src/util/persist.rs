@@ -32,6 +32,8 @@ use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 
+use super::async_poll::{AsyncResult, AsyncResultError, AsyncResultNo};
+
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
 	"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -127,9 +129,9 @@ pub trait KVStore {
 	/// `primary_namespace` and `secondary_namespace`.
 	///
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
-	fn read(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Result<Vec<u8>, io::Error>;
+	fn read<'a>(
+		&'a self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> AsyncResultError<'a, Vec<u8>, io::Error>;
 	/// Persists the given data under the given `key`.
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
@@ -186,13 +188,13 @@ pub trait MigratableKVStore: KVStore {
 ///
 /// Will abort and return an error if any IO operation fails. Note that in this case the
 /// `target_store` might get left in an intermediate state.
-pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
+pub async fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	source_store: &mut S, target_store: &mut T,
 ) -> Result<(), io::Error> {
 	let keys_to_migrate = source_store.list_all_keys()?;
 
 	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
-		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
+		let data = source_store.read(primary_namespace, secondary_namespace, key).await?;
 		target_store.write(primary_namespace, secondary_namespace, key, &data)?;
 	}
 
@@ -254,7 +256,7 @@ where
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
+impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + Sync + ?Sized> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
@@ -289,36 +291,38 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 		}
 	}
 
-	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		let monitor_key = monitor_name.to_string();
-		let monitor = match self.read(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-		) {
-			Ok(monitor) => monitor,
-			Err(_) => return,
-		};
-		match self.write(
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			&monitor,
-		) {
-			Ok(()) => {},
-			Err(_e) => return,
-		};
-		let _ = self.remove(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			true,
-		);
+	fn archive_persisted_channel<'a>(&'a self, monitor_name: MonitorName) -> AsyncResultNo<'a>{
+		Box::pin(async move {
+			let monitor_key = monitor_name.to_string();
+			let monitor = match self.read(
+				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				monitor_key.as_str(),
+			).await {
+				Ok(monitor) => monitor,
+				Err(_) => return,
+			};
+			match self.write(
+				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				monitor_key.as_str(),
+				&monitor,
+			) {
+				Ok(()) => {},
+				Err(_e) => return,
+			};
+			let _ = self.remove(
+				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				monitor_key.as_str(),
+				true,
+			);
+		})
 	}
 }
 
 /// Read previously persisted [`ChannelMonitor`]s from the store.
-pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
+pub async fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
 ) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 where
@@ -337,7 +341,7 @@ where
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 				&stored_key,
-			)?),
+			).await?),
 			(&*entropy_source, &*signer_provider),
 		) {
 			Ok((block_hash, channel_monitor)) => {
@@ -586,7 +590,7 @@ where
 	}
 
 	/// Read a channel monitor.
-	fn read_monitor(
+	async fn read_monitor(
 		&self, monitor_name: &MonitorName, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
@@ -594,7 +598,7 @@ where
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_key,
-		)?);
+		).await?);
 		// Discard the sentinel bytes if found.
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
