@@ -5049,28 +5049,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.get_initial_counterparty_commitment_signature(funding, logger)
 	}
 
-	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
-		let minimum_depth = funding.minimum_depth_override
-			.or(self.minimum_depth)
-			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
-
-		// Zero-conf channels always meet the minimum depth.
-		if minimum_depth == 0 {
-			return true;
-		}
-
-		if funding.funding_tx_confirmation_height == 0 {
-			return false;
-		}
-
-		let funding_tx_confirmations = height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
-		if funding_tx_confirmations < minimum_depth as i64 {
-			return false;
-		}
-
-		return true;
-	}
-
 	fn check_for_funding_tx_confirmed(
 		&mut self, funding: &mut FundingScope, block_hash: &BlockHash, height: u32,
 		index_in_block: usize, tx: &mut ConfirmedTransaction,
@@ -8513,7 +8491,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
-		if !self.context.check_funding_meets_minimum_depth(&self.funding, height) {
+		if !self.check_funding_meets_minimum_depth(&self.funding, height) {
 			return None;
 		}
 
@@ -8586,7 +8564,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	fn check_get_splice_locked(
 		&self, pending_splice: &PendingSplice, funding: &FundingScope, height: u32,
 	) -> Option<msgs::SpliceLocked> {
-		if !self.context.check_funding_meets_minimum_depth(funding, height) {
+		if !self.check_funding_meets_minimum_depth(funding, height) {
 			return None;
 		}
 
@@ -8607,6 +8585,28 @@ impl<SP: Deref> FundedChannel<SP> where
 				})
 			},
 		}
+	}
+
+	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
+		let minimum_depth = funding.minimum_depth_override
+			.or(self.context.minimum_depth)
+			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+
+		// Zero-conf channels always meet the minimum depth.
+		if minimum_depth == 0 {
+			return true;
+		}
+
+		if funding.funding_tx_confirmation_height == 0 {
+			return false;
+		}
+
+		let funding_tx_confirmations = height as i64 - funding.funding_tx_confirmation_height as i64 + 1;
+		if funding_tx_confirmations < minimum_depth as i64 {
+			return false;
+		}
+
+		return true;
 	}
 
 	#[cfg(splicing)]
