@@ -2636,6 +2636,8 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
 		&mut self.refunding_scope.pending_interactive_tx_signing_session
 	}
+
+	fn is_splice(&self) -> bool { true }
 }
 
 /// A channel struct implementing this trait can perform V2 transaction negotiation,
@@ -2650,6 +2652,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor>;
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
 	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession>;
+	fn is_splice(&self) -> bool;
 
 	/// Prepare and start interactive transaction negotiation.
 	/// `change_destination_opt` - Optional destination for optional change; if None,
@@ -2659,11 +2662,11 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
 		change_destination_opt: Option<ScriptBuf>,
-		is_splice: bool, prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
 	{
-		if is_splice {
+		if self.is_splice() {
 			debug_assert!(matches!(self.context().channel_state, ChannelState::ChannelReady(_)));
 		} else {
 			debug_assert!(matches!(self.context().channel_state, ChannelState::NegotiatingFunding(_)));
@@ -2978,6 +2981,8 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
 		&mut self.interactive_tx_signing_session
 	}
+
+	fn is_splice(&self) -> bool { false }
 }
 
 /// Data needed during splicing --
@@ -9436,7 +9441,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Start interactive funding negotiation. No extra input, as we are not the splice initiator
 		let mut refunding = self.as_renegotiating_funding()
 			.map_err(|err| ChannelError::Warn(err.into()))?;
-		let _msg = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, true, None)
+		let _msg = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, None)
 			.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
 
 		Ok(splice_ack_msg)
@@ -9567,7 +9572,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Start interactive funding negotiation, with the previous funding transaction as an extra shared input
 		let mut refunding = self.as_renegotiating_funding()
 			.map_err(|err| ChannelError::Warn(err.into()))?;
-		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, true, Some(prev_funding_input))
+		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, Some(prev_funding_input))
 			.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
 		Ok(tx_msg_opt)
 	}
