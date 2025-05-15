@@ -1387,9 +1387,6 @@ impl<SP: Deref> Channel<SP> where
 	pub fn unfunded_context_mut(&mut self) -> Option<&mut UnfundedChannelContext> {
 		match &mut self.phase {
 			ChannelPhase::Undefined => unreachable!(),
-			#[cfg(not(splicing))]
-			ChannelPhase::Funded(_) => { debug_assert!(false); None }
-			#[cfg(splicing)]
 			ChannelPhase::Funded(_chan) => {
 				debug_assert!(false, "FundedChannel is not unfunded!");
 				None
@@ -2621,7 +2618,7 @@ impl<'a, SP: Deref> FundingTxConstructorV2<SP> for FundedChannelRefundingWrapper
 		&mut self.refunding_scope.pending_funding_negotiation_context
 	}
 
-	fn transaction_number(&self) -> u64 {
+	fn current_holder_transaction_number(&self) -> u64 {
 		self.holder_commitment_point.transaction_number()
 	}
 
@@ -2649,7 +2646,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	fn pending_funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>);
 	fn funding_negotiation_context(&self) -> &FundingNegotiationContext;
 	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext;
-	fn transaction_number(&self) -> u64;
+	fn current_holder_transaction_number(&self) -> u64;
 	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor>;
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
 	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession>;
@@ -2830,7 +2827,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	{
 		let our_funding_satoshis = self.funding_negotiation_context()
 			.our_funding_satoshis;
-		let transaction_number = self.transaction_number();
+		let transaction_number = self.current_holder_transaction_number();
 		let pending_funding = self.pending_funding();
 
 		let mut output_index = None;
@@ -2963,7 +2960,7 @@ impl<SP: Deref> FundingTxConstructorV2<SP> for PendingV2Channel<SP> where SP::Ta
 		&mut self.funding_negotiation_context
 	}
 
-	fn transaction_number(&self) -> u64 {
+	fn current_holder_transaction_number(&self) -> u64 {
 		self.unfunded_context.transaction_number()
 	}
 
@@ -9222,7 +9219,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	#[cfg(splicing)]
 	pub fn splice_channel(&mut self, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: u32,
 	) -> Result<msgs::SpliceInit, APIError> {
 		// Check if a splice has been initiated already.
@@ -9356,7 +9353,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	{
 		let _res = self.splice_init_checks(msg)?;
 
-		let pre_channel_value = self.funding().get_value_satoshis();
+		let pre_channel_value = self.funding.get_value_satoshis();
 		let their_funding_contribution = msg.funding_contribution_satoshis;
 
 		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
@@ -9368,13 +9365,13 @@ impl<SP: Deref> FundedChannel<SP> where
 			false, // is_outbound
 		)?;
 
-		let post_value_to_self_msat = self.funding().value_to_self_msat.saturating_add(our_funding_satoshis);
+		let post_value_to_self_msat = self.funding.value_to_self_msat.saturating_add(our_funding_satoshis);
 
-		let mut post_channel_transaction_parameters = self.funding().channel_transaction_parameters.clone();
+		let mut post_channel_transaction_parameters = self.funding.channel_transaction_parameters.clone();
 		post_channel_transaction_parameters.channel_value_satoshis = post_channel_value;
 		// Update the splicing 'tweak', this will rotate the keys in the signer
-		let prev_funding_txid = self.funding.funding_transaction.as_ref()
-			.map(|tx| tx.compute_txid());
+		let prev_funding_txid = self.funding.channel_transaction_parameters.funding_outpoint
+			.map(|outpoint| outpoint.txid);
 		post_channel_transaction_parameters.splice_parent_funding_txid = prev_funding_txid;
 		match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
@@ -9493,13 +9490,13 @@ impl<SP: Deref> FundedChannel<SP> where
 			true, // is_outbound
 		)?;
 
-		let post_value_to_self_msat = self.funding().value_to_self_msat.saturating_add(our_funding_satoshis);
+		let post_value_to_self_msat = self.funding.value_to_self_msat.saturating_add(our_funding_satoshis);
 
-		let mut post_channel_transaction_parameters = self.funding().channel_transaction_parameters.clone();
+		let mut post_channel_transaction_parameters = self.funding.channel_transaction_parameters.clone();
 		post_channel_transaction_parameters.channel_value_satoshis = post_channel_value;
 		// Update the splicing 'tweak', this will rotate the keys in the signer
-		let prev_funding_txid = self.funding.funding_transaction.as_ref()
-			.map(|tx| tx.compute_txid());
+		let prev_funding_txid = self.funding.channel_transaction_parameters.funding_outpoint
+			.map(|outpoint| outpoint.txid);
 		post_channel_transaction_parameters.splice_parent_funding_txid = prev_funding_txid;
 		match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
