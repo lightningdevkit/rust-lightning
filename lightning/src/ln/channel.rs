@@ -2576,92 +2576,17 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 /// Can be produced by:
 /// - [`PendingV2Channel`], at V2 channel open, and
 /// - [`FundedChannel`], when splicing.
-#[cfg(splicing)]
 struct NegotiatingV2ChannelView<'a, SP: Deref> where SP::Target: SignerProvider {
-	channel_context: &'a mut ChannelContext<SP>,
-	funding_scope: &'a mut FundingScope,
+	context: &'a mut ChannelContext<SP>,
+	funding: &'a mut FundingScope,
 	funding_negotiation_context: &'a mut FundingNegotiationContext,
 	interactive_tx_constructor: &'a mut Option<InteractiveTxConstructor>,
 	interactive_tx_signing_session: &'a mut Option<InteractiveTxSigningSession>,
 	holder_commitment_transaction_number: u64,
+	is_splice: bool,
 }
 
-#[cfg(splicing)]
-impl<'a, SP: Deref> ChannelContextProvider<SP> for NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerProvider {
-	#[inline]
-	fn context(&self) -> &ChannelContext<SP> {
-		&self.channel_context
-	}
-
-	#[inline]
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
-		&mut self.channel_context
-	}
-}
-
-#[cfg(splicing)]
-impl<'a, SP: Deref> FundingTxConstructorV2<SP> for NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerProvider {
-	#[inline]
-	fn funding_scope(&self) -> &FundingScope {
-		&self.funding_scope
-	}
-
-	#[inline]
-	fn funding_context_mut(&mut self) -> &mut FundingScope {
-		&mut self.funding_scope
-	}
-
-	#[inline]
-	fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>) {
-		(&self.funding_scope, &mut self.channel_context)
-	}
-
-	#[inline]
-	fn funding_negotiation_context(&self) -> &FundingNegotiationContext {
-		&self.funding_negotiation_context
-	}
-
-	#[inline]
-	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext {
-		&mut self.funding_negotiation_context
-	}
-
-	fn current_holder_transaction_number(&self) -> u64 {
-		self.holder_commitment_transaction_number
-	}
-
-	#[inline]
-	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor> {
-		self.interactive_tx_constructor.as_ref()
-	}
-
-	#[inline]
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
-		&mut self.interactive_tx_constructor
-	}
-
-	#[inline]
-	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
-		&mut self.interactive_tx_signing_session
-	}
-
-	fn is_splice(&self) -> bool { true }
-}
-
-/// A channel struct implementing this trait can perform V2 transaction negotiation,
-/// either at channel open or during splicing.
-pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> where SP::Target: SignerProvider {
-	fn funding_scope(&self) -> &FundingScope;
-	fn funding_context_mut(&mut self) -> &mut FundingScope;
-	fn funding_and_context_mut(&mut self) -> (&FundingScope, &mut ChannelContext<SP>);
-	fn funding_negotiation_context(&self) -> &FundingNegotiationContext;
-	fn funding_negotiation_context_mut(&mut self) -> &mut FundingNegotiationContext;
-	fn current_holder_transaction_number(&self) -> u64;
-	fn interactive_tx_constructor(&self) -> Option<&InteractiveTxConstructor>;
-	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
-	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession>;
-	fn is_splice(&self) -> bool;
-
+impl<'a, SP: Deref> NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerProvider {
 	/// Prepare and start interactive transaction negotiation.
 	/// `change_destination_opt` - Optional destination for optional change; if None,
 	///   default destination address is used.
@@ -2674,17 +2599,16 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
 	{
-		if self.is_splice() {
-			debug_assert!(matches!(self.context().channel_state, ChannelState::ChannelReady(_)));
+		if self.is_splice {
+			debug_assert!(matches!(self.context.channel_state, ChannelState::ChannelReady(_)));
 		} else {
-			debug_assert!(matches!(self.context().channel_state, ChannelState::NegotiatingFunding(_)));
+			debug_assert!(matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_)));
 		}
 
-		debug_assert!(self.interactive_tx_constructor().is_none());
+		debug_assert!(self.interactive_tx_constructor.is_none());
 
 		let mut funding_inputs = Vec::new();
-		let funding_negotiation_context_mut = self.funding_negotiation_context_mut();
-		mem::swap(&mut funding_negotiation_context_mut.our_funding_inputs, &mut funding_inputs);
+		mem::swap(&mut self.funding_negotiation_context.our_funding_inputs, &mut funding_inputs);
 
 		if let Some(prev_funding_input) = prev_funding_input {
 			funding_inputs.push(prev_funding_input);
@@ -2696,18 +2620,15 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		let mut funding_outputs = Vec::new();
 		let mut expected_remote_shared_funding_output = None;
 
-		let funding_scope = self.funding_scope();
-
 		let shared_funding_output = TxOut {
-			value: Amount::from_sat(funding_scope.get_value_satoshis()),
-			script_pubkey: funding_scope.get_funding_redeemscript().to_p2wsh(),
+			value: Amount::from_sat(self.funding.get_value_satoshis()),
+			script_pubkey: self.funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		let funding_negotiation_context = &self.funding_negotiation_context();
-		if funding_scope.is_outbound() {
+		if self.funding.is_outbound() {
 			funding_outputs.push(
 				OutputOwned::Shared(SharedOwnedOutput::new(
-					shared_funding_output, funding_negotiation_context.our_funding_satoshis,
+					shared_funding_output, self.funding_negotiation_context.our_funding_satoshis,
 				))
 			);
 		} else {
@@ -2719,13 +2640,13 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		let change_script = if let Some(script) = change_destination_opt {
 			script
 		} else {
-			signer_provider.get_destination_script(self.context().channel_keys_id)
+			signer_provider.get_destination_script(self.context.channel_keys_id)
 				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
 		};
 		let change_value_opt = calculate_change_output_value(
-			funding_scope.is_outbound(), funding_negotiation_context.our_funding_satoshis,
+			self.funding.is_outbound(), self.funding_negotiation_context.our_funding_satoshis,
 			&funding_inputs, &funding_outputs,
-			funding_negotiation_context.funding_feerate_sat_per_1000_weight,
+			self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
 		)?;
 		if let Some(change_value) = change_value_opt {
@@ -2734,10 +2655,10 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 				script_pubkey: change_script,
 			};
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-			let change_output_fee = fee_for_weight(funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_output_fee = fee_for_weight(self.funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
 			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
 			// Check dust limit again
-			if change_value_decreased_with_fee > self.context().holder_dust_limit_satoshis {
+			if change_value_decreased_with_fee > self.context.holder_dust_limit_satoshis {
 				change_output.value = Amount::from_sat(change_value_decreased_with_fee);
 				funding_outputs.push(OutputOwned::Single(change_output));
 			}
@@ -2746,11 +2667,11 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		let constructor_args = InteractiveTxConstructorArgs {
 			entropy_source,
 			holder_node_id,
-			counterparty_node_id: self.context().counterparty_node_id,
-			channel_id: self.context().channel_id(),
-			feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
-			is_initiator: funding_scope.is_outbound(),
-			funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
+			counterparty_node_id: self.context.counterparty_node_id,
+			channel_id: self.context.channel_id(),
+			feerate_sat_per_kw: self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
+			is_initiator: self.funding.is_outbound(),
+			funding_tx_locktime: self.funding_negotiation_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
 			expected_remote_shared_funding_output,
@@ -2758,58 +2679,57 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)?;
 		let msg = tx_constructor.take_initiator_first_message();
 
-		*self.interactive_tx_constructor_mut() = Some(tx_constructor);
+		*self.interactive_tx_constructor = Some(tx_constructor);
 
 		Ok(msg)
 	}
 
 	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
 	fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
 	fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
 	fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> InteractiveTxMessageSendResult {
-		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
+		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.context().channel_id())),
+				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
 			None => Err(msgs::TxAbort {
-				channel_id: self.context().channel_id(),
+				channel_id: self.context.channel_id(),
 				data: b"No interactive transaction negotiation in progress".to_vec()
 			}),
 		})
 	}
 
 	fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
-		let interactive_tx_constructor = self.interactive_tx_constructor_mut();
-		let tx_constructor = match interactive_tx_constructor {
+		let tx_constructor = match self.interactive_tx_constructor {
 			Some(tx_constructor) => tx_constructor,
 			None => {
 				let tx_abort = msgs::TxAbort {
@@ -2836,15 +2756,13 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 	where
 		L::Target: Logger
 	{
-		let our_funding_satoshis = self.funding_negotiation_context()
+		let our_funding_satoshis = self.funding_negotiation_context
 			.our_funding_satoshis;
-		let transaction_number = self.current_holder_transaction_number();
-		let funding_scope = self.funding_scope();
 
 		let mut output_index = None;
-		let expected_spk = funding_scope.get_funding_redeemscript().to_p2wsh();
+		let expected_spk = self.funding.get_funding_redeemscript().to_p2wsh();
 		for (idx, outp) in signing_session.unsigned_tx().outputs().enumerate() {
-			if outp.script_pubkey() == &expected_spk && outp.value() == funding_scope.get_value_satoshis() {
+			if outp.script_pubkey() == &expected_spk && outp.value() == self.funding.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err(ChannelError::Close(
 						(
@@ -2864,10 +2782,10 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
 		};
-		self.funding_context_mut()
+		self.funding
 			.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 
-		if self.is_splice() {
+		if self.is_splice {
 			// TODO(splicing) Forced error, as the use case is not complete
 			return Err(ChannelError::Close((
 				"TODO Forced error, incomplete implementation".into(),
@@ -2875,17 +2793,16 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 			)));
 		}
 
-		self.context().assert_no_commitment_advancement(transaction_number, "initial commitment_signed");
-		let (funding, context_mut) = self.funding_and_context_mut();
-		let commitment_signed = context_mut.get_initial_commitment_signed(&funding, logger);
+		self.context.assert_no_commitment_advancement(self.holder_commitment_transaction_number, "initial commitment_signed");
+		let commitment_signed = self.context.get_initial_commitment_signed(&self.funding, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => {
-				self.funding_context_mut()
+				self.funding
 					.funding_transaction = Some(signing_session.unsigned_tx().build_unsigned_tx());
 				commitment_signed
 			},
 			Err(err) => {
-				self.funding_context_mut()
+				self.funding
 					.channel_transaction_parameters.funding_outpoint = None;
 				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })));
 			},
@@ -2893,7 +2810,7 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 
 		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
-			if signing_session.provide_holder_witnesses(self.context().channel_id, Vec::new()).is_err() {
+			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
 				debug_assert!(
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
@@ -2931,11 +2848,11 @@ pub(super) trait FundingTxConstructorV2<SP: Deref>: ChannelContextProvider<SP> w
 
 		let mut channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		channel_state.set_interactive_signing();
-		self.context_mut().channel_state = channel_state;
+		self.context.channel_state = channel_state;
 
 		// Clear the interactive transaction constructor
-		*self.interactive_tx_constructor_mut() = None;
-		*self.interactive_tx_signing_session_mut() = Some(signing_session);
+		*self.interactive_tx_constructor = None;
+		*self.interactive_tx_signing_session = Some(signing_session);
 
 		Ok((commitment_signed, funding_ready_for_sig_event))
 	}
@@ -5530,17 +5447,18 @@ impl<SP: Deref> FundedChannel<SP> where
 {
 	/// If we are in splicing/refunding, return a short-lived [`NegotiatingV2ChannelView`].
 	#[cfg(splicing)]
-	fn as_renegotiating_channel<'a>(&'a mut self) -> Result<impl FundingTxConstructorV2<SP> + 'a, &'static str> {
+	fn as_renegotiating_channel(&mut self) -> Result<NegotiatingV2ChannelView<SP>, &'static str> {
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			if let Some(ref mut funding_scope) = &mut pending_splice.funding_scope {
+			if let Some(ref mut funding) = &mut pending_splice.funding_scope {
 				if let Some(ref mut funding_negotiation_context) = &mut pending_splice.funding_negotiation_context {
 					Ok(NegotiatingV2ChannelView {
-						channel_context: &mut self.context,
-						funding_scope,
+						context: &mut self.context,
+						funding,
 						funding_negotiation_context,
 						interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
 						interactive_tx_signing_session: &mut pending_splice.interactive_tx_signing_session,
 						holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
+						is_splice: true,
 					})
 				} else {
 					Err("Channel is not refunding")
@@ -11201,15 +11119,15 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Return a short-lived [`NegotiatingV2ChannelView`].
-	#[cfg(splicing)]
-	fn as_negotiating_channel<'a>(&'a mut self) -> impl FundingTxConstructorV2<SP> + 'a {
+	fn as_negotiating_channel(&mut self) -> NegotiatingV2ChannelView<SP> {
 		NegotiatingV2ChannelView {
-			channel_context: &mut self.context,
-			funding_scope: &mut self.funding,
+			context: &mut self.context,
+			funding: &mut self.funding,
 			funding_negotiation_context: &mut self.funding_negotiation_context,
 			interactive_tx_constructor: &mut self.interactive_tx_constructor,
 			interactive_tx_signing_session: &mut self.interactive_tx_signing_session,
 			holder_commitment_transaction_number: self.unfunded_context.transaction_number(),
+			is_splice: false,
 		}
 	}
 }
