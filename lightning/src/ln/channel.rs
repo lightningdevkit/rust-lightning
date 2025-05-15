@@ -1668,6 +1668,10 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::UnfundedV2(chan) => chan.context.get_available_balances_for_scope(&chan.funding, fee_estimator),
 		}
 	}
+
+	pub fn minimum_depth(&self) -> Option<u32> {
+		self.context().minimum_depth(self.funding())
+	}
 }
 
 impl<SP: Deref> From<OutboundV1Channel<SP>> for Channel<SP>
@@ -3450,8 +3454,22 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.temporary_channel_id
 	}
 
-	pub fn minimum_depth(&self) -> Option<u32> {
-		self.minimum_depth
+	pub(super) fn minimum_depth(&self, funding: &FundingScope) -> Option<u32> {
+		let minimum_depth = self.minimum_depth?;
+
+		let is_coinbase = funding
+			.funding_transaction
+			.as_ref()
+			.map(|tx| tx.is_coinbase())
+			.unwrap_or(false);
+
+		// If the funding transaction is a coinbase transaction, we need 100 confirmations unless
+		// the channel is 0-conf.
+		if is_coinbase && minimum_depth > 0 && minimum_depth < COINBASE_MATURITY {
+			Some(COINBASE_MATURITY)
+		} else {
+			Some(minimum_depth)
+		}
 	}
 
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
@@ -8425,29 +8443,13 @@ impl<SP: Deref> FundedChannel<SP> where
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
-		let minimum_depth = self.context.minimum_depth
+		let minimum_depth = self.context.minimum_depth(funding)
 			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
 
 		// Zero-conf channels always meet the minimum depth.
 		if minimum_depth == 0 {
 			return true;
 		}
-
-		let is_coinbase = funding
-			.funding_transaction
-			.as_ref()
-			.map(|tx| tx.is_coinbase())
-			.unwrap_or(false);
-
-		let minimum_depth = {
-			// If the funding transaction is a coinbase transaction, we need to set the minimum
-			// depth to 100.
-			if is_coinbase && minimum_depth < COINBASE_MATURITY {
-				COINBASE_MATURITY
-			} else {
-				minimum_depth
-			}
-		};
 
 		if funding.funding_tx_confirmation_height == 0 {
 			return false;
