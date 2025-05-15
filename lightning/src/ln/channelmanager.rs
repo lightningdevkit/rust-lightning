@@ -3174,7 +3174,7 @@ macro_rules! locked_close_channel {
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
 		// never even got confirmations (which would open us up to DoS attacks).
 		let update_id = $channel_context.get_latest_monitor_update_id();
-		if $channel_funding.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth() == Some(0) || update_id > 1 {
+		if $channel_funding.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth($channel_funding) == Some(0) || update_id > 1 {
 			let chan_id = $channel_context.channel_id();
 			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
@@ -8375,7 +8375,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		if accept_0conf {
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
-			debug_assert!(channel.context().minimum_depth().unwrap() == 0);
+			debug_assert!(channel.minimum_depth().unwrap() == 0);
 		} else if channel.funding().get_channel_type().requires_zero_conf() {
 			let send_msg_err_event = MessageSendEvent::HandleError {
 				node_id: channel.context().get_counterparty_node_id(),
@@ -8456,7 +8456,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				Some(funded_chan) => {
 					// This covers non-zero-conf inbound `Channel`s that we are currently monitoring, but those
 					// which have not yet had any confirmations on-chain.
-					if !funded_chan.funding.is_outbound() && funded_chan.context.minimum_depth().unwrap_or(1) != 0 &&
+					if !funded_chan.funding.is_outbound() && chan.minimum_depth().unwrap_or(1) != 0 &&
 						funded_chan.funding.get_funding_tx_confirmations(best_block_height) == 0
 					{
 						num_unfunded_channels += 1;
@@ -8469,7 +8469,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 
 					// 0conf channels are not considered unfunded.
-					if chan.context().minimum_depth().unwrap_or(1) == 0 {
+					if chan.minimum_depth().unwrap_or(1) == 0 {
 						continue;
 					}
 

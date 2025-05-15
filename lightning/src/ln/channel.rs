@@ -1852,6 +1852,10 @@ where
 			},
 		}
 	}
+
+	pub fn minimum_depth(&self) -> Option<u32> {
+		self.context().minimum_depth(self.funding())
+	}
 }
 
 impl<SP: Deref> From<OutboundV1Channel<SP>> for Channel<SP>
@@ -3690,8 +3694,8 @@ where
 		self.temporary_channel_id
 	}
 
-	pub fn minimum_depth(&self) -> Option<u32> {
-		self.minimum_depth
+	pub(super) fn minimum_depth(&self, funding: &FundingScope) -> Option<u32> {
+		funding.minimum_depth_override.or(self.minimum_depth)
 	}
 
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
@@ -9021,9 +9025,9 @@ where
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &FundingScope, height: u32) -> bool {
-		let minimum_depth = funding
-			.minimum_depth_override
-			.or(self.context.minimum_depth)
+		let minimum_depth = self
+			.context
+			.minimum_depth(funding)
 			.expect("ChannelContext::minimum_depth should be set for FundedChannel");
 
 		// Zero-conf channels always meet the minimum depth.

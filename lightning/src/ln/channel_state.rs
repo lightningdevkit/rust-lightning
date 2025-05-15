@@ -531,7 +531,7 @@ impl ChannelDetails {
 			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 			next_outbound_htlc_minimum_msat: balance.next_outbound_htlc_minimum_msat,
 			user_channel_id: context.get_user_id(),
-			confirmations_required: context.minimum_depth(),
+			confirmations_required: channel.minimum_depth(),
 			confirmations: Some(funding.get_funding_tx_confirmations(best_block_height)),
 			force_close_spend_delay: funding.get_counterparty_selected_contest_delay(),
 			is_outbound: funding.is_outbound(),
