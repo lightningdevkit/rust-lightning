@@ -1531,6 +1531,7 @@ pub struct TestKeysInterface {
 	pub backing: DynKeysInterface,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
+	pub disable_all_state_policy_checks: bool,
 	enforcement_states: Mutex<HashMap<[u8; 32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 	pub unavailable_signers_ops: Mutex<HashMap<[u8; 32], HashSet<SignerOp>>>,
@@ -1599,8 +1600,9 @@ impl SignerProvider for TestKeysInterface {
 	fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.channel_keys_id());
-		let signer =
-			TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
+		let rev_checks = self.disable_revocation_policy_check;
+		let state_checks = self.disable_all_state_policy_checks;
+		let signer = TestChannelSigner::new_with_revoked(keys, state, rev_checks, state_checks);
 		#[cfg(test)]
 		if let Some(ops) = self.unavailable_signers_ops.lock().unwrap().get(&channel_keys_id) {
 			for &op in ops {
@@ -1668,6 +1670,7 @@ impl TestKeysInterface {
 			backing: DynKeysInterface::new(backing),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
+			disable_all_state_policy_checks: false,
 			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
 			unavailable_signers_ops: Mutex::new(new_hash_map()),

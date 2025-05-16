@@ -380,7 +380,7 @@ impl SignerProvider for KeyProvider {
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		let keys = DynSigner::new(keys);
-		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
+		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false, false)
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
