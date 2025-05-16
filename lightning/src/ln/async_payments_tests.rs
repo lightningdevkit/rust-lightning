@@ -668,7 +668,7 @@ fn amount_doesnt_match_invreq() {
 			valid_invreq = Some(invoice_request.clone());
 			*invoice_request = offer
 				.request_invoice(
-					&nodes[0].keys_manager.get_inbound_payment_key(),
+					&nodes[0].keys_manager.get_expanded_key(),
 					Nonce::from_entropy_source(nodes[0].keys_manager),
 					&secp_ctx,
 					payment_id,

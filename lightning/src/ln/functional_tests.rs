@@ -50,7 +50,7 @@ use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
 use crate::routing::router::{
 	get_route, Path, PaymentParameters, Route, RouteHop, RouteParameters,
 };
-use crate::sign::{EntropySource, OutputSpender, SignerProvider};
+use crate::sign::{EntropySource, NodeSigner, OutputSpender, SignerProvider};
 use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::config::{
@@ -5112,7 +5112,11 @@ pub fn test_key_derivation_params() {
 	let scorer = RwLock::new(test_utils::TestScorer::new());
 	let router =
 		test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[0].logger, &scorer);
-	let message_router = test_utils::TestMessageRouter::new(network_graph.clone(), &keys_manager);
+	let message_router = test_utils::TestMessageRouter::new(
+		network_graph.clone(),
+		&keys_manager,
+		keys_manager.get_expanded_key(),
+	);
 	let node = NodeCfg {
 		chain_source: &chanmon_cfgs[0].chain_source,
 		logger: &chanmon_cfgs[0].logger,
