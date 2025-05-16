@@ -9180,8 +9180,8 @@ impl<SP: Deref> FundedChannel<SP> where
 					return Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger));
 				}
 
-				// TODO: Close channel?
-				return Ok(None);
+				let err = "unknown splice funding txid";
+				return Err(ChannelError::close(err.to_string()));
 			}
 		}
 
