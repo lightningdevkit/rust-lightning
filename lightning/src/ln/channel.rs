@@ -8511,10 +8511,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				let pending_splice = match self.pending_splice.as_ref() {
 					Some(pending_splice) => pending_splice,
 					None => {
-						// TODO: Move pending_funding into pending_splice?
+						// TODO: Move pending_funding into pending_splice
 						debug_assert!(false);
-						// TODO: Error instead?
-						return Ok((None, None));
+						let err = "expected a pending splice".to_string();
+						return Err(ClosureReason::ProcessingError { err });
 					},
 				};
 				let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
@@ -8661,10 +8661,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			let pending_splice = match self.pending_splice.as_ref() {
 				Some(pending_splice) => pending_splice,
 				None => {
-					// TODO: Move pending_funding into pending_splice?
+					// TODO: Move pending_funding into pending_splice
 					debug_assert!(false);
-					// TODO: Error instead?
-					return Ok((None, timed_out_htlcs, None));
+					let err = "expected a pending splice".to_string();
+					return Err(ClosureReason::ProcessingError { err });
 				},
 			};
 			let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
