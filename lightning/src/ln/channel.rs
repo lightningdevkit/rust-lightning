@@ -76,7 +76,7 @@ use crate::util::config::{
 };
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
-use crate::util::scid_utils::scid_from_parts;
+use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{
 	Readable, ReadableArgs, RequiredWrapper, TransactionU16LenLimited, Writeable, Writer,
 };
@@ -1421,6 +1421,11 @@ pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60;
 /// Number of blocks needed for an output from a coinbase transaction to be spendable.
 pub(crate) const COINBASE_MATURITY: u32 = 100;
 
+/// The number of blocks to wait for a channel_announcement to propagate such that payments using an
+/// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
+/// this number of confirmations, the corresponding SCID will be forgotten.
+const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 12;
+
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -2425,6 +2430,10 @@ where
 	// blinded paths instead of simple scid+node_id aliases.
 	outbound_scid_alias: u64,
 
+	/// Short channel ids used by any prior FundingScope. These are maintained such that
+	/// ChannelManager can look up the channel for any pending HTLCs.
+	historical_scids: Vec<u64>,
+
 	// We track whether we already emitted a `ChannelPending` event.
 	channel_pending_event_emitted: bool,
 
@@ -3275,6 +3284,7 @@ where
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias: 0,
+			historical_scids: Vec::new(),
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
@@ -3517,6 +3527,7 @@ where
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
+			historical_scids: Vec::new(),
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
@@ -5604,6 +5615,11 @@ where
 
 		Ok(())
 	}
+
+	/// Returns SCIDs that have been associated with the channel's funding transactions.
+	pub fn historical_scids(&self) -> &[u64] {
+		&self.historical_scids[..]
+	}
 }
 
 // Internal utility functions for channels
@@ -5805,6 +5821,9 @@ where
 #[cfg(splicing)]
 macro_rules! promote_splice_funding {
 	($self: expr, $funding: expr) => {
+		if let Some(scid) = $self.funding.short_channel_id {
+			$self.context.historical_scids.push(scid);
+		}
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.pending_splice = None;
 		$self.pending_funding.clear();
@@ -10643,6 +10662,30 @@ where
 	pub fn has_pending_splice(&self) -> bool {
 		self.pending_splice.is_some()
 	}
+
+	pub fn remove_legacy_scids_before_block(&mut self, height: u32) -> alloc::vec::Drain<u64> {
+		let end = self
+			.funding
+			.get_short_channel_id()
+			.and_then(|current_scid| {
+				let historical_scids = &self.context.historical_scids;
+				historical_scids
+					.iter()
+					.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
+					.map(|(_, next_scid)| {
+						let funding_height = block_from_scid(*next_scid);
+						let retain_scid =
+							funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 > height;
+						retain_scid
+					})
+					.position(|retain_scid| retain_scid)
+			})
+			.unwrap_or(0);
+
+		// Drains the oldest historical SCIDs until reaching one without
+		// CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY confirmations.
+		self.context.historical_scids.drain(0..end)
+	}
 }
 
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
@@ -12073,6 +12116,7 @@ where
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
 			(58, self.interactive_tx_signing_session, option), // Added in 0.2
 			(59, self.funding.minimum_depth_override, option), // Added in 0.2
+			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -12390,6 +12434,7 @@ where
 		let mut is_manual_broadcast = None;
 
 		let mut pending_funding = Some(Vec::new());
+		let mut historical_scids = Some(Vec::new());
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
 
@@ -12435,6 +12480,7 @@ where
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
 			(59, minimum_depth_override, option), // Added in 0.2
+			(60, historical_scids, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -12708,6 +12754,7 @@ where
 				latest_inbound_scid_alias,
 				// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
 				outbound_scid_alias,
+				historical_scids: historical_scids.unwrap(),
 
 				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(false),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),

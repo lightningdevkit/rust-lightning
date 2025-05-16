@@ -3192,6 +3192,9 @@ macro_rules! locked_close_channel {
 			debug_assert!(alias_removed);
 		}
 		short_to_chan_info.remove(&$channel_context.outbound_scid_alias());
+		for scid in $channel_context.historical_scids() {
+			short_to_chan_info.remove(scid);
+		}
 	}}
 }
 
@@ -12120,6 +12123,18 @@ where
 					channel.check_for_stale_feerate(&logger, feerate)?;
 				}
 			}
+
+			// Remove any SCIDs used by older funding transactions
+			{
+				let legacy_scids = channel.remove_legacy_scids_before_block(height);
+				if !legacy_scids.as_slice().is_empty() {
+					let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+					for scid in legacy_scids {
+						short_to_chan_info.remove(&scid);
+					}
+				}
+			}
+
 			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
 		});
 
@@ -14502,6 +14517,11 @@ where
 					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
+
+					for short_channel_id in channel.context.historical_scids() {
+						short_to_chan_info.insert(*short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
+					}
+
 					per_peer_state.entry(channel.context.get_counterparty_node_id())
 						.or_insert_with(|| Mutex::new(empty_peer_state()))
 						.get_mut().unwrap()
