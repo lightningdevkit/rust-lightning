@@ -56,6 +56,7 @@ use lightning::routing::router::{
 	InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router,
 };
 use lightning::routing::utxo::UtxoLookup;
+use lightning::sign::PeerStorageKey;
 use lightning::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
@@ -223,6 +224,7 @@ type ChannelMan<'a> = ChannelManager<
 			Arc<FuzzEstimator>,
 			Arc<dyn Logger>,
 			Arc<TestPersister>,
+			Arc<KeyProvider>,
 		>,
 	>,
 	Arc<TestBroadcaster>,
@@ -242,6 +244,7 @@ type PeerMan<'a> = PeerManager<
 	Arc<dyn Logger>,
 	IgnoringMessageHandler,
 	Arc<KeyProvider>,
+	IgnoringMessageHandler,
 >;
 
 struct MoneyLossDetector<'a> {
@@ -254,6 +257,7 @@ struct MoneyLossDetector<'a> {
 			Arc<FuzzEstimator>,
 			Arc<dyn Logger>,
 			Arc<TestPersister>,
+			Arc<KeyProvider>,
 		>,
 	>,
 	handler: PeerMan<'a>,
@@ -278,6 +282,7 @@ impl<'a> MoneyLossDetector<'a> {
 				Arc<FuzzEstimator>,
 				Arc<dyn Logger>,
 				Arc<TestPersister>,
+				Arc<KeyProvider>,
 			>,
 		>,
 		handler: PeerMan<'a>,
@@ -427,6 +432,10 @@ impl NodeSigner for KeyProvider {
 		let msg_hash = Message::from_digest(Sha256dHash::hash(&msg.encode()[..]).to_byte_array());
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		PeerStorageKey { inner: [42; 32] }
 	}
 }
 
@@ -616,13 +625,6 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	];
 
 	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()) });
-	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
-		None,
-		broadcast.clone(),
-		Arc::clone(&logger),
-		fee_est.clone(),
-		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
-	));
 
 	let keys_manager = Arc::new(KeyProvider {
 		node_secret: our_network_key.clone(),
@@ -630,6 +632,17 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		counter: AtomicU64::new(0),
 		signer_state: RefCell::new(new_hash_map()),
 	});
+
+	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
+		None,
+		broadcast.clone(),
+		Arc::clone(&logger),
+		fee_est.clone(),
+		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
+		Arc::clone(&keys_manager),
+		keys_manager.get_peer_storage_key(),
+	));
+
 	let network = Network::Bitcoin;
 	let best_block_timestamp = genesis_block(network).header.time;
 	let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
@@ -661,6 +674,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: IgnoringMessageHandler {},
+		send_only_message_handler: IgnoringMessageHandler {},
 	};
 	let random_data = [
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
