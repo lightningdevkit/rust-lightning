@@ -9669,7 +9669,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 		};
 
-		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_locked)".to_owned(), msg.channel_id))
+		Ok(())
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
