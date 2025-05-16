@@ -1085,27 +1085,26 @@ where
 			),
 		})?;
 
-		let mut payment_queue =
-			if let OutboundJITChannelState::PendingChannelOpen { payment_queue, .. } =
-				&mut jit_channel.state
-			{
-				core::mem::take(payment_queue)
-			} else {
-				return Err(APIError::APIMisuseError {
-					err: "Channel is not in the PendingChannelOpen state.".to_string(),
-				});
+		if let OutboundJITChannelState::PendingChannelOpen { payment_queue, .. } =
+			&mut jit_channel.state
+		{
+			let intercepted_htlcs = payment_queue.clear();
+			for htlc in intercepted_htlcs {
+				self.channel_manager.get_cm().fail_htlc_backwards_with_reason(
+					&htlc.payment_hash,
+					FailureCode::TemporaryNodeFailure,
+				);
+			}
+
+			jit_channel.state = OutboundJITChannelState::PendingInitialPayment {
+				payment_queue: PaymentQueue::new(),
 			};
-
-		for htlc in payment_queue.clear() {
-			self.channel_manager.get_cm().fail_htlc_backwards_with_reason(
-				&htlc.payment_hash,
-				FailureCode::TemporaryNodeFailure,
-			);
+			Ok(())
+		} else {
+			Err(APIError::APIMisuseError {
+				err: "Channel is not in the PendingChannelOpen state.".to_string(),
+			})
 		}
-
-		jit_channel.state = OutboundJITChannelState::PendingInitialPayment { payment_queue };
-
-		Ok(())
 	}
 
 	/// Forward [`Event::ChannelReady`] event parameters into this function.
