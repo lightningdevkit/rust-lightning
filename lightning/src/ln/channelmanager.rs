@@ -84,7 +84,7 @@ use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
 use crate::util::wakers::{Future, Notifier};
-use crate::util::scid_utils::fake_scid;
+use crate::util::scid_utils::{block_from_scid, fake_scid};
 use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
@@ -2912,6 +2912,11 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
 pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
 
+/// The number of blocks to wait for a channel_announcement to propagate such that payments using an
+/// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
+/// this number of confirmations, the corresponding SCID will be forgotten.
+const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 12;
+
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
 #[derive(Debug, PartialEq)]
@@ -3070,6 +3075,9 @@ macro_rules! locked_close_channel {
 			debug_assert!(alias_removed);
 		}
 		short_to_chan_info.remove(&$channel_context.outbound_scid_alias());
+		for scid in &$channel_context.historical_scids {
+			short_to_chan_info.remove(scid);
+		}
 	}}
 }
 
@@ -11696,6 +11704,29 @@ where
 					channel.check_for_stale_feerate(&logger, feerate)?;
 				}
 			}
+
+			// Remove any scids used by older funding transactions
+			if let Some(current_scid) = channel.funding.get_short_channel_id() {
+				let historical_scids = &mut channel.context.historical_scids;
+				if !historical_scids.is_empty() {
+					let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+
+					// Remove an older SCID if the next funding has enough confirmations
+					for (scid, next_scid) in historical_scids
+						.iter()
+						.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
+					{
+						let funding_height = block_from_scid(*next_scid);
+						let retain_scid = funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 > height;
+						if !retain_scid {
+							short_to_chan_info.remove(scid);
+						}
+					}
+
+					historical_scids.retain(|scid| short_to_chan_info.contains_key(scid));
+				}
+			}
+
 			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
 		});
 
@@ -13994,6 +14025,11 @@ where
 					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
+
+					for short_channel_id in &channel.context.historical_scids {
+						short_to_chan_info.insert(*short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
+					}
+
 					per_peer_state.entry(channel.context.get_counterparty_node_id())
 						.or_insert_with(|| Mutex::new(empty_peer_state()))
 						.get_mut().unwrap()
