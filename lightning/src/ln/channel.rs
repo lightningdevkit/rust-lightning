@@ -2267,6 +2267,10 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// blinded paths instead of simple scid+node_id aliases.
 	outbound_scid_alias: u64,
 
+	/// Short channel ids used by any prior FundingScope. These are maintained such that
+	/// ChannelManager can look up the channel for any pending HTLCs.
+	pub historical_scids: Vec<u64>,
+
 	// We track whether we already emitted a `ChannelPending` event.
 	channel_pending_event_emitted: bool,
 
@@ -3083,6 +3087,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias: 0,
+			historical_scids: Vec::new(),
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
@@ -3317,6 +3322,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
+			historical_scids: Vec::new(),
 
 			channel_pending_event_emitted: false,
 			funding_tx_broadcast_safe_event_emitted: false,
@@ -5338,6 +5344,9 @@ pub(super) struct FundedChannel<SP: Deref> where SP::Target: SignerProvider {
 #[cfg(splicing)]
 macro_rules! promote_splice_funding {
 	($self: expr, $funding: expr) => {
+		if let Some(scid) = $self.funding.short_channel_id {
+			$self.context.historical_scids.push(scid);
+		}
 		core::mem::swap(&mut $self.funding, $funding);
 		$self.pending_splice = None;
 		$self.pending_funding.clear();
@@ -11448,7 +11457,8 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
-			(58, self.interactive_tx_signing_session, option) // Added in 0.2
+			(58, self.interactive_tx_signing_session, option), // Added in 0.2
+			(60, self.context.historical_scids, optional_vec), // Added in 0.2
 		});
 
 		Ok(())
@@ -11764,6 +11774,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 		let mut is_manual_broadcast = None;
 
 		let mut pending_funding = Some(Vec::new());
+		let mut historical_scids = Some(Vec::new());
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
 
@@ -11806,6 +11817,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
+			(60, historical_scids, optional_vec), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -12078,6 +12090,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				latest_inbound_scid_alias,
 				// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
 				outbound_scid_alias,
+				historical_scids: historical_scids.unwrap(),
 
 				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(false),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
