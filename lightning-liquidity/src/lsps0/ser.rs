@@ -195,7 +195,7 @@ pub struct LSPSRequestId(pub String);
 /// An object representing datetimes as described in bLIP-50 / LSPS0.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
-pub struct LSPSDateTime(chrono::DateTime<chrono::Utc>);
+pub struct LSPSDateTime(pub chrono::DateTime<chrono::Utc>);
 
 impl LSPSDateTime {
 	/// Returns the LSPSDateTime as RFC3339 formatted string.
