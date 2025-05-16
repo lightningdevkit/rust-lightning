@@ -1950,7 +1950,11 @@ impl FundingScope {
 #[cfg(splicing)]
 struct PendingSplice {
 	pub our_funding_contribution: i64,
+
+	/// The funding txid used in the `splice_locked` sent to the counterparty.
 	sent_funding_txid: Option<Txid>,
+
+	/// The funding txid used in the `splice_locked` received from the counterparty.
 	received_funding_txid: Option<Txid>,
 }
 
