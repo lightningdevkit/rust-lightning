@@ -715,7 +715,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		let claim_id = self.claimable_outpoints.get(outpoint).map(|(claim_id, _)| *claim_id)
 			.or_else(|| {
 				self.pending_claim_requests.iter()
-					.find(|(_, claim)| claim.outpoints().iter().any(|claim_outpoint| *claim_outpoint == outpoint))
+					.find(|(_, claim)| claim.outpoints().contains(&outpoint))
 					.map(|(claim_id, _)| *claim_id)
 			});
 		if let Some(claim_id) = claim_id {
@@ -726,7 +726,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			}
 		} else {
 			self.locktimed_packages.values_mut().for_each(|claims|
-				claims.retain(|claim| !claim.outpoints().iter().any(|claim_outpoint| *claim_outpoint == outpoint)));
+				claims.retain(|claim| !claim.outpoints().contains(&outpoint)));
 		}
 	}
 
