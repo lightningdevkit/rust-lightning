@@ -82,7 +82,7 @@ use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
 use crate::util::wakers::{Future, Notifier};
-use crate::util::scid_utils::fake_scid;
+use crate::util::scid_utils::{block_from_scid, fake_scid};
 use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
@@ -3068,6 +3068,9 @@ macro_rules! locked_close_channel {
 			debug_assert!(alias_removed);
 		}
 		short_to_chan_info.remove(&$channel_context.outbound_scid_alias());
+		for scid in &$channel_context.historical_scids {
+			short_to_chan_info.remove(scid);
+		}
 	}}
 }
 
@@ -11686,6 +11689,17 @@ where
 					channel.check_for_stale_feerate(&logger, feerate)?;
 				}
 			}
+
+			// Remove any scids used by old splice funding transactions
+			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+			channel.context.historical_scids.retain(|scid| {
+				let retain_scid = block_from_scid(*scid) + 12 > height;
+				if !retain_scid {
+					short_to_chan_info.remove(scid);
+				}
+				retain_scid
+			});
+
 			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
 		});
 
@@ -13976,6 +13990,11 @@ where
 					if let Some(short_channel_id) = channel.funding.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
 					}
+
+					for short_channel_id in &channel.context.historical_scids {
+						short_to_chan_info.insert(*short_channel_id, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
+					}
+
 					per_peer_state.entry(channel.context.get_counterparty_node_id())
 						.or_insert_with(|| Mutex::new(empty_peer_state()))
 						.get_mut().unwrap()
