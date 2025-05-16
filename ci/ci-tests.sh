@@ -50,18 +50,20 @@ WORKSPACE_MEMBERS=(
 	possiblyrandom
 )
 
-echo -e "\n\nChecking, testing, and building docs for all workspace members individually..."
-for DIR in "${WORKSPACE_MEMBERS[@]}"; do
-	cargo test -p "$DIR" --verbose --color always
-	cargo check -p "$DIR" --verbose --color always
-	cargo doc -p "$DIR" --document-private-items
-done
+echo -e "\n\nTesting the workspace, except lightning-transaction-sync."
+cargo test --verbose --color always
 
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 cargo test
 popd
+
+echo -e "\n\nChecking and building docs for all workspace members individually..."
+for DIR in "${WORKSPACE_MEMBERS[@]}"; do
+	cargo check -p "$DIR" --verbose --color always
+	cargo doc -p "$DIR" --document-private-items
+done
 
 echo -e "\n\nChecking and testing Block Sync Clients with features"
 
