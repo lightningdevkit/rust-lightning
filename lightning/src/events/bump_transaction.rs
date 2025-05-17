@@ -172,7 +172,7 @@ pub enum BumpTransactionEvent {
 		commitment_tx_fee_satoshis: u64,
 		/// The descriptor to sign the anchor input of the anchor transaction constructed as a
 		/// result of consuming this event.
-		anchor_descriptor: AnchorDescriptor,
+		anchor_descriptor: Box<AnchorDescriptor>,
 		/// The set of pending HTLCs on the commitment transaction that need to be resolved once the
 		/// commitment transaction confirms.
 		pending_htlcs: Vec<HTLCOutputInCommitment>,
@@ -1076,14 +1076,14 @@ mod tests {
 			package_target_feerate_sat_per_1000_weight: 868,
 			commitment_tx_fee_satoshis: 930,
 			commitment_tx,
-			anchor_descriptor: AnchorDescriptor {
+			anchor_descriptor: Box::new(AnchorDescriptor {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: 42_000_000,
 					keys_id: [42; 32],
 					transaction_parameters,
 				},
 				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
-			},
+			}),
 			pending_htlcs: Vec::new(),
 		});
 	}
