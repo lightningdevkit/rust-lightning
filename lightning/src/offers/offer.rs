@@ -167,7 +167,7 @@ impl Readable for OfferId {
 ///
 /// [module-level documentation]: self
 pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
-	offer: OfferContents,
+	offer: Box<OfferContents>,
 	metadata_strategy: core::marker::PhantomData<M>,
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
@@ -180,7 +180,7 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 #[cfg(c_bindings)]
 #[derive(Clone)]
 pub struct OfferWithExplicitMetadataBuilder<'a> {
-	offer: OfferContents,
+	offer: Box<OfferContents>,
 	metadata_strategy: core::marker::PhantomData<ExplicitMetadata>,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
@@ -193,7 +193,7 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 #[cfg(c_bindings)]
 #[derive(Clone)]
 pub struct OfferWithDerivedMetadataBuilder<'a> {
-	offer: OfferContents,
+	offer: Box<OfferContents>,
 	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
@@ -235,7 +235,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 		/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 		pub fn new(signing_pubkey: PublicKey) -> Self {
 			Self {
-				offer: OfferContents {
+				offer: Box::new(OfferContents {
 					chains: None,
 					metadata: None,
 					amount: None,
@@ -248,7 +248,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 					issuer_signing_pubkey: Some(signing_pubkey),
 					#[cfg(test)]
 					experimental_foo: None,
-				},
+				}),
 				metadata_strategy: core::marker::PhantomData,
 				secp_ctx: None,
 			}
@@ -289,7 +289,7 @@ macro_rules! offer_derived_metadata_builder_methods {
 			let derivation_material = MetadataMaterial::new(nonce, expanded_key, None);
 			let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 			Self {
-				offer: OfferContents {
+				offer: Box::new(OfferContents {
 					chains: None,
 					metadata: Some(metadata),
 					amount: None,
@@ -302,7 +302,7 @@ macro_rules! offer_derived_metadata_builder_methods {
 					issuer_signing_pubkey: Some(node_id),
 					#[cfg(test)]
 					experimental_foo: None,
-				},
+				}),
 				metadata_strategy: core::marker::PhantomData,
 				secp_ctx: Some(secp_ctx),
 			}
@@ -595,7 +595,7 @@ pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
 	pub(super) bytes: Vec<u8>,
-	pub(super) contents: OfferContents,
+	pub(super) contents: Box<OfferContents>,
 	id: OfferId,
 }
 
@@ -1169,7 +1169,7 @@ impl TryFrom<Vec<u8>> for Offer {
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let offer = ParsedMessage::<FullOfferTlvStream>::try_from(bytes)?;
 		let ParsedMessage { bytes, tlv_stream } = offer;
-		let contents = OfferContents::try_from(tlv_stream)?;
+		let contents = Box::new(OfferContents::try_from(tlv_stream)?);
 		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
 
 		Ok(Offer { bytes, contents, id })

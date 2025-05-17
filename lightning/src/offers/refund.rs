@@ -138,7 +138,7 @@ pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Refund v2~~~";
 ///
 /// [module-level documentation]: self
 pub struct RefundBuilder<'a, T: secp256k1::Signing> {
-	refund: RefundContents,
+	refund: Box<RefundContents>,
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
@@ -150,7 +150,7 @@ pub struct RefundBuilder<'a, T: secp256k1::Signing> {
 #[cfg(c_bindings)]
 #[derive(Clone)]
 pub struct RefundMaybeWithDerivedMetadataBuilder<'a> {
-	refund: RefundContents,
+	refund: Box<RefundContents>,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
 
@@ -178,7 +178,7 @@ macro_rules! refund_explicit_metadata_builder_methods {
 
 			let metadata = Metadata::Bytes(metadata);
 			Ok(Self {
-				refund: RefundContents {
+				refund: Box::new(RefundContents {
 					payer: PayerContents(metadata),
 					description: String::new(),
 					absolute_expiry: None,
@@ -194,7 +194,7 @@ macro_rules! refund_explicit_metadata_builder_methods {
 					experimental_foo: None,
 					#[cfg(test)]
 					experimental_bar: None,
-				},
+				}),
 				secp_ctx: None,
 			})
 		}
@@ -233,7 +233,7 @@ macro_rules! refund_builder_methods { (
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Ok(Self {
-			refund: RefundContents {
+			refund: Box::new(RefundContents {
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
 				quantity: None, payer_signing_pubkey: node_id, payer_note: None, paths: None,
@@ -241,7 +241,7 @@ macro_rules! refund_builder_methods { (
 				experimental_foo: None,
 				#[cfg(test)]
 				experimental_bar: None,
-			},
+			}),
 			secp_ctx: Some(secp_ctx),
 		})
 	}
@@ -449,7 +449,7 @@ impl<'a> From<RefundMaybeWithDerivedMetadataBuilder<'a>> for RefundBuilder<'a, s
 #[derive(Clone, Debug)]
 pub struct Refund {
 	pub(super) bytes: Vec<u8>,
-	pub(super) contents: RefundContents,
+	pub(super) contents: Box<RefundContents>,
 }
 
 /// The contents of a [`Refund`], which may be shared with an [`Bolt12Invoice`].
@@ -894,7 +894,7 @@ impl TryFrom<Vec<u8>> for Refund {
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let refund = ParsedMessage::<RefundTlvStream>::try_from(bytes)?;
 		let ParsedMessage { bytes, tlv_stream } = refund;
-		let contents = RefundContents::try_from(tlv_stream)?;
+		let contents = Box::new(RefundContents::try_from(tlv_stream)?);
 
 		Ok(Refund { bytes, contents })
 	}
