@@ -541,14 +541,14 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 			assert!(as_resp.1.is_some());
 			assert!(as_resp.2.is_some());
-			assert!(as_resp.3 == RAACommitmentOrder::CommitmentFirst);
+			assert_eq!(as_resp.3, RAACommitmentOrder::CommitmentFirst);
 		} else {
 			assert!(bs_resp.2.as_ref().unwrap().update_add_htlcs.is_empty());
 			assert!(bs_resp.2.as_ref().unwrap().update_fail_htlcs.is_empty());
 			assert!(bs_resp.2.as_ref().unwrap().update_fail_malformed_htlcs.is_empty());
 			assert!(bs_resp.2.as_ref().unwrap().update_fee.is_none());
 			assert_eq!(bs_resp.2.as_ref().unwrap().update_fulfill_htlcs, [bs_initial_fulfill]);
-			assert!(bs_resp.2.as_ref().unwrap().commitment_signed == bs_initial_commitment_signed);
+			assert_eq!(bs_resp.2.as_ref().unwrap().commitment_signed, bs_initial_commitment_signed);
 
 			assert!(as_resp.1.is_none());
 
@@ -587,11 +587,11 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 				disconnect_reconnect_peers!();
 
 			if (disconnect_count & 16) == 0 {
-				assert!(reestablish_1 == second_reestablish_1);
-				assert!(reestablish_2 == second_reestablish_2);
+				assert_eq!(reestablish_1, second_reestablish_1);
+				assert_eq!(reestablish_2, second_reestablish_2);
 			}
-			assert!(as_resp == second_as_resp);
-			assert!(bs_resp == second_bs_resp);
+			assert_eq!(as_resp, second_as_resp);
+			assert_eq!(bs_resp, second_bs_resp);
 		}
 
 		(
@@ -635,8 +635,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	if disconnect_count & !disconnect_flags > 2 {
 		let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
 
-		assert!(as_resp.1.unwrap() == initial_revoke_and_ack);
-		assert!(bs_resp.1.unwrap() == bs_revoke_and_ack);
+		assert_eq!(as_resp.1.unwrap(), initial_revoke_and_ack);
+		assert_eq!(bs_resp.1.unwrap(), bs_revoke_and_ack);
 
 		assert!(as_resp.2.is_none());
 		assert!(bs_resp.2.is_none());
@@ -682,13 +682,13 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		if disconnect_count & !disconnect_flags > 3 {
 			let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
 
-			assert!(as_resp.1.unwrap() == initial_revoke_and_ack);
+			assert_eq!(as_resp.1.unwrap(), initial_revoke_and_ack);
 			assert!(bs_resp.1.is_none());
 
-			assert!(as_resp.2.unwrap() == as_commitment_update);
+			assert_eq!(as_resp.2.unwrap(), as_commitment_update);
 			assert!(bs_resp.2.is_none());
 
-			assert!(as_resp.3 == RAACommitmentOrder::RevokeAndACKFirst);
+			assert_eq!(as_resp.3, RAACommitmentOrder::RevokeAndACKFirst);
 		}
 
 		handle_initial_raa!();
@@ -699,8 +699,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert!(as_resp.1.is_none());
 			assert!(bs_resp.1.is_none());
 
-			assert!(as_resp.2.unwrap() == as_commitment_update);
-			assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			assert_eq!(as_resp.2.unwrap(), as_commitment_update);
+			assert_eq!(bs_resp.2.unwrap(), bs_second_commitment_update);
 		}
 	} else {
 		handle_initial_raa!();
@@ -709,12 +709,12 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
 
 			assert!(as_resp.1.is_none());
-			assert!(bs_resp.1.unwrap() == bs_revoke_and_ack);
+			assert_eq!(bs_resp.1.unwrap(), bs_revoke_and_ack);
 
 			assert!(as_resp.2.is_none());
-			assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			assert_eq!(bs_resp.2.unwrap(), bs_second_commitment_update);
 
-			assert!(bs_resp.3 == RAACommitmentOrder::RevokeAndACKFirst);
+			assert_eq!(bs_resp.3, RAACommitmentOrder::RevokeAndACKFirst);
 		}
 
 		handle_bs_raa!();
@@ -725,8 +725,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert!(as_resp.1.is_none());
 			assert!(bs_resp.1.is_none());
 
-			assert!(as_resp.2.unwrap() == as_commitment_update);
-			assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			assert_eq!(as_resp.2.unwrap(), as_commitment_update);
+			assert_eq!(bs_resp.2.unwrap(), bs_second_commitment_update);
 		}
 	}
 
@@ -779,7 +779,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(via_channel_ids, [(channel_id, Some(user_channel_id))]);
+			assert_eq!(*via_channel_ids, [(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -940,7 +940,7 @@ fn test_monitor_update_fail_cs() {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(via_channel_ids, [(channel_id, Some(user_channel_id))]);
+			assert_eq!(*via_channel_ids, [(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -2509,7 +2509,7 @@ fn test_monitor_update_fail_claim() {
 			assert_eq!(payment_hash_3, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
-			assert_eq!(via_channel_ids, [(channel_id, Some(42))]);
+			assert_eq!(*via_channel_ids, [(channel_id, Some(42))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
