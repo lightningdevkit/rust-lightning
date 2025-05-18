@@ -38,6 +38,13 @@ use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
 use bitcoin::hashes::Hash;
 
+fn get_latest_mon_update_id<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, channel_id: ChannelId,
+) -> (u64, u64) {
+	let monitor_id_state = node.chain_monitor.latest_monitor_update_id.lock().unwrap();
+	monitor_id_state.get(&channel_id).unwrap().clone()
+}
+
 #[test]
 fn test_monitor_and_persister_update_fail() {
 	// Test that if both updating the `ChannelMonitor` and persisting the updated
@@ -207,14 +214,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	}
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], channel_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
@@ -425,14 +425,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 	// Now fix monitor updating...
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], channel_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
@@ -826,14 +819,7 @@ fn test_monitor_update_fail_cs() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 	let responses = nodes[1].node.get_and_clear_pending_msg_events();
@@ -868,14 +854,7 @@ fn test_monitor_update_fail_cs() {
 	}
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], channel_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
@@ -966,14 +945,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	check_added_monitors!(nodes[1], 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 0);
@@ -1057,14 +1029,7 @@ fn test_monitor_update_raa_while_paused() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
 
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], channel_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
@@ -1234,14 +1199,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Restore monitor updating, ensuring we immediately get a fail-back update and a
 	// update_add update.
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_2.2)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_2.2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_2.2, latest_update);
 	check_added_monitors!(nodes[1], 0);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
@@ -1563,14 +1521,7 @@ fn test_monitor_update_fail_reestablish() {
 	); // The "disabled" bit should be unset as we just reconnected
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_1.2)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_1.2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_1.2, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
@@ -1669,14 +1620,7 @@ fn raa_no_response_awaiting_raa_state() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	// nodes[1] should be AwaitingRAA here!
 	check_added_monitors!(nodes[1], 0);
@@ -1838,14 +1782,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	// Now un-fail the monitor, which will result in B sending its original commitment update,
 	// receiving the commitment update from A, and the resulting commitment dances.
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
@@ -2010,14 +1947,7 @@ fn monitor_failed_no_reestablish_response() {
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_b_id);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], node_a_id);
@@ -2130,14 +2060,7 @@ fn first_message_on_recv_ordering() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
@@ -2249,14 +2172,7 @@ fn test_monitor_update_fail_claim() {
 
 	// Now restore monitor updating on the 0<->1 channel and claim the funds on B.
 	let channel_id = chan_1.2;
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 0);
@@ -2392,14 +2308,7 @@ fn test_monitor_update_on_pending_forwards() {
 	check_added_monitors!(nodes[1], 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_1.2)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_1.2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_1.2, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
@@ -2489,14 +2398,7 @@ fn monitor_update_claim_fail_no_response() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 0);
@@ -2568,14 +2470,7 @@ fn do_during_funding_monitor_fail(
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], channel_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 	expect_channel_pending_event(&nodes[0], &node_b_id);
@@ -2630,14 +2525,7 @@ fn do_during_funding_monitor_fail(
 	}
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[1], 0);
 
@@ -2778,14 +2666,7 @@ fn test_path_paused_mpp() {
 
 	// And check that, after we successfully update the monitor for chan_2 we can pass the second
 	// HTLC along to nodes[3] and claim the whole payment back to nodes[0].
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_2_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], chan_2_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_2_id, latest_update);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -3311,14 +3192,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	// If we finish updating the monitor, we should free the holding cell right away (this did
 	// not occur prior to #756).
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (mon_id, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_id)
-		.unwrap()
-		.clone();
+	let (mon_id, _) = get_latest_mon_update_id(&nodes[0], chan_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, mon_id);
 	expect_payment_claimed!(nodes[0], payment_hash_0, 100_000);
 
@@ -3579,14 +3453,7 @@ fn test_temporary_error_during_shutdown() {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
-	let (latest_update, _) = nodes[0]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[0], channel_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	nodes[1].node.handle_closing_signed(
 		node_a_id,
@@ -3596,14 +3463,7 @@ fn test_temporary_error_during_shutdown() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let (latest_update, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 
 	nodes[0].node.handle_closing_signed(
@@ -3659,14 +3519,7 @@ fn double_temp_error() {
 	// `claim_funds` results in a ChannelMonitorUpdate.
 	nodes[1].node.claim_funds(payment_preimage_1);
 	check_added_monitors!(nodes[1], 1);
-	let (latest_update_1, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update_1, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	// Previously, this would've panicked due to a double-call to `Channel::monitor_update_failed`,
@@ -3675,14 +3528,7 @@ fn double_temp_error() {
 	check_added_monitors!(nodes[1], 1);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
-	let (latest_update_2, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&channel_id)
-		.unwrap()
-		.clone();
+	let (latest_update_2, _) = get_latest_mon_update_id(&nodes[1], channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update_1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 0);
@@ -4264,14 +4110,7 @@ fn do_test_inverted_mon_completion_order(
 		// (Finally) complete the A <-> B ChannelMonitorUpdate, ensuring the preimage is durably on
 		// disk in the proper ChannelMonitor, unblocking the B <-> C ChannelMonitor updating
 		// process.
-		let (_, ab_update_id) = nodes[1]
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&chan_id_ab)
-			.unwrap()
-			.clone();
+		let (_, ab_update_id) = get_latest_mon_update_id(&nodes[1], chan_id_ab);
 		nodes[1]
 			.chain_monitor
 			.chain_monitor
@@ -4310,14 +4149,7 @@ fn do_test_inverted_mon_completion_order(
 		// ChannelMonitorUpdate hasn't yet completed.
 		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
-		let (_, ab_update_id) = nodes[1]
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&chan_id_ab)
-			.unwrap()
-			.clone();
+		let (_, ab_update_id) = get_latest_mon_update_id(&nodes[1], chan_id_ab);
 		nodes[1]
 			.chain_monitor
 			.chain_monitor
@@ -4562,14 +4394,7 @@ fn do_test_durable_preimages_on_closed_channel(
 
 	// Once the blocked `ChannelMonitorUpdate` *finally* completes, the pending
 	// `PaymentForwarded` event will finally be released.
-	let (ab_update_id, _) = nodes[1]
-		.chain_monitor
-		.latest_monitor_update_id
-		.lock()
-		.unwrap()
-		.get(&chan_id_ab)
-		.unwrap()
-		.clone();
+	let (_, ab_update_id) = get_latest_mon_update_id(&nodes[1], chan_id_ab);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id_ab, ab_update_id);
 
 	// If the A<->B channel was closed before we reload, we'll replay the claim against it on
@@ -4694,8 +4519,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
 	}
 
-	let bc_update_id =
-		nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_bc).unwrap().1;
+	let (_, bc_update_id) = get_latest_mon_update_id(&nodes[1], chan_id_bc);
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if close_during_reload { 2 } else { 1 });
 	expect_payment_forwarded(
@@ -4720,8 +4544,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	// Once we run event processing the monitor should free, check that it was indeed the B<->C
 	// channel which was updated.
 	check_added_monitors(&nodes[1], if close_during_reload { 2 } else { 1 });
-	let post_ev_bc_update_id =
-		nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_bc).unwrap().1;
+	let (_, post_ev_bc_update_id) = get_latest_mon_update_id(&nodes[1], chan_id_bc);
 	assert!(bc_update_id != post_ev_bc_update_id);
 
 	// Finally, check that there's nothing left to do on B<->C reconnect and the channel operates
@@ -4815,14 +4638,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 
 		// ...but once we complete the A<->B channel preimage persistence, the B<->C channel
 		// unlocks and we send both peers commitment updates.
-		let (ab_update_id, _) = nodes[1]
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&chan_id_ab)
-			.unwrap()
-			.clone();
+		let (ab_update_id, _) = get_latest_mon_update_id(&nodes[1], chan_id_ab);
 		assert!(nodes[1]
 			.chain_monitor
 			.chain_monitor
