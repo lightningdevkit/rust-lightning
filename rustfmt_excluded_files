@@ -4,7 +4,6 @@ lightning/src/chain/channelmonitor.rs
 lightning/src/chain/mod.rs
 lightning/src/chain/onchaintx.rs
 lightning/src/chain/package.rs
-lightning/src/chain/transaction.rs
 lightning/src/lib.rs
 lightning/src/ln/async_signer_tests.rs
 lightning/src/ln/blinded_payment_tests.rs
