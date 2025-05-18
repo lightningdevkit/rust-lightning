@@ -82,20 +82,16 @@ fn large_payment_metadata() {
 	// Check that the maximum-size metadata is sendable.
 	let (mut route_0_1, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
-	let mut recipient_onion_max_md_size = RecipientOnionFields {
+	let mut max_sized_onion = RecipientOnionFields {
 		payment_secret: Some(payment_secret),
 		payment_metadata: Some(payment_metadata.clone()),
 		custom_tlvs: Vec::new(),
 	};
+	let route_params = route_0_1.route_params.clone().unwrap();
+	let id = PaymentId(payment_hash.0);
 	nodes[0]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_max_md_size.clone(),
-			PaymentId(payment_hash.0),
-			route_0_1.route_params.clone().unwrap(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params, Retry::Attempts(0))
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -119,35 +115,20 @@ fn large_payment_metadata() {
 	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
 	route_params_0_2.payment_params.max_path_length = 1;
 	nodes[0].router.expect_find_route_query(route_params_0_2);
+
+	let id = PaymentId(payment_hash_2.0);
+	let route_params = route_0_2.route_params.clone().unwrap();
 	let err = nodes[0]
 		.node
-		.send_payment(
-			payment_hash_2,
-			recipient_onion_max_md_size.clone(),
-			PaymentId(payment_hash_2.0),
-			route_0_2.route_params.clone().unwrap(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash_2, max_sized_onion.clone(), id, route_params, Retry::Attempts(0))
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::RouteNotFound);
 
 	// If our payment_metadata contains 1 additional byte, we'll fail prior to pathfinding.
-	let mut recipient_onion_too_large_md = recipient_onion_max_md_size.clone();
-	recipient_onion_too_large_md.payment_metadata.as_mut().map(|mut md| md.push(42));
-	let err = nodes[0]
-		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_too_large_md.clone(),
-			PaymentId(payment_hash.0),
-			route_0_1.route_params.clone().unwrap(),
-			Retry::Attempts(0),
-		)
-		.unwrap_err();
-	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
+	let mut too_large_onion = max_sized_onion.clone();
+	too_large_onion.payment_metadata.as_mut().map(|mut md| md.push(42));
 
-	// Confirm that we'll fail to construct an onion packet given this payment_metadata that's too
-	// large for even a 1-hop path.
+	// First confirm we'll fail to create the onion packet directly.
 	let secp_ctx = Secp256k1::signing_only();
 	route_0_1.paths[0].hops[0].fee_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 	route_0_1.paths[0].hops[0].cltv_expiry_delta = DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA;
@@ -156,7 +137,7 @@ fn large_payment_metadata() {
 		&route_0_1.paths[0],
 		&test_utils::privkey(42),
 		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
-		&recipient_onion_too_large_md,
+		&too_large_onion,
 		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		&payment_hash,
 		&None,
@@ -171,25 +152,28 @@ fn large_payment_metadata() {
 		_ => panic!(),
 	}
 
+	let route_params = route_0_1.route_params.clone().unwrap();
+	let err = nodes[0]
+		.node
+		.send_payment(payment_hash_2, too_large_onion, id, route_params, Retry::Attempts(0))
+		.unwrap_err();
+	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
+
 	// If we remove enough payment_metadata bytes to allow for 2 hops, we're now able to send to
 	// nodes[2].
-	let mut recipient_onion_allows_2_hops = RecipientOnionFields {
+	let two_hop_metadata = vec![42; max_metadata_len - INTERMED_PAYLOAD_LEN_ESTIMATE];
+	let mut onion_allowing_2_hops = RecipientOnionFields {
 		payment_secret: Some(payment_secret_2),
-		payment_metadata: Some(vec![42; max_metadata_len - INTERMED_PAYLOAD_LEN_ESTIMATE]),
+		payment_metadata: Some(two_hop_metadata.clone()),
 		custom_tlvs: Vec::new(),
 	};
 	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
 	route_params_0_2.payment_params.max_path_length = 2;
 	nodes[0].router.expect_find_route_query(route_params_0_2);
+	let route_params = route_0_2.route_params.unwrap();
 	nodes[0]
 		.node
-		.send_payment(
-			payment_hash_2,
-			recipient_onion_allows_2_hops.clone(),
-			PaymentId(payment_hash_2.0),
-			route_0_2.route_params.unwrap(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash_2, onion_allowing_2_hops, id, route_params, Retry::Attempts(0))
 		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -198,7 +182,7 @@ fn large_payment_metadata() {
 	let args =
 		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash_2, events.pop().unwrap())
 			.with_payment_secret(payment_secret_2)
-			.with_payment_metadata(recipient_onion_allows_2_hops.payment_metadata.unwrap());
+			.with_payment_metadata(two_hop_metadata);
 	do_pass_along_path(args);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(
 		&nodes[0],
@@ -277,18 +261,14 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		- final_payload_len_without_custom_tlv;
 
 	// Check that we can send the maximum custom TLV with 1 blinded hop.
-	let recipient_onion_max_custom_tlv_size = RecipientOnionFields::spontaneous_empty()
+	let max_sized_onion = RecipientOnionFields::spontaneous_empty()
 		.with_custom_tlvs(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])])
 		.unwrap();
+	let id = PaymentId(payment_hash.0);
+	let no_retry = Retry::Attempts(0);
 	nodes[1]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_max_custom_tlv_size.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
 
@@ -298,25 +278,19 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let args =
 		PassAlongPathArgs::new(&nodes[1], path, amt_msat, payment_hash, events.pop().unwrap())
 			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(recipient_onion_max_custom_tlv_size.custom_tlvs.clone());
+			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[1], &[&[&nodes[2]]], payment_preimage)
-			.with_custom_tlvs(recipient_onion_max_custom_tlv_size.custom_tlvs.clone()),
+			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone()),
 	);
 
 	// If 1 byte is added to the custom TLV value, we'll fail to send prior to pathfinding.
-	let mut recipient_onion_too_large_custom_tlv = recipient_onion_max_custom_tlv_size.clone();
-	recipient_onion_too_large_custom_tlv.custom_tlvs[0].1.push(42);
+	let mut too_large_custom_tlv_onion = max_sized_onion.clone();
+	too_large_custom_tlv_onion.custom_tlvs[0].1.push(42);
 	let err = nodes[1]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_too_large_custom_tlv,
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, too_large_custom_tlv_onion, id, route_params.clone(), no_retry)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
 
@@ -324,31 +298,19 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	// nodes[0] -> nodes[2] will fail.
 	let err = nodes[0]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_max_custom_tlv_size.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::RouteNotFound);
 
 	// If we remove enough custom TLV bytes to allow for 1 intermediate unblinded hop, we're now able
 	// to send nodes[0] -> nodes[2].
-	let mut recipient_onion_allows_2_hops = recipient_onion_max_custom_tlv_size.clone();
-	recipient_onion_allows_2_hops.custom_tlvs[0]
+	let mut onion_allows_2_hops = max_sized_onion.clone();
+	onion_allows_2_hops.custom_tlvs[0]
 		.1
 		.resize(max_custom_tlv_len - INTERMED_PAYLOAD_LEN_ESTIMATE, 0);
 	nodes[0]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_allows_2_hops.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, onion_allows_2_hops.clone(), id, route_params.clone(), no_retry)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -358,11 +320,11 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let args =
 		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
 			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs.clone());
+			.with_custom_tlvs(onion_allows_2_hops.custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
-			.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs),
+			.with_custom_tlvs(onion_allows_2_hops.custom_tlvs),
 	);
 }
 
@@ -425,18 +387,14 @@ fn blinded_path_with_custom_tlv() {
 		- reserved_packet_bytes_without_custom_tlv;
 
 	// Check that we can send the maximum custom TLV size with 0 intermediate unblinded hops.
-	let recipient_onion_max_custom_tlv_size = RecipientOnionFields::spontaneous_empty()
+	let max_sized_onion = RecipientOnionFields::spontaneous_empty()
 		.with_custom_tlvs(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])])
 		.unwrap();
+	let no_retry = Retry::Attempts(0);
+	let id = PaymentId(payment_hash.0);
 	nodes[1]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_max_custom_tlv_size.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
 		.unwrap();
 	check_added_monitors(&nodes[1], 1);
 
@@ -446,25 +404,19 @@ fn blinded_path_with_custom_tlv() {
 	let args =
 		PassAlongPathArgs::new(&nodes[1], path, amt_msat, payment_hash, events.pop().unwrap())
 			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(recipient_onion_max_custom_tlv_size.custom_tlvs.clone());
+			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[1], &[&[&nodes[2], &nodes[3]]], payment_preimage)
-			.with_custom_tlvs(recipient_onion_max_custom_tlv_size.custom_tlvs.clone()),
+			.with_custom_tlvs(max_sized_onion.custom_tlvs.clone()),
 	);
 
 	// If 1 byte is added to the custom TLV value, we'll fail to send prior to pathfinding.
-	let mut recipient_onion_too_large_custom_tlv = recipient_onion_max_custom_tlv_size.clone();
-	recipient_onion_too_large_custom_tlv.custom_tlvs[0].1.push(42);
+	let mut too_large_onion = max_sized_onion.clone();
+	too_large_onion.custom_tlvs[0].1.push(42);
 	let err = nodes[1]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_too_large_custom_tlv.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, too_large_onion.clone(), id, route_params.clone(), no_retry)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::OnionPacketSizeExceeded);
 
@@ -477,7 +429,7 @@ fn blinded_path_with_custom_tlv() {
 		&route.paths[0],
 		&test_utils::privkey(42),
 		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
-		&recipient_onion_too_large_custom_tlv,
+		&too_large_onion,
 		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		&payment_hash,
 		&None,
@@ -496,31 +448,19 @@ fn blinded_path_with_custom_tlv() {
 	// to route nodes[0] -> nodes[3] will fail.
 	let err = nodes[0]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_max_custom_tlv_size.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, max_sized_onion.clone(), id, route_params.clone(), no_retry)
 		.unwrap_err();
 	assert_eq!(err, RetryableSendFailure::RouteNotFound);
 
 	// If we remove enough custom TLV bytes to allow for 1 intermediate unblinded hop, we're now able
 	// to send nodes[0] -> nodes[3].
-	let mut recipient_onion_allows_2_hops = recipient_onion_max_custom_tlv_size.clone();
-	recipient_onion_allows_2_hops.custom_tlvs[0]
+	let mut onion_allowing_2_hops = max_sized_onion.clone();
+	onion_allowing_2_hops.custom_tlvs[0]
 		.1
 		.resize(max_custom_tlv_len - INTERMED_PAYLOAD_LEN_ESTIMATE, 0);
 	nodes[0]
 		.node
-		.send_payment(
-			payment_hash,
-			recipient_onion_allows_2_hops.clone(),
-			PaymentId(payment_hash.0),
-			route_params.clone(),
-			Retry::Attempts(0),
-		)
+		.send_payment(payment_hash, onion_allowing_2_hops.clone(), id, route_params, no_retry)
 		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 
@@ -530,7 +470,7 @@ fn blinded_path_with_custom_tlv() {
 	let args =
 		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
 			.with_payment_secret(payment_secret)
-			.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs.clone());
+			.with_custom_tlvs(onion_allowing_2_hops.custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(
@@ -538,7 +478,7 @@ fn blinded_path_with_custom_tlv() {
 			&[&[&nodes[1], &nodes[2], &nodes[3]]],
 			payment_preimage,
 		)
-		.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs),
+		.with_custom_tlvs(onion_allowing_2_hops.custom_tlvs),
 	);
 }
 
@@ -579,17 +519,10 @@ fn bolt12_invoice_too_large_blinded_paths() {
 
 	let offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
 	let payment_id = PaymentId([1; 32]);
+	let route_config = RouteParametersConfig::default();
 	nodes[0]
 		.node
-		.pay_for_offer(
-			&offer,
-			None,
-			Some(5000),
-			None,
-			payment_id,
-			Retry::Attempts(0),
-			RouteParametersConfig::default(),
-		)
+		.pay_for_offer(&offer, None, Some(5000), None, payment_id, Retry::Attempts(0), route_config)
 		.unwrap();
 	let invreq_om = nodes[0]
 		.onion_messenger
