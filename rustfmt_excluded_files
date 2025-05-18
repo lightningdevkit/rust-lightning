@@ -7,7 +7,6 @@ lightning/src/lib.rs
 lightning/src/ln/async_signer_tests.rs
 lightning/src/ln/blinded_payment_tests.rs
 lightning/src/ln/chan_utils.rs
-lightning/src/ln/chanmon_update_fail_tests.rs
 lightning/src/ln/channel.rs
 lightning/src/ln/channelmanager.rs
 lightning/src/ln/functional_test_utils.rs
