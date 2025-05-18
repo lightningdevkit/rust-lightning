@@ -52,7 +52,7 @@ fn test_monitor_and_persister_update_fail() {
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Rebalance the network to generate htlc in the two directions
-	send_payment(&nodes[0], &vec![&nodes[1]][..], 10_000_000);
+	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
 	// Route an HTLC from node 0 to node 1 (but don't settle)
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
@@ -237,7 +237,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(*via_channel_ids, vec![(channel_id, Some(user_channel_id))]);
+			assert_eq!(*via_channel_ids, &[(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -547,7 +547,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert!(bs_resp.2.as_ref().unwrap().update_fail_htlcs.is_empty());
 			assert!(bs_resp.2.as_ref().unwrap().update_fail_malformed_htlcs.is_empty());
 			assert!(bs_resp.2.as_ref().unwrap().update_fee.is_none());
-			assert!(bs_resp.2.as_ref().unwrap().update_fulfill_htlcs == vec![bs_initial_fulfill]);
+			assert_eq!(bs_resp.2.as_ref().unwrap().update_fulfill_htlcs, [bs_initial_fulfill]);
 			assert!(bs_resp.2.as_ref().unwrap().commitment_signed == bs_initial_commitment_signed);
 
 			assert!(as_resp.1.is_none());
@@ -779,7 +779,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(*via_channel_ids, vec![(channel_id, Some(user_channel_id))]);
+			assert_eq!(via_channel_ids, [(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -940,7 +940,7 @@ fn test_monitor_update_fail_cs() {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
-			assert_eq!(*via_channel_ids, vec![(channel_id, Some(user_channel_id))]);
+			assert_eq!(via_channel_ids, [(channel_id, Some(user_channel_id))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -1171,7 +1171,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]
+		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]
 	);
 	check_added_monitors!(nodes[2], 1);
 
@@ -1303,7 +1303,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	check_added_monitors!(nodes[1], 0);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward {
+		[HTLCHandlingFailureType::Forward {
 			node_id: Some(nodes[2].node.get_our_node_id()),
 			channel_id: chan_2.2
 		}]
@@ -2509,7 +2509,7 @@ fn test_monitor_update_fail_claim() {
 			assert_eq!(payment_hash_3, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
-			assert_eq!(*via_channel_ids, vec![(channel_id, Some(42))]);
+			assert_eq!(via_channel_ids, [(channel_id, Some(42))]);
 			match &purpose {
 				PaymentPurpose::Bolt11InvoicePayment {
 					payment_preimage, payment_secret, ..
@@ -2544,7 +2544,7 @@ fn test_monitor_update_on_pending_forwards() {
 	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[2],
-		vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]
+		[HTLCHandlingFailureType::Receive { payment_hash: payment_hash_1 }]
 	);
 	check_added_monitors!(nodes[2], 1);
 
@@ -2580,7 +2580,7 @@ fn test_monitor_update_on_pending_forwards() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward {
+		[HTLCHandlingFailureType::Forward {
 			node_id: Some(nodes[2].node.get_our_node_id()),
 			channel_id: chan_2.2
 		}]
@@ -3252,7 +3252,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 		nodes[1],
-		vec![HTLCHandlingFailureType::Forward {
+		[HTLCHandlingFailureType::Forward {
 			node_id: Some(nodes[2].node.get_our_node_id()),
 			channel_id: chan_id_2
 		}]
@@ -3754,7 +3754,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 			nodes[2],
-			vec![HTLCHandlingFailureType::Receive { payment_hash }]
+			[HTLCHandlingFailureType::Receive { payment_hash }]
 		);
 		check_added_monitors!(nodes[2], 1);
 		get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -3803,7 +3803,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		reconnect_nodes(reconnect_args);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
 			nodes[1],
-			vec![HTLCHandlingFailureType::Forward {
+			[HTLCHandlingFailureType::Forward {
 				node_id: Some(nodes[2].node.get_our_node_id()),
 				channel_id: chan_id_2
 			}]
