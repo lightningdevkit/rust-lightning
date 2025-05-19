@@ -63,7 +63,7 @@ use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, FinalOnionHopData, LightningError, MessageSendEvent};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{Bolt11PaymentError, NextTrampolineHopInfo, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration, TrampolineForwardInfo};
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
@@ -670,7 +670,7 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	},
 	(4, TrampolineForward) => {
 		(0, session_priv, required),
-		(2, previous_hop_data, required_vec),
+		(2, previous_hop_ids, required_vec),
 	},
 );
 
@@ -4667,24 +4667,35 @@ where
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
 			path, payment_hash, recipient_onion: &recipient_onion, total_value,
-			cur_height, payment_id, keysend_preimage, invoice_request: None, session_priv_bytes
+			cur_height, payment_id, keysend_preimage, invoice_request: None, session_priv_bytes,
+			trampoline_forward_info: None
 		})
 	}
 
 	fn send_payment_along_path(&self, args: SendAlongPathArgs) -> Result<(), APIError> {
 		let SendAlongPathArgs {
 			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
-			invoice_request, session_priv_bytes
+			invoice_request, session_priv_bytes, trampoline_forward_info
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
-		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
-			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
-			payment_hash, keysend_preimage, invoice_request, prng_seed
-		).map_err(|e| {
+		let onion_result = if let Some(trampoline_forward_info) = trampoline_forward_info {
+			// todo: ensure inter-Trampoline payment secret is always available for Trampoline forwards
+			onion_utils::create_trampoline_forward_onion(
+				&self.secp_ctx, &path, &session_priv, total_value, recipient_onion.payment_secret.unwrap(), cur_height,
+				payment_hash, keysend_preimage, &trampoline_forward_info.next_hop_info, prng_seed
+			)
+		} else {
+			onion_utils::create_payment_onion(
+				&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
+				payment_hash, keysend_preimage, invoice_request, prng_seed
+			)
+		};
+
+		let (onion_packet, htlc_msat, htlc_cltv) = onion_result.map_err(|e| {
 			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None, Some(*payment_hash));
 			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
 			e
@@ -4718,13 +4729,25 @@ where
 						}
 						let funding_txo = chan.funding.get_funding_txo().unwrap();
 						let logger = WithChannelContext::from(&self.logger, &chan.context, Some(*payment_hash));
-						let send_res = chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(),
-							htlc_cltv, HTLCSource::OutboundRoute {
+
+						let htlc_source = match trampoline_forward_info {
+							None => HTLCSource::OutboundRoute {
 								path: path.clone(),
 								session_priv: session_priv.clone(),
 								first_hop_htlc_msat: htlc_msat,
 								payment_id,
-							}, onion_packet, None, &self.fee_estimator, &&logger);
+							},
+							Some(trampoline_forward_info) => HTLCSource::TrampolineForward {
+								previous_hop_data: trampoline_forward_info.previous_hop_data.clone(),
+								// todo: fix
+								incoming_trampoline_shared_secret: [0; 32],
+								session_priv: session_priv.clone(),
+								hops: path.clone().hops,
+							}
+						};
+
+						let send_res = chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(),
+							htlc_cltv, htlc_source, onion_packet, None, &self.fee_estimator, &&logger);
 						match break_channel_entry!(self, peer_state, send_res, chan_entry) {
 							Some(monitor_update) => {
 								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
@@ -6300,33 +6323,74 @@ where
 									}
 								};
 
-								let usable_channels: Vec<ChannelDetails> = self.list_usable_channels();
-
 								// assume any Trampoline node supports MPP
 								let mut recipient_features = Bolt11InvoiceFeatures::empty();
 								recipient_features.set_basic_mpp_optional();
 
+								println!("PATH CONSTRUCTION CLTV: {} -> {} (delta: {})", incoming_cltv_expiry, outgoing_cltv_value, cltv_expiry_delta);
+
+								let route_parameters = RouteParameters {
+									payment_params: PaymentParameters {
+										payee: Payee::Clear {
+											node_id: next_node_id,
+											route_hints: vec![],
+											features: Some(recipient_features),
+											final_cltv_expiry_delta: 4,
+										},
+										expiry_time: None,
+										max_total_cltv_expiry_delta: cltv_expiry_delta,
+										max_path_count: DEFAULT_MAX_PATH_COUNT,
+										max_path_length: MAX_PATH_LENGTH_ESTIMATE / 2,
+										max_channel_saturation_power_of_half: 2,
+										previously_failed_channels: vec![],
+										previously_failed_blinded_path_idxs: vec![],
+									},
+									final_value_msat: outgoing_amt_msat,
+									max_total_routing_fee_msat: Some(max_total_routing_fee_msat),
+								};
+
+								self.pending_outbound_payments.send_payment_for_trampoline_forward(
+									PaymentId(payment_hash.0),
+									payment_hash,
+									TrampolineForwardInfo {
+										next_hop_info: NextTrampolineHopInfo {
+											onion_packet: onion_packet.clone(),
+											blinding_point: next_blinding_point,
+										},
+										previous_hop_data: vec![HTLCPreviousHopData {
+											short_channel_id: prev_short_channel_id,
+											user_channel_id: Some(prev_user_channel_id),
+											counterparty_node_id: prev_counterparty_node_id,
+											channel_id: prev_channel_id,
+											outpoint: prev_funding_outpoint,
+											htlc_id: prev_htlc_id,
+											incoming_packet_shared_secret: incoming_outer_shared_secret,
+											// Phantom payments are only PendingHTLCRouting::Receive.
+											phantom_shared_secret: None,
+											blinded_failure: blinded.map(|b| b.failure),
+											cltv_expiry: Some(incoming_cltv_expiry),
+										}],
+									},
+									Retry::Attempts(3),
+									route_parameters.clone(),
+									&self.router,
+									self.list_usable_channels(),
+									|| self.compute_inflight_htlcs(),
+									&self.entropy_source,
+									&self.node_signer,
+									self.current_best_block().height,
+									&self.logger,
+									&self.pending_events,
+									|args| self.send_payment_along_path(args)
+								);
+
+								continue;
+
+								let usable_channels: Vec<ChannelDetails> = self.list_usable_channels();
+
 								let route = match self.router.find_route(
 									&self.node_signer.get_node_id(Recipient::Node).unwrap(),
-									&RouteParameters {
-										payment_params: PaymentParameters {
-											payee: Payee::Clear {
-												node_id: next_node_id,
-												route_hints: vec![],
-												features: Some(recipient_features),
-												final_cltv_expiry_delta: 0,
-											},
-											expiry_time: None,
-											max_total_cltv_expiry_delta: cltv_expiry_delta,
-											max_path_count: DEFAULT_MAX_PATH_COUNT,
-											max_path_length: MAX_PATH_LENGTH_ESTIMATE / 2,
-											max_channel_saturation_power_of_half: 2,
-											previously_failed_channels: vec![],
-											previously_failed_blinded_path_idxs: vec![],
-										},
-										final_value_msat: outgoing_amt_msat,
-										max_total_routing_fee_msat: Some(max_total_routing_fee_msat),
-									},
+									&route_parameters,
 									Some(&usable_channels.iter().collect::<Vec<_>>()),
 									self.compute_inflight_htlcs()
 								) {
@@ -6413,6 +6477,7 @@ where
 												}
 											}
 										}
+
 
 										let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &inter_trampoline_session_priv);
 										let outer_onion_prng_seed = self.entropy_source.get_secure_random_bytes();

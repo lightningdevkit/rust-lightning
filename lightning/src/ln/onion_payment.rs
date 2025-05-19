@@ -71,6 +71,13 @@ fn check_blinded_forward(
 }
 
 fn check_trampoline_onion_constraints(outer_hop_data: &msgs::InboundTrampolineEntrypointPayload, trampoline_cltv_value: u32, trampoline_amount: u64) -> Result<(), LocalHTLCFailureReason> {
+	println!("outer amt_to_forward: {}", outer_hop_data.amt_to_forward);
+	println!("outer CLTV: {}", outer_hop_data.outgoing_cltv_value);
+	println!("inner amt_to_forward: {}", trampoline_amount);
+	println!("inner CLTV: {}", trampoline_cltv_value);
+
+	// panic!("ENOUGH!");
+
 	if outer_hop_data.outgoing_cltv_value < trampoline_cltv_value {
 		return Err(LocalHTLCFailureReason::FinalIncorrectCLTVExpiry);
 	}
@@ -329,6 +336,12 @@ pub(super) fn create_recv_pending_htlc_info(
 					}
 					_ => unreachable!()
 				}
+
+				println!("outer amt_to_forward: {}", outer_hop_data.amt_to_forward);
+				println!("outer CLTV: {}", outer_hop_data.outgoing_cltv_value);
+				println!("inner amt_to_forward: {}", sender_intended_htlc_amt_msat);
+				println!("inner CLTV: {}", cltv_expiry_height);
+
 				// The Trampoline onion's amt and CLTV values cannot exceed the outer onion's
 				InboundHTLCErr {
 					reason,
