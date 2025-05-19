@@ -15026,6 +15026,7 @@ where
 mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::ecdh::SharedSecret;
+	use lightning_types::features::ChannelTypeFeatures;
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCHandlingFailureType, ClosureReason};
 	use crate::ln::onion_utils::AttributionData;
@@ -15041,7 +15042,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
-	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
+	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate, UserConfig};
 	use crate::sign::EntropySource;
 
 	#[test]
@@ -16153,22 +16154,28 @@ mod tests {
 	}
 
 	#[test]
-	fn test_anchors_zero_fee_htlc_tx_fallback() {
+	fn test_anchors_zero_fee_htlc_tx_downgrade() {
 		// Tests that if both nodes support anchors, but the remote node does not want to accept
 		// anchor channels at the moment, an error it sent to the local node such that it can retry
 		// the channel without the anchors feature.
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let mut anchors_config = test_default_channel_config();
 		anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 		anchors_config.manually_accept_inbound_channels = true;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
+
+		do_test_channel_type_downgrade(anchors_config, |features| features.supports_anchors_zero_fee_htlc_tx())
+	}
+
+	fn do_test_channel_type_downgrade<F>(user_cfg: UserConfig, start_type_set: F)
+		where F: Fn(&ChannelTypeFeatures) -> bool {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_cfg.clone()), Some(user_cfg.clone())]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let error_message = "Channel force-closed";
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(open_channel_msg.common_fields.channel_type.as_ref().unwrap().supports_anchors_zero_fee_htlc_tx());
+		assert!(start_type_set(open_channel_msg.common_fields.channel_type.as_ref().unwrap()));
 
 		nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
 		let events = nodes[1].node.get_and_clear_pending_events();
@@ -16183,7 +16190,7 @@ mod tests {
 		nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
 
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(!open_channel_msg.common_fields.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
+		assert!(!start_type_set(open_channel_msg.common_fields.channel_type.as_ref().unwrap()));
 
 		// Since nodes[1] should not have accepted the channel, it should
 		// not have generated any events.
