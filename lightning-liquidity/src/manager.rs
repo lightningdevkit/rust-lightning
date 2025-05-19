@@ -235,7 +235,7 @@ where {
 		);
 
 		let lsps0_service_handler = if service_config.is_some() {
-			Some(LSPS0ServiceHandler::new(vec![], Arc::clone(&pending_messages)))
+			Some(LSPS0ServiceHandler::new(supported_protocols, Arc::clone(&pending_messages)))
 		} else {
 			None
 		};
