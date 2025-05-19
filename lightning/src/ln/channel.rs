@@ -13313,6 +13313,17 @@ mod tests {
 	fn test_supports_anchors_zero_htlc_tx_fee() {
 		// Tests that if both sides support and negotiate `anchors_zero_fee_htlc_tx`, it is the
 		// resulting `channel_type`.
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut expected_channel_type = ChannelTypeFeatures::empty();
+		expected_channel_type.set_static_remote_key_required();
+		expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
+
+		do_test_supports_channel_type(config, expected_channel_type)
+	}
+
+	fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: ChannelTypeFeatures) {
 		let secp_ctx = Secp256k1::new();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
 		let network = Network::Testnet;
@@ -13322,21 +13333,13 @@ mod tests {
 		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
 		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
-		let mut config = UserConfig::default();
-		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-
-		// It is not enough for just the initiator to signal `option_anchors_zero_fee_htlc_tx`, both
-		// need to signal it.
+		// Assert that we get `static_remotekey` when no custom config is negotiated.
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
 			&config, 0, 42, None, &logger
 		).unwrap();
-		assert!(!channel_a.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx());
-
-		let mut expected_channel_type = ChannelTypeFeatures::empty();
-		expected_channel_type.set_static_remote_key_required();
-		expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
+		assert_eq!(channel_a.funding.get_channel_type(), &ChannelTypeFeatures::only_static_remote_key());
 
 		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
