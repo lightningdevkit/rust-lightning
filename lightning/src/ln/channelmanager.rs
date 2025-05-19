@@ -12931,6 +12931,14 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// quiescent-dependent protocols (e.g., splicing).
 	#[cfg(any(test, fuzzing))]
 	features.set_quiescence_optional();
+
+	#[cfg(test)]
+	{
+		if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
+			features.set_anchor_zero_fee_commitments_optional();
+		}
+	}
+
 	features
 }
 
@@ -16163,6 +16171,18 @@ mod tests {
 		anchors_config.manually_accept_inbound_channels = true;
 
 		do_test_channel_type_downgrade(anchors_config, |features| features.supports_anchors_zero_fee_htlc_tx())
+	}
+
+	#[test]
+	fn test_zero_fee_commitments_downgrade() {
+		// Tests that the local node will retry without zero fee commitments in the case where the
+		// remote node supports the feature but does not accept it.
+		let mut zero_fee_config = test_default_channel_config();
+		zero_fee_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		zero_fee_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		zero_fee_config.manually_accept_inbound_channels = true;
+
+		do_test_channel_type_downgrade(zero_fee_config, |features| features.supports_anchor_zero_fee_commitments())
 	}
 
 	fn do_test_channel_type_downgrade<F>(user_cfg: UserConfig, start_type_set: F)

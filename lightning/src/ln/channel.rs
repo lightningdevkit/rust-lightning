@@ -4860,7 +4860,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// counterparty is advertising the feature, but rejecting channels proposing the feature for
 		// whatever reason.
 		let channel_type = &mut funding.channel_transaction_parameters.channel_type_features;
-		if channel_type.supports_anchors_zero_fee_htlc_tx() {
+		if channel_type.supports_anchor_zero_fee_commitments() {
+			channel_type.clear_anchor_zero_fee_commitments();
+			channel_type.set_anchors_zero_fee_htlc_tx_required();
+			channel_type.set_static_remote_key_required();
+
+			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee);
+			assert!(!channel_type.supports_anchor_zero_fee_commitments());
+			assert!(channel_type.supports_anchors_zero_fee_htlc_tx());
+			assert!(channel_type.supports_static_remote_key());
+		} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
 			channel_type.clear_anchors_zero_fee_htlc_tx();
 			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
 			assert!(!channel_type.supports_anchors_nonzero_fee_htlc_tx());
@@ -9906,8 +9915,9 @@ pub(super) fn channel_type_from_open_channel(
 
 		// We only support the channel types defined by the `ChannelManager` in
 		// `provided_channel_type_features`. The channel type must always support
-		// `static_remote_key`.
-		if !channel_type.requires_static_remote_key() {
+		// `static_remote_key`, except for `option_zero_fee_commitments` which
+		// assumes this feature.
+		if !channel_type.requires_static_remote_key() && !channel_type.requires_anchor_zero_fee_commitments(){
 			return Err(ChannelError::close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 		// Make sure we support all of the features behind the channel type.
@@ -10492,10 +10502,21 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 		ret.set_scid_privacy_required();
 	}
 
-	// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
-	// set it now. If they don't understand it, we'll fall back to our default of
-	// `only_static_remotekey`.
-	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+	// Optionally, if the user would like to negotiate `option_zero_fee_commitments` we set it now.
+	// If they don't understand it (or we don't want it), we check the same conditions for
+	// `option_anchors_zero_fee_htlc_tx`. The counterparty can still refuse the channel and we'll
+	// try to fall back (all the way to `only_static_remotekey`).
+	#[cfg(not(test))]
+	let negotiate_zero_fee_commitments = false;
+
+	#[cfg(test)]
+	let negotiate_zero_fee_commitments = config.channel_handshake_config.negotiate_anchor_zero_fee_commitments;
+
+	if negotiate_zero_fee_commitments && their_features.supports_anchor_zero_fee_commitments() {
+		ret.set_anchor_zero_fee_commitments_required();
+		// `option_static_remote_key` is assumed by `option_zero_fee_commitments`.
+		ret.clear_static_remote_key();
+	} else if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
 		their_features.supports_anchors_zero_fee_htlc_tx() {
 		ret.set_anchors_zero_fee_htlc_tx_required();
 	}
