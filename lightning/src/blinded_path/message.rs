@@ -238,6 +238,12 @@ pub enum NextMessageHop {
 }
 
 /// An intermediate node, and possibly a short channel id leading to the next node.
+///
+/// Note:
+/// [`MessageForwardNode`] must represent a node that supports [`supports_onion_messages`]
+/// in order to be included in valid blinded paths for onion messaging.
+///
+/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct MessageForwardNode {
 	/// This node's pubkey.
