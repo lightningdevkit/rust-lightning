@@ -830,7 +830,12 @@ pub struct UserConfig {
 	/// all your channels and open new ones. For privacy, you should also change your node_id
 	/// (swapping all private and public key material for new ones) at that time.
 	///
+	/// Note that this setting does not apply for intercepted payments that are surfaced via
+	/// [`Event::HTLCIntercepted`] and manually forwarded.
+	///
 	/// Default value: `false`
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	pub accept_forwards_to_priv_channels: bool,
 	/// If this is set to `false`, we do not accept inbound requests to open a new channel.
 	///
