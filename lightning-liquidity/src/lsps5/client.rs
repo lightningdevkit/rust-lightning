@@ -451,7 +451,7 @@ where
 	fn verify_notification_signature(
 		&self, counterparty_node_id: PublicKey, signature_timestamp: &LSPSDateTime,
 		signature: &str, notification: &WebhookNotification,
-	) -> Result<bool, LSPS5ClientError> {
+	) -> Result<(), LSPS5ClientError> {
 		let now =
 			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
 		let diff = signature_timestamp.abs_diff(now);
@@ -467,7 +467,7 @@ where
 		);
 
 		if message_signing::verify(message.as_bytes(), signature, &counterparty_node_id) {
-			Ok(true)
+			Ok(())
 		} else {
 			Err(LSPS5ClientError::InvalidSignature)
 		}
@@ -516,7 +516,7 @@ where
 	/// - `signature`: the zbase32-encoded LN signature over timestamp+body.
 	/// - `notification`: the [`WebhookNotification`] received from the LSP.
 	///
-	/// On success, emits [`LSPS5ClientEvent::WebhookNotificationReceived`].
+	/// On success, returns the received [`WebhookNotification`].
 	///
 	/// Failure reasons include:
 	/// - Timestamp too old (drift > 10 minutes)
@@ -527,36 +527,24 @@ where
 	/// event, before taking action on the notification. This guarantees that only authentic,
 	/// non-replayed notifications reach your application.
 	///
-	/// [`LSPS5ClientEvent::WebhookNotificationReceived`]: super::event::LSPS5ClientEvent::WebhookNotificationReceived
 	/// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 	/// [`WebhookNotification`]: super::msgs::WebhookNotification
 	pub fn parse_webhook_notification(
 		&self, counterparty_node_id: PublicKey, timestamp: &LSPSDateTime, signature: &str,
 		notification: &WebhookNotification,
-	) -> Result<(), LSPS5ClientError> {
-		match self.verify_notification_signature(
+	) -> Result<WebhookNotification, LSPS5ClientError> {
+		self.verify_notification_signature(
 			counterparty_node_id,
 			timestamp,
 			signature,
 			&notification,
-		) {
-			Ok(signature_valid) => {
-				let event_queue_notifier = self.pending_events.notifier();
+		)?;
 
-				self.check_signature_exists(signature)?;
+		self.check_signature_exists(signature)?;
 
-				self.store_signature(signature.to_string());
+		self.store_signature(signature.to_string());
 
-				event_queue_notifier.enqueue(LSPS5ClientEvent::WebhookNotificationReceived {
-					counterparty_node_id,
-					notification: notification.clone(),
-					timestamp: timestamp.clone(),
-					signature_valid,
-				});
-				Ok(())
-			},
-			Err(e) => Err(e),
-		}
+		Ok(notification.clone())
 	}
 }
 

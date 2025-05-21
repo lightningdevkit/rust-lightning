@@ -392,42 +392,4 @@ pub enum LSPS5ClientEvent {
 		/// This can be used to track which request this event corresponds to.
 		request_id: LSPSRequestId,
 	},
-
-	/// A webhook notification was received from the LSP.
-	///
-	/// This event is triggered when the client receives and successfully
-	/// verifies a webhook notification from the LSP. This represents an
-	/// asynchronous event that the LSP is notifying the client about.
-	///
-	/// When this event occurs, the client should:
-	/// 1. Check `signature_valid` to confirm the notification is authentic
-	/// 2. Examine the `notification.method` to determine the type of notification
-	/// 3. Process the notification according to its method and parameters
-	/// 4. Update any UI or take actions based on the notification type
-	///
-	/// Common notification methods include:
-	/// - [`LSPS5WebhookRegistered`] - Initial test notification after registration
-	/// - [`LSPS5PaymentIncoming`] - Client has pending incoming payments
-	/// - [`LSPS5ExpirySoon`] - An HTLC or contract will expire soon
-	/// - [`LSPS5LiquidityManagementRequest`] - LSP needs to manage liquidity
-	/// - [`LSPS5OnionMessageIncoming`] - Client has pending onion messages
-	///
-	/// The client should reject notifications with invalid signatures or timestamps
-	/// more than 10 minutes from the current time.
-	///
-	/// [`LSPS5WebhookRegistered`]: super::msgs::WebhookNotificationMethod::LSPS5WebhookRegistered
-	/// [`LSPS5PaymentIncoming`]: super::msgs::WebhookNotificationMethod::LSPS5PaymentIncoming
-	/// [`LSPS5ExpirySoon`]: super::msgs::WebhookNotificationMethod::LSPS5ExpirySoon
-	/// [`LSPS5LiquidityManagementRequest`]: super::msgs::WebhookNotificationMethod::LSPS5LiquidityManagementRequest
-	/// [`LSPS5OnionMessageIncoming`]: super::msgs::WebhookNotificationMethod::LSPS5OnionMessageIncoming
-	WebhookNotificationReceived {
-		/// LSP node ID that sent the notification.
-		counterparty_node_id: PublicKey,
-		/// The notification with its method and parameters.
-		notification: WebhookNotification,
-		/// Timestamp of the notification.
-		timestamp: LSPSDateTime,
-		/// Whether the LSP's signature was successfully verified.
-		signature_valid: bool,
-	},
 }
