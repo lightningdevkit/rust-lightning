@@ -1048,7 +1048,7 @@ enum UpdateFulfillFetch {
 	NewClaim {
 		monitor_update: ChannelMonitorUpdate,
 		htlc_value_msat: u64,
-		msg: Option<msgs::UpdateFulfillHTLC>,
+		update_blocked: bool,
 	},
 	DuplicateClaim {},
 }
@@ -5388,8 +5388,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
-		if let UpdateFulfillFetch::NewClaim { msg, .. } = fulfill_resp {
-			assert!(msg.is_none()); // The HTLC must have ended up in the holding cell.
+		if let UpdateFulfillFetch::NewClaim { update_blocked, .. } = fulfill_resp {
+			assert!(update_blocked); // The HTLC must have ended up in the holding cell.
 		}
 	}
 
@@ -5476,7 +5476,7 @@ impl<SP: Deref> FundedChannel<SP> where
 							// TODO: We may actually be able to switch to a fulfill here, though its
 							// rare enough it may not be worth the complexity burden.
 							debug_assert!(false, "Tried to fulfill an HTLC that was already failed");
-							return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: None };
+							return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: true };
 						}
 					},
 					_ => {}
@@ -5486,7 +5486,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg, htlc_id: htlc_id_arg,
 			});
-			return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: None };
+			return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: true };
 		}
 
 		{
@@ -5494,7 +5494,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			if let InboundHTLCState::Committed = htlc.state {
 			} else {
 				debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
-				return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: None };
+				return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, update_blocked: true };
 			}
 			log_trace!(logger, "Upgrading HTLC {} to LocalRemoved with a Fulfill in channel {}!", &htlc.payment_hash, &self.context.channel_id);
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
@@ -5503,11 +5503,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		UpdateFulfillFetch::NewClaim {
 			monitor_update,
 			htlc_value_msat,
-			msg: Some(msgs::UpdateFulfillHTLC {
-				channel_id: self.context.channel_id(),
-				htlc_id: htlc_id_arg,
-				payment_preimage: payment_preimage_arg,
-			}),
+			update_blocked: false,
 		}
 	}
 
@@ -5517,13 +5513,13 @@ impl<SP: Deref> FundedChannel<SP> where
 	) -> UpdateFulfillCommitFetch where L::Target: Logger {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
 		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, payment_info, logger) {
-			UpdateFulfillFetch::NewClaim { mut monitor_update, htlc_value_msat, msg } => {
+			UpdateFulfillFetch::NewClaim { mut monitor_update, htlc_value_msat, update_blocked } => {
 				// Even if we aren't supposed to let new monitor updates with commitment state
 				// updates run, we still need to push the preimage ChannelMonitorUpdateStep no
 				// matter what. Sadly, to push a new monitor update which flies before others
 				// already queued, we have to insert it into the pending queue and update the
 				// update_ids of all the following monitors.
-				if release_cs_monitor && msg.is_some() {
+				if release_cs_monitor && !update_blocked {
 					let mut additional_update = self.build_commitment_no_status_check(logger);
 					// build_commitment_no_status_check may bump latest_monitor_id but we want them
 					// to be strictly increasing by one, so decrement it here.
@@ -5536,7 +5532,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					for held_update in self.context.blocked_monitor_updates.iter_mut() {
 						held_update.update.update_id += 1;
 					}
-					if msg.is_some() {
+					if !update_blocked {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
 						self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
@@ -5545,7 +5541,7 @@ impl<SP: Deref> FundedChannel<SP> where
 					}
 				}
 
-				self.monitor_updating_paused(false, msg.is_some(), false, Vec::new(), Vec::new(), Vec::new());
+				self.monitor_updating_paused(false, !update_blocked, false, Vec::new(), Vec::new(), Vec::new());
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat, }
 			},
 			UpdateFulfillFetch::DuplicateClaim {} => UpdateFulfillCommitFetch::DuplicateClaim {},
