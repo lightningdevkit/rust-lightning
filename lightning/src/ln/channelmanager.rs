@@ -82,8 +82,8 @@ use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{
-	Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest,
-	SendAlongPathArgs, StaleExpiration,
+	OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs,
+	StaleExpiration,
 };
 use crate::ln::types::ChannelId;
 use crate::offers::flow::OffersMessageFlow;
@@ -187,7 +187,8 @@ use core::{cmp, mem};
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 pub use crate::ln::outbound_payment::{
-	Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry, RetryableSendFailure,
+	Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry,
+	RetryableSendFailure,
 };
 use crate::ln::script::ShutdownScript;
 
