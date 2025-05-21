@@ -8459,6 +8459,24 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
+	fn maybe_promote_splice_funding(
+		&mut self, splice_txid: Txid, confirmed_funding_index: usize,
+	) -> bool {
+		debug_assert!(self.pending_splice.is_some());
+		debug_assert!(confirmed_funding_index < self.pending_funding.len());
+
+		let pending_splice = self.pending_splice.as_mut().unwrap();
+		pending_splice.sent_funding_txid = Some(splice_txid);
+
+		if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
+			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
+			promote_splice_funding!(self, funding);
+			return true;
+		}
+
+		return false;
+	}
+
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
@@ -8532,18 +8550,12 @@ impl<SP: Deref> FundedChannel<SP> where
 
 					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
-					let pending_splice = self.pending_splice.as_mut().unwrap();
-					pending_splice.sent_funding_txid = Some(splice_locked.splice_txid);
+					let announcement_sigs = self
+						.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index)
+						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
+						.flatten();
 
-					if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
-						let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
-						promote_splice_funding!(self, funding);
-
-						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-						return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), announcement_sigs));
-					}
-
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), None));
+					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), announcement_sigs));
 				}
 			}
 
@@ -8678,22 +8690,16 @@ impl<SP: Deref> FundedChannel<SP> where
 			if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
-				let pending_splice = self.pending_splice.as_mut().unwrap();
-				pending_splice.sent_funding_txid = Some(splice_locked.splice_txid);
+				let announcement_sigs = self
+					.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index)
+					.then(|| chain_node_signer
+						.and_then(|(chain_hash, node_signer, user_config)|
+							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+						)
+					)
+					.flatten();
 
-				if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
-					let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
-					promote_splice_funding!(self, funding);
-
-					let mut announcement_sigs = None;
-					if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
-						announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-					}
-
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), timed_out_htlcs, announcement_sigs));
-				}
-
-				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), timed_out_htlcs, None));
+				return Ok((Some(FundingConfirmedMessage::Splice(splice_locked)), timed_out_htlcs, announcement_sigs));
 			}
 		}
 
