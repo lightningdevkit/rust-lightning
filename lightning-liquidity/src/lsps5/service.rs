@@ -439,19 +439,18 @@ where
 
 		let signature_hex = self.sign_notification(&notification, &timestamp);
 
-		let headers = vec![
-			("Content-Type".to_string(), "application/json".to_string()),
-			("x-lsps5-timestamp".to_string(), timestamp.to_rfc3339()),
-			("x-lsps5-signature".to_string(), signature_hex.clone()),
-		];
+		let mut headers: HashMap<String, String> = [("Content-Type", "application/json")]
+			.into_iter()
+			.map(|(k, v)| (k.to_string(), v.to_string()))
+			.collect();
+		headers.insert("x-lsps5-timestamp".into(), timestamp.to_rfc3339());
+		headers.insert("x-lsps5-signature".into(), signature_hex);
 
 		event_queue_notifier.enqueue(LSPS5ServiceEvent::SendWebhookNotification {
 			counterparty_node_id,
 			app_name,
 			url,
 			notification,
-			timestamp,
-			signature: signature_hex,
 			headers,
 		});
 	}
