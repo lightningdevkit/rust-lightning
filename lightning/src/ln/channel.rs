@@ -8429,8 +8429,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			self.context.channel_state.is_our_channel_ready() {
 			let mut funding_tx_confirmations = height as i64 - self.funding.funding_tx_confirmation_height as i64 + 1;
 			if self.funding.funding_tx_confirmation_height == 0 {
-				// Note that check_get_channel_ready may reset funding_tx_confirmation_height to
-				// zero if it has been reorged out, however in either case, our state flags
+				// Note that transaction_unconfirmed may have reset funding_tx_confirmation_height
+				// to zero if it has been reorged out, however in either case, our state flags
 				// indicate we've already sent a channel_ready
 				funding_tx_confirmations = 0;
 			}
