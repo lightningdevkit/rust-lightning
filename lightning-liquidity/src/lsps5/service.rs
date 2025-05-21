@@ -209,21 +209,23 @@ where
 			});
 		}
 
+		let (last_used, last_notification_sent) = if no_change {
+			let existing_webhook = client_webhooks.get(&params.app_name).unwrap();
+			(existing_webhook.last_used.clone(), existing_webhook.last_notification_sent.clone())
+		} else {
+			(now, new_hash_map())
+		};
+
 		let stored_webhook = StoredWebhook {
 			_app_name: params.app_name.clone(),
 			url: params.webhook.clone(),
 			_counterparty_node_id: counterparty_node_id,
-			last_used: now,
-			last_notification_sent: new_hash_map(),
+			last_used,
+			last_notification_sent,
 		};
 
 		client_webhooks.insert(params.app_name.clone(), stored_webhook);
 
-		let response = SetWebhookResponse {
-			num_webhooks: client_webhooks.len() as u32,
-			max_webhooks: self.config.max_webhooks_per_client,
-			no_change,
-		};
 		event_queue_notifier.enqueue(LSPS5ServiceEvent::WebhookRegistered {
 			counterparty_node_id,
 			app_name: params.app_name.clone(),
@@ -232,9 +234,6 @@ where
 			no_change,
 		});
 
-		// Send webhook_registered notification if needed
-		// According to spec:
-		// "The LSP MUST send this notification to this webhook before sending any other notifications to this webhook."
 		if !no_change {
 			self.send_webhook_registered_notification(
 				counterparty_node_id,
@@ -243,7 +242,15 @@ where
 			);
 		}
 
-		let msg = LSPS5Message::Response(request_id, LSPS5Response::SetWebhook(response)).into();
+		let msg = LSPS5Message::Response(
+			request_id,
+			LSPS5Response::SetWebhook(SetWebhookResponse {
+				num_webhooks: client_webhooks.len() as u32,
+				max_webhooks: self.config.max_webhooks_per_client,
+				no_change,
+			}),
+		)
+		.into();
 		self.pending_messages.enqueue(&counterparty_node_id, msg);
 		Ok(())
 	}
