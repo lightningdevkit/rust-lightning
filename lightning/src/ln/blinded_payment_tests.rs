@@ -8,6 +8,8 @@
 // licenses.
 
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -2091,6 +2093,10 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		route_params: None,
 	};
 
+	// We need the session priv to construct an invalid onion packet later.
+	let override_random_bytes = [3; 32];
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
+
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0)).unwrap();
 
 	check_added_monitors!(&nodes[0], 1);
@@ -2101,8 +2107,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	} else {
 		let replacement_onion = {
 			// create a substitute onion where the last Trampoline hop is a forward
-			let trampoline_secret_key = secret_from_hex("0134928f7b7ca6769080d70f16be84c812c741f545b49a34db47ce338a205799");
-			let prng_seed = secret_from_hex("fe02b4b9054302a3ddf4e1e9f7c411d644aebbd295218ab009dca94435f775a9");
+			let trampoline_secret_key = SecretKey::from_slice(&override_random_bytes).unwrap();
 			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 
 			let mut blinded_tail = route.paths[0].blinded_tail.clone().unwrap();
@@ -2122,19 +2127,22 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 			let trampoline_packet = onion_utils::construct_trampoline_onion_packet(
 				trampoline_payloads,
 				trampoline_onion_keys,
-				prng_seed.secret_bytes(),
+				override_random_bytes,
 				&payment_hash,
 				None,
 			).unwrap();
 
-			let outer_session_priv = secret_from_hex("e52c20461ed7acd46c4e7b591a37610519179482887bd73bf3b94617f8f03677");
+			let outer_session_priv = {
+				let session_priv_hash = Sha256::hash(&override_random_bytes).to_byte_array();
+				SecretKey::from_slice(&session_priv_hash[..]).expect("You broke SHA-256!")
+			};
 
 			let (outer_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], outer_total_msat, &recipient_onion_fields, outer_starting_htlc_offset, &None, None, Some(trampoline_packet)).unwrap();
 			let outer_onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.clone().paths[0], &outer_session_priv);
 			let outer_packet = onion_utils::construct_onion_packet(
 				outer_payloads,
 				outer_onion_keys,
-				prng_seed.secret_bytes(),
+				override_random_bytes,
 				&payment_hash,
 			).unwrap();
 
