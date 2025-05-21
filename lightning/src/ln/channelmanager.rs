@@ -11695,16 +11695,27 @@ where
 				}
 			}
 
-			// Remove any scids used by old splice funding transactions
-			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-			channel.context.historical_scids.retain(|scid| {
-				let funding_height = block_from_scid(*scid);
-				let retain_scid = funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY > height;
-				if !retain_scid {
-					short_to_chan_info.remove(scid);
+			// Remove any scids used by older funding transactions
+			if let Some(current_scid) = channel.funding.get_short_channel_id() {
+				let historical_scids = &mut channel.context.historical_scids;
+				if !historical_scids.is_empty() {
+					let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+
+					// Remove an older SCID if the next funding has enough confirmations
+					for (scid, next_scid) in historical_scids
+						.iter()
+						.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
+					{
+						let funding_height = block_from_scid(*next_scid);
+						let retain_scid = funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY > height;
+						if !retain_scid {
+							short_to_chan_info.remove(scid);
+						}
+					}
+
+					historical_scids.retain(|scid| short_to_chan_info.contains_key(scid));
 				}
-				retain_scid
-			});
+			}
 
 			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
 		});
