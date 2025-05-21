@@ -9,11 +9,11 @@
 
 //! Contains bLIP-55 / LSPS5 event types
 
-use crate::lsps0::ser::LSPSDateTime;
 use crate::lsps0::ser::LSPSRequestId;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bitcoin::secp256k1::PublicKey;
+use lightning::util::hash_tables::HashMap;
 
 use super::msgs::LSPS5AppName;
 use super::msgs::LSPS5Error;
@@ -143,7 +143,7 @@ pub enum LSPS5ServiceEvent {
 	///
 	/// When this event occurs, the LSP should:
 	/// 1. Send an HTTP POST request to the specified webhook URL
-	/// 2. Include all provided headers, especially the timestamp and signature headers
+	/// 2. Include all provided headers in the request
 	/// 3. Send the JSON-serialized notification as the request body
 	/// 4. Handle any HTTP errors according to the LSP's retry policy
 	///
@@ -181,22 +181,14 @@ pub enum LSPS5ServiceEvent {
 		///
 		/// This contains the type of notification and any associated data to be sent to the client.
 		notification: WebhookNotification,
-		///  Timestamp of the notification.
-		///
-		/// This timestamp is used for signing the notification and must be within 10 minutes
-		/// of the client's local time for the signature to be accepted.
-		timestamp: LSPSDateTime,
-		/// Signature of the notification using the LSP's node ID.
-		///
-		/// This signature helps the client verify that the notification was sent by the LSP.
-		signature: String,
 		/// Headers to be included in the HTTP POST request.
 		///
-		/// Headers should include:
-		/// - Content-Type (application/json)
-		/// - x-lsps5-timestamp (timestamp in RFC3339 format, e.g., "YYYY-MM-DDThh:mm:ss.uuuZ")
-		/// - x-lsps5-signature (signature of the notification using the LSP's node ID)
-		headers: Vec<(String, String)>,
+		/// This is a map of HTTP header key-value pairs. It will include:
+		/// - `"Content-Type"`: with a value like `"application/json"`.
+		/// - `"x-lsps5-timestamp"`: with the timestamp in RFC3339 format (`"YYYY-MM-DDThh:mm:ss.uuuZ"`).
+		/// - `"x-lsps5-signature"`: with the signature of the notification payload, signed using the LSP's node ID.
+		/// Other custom headers may also be included as needed.
+		headers: HashMap<String, String>,
 	},
 }
 
