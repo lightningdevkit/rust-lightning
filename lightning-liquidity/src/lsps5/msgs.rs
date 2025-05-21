@@ -328,20 +328,12 @@ pub struct LSPS5WebhookUrl(LSPSUrl);
 impl LSPS5WebhookUrl {
 	/// Create a new LSPS5 webhook URL.
 	pub fn new(url: UntrustedString) -> Result<Self, LSPS5Error> {
-		let parsed_url = LSPSUrl::parse(url.0.clone())
-			.map_err(|_e| LSPS5ProtocolError::UrlParse("Error parsing URL".to_string()))?;
-		if parsed_url.url_length() > MAX_WEBHOOK_URL_LENGTH {
+		let raw_url = url.to_string();
+		if raw_url.len() > MAX_WEBHOOK_URL_LENGTH {
 			return Err(LSPS5ProtocolError::WebhookUrlTooLong.into());
 		}
-		if !parsed_url.is_https() {
-			return Err(LSPS5ProtocolError::UnsupportedProtocol.into());
-		}
-		if !parsed_url.is_public() {
-			return Err(LSPS5ProtocolError::UrlParse(
-				"Webhook URL must be a public URL".to_string(),
-			)
-			.into());
-		}
+		let parsed_url = LSPSUrl::parse(url.0)?;
+
 		Ok(Self(parsed_url))
 	}
 
@@ -807,13 +799,14 @@ mod tests {
 	#[test]
 	fn test_url_security_validation() {
 		let urls_that_should_throw = [
-			"https://10.0.0.1/webhook",
-			"https://192.168.1.1/webhook",
-			"https://172.16.0.1/webhook",
-			"https://172.31.255.255/webhook",
-			"https://localhost/webhook",
 			"test-app",
 			"http://example.com/webhook",
+			"ftp://example.com/webhook",
+			"ws://example.com/webhook",
+			"ws+unix://example.com/webhook",
+			"ws+unix:/example.com/webhook",
+			"ws+unix://example.com/webhook?param=value",
+			"ws+unix:/example.com/webhook?param=value",
 		];
 
 		for url_str in urls_that_should_throw.iter() {
