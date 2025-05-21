@@ -64,7 +64,7 @@ use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MessageSendEvent};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
@@ -129,7 +129,7 @@ use core::time::Duration;
 use core::ops::Deref;
 use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub use crate::ln::outbound_payment::{Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::script::ShutdownScript;
