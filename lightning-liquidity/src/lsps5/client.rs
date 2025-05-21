@@ -83,18 +83,24 @@ impl Default for LSPS5ClientConfig {
 	}
 }
 
-struct PeerState {
+struct PeerState<TP: Deref>
+where
+	TP::Target: TimeProvider,
+{
 	pending_set_webhook_requests:
 		HashMap<LSPSRequestId, (LSPS5AppName, LSPS5WebhookUrl, LSPSDateTime)>,
 	pending_list_webhooks_requests: HashMap<LSPSRequestId, LSPSDateTime>,
 	pending_remove_webhook_requests: HashMap<LSPSRequestId, (LSPS5AppName, LSPSDateTime)>,
 	last_cleanup: Option<LSPSDateTime>,
 	max_age_secs: Duration,
-	time_provider: Arc<dyn TimeProvider>,
+	time_provider: TP,
 }
 
-impl PeerState {
-	fn new(max_age_secs: Duration, time_provider: Arc<dyn TimeProvider>) -> Self {
+impl<TP: Deref> PeerState<TP>
+where
+	TP::Target: TimeProvider,
+{
+	fn new(max_age_secs: Duration, time_provider: TP) -> Self {
 		Self {
 			pending_set_webhook_requests: new_hash_map(),
 			pending_list_webhooks_requests: new_hash_map(),
@@ -148,27 +154,29 @@ impl PeerState {
 /// [`lsps5.set_webhook`]: super::msgs::LSPS5Request::SetWebhook
 /// [`lsps5.list_webhooks`]: super::msgs::LSPS5Request::ListWebhooks
 /// [`lsps5.remove_webhook`]: super::msgs::LSPS5Request::RemoveWebhook
-pub struct LSPS5ClientHandler<ES: Deref>
+pub struct LSPS5ClientHandler<ES: Deref, TP: Deref + Clone>
 where
 	ES::Target: EntropySource,
+	TP::Target: TimeProvider,
 {
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue>,
 	entropy_source: ES,
-	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
+	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState<TP>>>>,
 	config: LSPS5ClientConfig,
-	time_provider: Arc<dyn TimeProvider>,
+	time_provider: TP,
 	recent_signatures: Mutex<VecDeque<(String, LSPSDateTime)>>,
 }
 
-impl<ES: Deref> LSPS5ClientHandler<ES>
+impl<ES: Deref, TP: Deref + Clone> LSPS5ClientHandler<ES, TP>
 where
 	ES::Target: EntropySource,
+	TP::Target: TimeProvider,
 {
 	/// Constructs an `LSPS5ClientHandler`.
 	pub(crate) fn new(
 		entropy_source: ES, pending_messages: Arc<MessageQueue>, pending_events: Arc<EventQueue>,
-		config: LSPS5ClientConfig, time_provider: Arc<dyn TimeProvider>,
+		config: LSPS5ClientConfig, time_provider: TP,
 	) -> Self {
 		let max_signatures = config.signature_config.max_signatures.clone();
 		Self {
@@ -184,11 +192,11 @@ where
 
 	fn with_peer_state<F, R>(&self, counterparty_node_id: PublicKey, f: F) -> R
 	where
-		F: FnOnce(&mut PeerState) -> R,
+		F: FnOnce(&mut PeerState<TP>) -> R,
 	{
 		let mut outer_state_lock = self.per_peer_state.write().unwrap();
 		let inner_state_lock = outer_state_lock.entry(counterparty_node_id).or_insert(Mutex::new(
-			PeerState::new(self.config.response_max_age_secs, Arc::clone(&self.time_provider)),
+			PeerState::new(self.config.response_max_age_secs, self.time_provider.clone()),
 		));
 		let mut peer_state_lock = inner_state_lock.lock().unwrap();
 
@@ -349,7 +357,7 @@ where
 			action: ErrorAction::IgnoreAndLog(Level::Error),
 		});
 		let event_queue_notifier = self.pending_events.notifier();
-		let handle_response = |peer_state: &mut PeerState| {
+		let handle_response = |peer_state: &mut PeerState<TP>| {
 			if let Some((app_name, webhook_url, _)) =
 				peer_state.pending_set_webhook_requests.remove(&request_id)
 			{
@@ -548,9 +556,10 @@ where
 	}
 }
 
-impl<ES: Deref> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES>
+impl<ES: Deref, TP: Deref + Clone> LSPSProtocolMessageHandler for LSPS5ClientHandler<ES, TP>
 where
 	ES::Target: EntropySource,
+	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS5Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(5);

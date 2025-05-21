@@ -57,7 +57,7 @@ struct StoredWebhook {
 ///
 /// This trait is used to provide the current time for LSPS5 service operations
 /// and to convert between timestamps and durations.
-pub trait TimeProvider: Send + Sync {
+pub trait TimeProvider {
 	/// Get the current time as a duration since the Unix epoch.
 	fn duration_since_epoch(&self) -> Duration;
 }
@@ -127,27 +127,29 @@ pub struct LSPS5ServiceConfig {
 /// [`LSPS5ServiceEvent::SendWebhookNotification`]: super::event::LSPS5ServiceEvent::SendWebhookNotification
 /// [`app_name`]: super::msgs::LSPS5AppName
 /// [`lsps5.webhook_registered`]: super::msgs::WebhookNotificationMethod::LSPS5WebhookRegistered
-pub struct LSPS5ServiceHandler<CM: Deref>
+pub struct LSPS5ServiceHandler<CM: Deref, TP: Deref>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	config: LSPS5ServiceConfig,
 	webhooks: Mutex<HashMap<PublicKey, HashMap<LSPS5AppName, StoredWebhook>>>,
 	event_queue: Arc<EventQueue>,
 	pending_messages: Arc<MessageQueue>,
-	time_provider: Arc<dyn TimeProvider>,
+	time_provider: TP,
 	channel_manager: CM,
 	last_pruning: Mutex<Option<LSPSDateTime>>,
 }
 
-impl<CM: Deref> LSPS5ServiceHandler<CM>
+impl<CM: Deref, TP: Deref> LSPS5ServiceHandler<CM, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS5ServiceHandler`.
 	pub(crate) fn new(
 		event_queue: Arc<EventQueue>, pending_messages: Arc<MessageQueue>, channel_manager: CM,
-		config: LSPS5ServiceConfig, time_provider: Arc<dyn TimeProvider>,
+		config: LSPS5ServiceConfig, time_provider: TP,
 	) -> Self {
 		assert!(config.max_webhooks_per_client > 0, "`max_webhooks_per_client` must be > 0");
 		Self {
@@ -494,9 +496,10 @@ where
 	}
 }
 
-impl<CM: Deref> LSPSProtocolMessageHandler for LSPS5ServiceHandler<CM>
+impl<CM: Deref, TP: Deref> LSPSProtocolMessageHandler for LSPS5ServiceHandler<CM, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS5Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(5);
