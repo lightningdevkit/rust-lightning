@@ -14177,10 +14177,18 @@ where
 			 $peer_state: expr, $logger: expr, $channel_info_log: expr
 			) => { {
 				let mut max_in_flight_update_id = 0;
+				let starting_len =  $chan_in_flight_upds.len();
 				$chan_in_flight_upds.retain(|upd| upd.update_id > $monitor.get_latest_update_id());
+				if $chan_in_flight_upds.len() < starting_len {
+					log_debug!(
+						$logger,
+						"{} ChannelMonitorUpdates completed after ChannelManager was last serialized",
+						starting_len - $chan_in_flight_upds.len()
+					);
+				}
 				let funding_txo = $monitor.get_funding_txo();
 				for update in $chan_in_flight_upds.iter() {
-					log_trace!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
+					log_debug!($logger, "Replaying ChannelMonitorUpdate {} for {}channel {}",
 						update.update_id, $channel_info_log, &$monitor.channel_id());
 					max_in_flight_update_id = cmp::max(max_in_flight_update_id, update.update_id);
 					pending_background_events.push(
@@ -14744,11 +14752,31 @@ where
 							debug_assert!(false, "Non-event-generating channel freeing should not appear in our queue");
 						}
 					}
+					// Note that we may have a post-update action for a channel that has no pending
+					// `ChannelMonitorUpdate`s, but unlike the no-peer-state case, it may simply be
+					// because we had a `ChannelMonitorUpdate` complete after the last time this
+					// `ChannelManager` was serialized. In that case, we'll run the post-update
+					// actions as soon as we get going.
 				}
 				peer_state.lock().unwrap().monitor_update_blocked_actions = monitor_update_blocked_actions;
 			} else {
-				log_error!(WithContext::from(&args.logger, Some(node_id), None, None), "Got blocked actions without a per-peer-state for {}", node_id);
-				return Err(DecodeError::InvalidValue);
+				for actions in monitor_update_blocked_actions.values() {
+					for action in actions.iter() {
+						if matches!(action, MonitorUpdateCompletionAction::PaymentClaimed { .. }) {
+							// If there are no state for this channel but we have pending
+							// post-update actions, its possible that one was left over from pre-0.1
+							// payment claims where MPP claims led to a channel blocked on itself
+							// and later `ChannelMonitorUpdate`s didn't get their post-update
+							// actions run.
+							// This should only have happened for `PaymentClaimed` post-update actions,
+							// which we ignore here.
+						} else {
+							let logger = WithContext::from(&args.logger, Some(node_id), None, None);
+							log_error!(logger, "Got blocked actions {:?} without a per-peer-state for {}", monitor_update_blocked_actions, node_id);
+							return Err(DecodeError::InvalidValue);
+						}
+					}
+				}
 			}
 		}
 
