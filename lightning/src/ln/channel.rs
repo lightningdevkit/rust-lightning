@@ -5053,8 +5053,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			},
 		};
 
-		let mut is_funding_tx_confirmed = false;
-
 		// Check if the transaction is the expected funding transaction, and if it is,
 		// check that it pays the right amount to the right script.
 		if funding.funding_tx_confirmation_height == 0 {
@@ -5102,13 +5100,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 						Ok(scid) => Some(scid),
 						Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 					};
-				}
 
-				is_funding_tx_confirmed = true;
+					return Ok(true);
+				}
 			}
 		}
 
-		Ok(is_funding_tx_confirmed)
+		Ok(false)
 	}
 
 	fn check_for_funding_tx_spent<L: Deref>(
