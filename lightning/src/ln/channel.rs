@@ -8482,8 +8482,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 			if is_funding_tx_confirmed {
 				if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
-					for &(_, tx) in txdata.iter() {
-						self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
+					for &(idx, tx) in txdata.iter() {
+						if idx > index_in_block {
+							self.context.check_for_funding_tx_spent(&self.funding, tx, logger)?;
+						}
 					}
 
 					log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
@@ -8522,8 +8524,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				let funding = self.pending_funding.get(confirmed_funding_index).unwrap();
 
 				if let Some(splice_locked) = self.check_get_splice_locked(pending_splice, funding, height) {
-					for &(_, tx) in txdata.iter() {
-						self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+					for &(idx, tx) in txdata.iter() {
+						if idx > index_in_block {
+							self.context.check_for_funding_tx_spent(funding, tx, logger)?;
+						}
 					}
 
 					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
