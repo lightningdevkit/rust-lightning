@@ -996,12 +996,7 @@ pub trait ChangeDestinationSourceSync {
 }
 
 /// A wrapper around [`ChangeDestinationSource`] to allow for async calls.
-#[cfg(any(test, feature = "_test_utils"))]
 pub struct ChangeDestinationSourceSyncWrapper<T: Deref>(T)
-where
-	T::Target: ChangeDestinationSourceSync;
-#[cfg(not(any(test, feature = "_test_utils")))]
-pub(crate) struct ChangeDestinationSourceSyncWrapper<T: Deref>(T)
 where
 	T::Target: ChangeDestinationSourceSync;
 
