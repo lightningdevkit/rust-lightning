@@ -2910,6 +2910,11 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
 pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
 
+/// The number of blocks to wait for a channel_announcement to propagate such that payments using an
+/// older SCID can still be relayed. Once the spend of the previous funding transaction has reached
+/// this number of confirmations, the corresponding SCID will be forgotten.
+const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 12;
+
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
 #[derive(Debug, PartialEq)]
@@ -11693,7 +11698,8 @@ where
 			// Remove any scids used by old splice funding transactions
 			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 			channel.context.historical_scids.retain(|scid| {
-				let retain_scid = block_from_scid(*scid) + 12 > height;
+				let funding_height = block_from_scid(*scid);
+				let retain_scid = funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY > height;
 				if !retain_scid {
 					short_to_chan_info.remove(scid);
 				}
