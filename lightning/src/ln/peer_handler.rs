@@ -1899,6 +1899,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 
 			// Channel messages:
+			wire::Message::StartBatch(_msg) => {
+				debug_assert!(false);
+			},
 			wire::Message::OpenChannel(msg) => {
 				self.message_handler.chan_handler.handle_open_channel(their_node_id, &msg);
 			},
@@ -1984,9 +1987,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 
 			// Commitment messages:
-			wire::Message::StartBatch(_msg) => {
-				debug_assert!(false);
-			},
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(their_node_id, &msg);
 			},
