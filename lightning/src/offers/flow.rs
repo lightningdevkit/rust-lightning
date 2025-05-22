@@ -193,7 +193,7 @@ where
 /// Sending multiple requests increases the chances of successful delivery in case some
 /// paths are unavailable. However, only one invoice for a given [`PaymentId`] will be paid,
 /// even if multiple invoices are received.
-pub(crate) const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
+const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
 impl<MR: Deref> OffersMessageFlow<MR>
 where
