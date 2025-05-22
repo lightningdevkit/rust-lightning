@@ -505,7 +505,7 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 		channel_id: chan.2,
 		signature: res.0,
 		htlc_signatures: res.1,
-		batch: None,
+		funding_txid: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	};
@@ -598,7 +598,7 @@ pub fn test_update_fee_that_saturates_subs() {
 		channel_id: chan_id,
 		signature: res.0,
 		htlc_signatures: res.1,
-		batch: None,
+		funding_txid: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	};
