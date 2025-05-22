@@ -686,6 +686,18 @@ pub struct ClosingSigned {
 	pub fee_range: Option<ClosingSignedFeeRange>,
 }
 
+/// A [`start_batch`] message to be sent to group together multiple channel messages as a single
+/// logical message.
+///
+/// [`start_batch`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#batching-channel-messages
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct StartBatch {
+	/// The channel ID of all messages in the batch.
+	pub channel_id: ChannelId,
+	/// The number of messages to follow.
+	pub batch_size: u16,
+}
+
 /// An [`update_add_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_add_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#adding-an-htlc-update_add_htlc
@@ -3096,6 +3108,11 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 impl_writeable_msg!(PeerStorage, { data }, {});
 
 impl_writeable_msg!(PeerStorageRetrieval, { data }, {});
+
+impl_writeable_msg!(StartBatch, {
+	channel_id,
+	batch_size
+}, {});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
 // serialization format in a way which assumes we know the total serialized length/message end

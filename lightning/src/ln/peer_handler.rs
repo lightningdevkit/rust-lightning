@@ -1901,6 +1901,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 
 			// Channel messages:
+			wire::Message::StartBatch(_msg) => {
+				debug_assert!(false);
+			},
 			wire::Message::OpenChannel(msg) => {
 				self.message_handler.chan_handler.handle_open_channel(their_node_id, &msg);
 			},
