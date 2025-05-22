@@ -1984,6 +1984,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 
 			// Commitment messages:
+			wire::Message::StartBatch(_msg) => {
+				debug_assert!(false);
+			},
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(their_node_id, &msg);
 			},
