@@ -807,15 +807,6 @@ pub struct UpdateFailMalformedHTLC {
 	pub failure_code: u16,
 }
 
-/// Optional batch parameters for `commitment_signed` message.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct CommitmentSignedBatch {
-	/// Batch size N: all N `commitment_signed` messages must be received before being processed
-	pub batch_size: u16,
-	/// The funding transaction, to discriminate among multiple pending funding transactions (e.g. in case of splicing)
-	pub funding_txid: Txid,
-}
-
 /// A [`commitment_signed`] message to be sent to or received from a peer.
 ///
 /// [`commitment_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#committing-updates-so-far-commitment_signed
@@ -827,8 +818,8 @@ pub struct CommitmentSigned {
 	pub signature: Signature,
 	/// Signatures on the HTLC transactions
 	pub htlc_signatures: Vec<Signature>,
-	/// Optional batch size and other parameters
-	pub batch: Option<CommitmentSignedBatch>,
+	/// The funding transaction, to discriminate among multiple pending funding transactions (e.g. in case of splicing)
+	pub funding_txid: Option<Txid>,
 	#[cfg(taproot)]
 	/// The partial Taproot signature on the commitment transaction
 	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
@@ -1986,15 +1977,14 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 	) {
 		assert!(!batch.is_empty());
 		if batch.len() == 1 {
-			assert!(batch[0].batch.is_none());
 			self.handle_commitment_signed(their_node_id, &batch[0]);
 		} else {
 			let channel_id = batch[0].channel_id;
 			let batch: BTreeMap<Txid, CommitmentSigned> = batch
 				.iter()
 				.cloned()
-				.map(|mut cs| {
-					let funding_txid = cs.batch.take().unwrap().funding_txid;
+				.map(|cs| {
+					let funding_txid = cs.funding_txid.unwrap();
 					(funding_txid, cs)
 				})
 				.collect();
@@ -2768,18 +2758,14 @@ impl_writeable!(ClosingSignedFeeRange, {
 	max_fee_satoshis
 });
 
-impl_writeable_msg!(CommitmentSignedBatch, {
-	batch_size,
-	funding_txid,
-}, {});
-
 #[cfg(not(taproot))]
 impl_writeable_msg!(CommitmentSigned, {
 	channel_id,
 	signature,
 	htlc_signatures
 }, {
-	(0, batch, option),
+	// TOOD(splicing): Change this to 1 once the spec is finalized
+	(1001, funding_txid, option),
 });
 
 #[cfg(taproot)]
@@ -2788,8 +2774,9 @@ impl_writeable_msg!(CommitmentSigned, {
 	signature,
 	htlc_signatures
 }, {
-	(0, batch, option),
 	(2, partial_signature_with_nonce, option),
+	// TOOD(splicing): Change this to 1 and reorder once the spec is finalized
+	(1001, funding_txid, option),
 });
 
 impl_writeable!(DecodedOnionErrorPacket, {
@@ -5649,13 +5636,10 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			signature: sig_1,
 			htlc_signatures: if htlcs { vec![sig_2, sig_3, sig_4] } else { Vec::new() },
-			batch: Some(msgs::CommitmentSignedBatch {
-				batch_size: 3,
-				funding_txid: Txid::from_str(
-					"c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e",
-				)
-				.unwrap(),
-			}),
+			funding_txid: Some(
+				Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e")
+					.unwrap(),
+			),
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
 		};
@@ -5666,7 +5650,9 @@ mod tests {
 		} else {
 			target_value += "0000";
 		}
-		target_value += "002200036e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2"; // batch
+		target_value += "fd03e9"; // Type (funding_txid)
+		target_value += "20"; // Length (funding_txid)
+		target_value += "6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2"; // Value
 		assert_eq!(encoded_value.as_hex().to_string(), target_value);
 	}
 

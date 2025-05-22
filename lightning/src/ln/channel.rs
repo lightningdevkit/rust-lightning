@@ -4978,7 +4978,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			channel_id: self.channel_id,
 			htlc_signatures: vec![],
 			signature,
-			batch: None,
+			funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
 		})
@@ -5946,10 +5946,6 @@ impl<SP: Deref> FundedChannel<SP> where
 					"Received initial commitment_signed before funding transaction constructed or after peer's tx_signatures received!".to_owned(),
 					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 				)));
-		}
-
-		if msg.batch.is_some() {
-			return Err(ChannelError::close("Peer sent initial commitment_signed with a batch".to_owned()));
 		}
 
 		let holder_commitment_point = &mut self.holder_commitment_point.clone();
@@ -9349,20 +9345,11 @@ impl<SP: Deref> FundedChannel<SP> where
 					}
 				}
 
-				let batch = if self.pending_funding.is_empty() { None } else {
-					Some(msgs::CommitmentSignedBatch {
-						batch_size: self.pending_funding.len() as u16 + 1,
-						funding_txid: funding
-							.get_funding_txo()
-							.expect("splices should have their funding transactions negotiated before exiting quiescence while un-negotiated splices are discarded on reload")
-							.txid,
-					})
-				};
 				Ok(msgs::CommitmentSigned {
 					channel_id: self.context.channel_id,
 					signature,
 					htlc_signatures,
-					batch,
+					funding_txid: funding.get_funding_txo().map(|funding_txo| funding_txo.txid),
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
 				})
