@@ -696,6 +696,8 @@ pub struct StartBatch {
 	pub channel_id: ChannelId,
 	/// The number of messages to follow.
 	pub batch_size: u16,
+	/// The type of all messages expected in the batch.
+	pub message_type: Option<u16>,
 }
 
 /// An [`update_add_htlc`] message to be sent to or received from a peer.
@@ -3099,7 +3101,9 @@ impl_writeable_msg!(PeerStorageRetrieval, { data }, {});
 impl_writeable_msg!(StartBatch, {
 	channel_id,
 	batch_size
-}, {});
+}, {
+	(1, message_type, option)
+});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
 // serialization format in a way which assumes we know the total serialized length/message end
