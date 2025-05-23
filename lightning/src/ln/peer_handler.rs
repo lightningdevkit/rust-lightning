@@ -1772,20 +1772,48 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		// before they are handled.
 		if let wire::Message::StartBatch(msg) = message {
 			if peer_lock.commitment_signed_batch.is_some() {
-				log_debug!(logger, "Peer {} sent start_batch for channel {} before previous batch completed", log_pubkey!(their_node_id), &msg.channel_id);
-				return Err(PeerHandleError { }.into());
+				let error = format!("Peer {} sent start_batch for channel {} before previous batch completed", log_pubkey!(their_node_id), &msg.channel_id);
+				log_debug!(logger, "{}", error);
+				return Err(LightningError {
+					err: error.clone(),
+					action: msgs::ErrorAction::DisconnectPeerWithWarning {
+						msg: msgs::WarningMessage {
+							channel_id: msg.channel_id,
+							data: error,
+						},
+					},
+				}.into());
 			}
 
 			let batch_size = msg.batch_size as usize;
 			if batch_size <= 1 {
-				log_debug!(logger, "Peer {} sent start_batch for channel {} not strictly greater than 1", log_pubkey!(their_node_id), &msg.channel_id);
-				return Err(PeerHandleError { }.into());
+				let error = format!("Peer {} sent start_batch for channel {} not strictly greater than 1", log_pubkey!(their_node_id), &msg.channel_id);
+				log_debug!(logger, "{}", error);
+				return Err(LightningError {
+					err: error.clone(),
+					action: msgs::ErrorAction::SendWarningMessage {
+						msg: msgs::WarningMessage {
+							channel_id: msg.channel_id,
+							data: error,
+						},
+						log_level: Level::Debug,
+					},
+				}.into());
 			}
 
 			const COMMITMENT_SIGNED_BATCH_LIMIT: usize = 20;
 			if batch_size > COMMITMENT_SIGNED_BATCH_LIMIT {
-				log_debug!(logger, "Peer {} sent start_batch for channel {} exceeding the limit", log_pubkey!(their_node_id), &msg.channel_id);
-				return Err(PeerHandleError { }.into());
+				let error = format!("Peer {} sent start_batch for channel {} exceeding the limit", log_pubkey!(their_node_id), &msg.channel_id);
+				log_debug!(logger, "{}", error);
+				return Err(LightningError {
+					err: error.clone(),
+					action: msgs::ErrorAction::DisconnectPeerWithWarning {
+						msg: msgs::WarningMessage {
+							channel_id: msg.channel_id,
+							data: error,
+						},
+					},
+				}.into());
 			}
 
 			peer_lock.commitment_signed_batch = Some((msg.channel_id, batch_size, BTreeMap::new()));
@@ -1796,8 +1824,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		if let wire::Message::CommitmentSigned(msg) = message {
 			if let Some((channel_id, batch_size, buffer)) = &mut peer_lock.commitment_signed_batch {
 				if msg.channel_id != *channel_id {
-					log_debug!(logger, "Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), channel_id, &msg.channel_id);
-					return Err(PeerHandleError { }.into());
+					let error = format!("Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), channel_id, &msg.channel_id);
+					log_debug!(logger, "{}", error);
+					return Err(LightningError {
+						err: error.clone(),
+						action: msgs::ErrorAction::DisconnectPeerWithWarning {
+							msg: msgs::WarningMessage {
+								channel_id: msg.channel_id,
+								data: error,
+							},
+						},
+					}.into());
 				}
 
 				let funding_txid = match msg.funding_txid {
