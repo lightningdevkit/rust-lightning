@@ -71,6 +71,7 @@ pub struct TestChannelSigner {
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
+	pub disable_all_state_policy_checks: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -124,6 +125,7 @@ impl TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
+			disable_all_state_policy_checks: false,
 		}
 	}
 
@@ -132,12 +134,11 @@ impl TestChannelSigner {
 	/// Since there are multiple copies of this struct for each channel, some coordination is needed
 	/// so that all copies are aware of enforcement state.  A pointer to this state is provided
 	/// here, usually by an implementation of KeysInterface.
-	pub fn new_with_revoked(inner: InMemorySigner, state: Arc<Mutex<EnforcementState>>, disable_revocation_policy_check: bool) -> Self {
-		Self {
-			inner,
-			state,
-			disable_revocation_policy_check,
-		}
+	pub fn new_with_revoked(
+		inner: InMemorySigner, state: Arc<Mutex<EnforcementState>>,
+		disable_revocation_policy_check: bool, disable_all_state_policy_checks: bool,
+	) -> Self {
+		Self { inner, state, disable_revocation_policy_check, disable_all_state_policy_checks }
 	}
 
 	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features().unwrap() }
@@ -177,19 +178,26 @@ impl ChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::ReleaseCommitmentSecret) {
 			return Err(());
 		}
-		{
-			let mut state = self.state.lock().unwrap();
+		let mut state = self.state.lock().unwrap();
+		if !self.disable_all_state_policy_checks {
 			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);
 			assert!(idx > state.last_holder_commitment, "cannot revoke the last holder commitment - attempted to revoke {} last commitment {}", idx, state.last_holder_commitment);
-			state.last_holder_revoked_commitment = idx;
 		}
+		state.last_holder_revoked_commitment = idx;
 		self.inner.release_commitment_secret(idx)
 	}
 
 	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
-		assert!(idx == state.last_holder_commitment || idx == state.last_holder_commitment - 1, "expecting to validate the current or next holder commitment - trying {}, current {}", idx, state.last_holder_commitment);
+		if !self.disable_all_state_policy_checks {
+			assert!(
+				idx == state.last_holder_commitment || idx == state.last_holder_commitment - 1,
+				"expecting to validate the current or next holder commitment - trying {}, current {}",
+				idx,
+				state.last_holder_commitment
+			);
+		}
 		state.last_holder_commitment = idx;
 		Ok(())
 	}
@@ -200,7 +208,9 @@ impl ChannelSigner for TestChannelSigner {
 			return Err(());
 		}
 		let mut state = self.state.lock().unwrap();
-		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
+		if !self.disable_all_state_policy_checks {
+			assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
+		}
 		state.last_counterparty_revoked_commitment = idx;
 		Ok(())
 	}
@@ -218,22 +228,28 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>, outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
-		{
-			#[cfg(test)]
-			if !self.is_signer_available(SignerOp::SignCounterpartyCommitment) {
-				return Err(());
-			}
-			let mut state = self.state.lock().unwrap();
-			let actual_commitment_number = commitment_tx.commitment_number();
-			let last_commitment_number = state.last_counterparty_commitment;
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::SignCounterpartyCommitment) {
+			return Err(());
+		}
+		let mut state = self.state.lock().unwrap();
+		let actual_commitment_number = commitment_tx.commitment_number();
+		let last_commitment_number = state.last_counterparty_commitment;
+		if !self.disable_all_state_policy_checks {
 			// These commitment numbers are backwards counting.  We expect either the same as the previously encountered,
 			// or the next one.
 			assert!(last_commitment_number == actual_commitment_number || last_commitment_number - 1 == actual_commitment_number, "{} doesn't come after {}", actual_commitment_number, last_commitment_number);
 			// Ensure that the counterparty doesn't get more than two broadcastable commitments -
 			// the last and the one we are trying to sign
-			assert!(actual_commitment_number >= state.last_counterparty_revoked_commitment - 2, "cannot sign a commitment if second to last wasn't revoked - signing {} revoked {}", actual_commitment_number, state.last_counterparty_revoked_commitment);
-			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
+			assert!(
+				actual_commitment_number >= state.last_counterparty_revoked_commitment - 2,
+				"cannot sign a commitment if second to last wasn't revoked - signing {} revoked {}",
+				actual_commitment_number,
+				state.last_counterparty_revoked_commitment
+			);
 		}
+		state.last_counterparty_commitment =
+			cmp::min(last_commitment_number, actual_commitment_number);
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
 	}
@@ -244,12 +260,14 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			return Err(());
 		}
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
-		let state = self.state.lock().unwrap();
-		let commitment_number = trusted_tx.commitment_number();
-		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
-			if !self.disable_revocation_policy_check {
-				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
+		if !self.disable_all_state_policy_checks {
+			let state = self.state.lock().unwrap();
+			let commitment_number = trusted_tx.commitment_number();
+			if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
+				if !self.disable_revocation_policy_check {
+					panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+						   state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
+				}
 			}
 		}
 		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
@@ -284,13 +302,15 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::SignHolderHtlcTransaction) {
 			return Err(());
 		}
-		let state = self.state.lock().unwrap();
-		if state.last_holder_revoked_commitment - 1 != htlc_descriptor.per_commitment_number &&
-			state.last_holder_revoked_commitment - 2 != htlc_descriptor.per_commitment_number
-		{
-			if !self.disable_revocation_policy_check {
-				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed[0])
+		if !self.disable_all_state_policy_checks {
+			let state = self.state.lock().unwrap();
+			if state.last_holder_revoked_commitment - 1 != htlc_descriptor.per_commitment_number &&
+				state.last_holder_revoked_commitment - 2 != htlc_descriptor.per_commitment_number
+			{
+				if !self.disable_revocation_policy_check {
+					panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+						   state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed[0])
+				}
 			}
 		}
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());

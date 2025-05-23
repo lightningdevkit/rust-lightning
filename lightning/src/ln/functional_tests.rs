@@ -24,7 +24,7 @@ use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT, get_holder_selected_channel_reserve_satoshis, OutboundV1Channel, InboundV1Channel, COINBASE_MATURITY, ChannelPhase};
 use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
-use crate::ln::channel::{DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
+use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
@@ -673,28 +673,49 @@ fn test_update_fee_vanilla() {
 	check_added_monitors!(nodes[1], 1);
 }
 
-#[test]
-fn test_update_fee_that_funder_cannot_afford() {
+pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: ChannelTypeFeatures) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+
+	let mut default_config = test_default_channel_config();
+	if channel_type_features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		// this setting is also needed to create an anchor channel
+		default_config.manually_accept_inbound_channels = true;
+	}
+
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(default_config.clone()), Some(default_config.clone())],
+	);
+
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_value = 5000;
 	let push_sats = 700;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, push_sats * 1000);
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
-	let default_config = UserConfig::default();
 	let bs_channel_reserve_sats = get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
 
-	let channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+	let (anchor_outputs_value_sats, outputs_num_no_htlcs) =
+		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+			(ANCHOR_OUTPUT_VALUE_SATOSHI * 2, 4)
+		} else {
+			(0, 2)
+		};
 
 	// Calculate the maximum feerate that A can afford. Note that we don't send an update_fee
 	// CONCURRENT_INBOUND_HTLC_FEE_BUFFER HTLCs before actually running out of local balance, so we
 	// calculate two different feerates here - the expected local limit as well as the expected
 	// remote limit.
-	let feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / (commitment_tx_base_weight(&channel_type_features) + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)) as u32;
-	let non_buffer_feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / commitment_tx_base_weight(&channel_type_features)) as u32;
+	let feerate =
+		((channel_value - bs_channel_reserve_sats - push_sats - anchor_outputs_value_sats) * 1000
+			/ (commitment_tx_base_weight(&channel_type_features)
+				+ CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)) as u32;
+	let non_buffer_feerate =
+		((channel_value - bs_channel_reserve_sats - push_sats - anchor_outputs_value_sats) * 1000
+			/ commitment_tx_base_weight(&channel_type_features)) as u32;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = feerate;
@@ -711,8 +732,8 @@ fn test_update_fee_that_funder_cannot_afford() {
 	{
 		let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
 
-		//We made sure neither party's funds are below the dust limit and there are no HTLCs here
-		assert_eq!(commitment_tx.output.len(), 2);
+		// We made sure neither party's funds are below the dust limit and there are no HTLCs here
+		assert_eq!(commitment_tx.output.len(), outputs_num_no_htlcs);
 		let total_fee: u64 = commit_tx_fee_msat(feerate, 0, &channel_type_features) / 1000;
 		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value.to_sat());
 		actual_fee = channel_value - actual_fee;
@@ -771,7 +792,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			push_sats,
-			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
+			channel_value - push_sats - anchor_outputs_value_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
 			local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
@@ -806,6 +827,14 @@ fn test_update_fee_that_funder_cannot_afford() {
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: String::from("Funding remote cannot afford proposed new fee") },
 		[nodes[0].node.get_our_node_id()], channel_value);
+}
+
+#[test]
+pub fn test_update_fee_that_funder_cannot_afford() {
+	do_test_update_fee_that_funder_cannot_afford(ChannelTypeFeatures::only_static_remote_key());
+	do_test_update_fee_that_funder_cannot_afford(
+		ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+	);
 }
 
 #[test]
