@@ -537,6 +537,28 @@ enum InitSyncTracker{
 	NodesSyncing(NodeId),
 }
 
+/// A batch of messages initiated when receiving a `start_batch` message.
+struct MessageBatch {
+	/// The channel associated with all the messages in the batch.
+	channel_id: ChannelId,
+
+	/// The number of messages expected to be in the batch.
+	batch_size: usize,
+
+	/// The batch of messages, which should all be of the same type.
+	messages: MessageBatchImpl,
+}
+
+/// The representation of the message batch, which may different for each message type.
+enum MessageBatchImpl {
+	/// Used before the first message in the batch is received, since the type of messages in the
+	/// batch is not yet known.
+	Unknown,
+
+	/// A batch of `commitment_signed` messages, where each has a unique `funding_txid`.
+	CommitmentSigned(BTreeMap<Txid, msgs::CommitmentSigned>),
+}
+
 /// The ratio between buffer sizes at which we stop sending initial sync messages vs when we stop
 /// forwarding gossip messages to peers altogether.
 const FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO: usize = 2;
@@ -618,7 +640,7 @@ struct Peer {
 
 	inbound_connection: bool,
 
-	commitment_signed_batch: Option<(ChannelId, usize, BTreeMap<Txid, msgs::CommitmentSigned>)>,
+	message_batch: Option<MessageBatch>,
 }
 
 impl Peer {
@@ -1157,7 +1179,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: false,
 
-					commitment_signed_batch: None,
+					message_batch: None,
 				}));
 				Ok(res)
 			}
@@ -1215,7 +1237,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: true,
 
-					commitment_signed_batch: None,
+					message_batch: None,
 				}));
 				Ok(())
 			}
@@ -1771,7 +1793,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		// During splicing, commitment_signed messages need to be collected into a single batch
 		// before they are handled.
 		if let wire::Message::StartBatch(msg) = message {
-			if peer_lock.commitment_signed_batch.is_some() {
+			if peer_lock.message_batch.is_some() {
 				let error = format!("Peer {} sent start_batch for channel {} before previous batch completed", log_pubkey!(their_node_id), &msg.channel_id);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -1816,15 +1838,29 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				}.into());
 			}
 
-			peer_lock.commitment_signed_batch = Some((msg.channel_id, batch_size, BTreeMap::new()));
+			let message_batch = MessageBatch {
+				channel_id: msg.channel_id,
+				batch_size: msg.batch_size as usize,
+				messages: MessageBatchImpl::Unknown,
+			};
+			peer_lock.message_batch = Some(message_batch);
 
 			return Ok(None);
 		}
 
 		if let wire::Message::CommitmentSigned(msg) = message {
-			if let Some((channel_id, batch_size, buffer)) = &mut peer_lock.commitment_signed_batch {
-				if msg.channel_id != *channel_id {
-					let error = format!("Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), channel_id, &msg.channel_id);
+			if let Some(message_batch) = &mut peer_lock.message_batch {
+				if let MessageBatchImpl::Unknown = message_batch.messages {
+					message_batch.messages = MessageBatchImpl::CommitmentSigned(BTreeMap::new());
+				}
+
+				let buffer = match &mut message_batch.messages {
+					MessageBatchImpl::Unknown => unreachable!(),
+					MessageBatchImpl::CommitmentSigned(ref mut messages) => messages,
+				};
+
+				if msg.channel_id != message_batch.channel_id {
+					let error = format!("Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), message_batch.channel_id, &msg.channel_id);
 					log_debug!(logger, "{}", error);
 					return Err(LightningError {
 						err: error.clone(),
@@ -1840,7 +1876,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let funding_txid = match msg.funding_txid {
 					Some(funding_txid) => funding_txid,
 					None => {
-						log_debug!(logger, "Peer {} sent batched commitment_signed without a funding_txid for channel {}", log_pubkey!(their_node_id), channel_id);
+						log_debug!(logger, "Peer {} sent batched commitment_signed without a funding_txid for channel {}", log_pubkey!(their_node_id), message_batch.channel_id);
 						return Err(PeerHandleError { }.into());
 					},
 				};
@@ -1848,13 +1884,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				match buffer.entry(funding_txid) {
 					btree_map::Entry::Vacant(entry) => { entry.insert(msg); },
 					btree_map::Entry::Occupied(_) => {
-						log_debug!(logger, "Peer {} sent batched commitment_signed with duplicate funding_txid {} for channel {}", log_pubkey!(their_node_id), funding_txid, channel_id);
+						log_debug!(logger, "Peer {} sent batched commitment_signed with duplicate funding_txid {} for channel {}", log_pubkey!(their_node_id), funding_txid, message_batch.channel_id);
 						return Err(PeerHandleError { }.into());
 					}
 				}
 
-				if buffer.len() == *batch_size {
-					let (channel_id, _, batch) = peer_lock.commitment_signed_batch.take().expect("batch should have been inserted");
+				if buffer.len() == message_batch.batch_size {
+					let MessageBatch { channel_id, batch_size: _, messages } = peer_lock.message_batch.take().expect("batch should have been inserted");
+					let batch = match messages {
+						MessageBatchImpl::Unknown => unreachable!(),
+						MessageBatchImpl::CommitmentSigned(messages) => messages,
+					};
+
 					return Ok(Some(LogicalMessage::CommitmentSignedBatch(channel_id, batch)));
 				} else {
 					return Ok(None);
@@ -1862,8 +1903,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			} else {
 				return Ok(Some(LogicalMessage::FromWire(wire::Message::CommitmentSigned(msg))));
 			}
-		} else if peer_lock.commitment_signed_batch.is_some() {
-			log_debug!(logger, "Peer {} sent non-commitment_signed message when expecting batched commitment_signed", log_pubkey!(their_node_id));
+		} else if let Some(message_batch) = &peer_lock.message_batch {
+			match message_batch.messages {
+				MessageBatchImpl::Unknown => {
+					log_debug!(logger, "Peer {} sent an unexpected message for a batch", log_pubkey!(their_node_id));
+				},
+				MessageBatchImpl::CommitmentSigned(_) => {
+					log_debug!(logger, "Peer {} sent an unexpected message for a commitment_signed batch", log_pubkey!(their_node_id));
+				},
+			}
+
 			return Err(PeerHandleError { }.into());
 		}
 
