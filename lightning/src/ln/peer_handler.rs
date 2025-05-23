@@ -17,7 +17,6 @@
 //! call into the provided message handlers (probably a ChannelManager and P2PGossipSync) with
 //! messages they should handle, and encoding/sending response messages.
 
-use bitcoin::Txid;
 use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
@@ -43,8 +42,6 @@ use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
-
-use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
 use crate::sync::{Mutex, MutexGuard, FairRwLock};
@@ -337,8 +334,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_commitment_signed_batch(
-		&self, their_node_id: PublicKey, channel_id: ChannelId,
-		_batch: BTreeMap<Txid, msgs::CommitmentSigned>,
+		&self, their_node_id: PublicKey, channel_id: ChannelId, _batch: Vec<msgs::CommitmentSigned>,
 	) {
 		ErroringMessageHandler::push_error(self, their_node_id, channel_id);
 	}
@@ -553,8 +549,8 @@ struct MessageBatch {
 
 /// The representation of the message batch, which may different for each message type.
 enum MessageBatchImpl {
-	/// A batch of `commitment_signed` messages, where each has a unique `funding_txid`.
-	CommitmentSigned(BTreeMap<Txid, msgs::CommitmentSigned>),
+	/// A batch of `commitment_signed` messages used when there are pending splices.
+	CommitmentSigned(Vec<msgs::CommitmentSigned>),
 }
 
 /// The ratio between buffer sizes at which we stop sending initial sync messages vs when we stop
@@ -891,7 +887,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 
 enum LogicalMessage<T: core::fmt::Debug + wire::Type + wire::TestEq> {
 	FromWire(wire::Message<T>),
-	CommitmentSignedBatch(ChannelId, BTreeMap<Txid, msgs::CommitmentSigned>),
+	CommitmentSignedBatch(ChannelId, Vec<msgs::CommitmentSigned>),
 }
 
 enum MessageHandlingError {
@@ -1838,7 +1834,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			let messages = match msg.message_type {
 				Some(message_type) if message_type == msgs::CommitmentSigned::TYPE => {
-					MessageBatchImpl::CommitmentSigned(BTreeMap::new())
+					let messages = Vec::with_capacity(batch_size);
+					MessageBatchImpl::CommitmentSigned(messages)
 				},
 				_ => {
 					let error = format!("Peer {} sent start_batch for channel {} without a known message type", log_pubkey!(their_node_id), &msg.channel_id);
@@ -1867,7 +1864,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		if let wire::Message::CommitmentSigned(msg) = message {
 			if let Some(message_batch) = &mut peer_lock.message_batch {
-				let MessageBatchImpl::CommitmentSigned(ref mut buffer) = &mut message_batch.messages;
+				let MessageBatchImpl::CommitmentSigned(ref mut messages) = &mut message_batch.messages;
 
 				if msg.channel_id != message_batch.channel_id {
 					let error = format!("Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), message_batch.channel_id, &msg.channel_id);
@@ -1883,23 +1880,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}.into());
 				}
 
-				let funding_txid = match msg.funding_txid {
-					Some(funding_txid) => funding_txid,
-					None => {
-						log_debug!(logger, "Peer {} sent batched commitment_signed without a funding_txid for channel {}", log_pubkey!(their_node_id), message_batch.channel_id);
-						return Err(PeerHandleError { }.into());
-					},
-				};
+				messages.push(msg);
 
-				match buffer.entry(funding_txid) {
-					btree_map::Entry::Vacant(entry) => { entry.insert(msg); },
-					btree_map::Entry::Occupied(_) => {
-						log_debug!(logger, "Peer {} sent batched commitment_signed with duplicate funding_txid {} for channel {}", log_pubkey!(their_node_id), funding_txid, message_batch.channel_id);
-						return Err(PeerHandleError { }.into());
-					}
-				}
-
-				if buffer.len() == message_batch.batch_size {
+				if messages.len() == message_batch.batch_size {
 					let MessageBatch { channel_id, batch_size: _, messages } = peer_lock.message_batch.take().expect("batch should have been inserted");
 					let MessageBatchImpl::CommitmentSigned(batch) = messages;
 

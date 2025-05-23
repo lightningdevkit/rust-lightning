@@ -47,8 +47,6 @@ use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use alloc::collections::BTreeMap;
-
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 use core::fmt;
@@ -1967,8 +1965,7 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 	fn handle_commitment_signed(&self, their_node_id: PublicKey, msg: &CommitmentSigned);
 	/// Handle a batch of incoming `commitment_signed` message from the given peer.
 	fn handle_commitment_signed_batch(
-		&self, their_node_id: PublicKey, channel_id: ChannelId,
-		batch: BTreeMap<Txid, CommitmentSigned>,
+		&self, their_node_id: PublicKey, channel_id: ChannelId, batch: Vec<CommitmentSigned>,
 	);
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK);
@@ -1982,15 +1979,7 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 			self.handle_commitment_signed(their_node_id, &batch[0]);
 		} else {
 			let channel_id = batch[0].channel_id;
-			let batch: BTreeMap<Txid, CommitmentSigned> = batch
-				.iter()
-				.cloned()
-				.map(|cs| {
-					let funding_txid = cs.funding_txid.unwrap();
-					(funding_txid, cs)
-				})
-				.collect();
-			self.handle_commitment_signed_batch(their_node_id, channel_id, batch);
+			self.handle_commitment_signed_batch(their_node_id, channel_id, batch.clone());
 		}
 	}
 

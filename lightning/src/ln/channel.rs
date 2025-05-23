@@ -68,7 +68,7 @@ use crate::util::errors::APIError;
 use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits, MaxDustHTLCExposure};
 use crate::util::scid_utils::scid_from_parts;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
 use crate::prelude::*;
@@ -5987,10 +5987,27 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.commitment_signed_update_monitor(updates, logger)
 	}
 
-	pub fn commitment_signed_batch<L: Deref>(&mut self, batch: &BTreeMap<Txid, msgs::CommitmentSigned>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	pub fn commitment_signed_batch<L: Deref>(&mut self, batch: Vec<msgs::CommitmentSigned>, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
 		where L::Target: Logger
 	{
 		self.commitment_signed_check_state()?;
+
+		let mut messages = BTreeMap::new();
+		for msg in batch {
+			let funding_txid = match msg.funding_txid {
+				Some(funding_txid) => funding_txid,
+				None => {
+					return Err(ChannelError::close("Peer sent batched commitment_signed without a funding_txid".to_string()));
+				},
+			};
+
+			match messages.entry(funding_txid) {
+				btree_map::Entry::Vacant(entry) => { entry.insert(msg); },
+				btree_map::Entry::Occupied(_) => {
+					return Err(ChannelError::close(format!("Peer sent batched commitment_signed with duplicate funding_txid {}", funding_txid)));
+				}
+			}
+		}
 
 		// Any commitment_signed not associated with a FundingScope is ignored below if a
 		// pending splice transaction has confirmed since receiving the batch.
@@ -5998,7 +6015,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			.chain(self.pending_funding.iter())
 			.map(|funding| {
 				let funding_txid = funding.get_funding_txo().unwrap().txid;
-				let msg = batch
+				let msg = messages
 					.get(&funding_txid)
 					.ok_or_else(|| ChannelError::close(format!("Peer did not send a commitment_signed for pending splice transaction: {}", funding_txid)))?;
 				self.context
