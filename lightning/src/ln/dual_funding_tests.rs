@@ -39,7 +39,9 @@ struct V2ChannelEstablishmentTestSession {
 fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut node_1_user_config = test_default_channel_config();
+	node_1_user_config.enable_dual_funded_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(node_1_user_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 
@@ -206,13 +208,6 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	assert!(events.is_empty());
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::ChannelPending { channel_id: chan_id, .. } => assert_eq!(chan_id, channel_id),
-		_ => panic!("Unexpected event"),
-	};
-
 	let tx_signatures_msg = get_event_msg!(
 		nodes[1],
 		MessageSendEvent::SendTxSignatures,
@@ -233,6 +228,13 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 			shared_input_signature: None,
 		},
 	);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelPending { channel_id: chan_id, .. } => assert_eq!(chan_id, channel_id),
+		_ => panic!("Unexpected event"),
+	};
 
 	// For an inbound channel V2 channel the transaction should be broadcast once receiving a
 	// tx_signature and applying local tx_signatures:

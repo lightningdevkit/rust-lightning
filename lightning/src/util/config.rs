@@ -880,6 +880,10 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	pub manually_handle_bolt12_invoices: bool,
+	/// If this is set to `true`, dual-funded channels will be enabled.
+	///
+	/// Default value: `false`
+	pub enable_dual_funded_channels: bool,
 }
 
 impl Default for UserConfig {
@@ -893,6 +897,7 @@ impl Default for UserConfig {
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
+			enable_dual_funded_channels: false,
 		}
 	}
 }
@@ -912,6 +917,7 @@ impl Readable for UserConfig {
 			manually_accept_inbound_channels: Readable::read(reader)?,
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
+			enable_dual_funded_channels: Readable::read(reader)?,
 		})
 	}
 }

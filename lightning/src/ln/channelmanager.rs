@@ -3253,7 +3253,7 @@ macro_rules! handle_monitor_update_completion {
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
 			updates.commitment_update, updates.order, updates.accepted_htlcs, updates.pending_update_adds,
 			updates.funding_broadcastable, updates.channel_ready,
-			updates.announcement_sigs, updates.tx_signatures);
+			updates.announcement_sigs, updates.tx_signatures, None);
 		if let Some(upd) = channel_update {
 			$peer_state.pending_msg_events.push(upd);
 		}
@@ -7665,10 +7665,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
-		tx_signatures: Option<msgs::TxSignatures>
+		tx_signatures: Option<msgs::TxSignatures>, tx_abort: Option<msgs::TxAbort>,
 	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures",
+		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort",
 			&channel.context.channel_id(),
 			if raa.is_some() { "an" } else { "no" },
 			if commitment_update.is_some() { "a" } else { "no" },
@@ -7677,6 +7677,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if channel_ready.is_some() { "sending" } else { "without" },
 			if announcement_sigs.is_some() { "sending" } else { "without" },
 			if tx_signatures.is_some() { "sending" } else { "without" },
+			if tx_abort.is_some() { "sending" } else { "without" },
 		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
@@ -7706,6 +7707,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 		if let Some(msg) = tx_signatures {
 			pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+				node_id: counterparty_node_id,
+				msg,
+			});
+		}
+		if let Some(msg) = tx_abort {
+			pending_msg_events.push(MessageSendEvent::SendTxAbort {
 				node_id: counterparty_node_id,
 				msg,
 			});
@@ -8583,14 +8590,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let tx_signatures_opt = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_entry);
+						let (funding_tx_opt, tx_signatures_opt) = try_channel_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
 								msg: tx_signatures,
 							});
 						}
-						if let Some(ref funding_tx) = chan.context.unbroadcasted_funding(&chan.funding) {
+						if let Some(ref funding_tx) = funding_tx_opt {
 							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
 							{
 								let mut pending_events = self.pending_events.lock().unwrap();
@@ -9491,7 +9498,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.order,
-							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs, None);
+							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
+							responses.tx_signatures, responses.tx_abort);
 						debug_assert!(htlc_forwards.is_none());
 						debug_assert!(decode_update_add_htlcs.is_none());
 						if let Some(upd) = channel_update {
@@ -12006,6 +12014,12 @@ where
 	}
 
 	fn handle_open_channel_v2(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannelV2) {
+		if !self.init_features().supports_dual_fund() {
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				msg.common_fields.temporary_channel_id.clone())), counterparty_node_id);
+			return;
+		}
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
@@ -12926,7 +12940,9 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
-	features.set_dual_fund_optional();
+	if config.enable_dual_funded_channels {
+		features.set_dual_fund_optional();
+	}
 	// Only signal quiescence support in tests for now, as we don't yet support any
 	// quiescent-dependent protocols (e.g., splicing).
 	#[cfg(any(test, fuzzing))]
