@@ -12,7 +12,9 @@
 //! [`Event`]: crate::events::Event
 
 use alloc::collections::BTreeMap;
+use core::future::Future;
 use core::ops::Deref;
+use core::task;
 
 use crate::chain::chaininterface::{fee_for_weight, BroadcasterInterface};
 use crate::chain::ClaimId;
@@ -29,8 +31,9 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{
 	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
+use crate::sync::Arc;
 use crate::sync::Mutex;
-use crate::util::async_poll::{AsyncResult, MaybeSend, MaybeSync};
+use crate::util::async_poll::{dummy_waker, AsyncResult, MaybeSend, MaybeSync};
 use crate::util::logger::Logger;
 
 use bitcoin::amount::Amount;
@@ -357,6 +360,63 @@ pub trait CoinSelectionSource {
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
 	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction>;
+}
+
+/// A synchronous helper trait that can be used to implement [`CoinSelectionSource`] in a synchronous
+/// context.
+pub trait CoinSelectionSourceSync {
+	/// A synchronous version of [`CoinSelectionSource::select_confirmed_utxos`].
+	fn select_confirmed_utxos(
+		&self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &[TxOut],
+		target_feerate_sat_per_1000_weight: u32,
+	) -> Result<CoinSelection, ()>;
+
+	/// A synchronous version of [`CoinSelectionSource::sign_psbt`].
+	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
+}
+
+/// A wrapper around [`CoinSelectionSourceSync`] to allow for async calls. This wrapper isn't intended to be used
+/// directly, because that would risk blocking an async context.
+#[cfg(any(test, feature = "_test_utils"))]
+pub struct CoinSelectionSourceSyncWrapper<T: Deref>(T)
+where
+	T::Target: CoinSelectionSourceSync;
+#[cfg(not(any(test, feature = "_test_utils")))]
+pub(crate) struct CoinSelectionSourceSyncWrapper<T: Deref>(T)
+where
+	T::Target: CoinSelectionSourceSync;
+
+impl<T: Deref> CoinSelectionSourceSyncWrapper<T>
+where
+	T::Target: CoinSelectionSourceSync,
+{
+	#[allow(dead_code)]
+	pub fn new(source: T) -> Self {
+		Self(source)
+	}
+}
+
+impl<T: Deref> CoinSelectionSource for CoinSelectionSourceSyncWrapper<T>
+where
+	T::Target: CoinSelectionSourceSync,
+{
+	fn select_confirmed_utxos<'a>(
+		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
+		target_feerate_sat_per_1000_weight: u32,
+	) -> AsyncResult<'a, CoinSelection> {
+		let coins = self.0.select_confirmed_utxos(
+			claim_id,
+			must_spend,
+			must_pay_to,
+			target_feerate_sat_per_1000_weight,
+		);
+		Box::pin(async move { coins })
+	}
+
+	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction> {
+		let psbt = self.0.sign_psbt(psbt);
+		Box::pin(async move { psbt })
+	}
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -1040,6 +1100,51 @@ where
 						htlc_descriptors[0].commitment_txid
 					);
 				});
+			},
+		}
+	}
+}
+
+/// A synchronous wrapper around [`BumpTransactionEventHandler`] to be used in contexts where async is not available.
+pub struct BumpTransactionEventHandlerSync<B: Deref, C: Deref, SP: Deref, L: Deref>
+where
+	B::Target: BroadcasterInterface,
+	C::Target: CoinSelectionSourceSync,
+	SP::Target: SignerProvider,
+	L::Target: Logger,
+{
+	bump_transaction_event_handler:
+		Arc<BumpTransactionEventHandler<B, Arc<CoinSelectionSourceSyncWrapper<C>>, SP, L>>,
+}
+
+impl<B: Deref, C: Deref, SP: Deref, L: Deref> BumpTransactionEventHandlerSync<B, C, SP, L>
+where
+	B::Target: BroadcasterInterface,
+	C::Target: CoinSelectionSourceSync,
+	SP::Target: SignerProvider,
+	L::Target: Logger,
+{
+	/// Constructs a new instance of [`BumpTransactionEventHandlerSync`].
+	pub fn new(broadcaster: B, utxo_source: C, signer_provider: SP, logger: L) -> Self {
+		let bump_transaction_event_handler = Arc::new(BumpTransactionEventHandler::new(
+			broadcaster,
+			Arc::new(CoinSelectionSourceSyncWrapper(utxo_source)),
+			signer_provider,
+			logger,
+		));
+		Self { bump_transaction_event_handler }
+	}
+
+	/// Handles all variants of [`BumpTransactionEvent`].
+	pub fn handle_event(&self, event: &BumpTransactionEvent) {
+		let mut fut = Box::pin(self.bump_transaction_event_handler.handle_event(event));
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("BumpTransactionEventHandlerSync::handle_event should not be pending in a sync context");
 			},
 		}
 	}
