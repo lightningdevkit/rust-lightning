@@ -9050,7 +9050,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn internal_commitment_signed_batch(&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, batch: &BTreeMap<Txid, msgs::CommitmentSigned>) -> Result<(), MsgHandleErrInternal> {
+	fn internal_commitment_signed_batch(&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, batch: Vec<msgs::CommitmentSigned>) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -12209,9 +12209,9 @@ where
 		let _ = handle_error!(self, self.internal_commitment_signed(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
-	fn handle_commitment_signed_batch(&self, counterparty_node_id: PublicKey, channel_id: ChannelId, batch: BTreeMap<Txid, msgs::CommitmentSigned>) {
+	fn handle_commitment_signed_batch(&self, counterparty_node_id: PublicKey, channel_id: ChannelId, batch: Vec<msgs::CommitmentSigned>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, &batch), counterparty_node_id);
+		let _ = handle_error!(self, self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, batch), counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::RevokeAndACK) {

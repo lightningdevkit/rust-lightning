@@ -899,7 +899,7 @@ pub fn test_fee_spike_violation_fails_htlc() {
 		channel_id: chan.2,
 		signature: res.0,
 		htlc_signatures: res.1,
-		batch: None,
+		funding_txid: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	};

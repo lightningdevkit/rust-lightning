@@ -185,7 +185,7 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 			)
 			.unwrap(),
 		htlc_signatures: vec![],
-		batch: None,
+		funding_txid: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	};
