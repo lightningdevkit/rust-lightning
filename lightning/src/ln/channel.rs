@@ -3808,7 +3808,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		if update_fee {
 			debug_assert!(!funding.is_outbound());
 			let counterparty_reserve_we_require_msat = funding.holder_selected_channel_reserve_satoshis * 1000;
-			if commitment_data.stats.remote_balance_before_fee_anchors_msat < commitment_data.stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
+			if commitment_data.stats.remote_balance_before_fee_anchors_msat < commitment_data.stats.total_fee_sat * 1000 + commitment_data.stats.total_anchors_sat * 1000 + counterparty_reserve_we_require_msat {
 				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
 			}
 		}
@@ -6724,7 +6724,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.funding.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
-		if holder_balance_msat < buffer_fee_msat  + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
 			return None;

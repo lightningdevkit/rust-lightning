@@ -6,8 +6,8 @@ use crate::ln::chan_utils::{
 	COMMITMENT_TX_WEIGHT_PER_HTLC,
 };
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, CONCURRENT_INBOUND_HTLC_FEE_BUFFER,
-	MIN_AFFORDABLE_HTLC_COUNT,
+	get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI,
+	CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT,
 };
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::functional_test_utils::*;
@@ -388,11 +388,22 @@ pub fn test_update_fee_vanilla() {
 	check_added_monitors(&nodes[1], 1);
 }
 
-#[xtest(feature = "_externalize_tests")]
-pub fn test_update_fee_that_funder_cannot_afford() {
+pub fn do_test_update_fee_that_funder_cannot_afford(channel_type_features: ChannelTypeFeatures) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+
+	let mut default_config = test_default_channel_config();
+	if channel_type_features == ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies() {
+		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		// this setting is also needed to create an anchor channel
+		default_config.manually_accept_inbound_channels = true;
+	}
+
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(default_config.clone()), Some(default_config.clone())],
+	);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -409,22 +420,26 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 	);
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
-	let default_config = UserConfig::default();
 	let bs_channel_reserve_sats =
 		get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
-
-	let channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+	let (anchor_outputs_value_sats, outputs_num_no_htlcs) =
+		if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+			(ANCHOR_OUTPUT_VALUE_SATOSHI * 2, 4)
+		} else {
+			(0, 2)
+		};
 
 	// Calculate the maximum feerate that A can afford. Note that we don't send an update_fee
 	// CONCURRENT_INBOUND_HTLC_FEE_BUFFER HTLCs before actually running out of local balance, so we
 	// calculate two different feerates here - the expected local limit as well as the expected
 	// remote limit.
-	let feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000
-		/ (commitment_tx_base_weight(&channel_type_features)
-			+ CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC))
-		as u32;
-	let non_buffer_feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000
-		/ commitment_tx_base_weight(&channel_type_features)) as u32;
+	let feerate =
+		((channel_value - bs_channel_reserve_sats - push_sats - anchor_outputs_value_sats) * 1000
+			/ (commitment_tx_base_weight(&channel_type_features)
+				+ CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)) as u32;
+	let non_buffer_feerate =
+		((channel_value - bs_channel_reserve_sats - push_sats - anchor_outputs_value_sats) * 1000
+			/ commitment_tx_base_weight(&channel_type_features)) as u32;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = feerate;
@@ -441,8 +456,8 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 	{
 		let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
 
-		//We made sure neither party's funds are below the dust limit and there are no HTLCs here
-		assert_eq!(commitment_tx.output.len(), 2);
+		// We made sure neither party's funds are below the dust limit and there are no HTLCs here
+		assert_eq!(commitment_tx.output.len(), outputs_num_no_htlcs);
 		let total_fee: u64 = commit_tx_fee_msat(feerate, 0, &channel_type_features) / 1000;
 		let mut actual_fee =
 			commitment_tx.output.iter().fold(0, |acc, output| acc + output.value.to_sat());
@@ -486,8 +501,8 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 			&remote_point,
 			push_sats,
 			channel_value
-				- push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features)
-				/ 1000,
+				- push_sats - anchor_outputs_value_sats
+				- commit_tx_fee_msat(non_buffer_feerate + 4, 0, &channel_type_features) / 1000,
 			non_buffer_feerate + 4,
 			nondust_htlcs,
 			&local_chan.funding().channel_transaction_parameters.as_counterparty_broadcastable(),
@@ -524,6 +539,14 @@ pub fn test_update_fee_that_funder_cannot_afford() {
 	check_closed_broadcast!(nodes[1], true);
 	let reason = ClosureReason::ProcessingError { err: err.to_string() };
 	check_closed_event!(nodes[1], 1, reason, [node_a_id], channel_value);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fee_that_funder_cannot_afford() {
+	do_test_update_fee_that_funder_cannot_afford(ChannelTypeFeatures::only_static_remote_key());
+	do_test_update_fee_that_funder_cannot_afford(
+		ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]
