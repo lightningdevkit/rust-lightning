@@ -1078,6 +1078,7 @@ impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
+impl_for_vec!(crate::blinded_path::message::BlindedMessagePath);
 impl_for_vec!((A, B), A, B);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
