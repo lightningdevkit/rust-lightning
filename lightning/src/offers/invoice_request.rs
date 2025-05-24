@@ -119,7 +119,7 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 /// [module-level documentation]: self
 pub struct InvoiceRequestBuilder<'a, 'b, T: secp256k1::Signing> {
 	offer: &'a Offer,
-	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	invoice_request: Box<InvoiceRequestContentsWithoutPayerSigningPubkey>,
 	payer_signing_pubkey: Option<PublicKey>,
 	secp_ctx: Option<&'b Secp256k1<T>>,
 }
@@ -132,7 +132,7 @@ pub struct InvoiceRequestBuilder<'a, 'b, T: secp256k1::Signing> {
 #[cfg(c_bindings)]
 pub struct InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b> {
 	offer: &'a Offer,
-	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	invoice_request: Box<InvoiceRequestContentsWithoutPayerSigningPubkey>,
 	payer_signing_pubkey: Option<PublicKey>,
 	secp_ctx: Option<&'b Secp256k1<secp256k1::All>>,
 }
@@ -151,7 +151,7 @@ macro_rules! invoice_request_derived_payer_signing_pubkey_builder_methods {
 			let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 			Self {
 				offer,
-				invoice_request: Self::create_contents(offer, metadata),
+				invoice_request: Box::new(Self::create_contents(offer, metadata)),
 				payer_signing_pubkey: None,
 				secp_ctx: Some(secp_ctx),
 			}
@@ -181,7 +181,7 @@ macro_rules! invoice_request_builder_methods { (
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerSigningPubkey {
-		let offer = offer.contents.clone();
+		let offer = *offer.contents.clone();
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
@@ -317,13 +317,13 @@ macro_rules! invoice_request_builder_methods { (
 		debug_assert!($self.payer_signing_pubkey.is_some());
 		let payer_signing_pubkey = $self.payer_signing_pubkey.unwrap();
 
-		let invoice_request = InvoiceRequestContents {
+		let invoice_request = Box::new(InvoiceRequestContents {
 			#[cfg(not(c_bindings))]
 			inner: $self.invoice_request,
 			#[cfg(c_bindings)]
 			inner: $self.invoice_request.clone(),
 			payer_signing_pubkey,
-		};
+		});
 		let unsigned_invoice_request = UnsignedInvoiceRequest::new($self.offer, invoice_request);
 
 		(unsigned_invoice_request, keys, secp_ctx)
@@ -446,7 +446,7 @@ impl<'a, 'b> From<InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>>
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
 	experimental_bytes: Vec<u8>,
-	contents: InvoiceRequestContents,
+	contents: Box<InvoiceRequestContents>,
 	tagged_hash: TaggedHash,
 }
 
@@ -475,7 +475,7 @@ where
 }
 
 impl UnsignedInvoiceRequest {
-	fn new(offer: &Offer, contents: InvoiceRequestContents) -> Self {
+	fn new(offer: &Offer, contents: Box<InvoiceRequestContents>) -> Self {
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
 		// unknown TLV records, which are not stored in `OfferContents`.
 		let (
@@ -584,7 +584,7 @@ impl AsRef<TaggedHash> for UnsignedInvoiceRequest {
 #[cfg_attr(test, derive(PartialEq))]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
-	pub(super) contents: InvoiceRequestContents,
+	pub(super) contents: Box<InvoiceRequestContents>,
 	signature: Signature,
 }
 
@@ -621,7 +621,7 @@ pub struct VerifiedInvoiceRequest {
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContents {
-	pub(super) inner: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	pub(super) inner: Box<InvoiceRequestContentsWithoutPayerSigningPubkey>,
 	payer_signing_pubkey: PublicKey,
 }
 
@@ -997,10 +997,8 @@ impl VerifiedInvoiceRequest {
 	///
 	/// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
 	pub fn fields(&self) -> InvoiceRequestFields {
-		let InvoiceRequestContents {
-			payer_signing_pubkey,
-			inner: InvoiceRequestContentsWithoutPayerSigningPubkey { quantity, payer_note, .. },
-		} = &self.inner.contents;
+		let InvoiceRequestContents { payer_signing_pubkey, inner } = &*self.inner.contents;
+		let InvoiceRequestContentsWithoutPayerSigningPubkey { quantity, payer_note, .. } = &**inner;
 
 		InvoiceRequestFields {
 			payer_signing_pubkey: *payer_signing_pubkey,
@@ -1271,7 +1269,7 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 		let invoice_request = ParsedMessage::<PartialInvoiceRequestTlvStream>::try_from(bytes)?;
 		let ParsedMessage { mut bytes, tlv_stream } = invoice_request;
 
-		let contents = InvoiceRequestContents::try_from(tlv_stream)?;
+		let contents = Box::new(InvoiceRequestContents::try_from(tlv_stream)?);
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
 		let offset = TlvStream::new(&bytes)
@@ -1298,13 +1296,13 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
 		) = tlv_stream;
-		let contents = InvoiceRequestContents::try_from((
+		let contents = Box::new(InvoiceRequestContents::try_from((
 			payer_tlv_stream,
 			offer_tlv_stream,
 			invoice_request_tlv_stream,
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
-		))?;
+		))?);
 
 		let signature = match signature {
 			None => {
@@ -1374,7 +1372,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		}
 
 		Ok(InvoiceRequestContents {
-			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
+			inner: Box::new(InvoiceRequestContentsWithoutPayerSigningPubkey {
 				payer,
 				offer,
 				chain,
@@ -1385,7 +1383,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				offer_from_hrn,
 				#[cfg(test)]
 				experimental_bar,
-			},
+			}),
 			payer_signing_pubkey,
 		})
 	}
