@@ -138,7 +138,7 @@ use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferTlvStream,
 	OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
-use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef, PAYER_METADATA_TYPE};
 use crate::offers::refund::{
 	Refund, RefundContents, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA,
@@ -158,6 +158,7 @@ use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
 use bitcoin::{Network, WitnessProgram, WitnessVersion};
 use core::hash::{Hash, Hasher};
+use core::str::FromStr;
 use core::time::Duration;
 
 #[allow(unused_imports)]
@@ -1416,6 +1417,30 @@ impl Writeable for InvoiceContents {
 	}
 }
 
+impl AsRef<[u8]> for Bolt12Invoice {
+	fn as_ref(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
+impl Bech32Encode for Bolt12Invoice {
+	const BECH32_HRP: &'static str = "lni";
+}
+
+impl FromStr for Bolt12Invoice {
+	type Err = Bolt12ParseError;
+
+	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+		Self::from_bech32_str(s)
+	}
+}
+
+impl core::fmt::Display for Bolt12Invoice {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		self.fmt_bech32_str(f)
+	}
+}
+
 impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 	type Error = Bolt12ParseError;
 
@@ -2569,6 +2594,22 @@ mod tests {
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SignError::Verification(secp256k1::Error::IncorrectSignature)),
+		}
+	}
+
+	#[test]
+	fn parses_bech32_encoded_invoices() {
+		let invoices = [
+			"lni1qqsg7jpsyzz4hcsj0hu6rvjevwhmkceurq7sd5ez8ne3js4qt8acvxcgqgp7szsqzcss9w6ckhlv55zuwnkuqqxc9qhu24h9rggzflyw04l9d3hcslzu340jtqss9l7txvy6ukzg8zkxdnvzmg2at4stt004vdqrm0zedsez596nf5w55r7sr3qzhfe2d696205tjuddpjvz8952aaxh3n527f26ks7llqcq8jgzlwxsxhzwphk8y90zdqee8pesuhjst2nz2px6ska9wyr2g666ysz0e8vwqgptkk94lm99qhr5ahqqpkpg9lz4deg6zqj0erna0etvd7y8chydtusq9vqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz3afsfc3h8etwulthfjufa8c6lm8saelrud6h7xyeprcxnk4rd3sqqtqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq46w2nw3wjnazuhrtgvnq3edzh0f4uvazhj2k458hlcxqpujqhm35p4cnsda3eptcngxwfcwv89u5z65cjsfk59hft3q6jxkk3yqn7fmrszqw2gk576jl7lvaxqsae3tt9uepmp4gae5kptgwvc97a04jvljuss7qpdqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq0vc5l00vl5rwqgc7cmxyrgtuz8dvv6yma5qs2609uvyfe7wvq2gxqpwqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz3rsqqqqqqsqqqraqqz5qqqqqqqqqqqvsqqqq8g6jj3qqqqqqqqqqqpqqqq86qq9gqqqqqqqqqqqeqqqqqw3499zqqqqq9yq35rr8sh4qsz52329g4z52329g4z52329g4z52329g4z52329g4z52329g4z5242qgp73tzaqqqzpcasc3pf3lquzjd0haxgn9hmjfp84eq7geymjdx2f9verdu99wz4qqqpf67qrgen88wz7kzlkpyp480l5rgzecaz2qgqyza43d07efg9ca8dcqqds2p0c4tw2xssyn7gult72mr03p79er2l9vppq2a43d07efg9ca8dcqqds2p0c4tw2xssyn7gult72mr03p79er2l9uzq9wktr4p2qxgmdnpw8qvs05qr0zvam2h52lxt4zz7lah7yp6vmsczevlvqdgjxtwdlp84304uqcygvqcgzpj8p44smqjpzeua0xryrrc"
+		];
+		for encoded in invoices {
+			let decoded = match encoded.parse::<Bolt12Invoice>() {
+				Ok(decoded) => decoded,
+				Err(e) => panic!("Invalid invoice ({:?}): {}", e, encoded),
+			};
+
+			let reencoded = decoded.to_string();
+			assert_eq!(reencoded, encoded, "Re-encoded invoice does not match original");
 		}
 	}
 
