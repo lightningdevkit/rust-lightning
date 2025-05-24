@@ -285,10 +285,9 @@ mod tests {
 
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
-	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
+	use crate::offers::invoice_request::UnsignedInvoiceRequest;
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Amount, OfferBuilder};
-	use crate::offers::parse::Bech32Encode;
 	use crate::offers::signer::Metadata;
 	use crate::offers::test_utils::recipient_pubkey;
 	use crate::util::ser::Writeable;
@@ -476,21 +475,5 @@ mod tests {
 			.collect::<Vec<u8>>();
 
 		assert_eq!(tlv_stream, invoice_request.bytes);
-	}
-
-	impl AsRef<[u8]> for InvoiceRequest {
-		fn as_ref(&self) -> &[u8] {
-			&self.bytes
-		}
-	}
-
-	impl Bech32Encode for InvoiceRequest {
-		const BECH32_HRP: &'static str = "lnr";
-	}
-
-	impl core::fmt::Display for InvoiceRequest {
-		fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-			self.fmt_bech32_str(f)
-		}
 	}
 }
