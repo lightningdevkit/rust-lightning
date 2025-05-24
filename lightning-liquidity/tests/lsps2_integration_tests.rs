@@ -1,4 +1,4 @@
-#![cfg(all(test, feature = "std"))]
+#![cfg(all(test, feature = "std", feature = "time"))]
 
 mod common;
 
@@ -11,6 +11,7 @@ use lightning_liquidity::lsps2::event::{LSPS2ClientEvent, LSPS2ServiceEvent};
 use lightning_liquidity::lsps2::msgs::LSPS2RawOpeningFeeParams;
 use lightning_liquidity::lsps2::service::LSPS2ServiceConfig;
 use lightning_liquidity::lsps2::utils::is_valid_opening_fee_params;
+use lightning_liquidity::lsps5::service::DefaultTimeProvider;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
 
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
@@ -26,6 +27,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Network;
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn create_jit_invoice(
@@ -88,6 +90,7 @@ fn invoice_generation_flow() {
 		#[cfg(lsps1_service)]
 		lsps1_service_config: None,
 		lsps2_service_config: Some(lsps2_service_config),
+		lsps5_service_config: None,
 		advertise_service: true,
 	};
 
@@ -95,10 +98,15 @@ fn invoice_generation_flow() {
 	let client_config = LiquidityClientConfig {
 		lsps1_client_config: None,
 		lsps2_client_config: Some(lsps2_client_config),
+		lsps5_client_config: None,
 	};
 
-	let (service_node, client_node) =
-		create_service_and_client_nodes("invoice_generation_flow", service_config, client_config);
+	let (service_node, client_node) = create_service_and_client_nodes(
+		"invoice_generation_flow",
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
 
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
 	let service_node_id = service_node.channel_manager.get_our_node_id();
