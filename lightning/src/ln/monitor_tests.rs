@@ -13,7 +13,7 @@ use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, Spen
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
-use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
+use crate::events::bump_transaction::{BumpTransactionEvent, WalletSourceSync};
 use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
@@ -441,7 +441,7 @@ fn fuzzy_assert_eq<V: core::convert::TryInto<u64>>(a: V, b: V) {
 	assert!(b_u64 >= a_u64 - 5);
 }
 
-fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
+async fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// Tests `get_claimable_balances` with an HTLC across a force-close.
 	// We build a channel with an HTLC pending, then force close the channel and check that the
 	// `get_claimable_balances` return value is correct as transactions confirm on-chain.
@@ -650,8 +650,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 				} else {
 					panic!("Unexpected event");
 				}
-				nodes[1].bump_tx_handler.handle_event(&first_htlc_event);
-				nodes[1].bump_tx_handler.handle_event(&second_htlc_event);
+				nodes[1].bump_tx_handler.handle_event(&first_htlc_event).await;
+				nodes[1].bump_tx_handler.handle_event(&second_htlc_event).await;
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -837,15 +837,15 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	}
 }
 
-#[test]
-fn test_claim_value_force_close() {
-	do_test_claim_value_force_close(false, true);
-	do_test_claim_value_force_close(false, false);
-	do_test_claim_value_force_close(true, true);
-	do_test_claim_value_force_close(true, false);
+#[tokio::test]
+async fn test_claim_value_force_close() {
+	do_test_claim_value_force_close(false, true).await;
+	do_test_claim_value_force_close(false, false).await;
+	do_test_claim_value_force_close(true, true).await;
+	do_test_claim_value_force_close(true, false).await;
 }
 
-fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
+async fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	// Previously, when handling the broadcast of a local commitment transactions (with associated
 	// CSV delays prior to spendability), we incorrectly handled the CSV delays on HTLC
 	// transactions. This caused us to miss spendable outputs for HTLCs which were awaiting a CSV
@@ -985,7 +985,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		}, htlc_balance_known_preimage.clone(), htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
 	if anchors {
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 	}
 	let mut timeout_htlc_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 	if anchors {
@@ -1018,7 +1018,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	if anchors {
 		// The HTLC timeout claim corresponding to the counterparty preimage claim is removed from the
 		// aggregated package.
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 		timeout_htlc_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(timeout_htlc_txn.len(), 1);
 		check_spends!(timeout_htlc_txn[0], commitment_tx, coinbase_tx);
@@ -1095,10 +1095,10 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances().is_empty());
 }
 
-#[test]
-fn test_balances_on_local_commitment_htlcs() {
-	do_test_balances_on_local_commitment_htlcs(false);
-	do_test_balances_on_local_commitment_htlcs(true);
+#[tokio::test]
+async fn test_balances_on_local_commitment_htlcs() {
+	do_test_balances_on_local_commitment_htlcs(false).await;
+	do_test_balances_on_local_commitment_htlcs(true).await;
 }
 
 #[test]
@@ -1635,7 +1635,7 @@ fn test_revoked_counterparty_commitment_balances() {
 	do_test_revoked_counterparty_commitment_balances(true, false);
 }
 
-fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
+async fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// Tests `get_claimable_balances` for revocation spends of HTLC transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
@@ -1700,7 +1700,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 	if anchors {
-		handle_bump_htlc_event(&nodes[1], 1);
+		handle_bump_htlc_event(&nodes[1], 1).await;
 	}
 	let revoked_htlc_success = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
@@ -1716,7 +1716,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
 	if anchors {
-		handle_bump_htlc_event(&nodes[1], 2);
+		handle_bump_htlc_event(&nodes[1], 2).await;
 	}
 	let revoked_htlc_timeout = {
 		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
@@ -1925,13 +1925,13 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances().is_empty());
 }
 
-#[test]
-fn test_revoked_counterparty_htlc_tx_balances() {
-	do_test_revoked_counterparty_htlc_tx_balances(false);
-	do_test_revoked_counterparty_htlc_tx_balances(true);
+#[tokio::test]
+async fn test_revoked_counterparty_htlc_tx_balances() {
+	do_test_revoked_counterparty_htlc_tx_balances(false).await;
+	do_test_revoked_counterparty_htlc_tx_balances(true).await;
 }
 
-fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
+async fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	// Tests `get_claimable_balances` for revoked counterparty commitment transactions when
 	// claiming with an aggregated claim transaction.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2074,7 +2074,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		check_closed_broadcast(&nodes[0], 1, true);
 		check_added_monitors(&nodes[0], 1);
 		check_closed_event!(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, [nodes[1].node.get_our_node_id()], 1_000_000);
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 	}
 	let htlc_success_claim = if anchors {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -2211,10 +2211,10 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances().is_empty());
 }
 
-#[test]
-fn test_revoked_counterparty_aggregated_claims() {
-	do_test_revoked_counterparty_aggregated_claims(false);
-	do_test_revoked_counterparty_aggregated_claims(true);
+#[tokio::test]
+async fn test_revoked_counterparty_aggregated_claims() {
+	do_test_revoked_counterparty_aggregated_claims(false).await;
+	do_test_revoked_counterparty_aggregated_claims(true).await;
 }
 
 fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: bool, anchors: bool) {
@@ -2391,7 +2391,7 @@ fn test_restored_packages_retry() {
 	do_test_restored_packages_retry(true);
 }
 
-fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
+async fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// Test that we will retry broadcasting pending claims for a force-closed channel on every
 	// `ChainMonitor::rebroadcast_pending_claims` call.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2437,90 +2437,95 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// bumps if fees have not increased after a block has been connected (assuming the height timer
 	// re-evaluates at every block) or after `ChainMonitor::rebroadcast_pending_claims` is called.
 	let mut prev_htlc_tx_feerate = None;
-	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
-		let (htlc_tx, htlc_tx_feerate) = if anchors {
-			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
-			let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
-			if !should_retry {
-				return None;
-			}
-			match &events[0] {
-				Event::BumpTransaction(event) => {
-					nodes[0].bump_tx_handler.handle_event(&event);
-					let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-					assert_eq!(txn.len(), 1);
-					let htlc_tx = txn.pop().unwrap();
-					check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
-					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value.to_sat() -
-						htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
-					let htlc_tx_weight = htlc_tx.weight().to_wu();
-					(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
-				}
-				_ => panic!("Unexpected event"),
-			}
-		} else {
-			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
-			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
-			assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
-			if !should_retry {
-				return None;
-			}
-			let htlc_tx = txn.pop().unwrap();
-			check_spends!(htlc_tx, commitment_txn[0]);
-			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value.to_sat();
-			let htlc_tx_weight = htlc_tx.weight().to_wu();
-			(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
-		};
-		if should_bump {
-			assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
-		} else if let Some(prev_feerate) = prev_htlc_tx_feerate.take() {
-			assert_eq!(htlc_tx_feerate, prev_feerate);
-		}
-		prev_htlc_tx_feerate = Some(htlc_tx_feerate);
-		Some(htlc_tx)
-	};
 
 	// Connect blocks up to one before the HTLC expires. This should not result in a claim/retry.
 	connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1 - 1);
-	check_htlc_retry(false, false);
+	check_htlc_retry(&nodes[0], anchors, false, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await;
 
 	// Connect one more block, producing our first claim.
 	connect_blocks(&nodes[0], 1);
-	check_htlc_retry(true, false);
+	check_htlc_retry(&nodes[0], anchors, true, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await;
 
 	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
 	// HTLC transactions pre-anchors.
 	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
-	check_htlc_retry(true, anchors);
+	check_htlc_retry(&nodes[0], anchors, true, anchors, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await;
 
 	// Trigger a call and we should have another retry, but without a bump.
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(true, false);
+	check_htlc_retry(&nodes[0], anchors, true, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await;
 
 	// Double the feerate and trigger a call, expecting a fee-bumped retry.
 	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(true, anchors);
+	check_htlc_retry(&nodes[0], anchors, true, anchors, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await;
 
 	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
 	// HTLC transactions pre-anchors.
 	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
-	let htlc_tx = check_htlc_retry(true, anchors).unwrap();
+	let htlc_tx = check_htlc_retry(&nodes[0], anchors, true, anchors, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await.unwrap();
 
 	// Mine the HTLC transaction to ensure we don't retry claims while they're confirmed.
 	mine_transaction(&nodes[0], &htlc_tx);
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
-	check_htlc_retry(false, false);
+	check_htlc_retry(&nodes[0], anchors, false, false, &commitment_txn, &coinbase_tx, &mut prev_htlc_tx_feerate, HTLC_AMT_SAT).await;
 }
 
-#[test]
-fn test_monitor_timer_based_claim() {
-	do_test_monitor_rebroadcast_pending_claims(false);
-	do_test_monitor_rebroadcast_pending_claims(true);
+async fn check_htlc_retry(
+	node: &Node<'_, '_, '_>, anchors: bool, should_retry: bool, should_bump: bool,
+	commitment_txn: &[Transaction], coinbase_tx: &Transaction,
+	prev_htlc_tx_feerate: &mut Option<u32>, htlc_amt_sat: u64,
+) -> Option<Transaction> {
+	let (htlc_tx, htlc_tx_feerate) = if anchors {
+		assert!(node.tx_broadcaster.txn_broadcast().is_empty());
+		let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), if should_retry { 1 } else { 0 });
+		if !should_retry {
+			return None;
+		}
+		match &events[0] {
+			Event::BumpTransaction(event) => {
+				node.bump_tx_handler.handle_event(&event).await;
+				let mut txn = node.tx_broadcaster.unique_txn_broadcast();
+				assert_eq!(txn.len(), 1);
+				let htlc_tx = txn.pop().unwrap();
+				check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
+				let htlc_tx_fee = htlc_amt_sat + coinbase_tx.output[0].value.to_sat()
+					- htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
+				let htlc_tx_weight = htlc_tx.weight().to_wu();
+				(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
+			},
+			_ => panic!("Unexpected event"),
+		}
+	} else {
+		assert!(node.chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+		let mut txn = node.tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
+		if !should_retry {
+			return None;
+		}
+		let htlc_tx = txn.pop().unwrap();
+		check_spends!(htlc_tx, commitment_txn[0]);
+		let htlc_tx_fee = htlc_amt_sat - htlc_tx.output[0].value.to_sat();
+		let htlc_tx_weight = htlc_tx.weight().to_wu();
+		(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
+	};
+	if should_bump {
+		assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
+	} else if let Some(prev_feerate) = prev_htlc_tx_feerate.take() {
+		assert_eq!(htlc_tx_feerate, prev_feerate);
+	}
+	*prev_htlc_tx_feerate = Some(htlc_tx_feerate);
+	Some(htlc_tx)
 }
 
-fn do_test_yield_anchors_events(have_htlcs: bool) {
+#[tokio::test]
+async fn test_monitor_timer_based_claim() {
+	do_test_monitor_rebroadcast_pending_claims(false).await;
+	do_test_monitor_rebroadcast_pending_claims(true).await;
+}
+
+async fn do_test_yield_anchors_events(have_htlcs: bool) {
 	// Tests that two parties supporting anchor outputs can open a channel, route payments over
 	// it, and finalize its resolution uncooperatively. Once the HTLCs are locked in, one side will
 	// force close once the HTLCs expire. The force close should stem from an event emitted by LDK,
@@ -2621,7 +2626,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 				}],
 			};
 			nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-			nodes[0].bump_tx_handler.handle_event(&event);
+			nodes[0].bump_tx_handler.handle_event(&event).await;
 			let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 			assert_eq!(txn.len(), 2);
 			let anchor_tx = txn.pop().unwrap();
@@ -2679,7 +2684,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	for event in holder_events {
 		match event {
 			Event::BumpTransaction(event) => {
-				nodes[0].bump_tx_handler.handle_event(&event);
+				nodes[0].bump_tx_handler.handle_event(&event).await;
 				let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 				assert_eq!(txn.len(), 1);
 				let htlc_tx = txn.pop().unwrap();
@@ -2708,14 +2713,14 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	}
 }
 
-#[test]
-fn test_yield_anchors_events() {
-	do_test_yield_anchors_events(true);
-	do_test_yield_anchors_events(false);
+#[tokio::test]
+async fn test_yield_anchors_events() {
+	do_test_yield_anchors_events(true).await;
+	do_test_yield_anchors_events(false).await;
 }
 
-#[test]
-fn test_anchors_aggregated_revoked_htlc_tx() {
+#[tokio::test]
+async fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Test that `ChannelMonitor`s can properly detect and claim funds from a counterparty claiming
 	// multiple HTLCs from multiple channels in a single transaction via the success path from a
 	// revoked commitment.
@@ -2807,7 +2812,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, utxo_value);
 		match event {
-			Event::BumpTransaction(event) => nodes[1].bump_tx_handler.handle_event(&event),
+			Event::BumpTransaction(event) => nodes[1].bump_tx_handler.handle_event(&event).await,
 			_ => panic!("Unexpected event"),
 		};
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
@@ -3110,7 +3115,7 @@ fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
 }
 
 #[cfg(not(ldk_test_vectors))]
-fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterparty_commitment: bool) {
+async fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterparty_commitment: bool) {
 	// Tests that our monitor claims will always use fresh random signatures (ensuring a unique
 	// wtxid) to prevent certain classes of transaction replacement at the bitcoin P2P layer.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -3185,7 +3190,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV);
 	}
 	if anchors && !confirm_counterparty_commitment {
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 	}
 	let htlc_timeout_tx = {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -3198,7 +3203,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	// Check we rebroadcast it with a different wtxid.
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
 	if anchors && !confirm_counterparty_commitment {
-		handle_bump_htlc_event(&nodes[0], 1);
+		handle_bump_htlc_event(&nodes[0], 1).await;
 	}
 	{
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -3209,12 +3214,12 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 }
 
 #[cfg(not(ldk_test_vectors))]
-#[test]
-fn test_monitor_claims_with_random_signatures() {
-	do_test_monitor_claims_with_random_signatures(false, false);
-	do_test_monitor_claims_with_random_signatures(false, true);
-	do_test_monitor_claims_with_random_signatures(true, false);
-	do_test_monitor_claims_with_random_signatures(true, true);
+#[tokio::test]
+async fn test_monitor_claims_with_random_signatures() {
+	do_test_monitor_claims_with_random_signatures(false, false).await;
+	do_test_monitor_claims_with_random_signatures(false, true).await;
+	do_test_monitor_claims_with_random_signatures(true, false).await;
+	do_test_monitor_claims_with_random_signatures(true, true).await;
 }
 
 #[test]
