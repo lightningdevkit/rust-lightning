@@ -316,7 +316,9 @@ impl KVStore for FilesystemStore {
 			let entry = entry?;
 			let p = entry.path();
 
-			if !dir_entry_is_key(&p)? {
+			// We skip any entries that do not adhere to our key requirements, or for which we get
+			// an error.
+			if !dir_entry_is_key(&p).unwrap_or(false) {
 				continue;
 			}
 
