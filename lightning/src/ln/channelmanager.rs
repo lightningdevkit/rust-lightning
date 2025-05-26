@@ -10746,7 +10746,7 @@ where
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	#[cfg(feature = "dnssec")]
 	pub fn pay_for_offer_from_human_readable_name(
-		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
+		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId, payer_note: Option<String>,
 		retry_strategy: Retry, route_params_config: RouteParametersConfig,
 		dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
@@ -10754,7 +10754,7 @@ where
 			self.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
 		let expiration = StaleExpiration::TimerTicks(1);
-		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats)?;
+		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats, payer_note)?;
 		let message_params = dns_resolvers
 			.iter()
 			.flat_map(|destination| reply_paths.iter().map(move |path| (path, destination)))
@@ -12811,9 +12811,9 @@ where
 					// offer, but tests can deal with that.
 					offer = replacement_offer;
 				}
-				if let Ok(amt_msats) = self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id) {
+				if let Ok((amt_msats, payer_note)) = self.pending_outbound_payments.params_for_payment_awaiting_offer(payment_id) {
 					let offer_pay_res =
-						self.pay_for_offer_intern(&offer, None, Some(amt_msats), None, payment_id, Some(name),
+						self.pay_for_offer_intern(&offer, None, Some(amt_msats), payer_note, payment_id, Some(name),
 							|invoice_request, nonce| {
 								let retryable_invoice_request = RetryableInvoiceRequest {
 									invoice_request: invoice_request.clone(),
