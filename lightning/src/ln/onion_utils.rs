@@ -880,10 +880,7 @@ fn crypt_failure_packet(shared_secret: &[u8], packet: &mut OnionErrorPacket) {
 	chacha.process_in_place(&mut packet.data);
 
 	if let Some(ref mut attribution_data) = packet.attribution_data {
-		let ammagext = gen_ammagext_from_shared_secret(&shared_secret);
-		let mut chacha = ChaCha20::new(&ammagext, &[0u8; 8]);
-		chacha.process_in_place(&mut attribution_data.hold_times);
-		chacha.process_in_place(&mut attribution_data.hmacs);
+		attribution_data.crypt(shared_secret);
 	}
 }
 
@@ -945,10 +942,7 @@ fn update_attribution_data(
 	let attribution_data =
 		onion_error_packet.attribution_data.get_or_insert(AttributionData::new());
 
-	let hold_time_bytes: [u8; 4] = hold_time.to_be_bytes();
-	attribution_data.hold_times[..HOLD_TIME_LEN].copy_from_slice(&hold_time_bytes);
-
-	attribution_data.add_hmacs(shared_secret, &onion_error_packet.data);
+	attribution_data.update(&onion_error_packet.data, shared_secret, hold_time);
 }
 
 pub(super) fn build_failure_packet(
@@ -1214,34 +1208,37 @@ where
 					// nearby failure, the verified HMACs will include some zero padding data. Failures beyond the last
 					// attributable hop will not be attributable.
 					let position = attributable_hop_count - route_hop_idx - 1;
-					let hold_time = attribution_data.verify(
+					let res = attribution_data.verify(
 						&encrypted_packet.data,
 						shared_secret.as_ref(),
 						position,
 					);
-					if let Some(hold_time) = hold_time {
-						hop_hold_times.push(hold_time);
+					match res {
+						Ok(hold_time) => {
+							hop_hold_times.push(hold_time);
 
-						log_debug!(
-							logger,
-							"Htlc hold time at pos {}: {} ms",
-							route_hop_idx,
-							(hold_time as u128) * HOLD_TIME_UNIT_MILLIS
-						);
+							log_debug!(
+								logger,
+								"Htlc hold time at pos {}: {} ms",
+								route_hop_idx,
+								(hold_time as u128) * HOLD_TIME_UNIT_MILLIS
+							);
 
-						// Shift attribution data to prepare for processing the next hop.
-						attribution_data.shift_left();
-					} else {
-						// Store the failing hop, but continue processing the failure for the remaining hops. During the
-						// upgrade period, it may happen that nodes along the way drop attribution data. If the legacy
-						// failure is still valid, it should be processed normally.
-						attribution_failed_channel = route_hop.short_channel_id();
+							// Shift attribution data to prepare for processing the next hop.
+							attribution_data.shift_left();
+						},
+						Err(()) => {
+							// Store the failing hop, but continue processing the failure for the remaining hops. During the
+							// upgrade period, it may happen that nodes along the way drop attribution data. If the legacy
+							// failure is still valid, it should be processed normally.
+							attribution_failed_channel = route_hop.short_channel_id();
 
-						log_debug!(
-							logger,
-							"Invalid HMAC in attribution data for node at pos {}",
-							route_hop_idx
-						);
+							log_debug!(
+								logger,
+								"Invalid failure HMAC in attribution data for node at pos {}",
+								route_hop_idx
+							);
+						},
 					}
 				}
 			} else {
@@ -2657,6 +2654,14 @@ impl_writeable!(AttributionData, {
 });
 
 impl AttributionData {
+	/// Encrypts or decrypts the attribution data using the provided shared secret.
+	pub(crate) fn crypt(&mut self, shared_secret: &[u8]) {
+		let ammagext = gen_ammagext_from_shared_secret(&shared_secret);
+		let mut chacha = ChaCha20::new(&ammagext, &[0u8; 8]);
+		chacha.process_in_place(&mut self.hold_times);
+		chacha.process_in_place(&mut self.hmacs);
+	}
+
 	/// Adds the current node's HMACs for all possible positions to this packet.
 	pub(crate) fn add_hmacs(&mut self, shared_secret: &[u8], message: &[u8]) {
 		let um: [u8; 32] = gen_um_from_shared_secret(&shared_secret);
@@ -2705,8 +2710,8 @@ impl AttributionData {
 	}
 
 	/// Verifies the attribution data of a failure packet for the given position in the path. If the HMAC checks out, the
-	/// reported hold time is returned. If the HMAC does not match, None is returned.
-	fn verify(&self, message: &Vec<u8>, shared_secret: &[u8], position: usize) -> Option<u32> {
+	/// reported hold time is returned. If the HMAC does not match, an error is returned.
+	fn verify(&self, message: &[u8], shared_secret: &[u8], position: usize) -> Result<u32, ()> {
 		// Calculate the expected HMAC.
 		let um = gen_um_from_shared_secret(shared_secret);
 		let mut hmac = HmacEngine::<Sha256>::new(&um);
@@ -2719,13 +2724,13 @@ impl AttributionData {
 		let hmac_idx = MAX_HOPS - position - 1;
 		let actual_hmac = self.get_hmac(hmac_idx);
 		if !fixed_time_eq(expected_hmac, actual_hmac) {
-			return None;
+			return Err(());
 		}
 
 		// The HMAC checks out and the hold time can be extracted and returned;
 		let hold_time: u32 = u32::from_be_bytes(self.get_hold_time_bytes(0).try_into().unwrap());
 
-		Some(hold_time)
+		Ok(hold_time)
 	}
 
 	/// Shifts hold times and HMACs to the left, taking into account HMAC pruning. This is the inverse operation of what
@@ -2790,6 +2795,12 @@ impl AttributionData {
 
 	fn get_hold_time_bytes(&self, idx: usize) -> &[u8] {
 		&self.hold_times[idx * HOLD_TIME_LEN..(idx + 1) * HOLD_TIME_LEN]
+	}
+
+	fn update(&mut self, message: &[u8], shared_secret: &[u8], hold_time: u32) {
+		let hold_time_bytes: [u8; 4] = hold_time.to_be_bytes();
+		self.hold_times[..HOLD_TIME_LEN].copy_from_slice(&hold_time_bytes);
+		self.add_hmacs(shared_secret, message);
 	}
 }
 
