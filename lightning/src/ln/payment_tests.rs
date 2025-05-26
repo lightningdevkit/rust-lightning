@@ -61,6 +61,8 @@ use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
 
 use core::cmp::Ordering;
+#[cfg(feature = "std")]
+use std::thread;
 
 #[cfg(feature = "std")]
 use {
@@ -527,6 +529,65 @@ fn test_mpp_keysend() {
 	let ev = remove_first_msg_event_to_node(&node_c_id, &mut events);
 	pass_along_path(&nodes[0], route[1], recv_value, hash, payment_secret, ev, true, preimage);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, preimage.unwrap()));
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_fulfill_hold_times() {
+	// Tests that as a sender we correctly receive non-zero hold times for a keysend payment.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let recv_value = 5_000_000;
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::for_keysend(node_c_id, 40, true),
+		recv_value,
+	);
+
+	let preimage = Some(PaymentPreimage([42; 32]));
+	let payment_secret = PaymentSecret([42; 32]);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let retry = Retry::Attempts(0);
+	let id = PaymentId([42; 32]);
+	let hash =
+		nodes[0].node.send_spontaneous_payment(preimage, onion, id, route_params, retry).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	let ev = remove_first_msg_event_to_node(&node_b_id, &mut events);
+	let payment_secret = Some(payment_secret);
+	pass_along_path(&nodes[0], route[0], recv_value, hash, payment_secret, ev, true, preimage);
+
+	// Delay claiming so that we get a non-zero hold time.
+	thread::sleep(Duration::from_millis(200));
+
+	let (_, path_events) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, preimage.unwrap()));
+
+	assert_eq!(path_events.len(), 1);
+	match &path_events[0] {
+		Event::PaymentPathSuccessful { hold_times, .. } => {
+			assert_eq!(hold_times.len(), 2);
+
+			// The final node always reports a zero hold time.
+			assert!(hold_times[1] == 0);
+
+			// It's predecessor reports a non-zero hold time because we delayed claiming.
+			assert!(hold_times[0] > 0);
+		},
+		_ => panic!("Unexpected event"),
+	}
 }
 
 #[test]

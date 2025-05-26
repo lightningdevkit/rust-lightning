@@ -404,7 +404,7 @@ impl OutboundHTLCState {
 enum OutboundHTLCOutcome {
 	/// We started always filling in the preimages here in 0.0.105, and the requirement
 	/// that the preimages always be filled in was added in 0.2.
-	Success(PaymentPreimage, #[allow(dead_code)] Option<AttributionData>),
+	Success(PaymentPreimage, Option<AttributionData>),
 	Failure(HTLCFailReason),
 }
 
@@ -1184,7 +1184,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub order: RAACommitmentOrder,
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-	pub finalized_claimed_htlcs: Vec<HTLCSource>,
+	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
@@ -2314,7 +2314,7 @@ where
 	// but need to handle this somehow or we run the risk of losing HTLCs!
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
+	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	monitor_pending_tx_signatures: Option<msgs::TxSignatures>,
 
@@ -6677,7 +6677,8 @@ where
 			));
 		}
 
-		let outcome = OutboundHTLCOutcome::Success(msg.payment_preimage, None);
+		let outcome =
+			OutboundHTLCOutcome::Success(msg.payment_preimage, msg.attribution_data.clone());
 		self.mark_outbound_htlc_removed(msg.htlc_id, outcome).map(|htlc| {
 			(htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat, htlc.send_timestamp)
 		})
@@ -7498,16 +7499,21 @@ where
 						&htlc.payment_hash
 					);
 					// We really want take() here, but, again, non-mut ref :(
-					if let OutboundHTLCOutcome::Failure(mut reason) = outcome.clone() {
-						hold_time(htlc.send_timestamp, now).map(|hold_time| {
-							reason.set_hold_time(hold_time);
-						});
-
-						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
-					} else {
-						finalized_claimed_htlcs.push(htlc.source.clone());
-						// They fulfilled, so we sent them money
-						value_to_self_msat_diff -= htlc.amount_msat as i64;
+					match outcome.clone() {
+						OutboundHTLCOutcome::Failure(mut reason) => {
+							hold_time(htlc.send_timestamp, now).map(|hold_time| {
+								reason.set_hold_time(hold_time);
+							});
+							revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
+						},
+						OutboundHTLCOutcome::Success(_, attribution_data) => {
+							// Even though a fast track was taken for fulfilled HTLCs to the incoming side, we still
+							// pass along attribution data here so that we can include hold time information in the
+							// final PaymentPathSuccessful events.
+							finalized_claimed_htlcs.push((htlc.source.clone(), attribution_data));
+							// They fulfilled, so we sent them money
+							value_to_self_msat_diff -= htlc.amount_msat as i64;
+						},
 					}
 					false
 				} else {
@@ -7990,7 +7996,7 @@ where
 		&mut self, resend_raa: bool, resend_commitment: bool, resend_channel_ready: bool,
 		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
-		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>,
+		mut pending_finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	) {
 		self.context.monitor_pending_revoke_and_ack |= resend_raa;
 		self.context.monitor_pending_commitment_signed |= resend_commitment;

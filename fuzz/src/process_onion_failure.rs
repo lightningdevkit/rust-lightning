@@ -115,7 +115,7 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let path = Path { hops, blinded_tail };
 
 	let htlc_source = HTLCSource::OutboundRoute {
-		path,
+		path: path.clone(),
 		session_priv,
 		first_hop_htlc_msat: 0,
 		payment_id,
@@ -133,8 +133,19 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	} else {
 		None
 	};
-	let encrypted_packet = OnionErrorPacket { data: failure_data.into(), attribution_data };
+	let encrypted_packet =
+		OnionErrorPacket { data: failure_data.into(), attribution_data: attribution_data.clone() };
 	lightning::ln::process_onion_failure(&secp_ctx, &logger, &htlc_source, encrypted_packet);
+
+	if let Some(attribution_data) = attribution_data {
+		lightning::ln::decode_fulfill_attribution_data(
+			&secp_ctx,
+			&logger,
+			&path,
+			&session_priv,
+			attribution_data,
+		);
+	}
 }
 
 /// Method that needs to be added manually, {name}_test

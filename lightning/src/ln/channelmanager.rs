@@ -77,8 +77,10 @@ use crate::ln::onion_payment::{
 	NextPacketDetails,
 };
 use crate::ln::onion_utils::{self};
+use crate::ln::onion_utils::{
+	decode_fulfill_attribution_data, HTLCFailReason, LocalHTLCFailureReason,
+};
 use crate::ln::onion_utils::{process_fulfill_attribution_data, AttributionData};
-use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
 use crate::ln::our_peer_storage::EncryptedOurPeerStorage;
 #[cfg(test)]
 use crate::ln::outbound_payment;
@@ -8279,8 +8281,38 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		);
 	}
 
-	fn finalize_claims(&self, sources: Vec<HTLCSource>) {
-		self.pending_outbound_payments.finalize_claims(sources, &self.pending_events);
+	fn finalize_claims(&self, sources: Vec<(HTLCSource, Option<AttributionData>)>) {
+		// Decode attribution data to hold times.
+		let hold_times = sources.into_iter().filter_map(|(source, attribution_data)| {
+			if let HTLCSource::OutboundRoute { ref session_priv, ref path, .. } = source {
+				// If the path has trampoline hops, we need to hash the session private key to get the outer session key.
+				let derived_key;
+				let session_priv = if path.has_trampoline_hops() {
+					let session_priv_hash =
+						Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
+					derived_key = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
+					&derived_key
+				} else {
+					session_priv
+				};
+
+				let hold_times = attribution_data.map_or(Vec::new(), |attribution_data| {
+					decode_fulfill_attribution_data(
+						&self.secp_ctx,
+						&self.logger,
+						path,
+						session_priv,
+						attribution_data,
+					)
+				});
+
+				Some((source, hold_times))
+			} else {
+				None
+			}
+		});
+
+		self.pending_outbound_payments.finalize_claims(hold_times, &self.pending_events);
 	}
 
 	fn claim_funds_internal(
@@ -17114,7 +17146,7 @@ mod tests {
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
-			Event::PaymentPathSuccessful { payment_id: ref actual_payment_id, ref payment_hash, ref path } => {
+			Event::PaymentPathSuccessful { payment_id: ref actual_payment_id, ref payment_hash, ref path, .. } => {
 				assert_eq!(payment_id, *actual_payment_id);
 				assert_eq!(our_payment_hash, *payment_hash.as_ref().unwrap());
 				assert_eq!(route.paths[0], *path);
@@ -17122,7 +17154,7 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
-			Event::PaymentPathSuccessful { payment_id: ref actual_payment_id, ref payment_hash, ref path } => {
+			Event::PaymentPathSuccessful { payment_id: ref actual_payment_id, ref payment_hash, ref path, ..} => {
 				assert_eq!(payment_id, *actual_payment_id);
 				assert_eq!(our_payment_hash, *payment_hash.as_ref().unwrap());
 				assert_eq!(route.paths[0], *path);
