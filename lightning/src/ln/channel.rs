@@ -121,7 +121,7 @@ enum FeeUpdateState {
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
-	Fulfill(PaymentPreimage),
+	Fulfill(PaymentPreimage, Option<AttributionData>),
 }
 
 /// Represents the resolution status of an inbound HTLC.
@@ -220,7 +220,7 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
 			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_, _)) =>
 				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
 		}
 	}
@@ -251,7 +251,7 @@ impl InboundHTLCState {
 
 	fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage)) => Some(*preimage),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(preimage, _)) => Some(*preimage),
 			_ => None,
 		}
 	}
@@ -439,6 +439,7 @@ enum HTLCUpdateAwaitingACK {
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
+		attribution_data: AttributionData,
 		htlc_id: u64,
 	},
 	FailHTLC {
@@ -5347,7 +5348,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// (see equivalent if condition there).
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
-		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, logger);
+		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, AttributionData::new(), logger);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { msg, .. } = fulfill_resp {
 			assert!(!msg); // The HTLC must have ended up in the holding cell.
@@ -5356,7 +5357,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	fn get_update_fulfill_htlc<L: Deref>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, logger: &L,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: AttributionData, logger: &L,
 	) -> UpdateFulfillFetch where L::Target: Logger {
 		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -5380,7 +5381,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				match htlc.state {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(ref reason) => {
-						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+						if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						} else {
 							log_warn!(logger, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", &htlc.payment_hash, &self.context.channel_id());
 							debug_assert!(false, "Tried to fulfill an HTLC that was already failed");
@@ -5446,6 +5447,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			log_trace!(logger, "Adding HTLC claim to holding_cell in channel {}! Current state: {}", &self.context.channel_id(), self.context.channel_state.to_u32());
 			self.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg, htlc_id: htlc_id_arg,
+				attribution_data,
 			});
 			return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: false };
 		}
@@ -5458,7 +5460,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				return UpdateFulfillFetch::NewClaim { monitor_update, htlc_value_msat, msg: false };
 			}
 			log_trace!(logger, "Upgrading HTLC {} to LocalRemoved with a Fulfill in channel {}!", &htlc.payment_hash, &self.context.channel_id);
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
+			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone(), Some(attribution_data)));
 		}
 
 		UpdateFulfillFetch::NewClaim {
@@ -5470,10 +5472,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
-		payment_info: Option<PaymentClaimDetails>, logger: &L,
+		payment_info: Option<PaymentClaimDetails>, attribution_data: AttributionData, logger: &L,
 	) -> UpdateFulfillCommitFetch where L::Target: Logger {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
-		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, payment_info, logger) {
+		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, payment_info, attribution_data, logger) {
 			UpdateFulfillFetch::NewClaim { mut monitor_update, htlc_value_msat, msg } => {
 				// Even if we aren't supposed to let new monitor updates with commitment state
 				// updates run, we still need to push the preimage ChannelMonitorUpdateStep no
@@ -5848,7 +5850,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		Err(ChannelError::close("Remote tried to fulfill/fail an HTLC we couldn't find".to_owned()))
 	}
 
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64, Option<u64>, Option<Duration>), ChannelError> {
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fulfill HTLC message while quiescent".to_owned()));
 		}
@@ -5859,7 +5861,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Success(msg.payment_preimage)).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
+		self.mark_outbound_htlc_removed(msg.htlc_id, OutboundHTLCOutcome::Success(msg.payment_preimage)).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat, htlc.send_timestamp))
 	}
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
@@ -6188,7 +6190,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						}
 						None
 					},
-					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
+					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, ref attribution_data } => {
 						// If an HTLC claim was previously added to the holding cell (via
 						// `get_update_fulfill_htlc`, then generating the claim message itself must
 						// not fail - any in between attempts to claim the HTLC will have resulted
@@ -6201,7 +6203,7 @@ impl<SP: Deref> FundedChannel<SP> where
 						// We do not bother to track and include `payment_info` here, however.
 						let mut additional_monitor_update =
 							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } =
-								self.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, logger)
+								self.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, attribution_data.clone(), logger)
 							{ monitor_update } else { unreachable!() };
 						update_fulfill_count += 1;
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
@@ -6366,7 +6368,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			pending_inbound_htlcs.retain(|htlc| {
 				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
 					log_trace!(logger, " ...removing inbound LocalRemoved {}", &htlc.payment_hash);
-					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+					if let &InboundHTLCRemovalReason::Fulfill(_, _) = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
 					*expecting_peer_commitment_signed = true;
@@ -7139,11 +7141,12 @@ impl<SP: Deref> FundedChannel<SP> where
 							failure_code: failure_code.clone(),
 						});
 					},
-					&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
+					&InboundHTLCRemovalReason::Fulfill(ref payment_preimage, ref attribution_data) => {
 						update_fulfill_htlcs.push(msgs::UpdateFulfillHTLC {
 							channel_id: self.context.channel_id(),
 							htlc_id: htlc.htlc_id,
 							payment_preimage: payment_preimage.clone(),
+							attribution_data: attribution_data.clone(),
 						});
 					},
 				}
@@ -10642,7 +10645,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 							1u8.write(writer)?;
 							(hash, code).write(writer)?;
 						},
-						InboundHTLCRemovalReason::Fulfill(preimage) => {
+						InboundHTLCRemovalReason::Fulfill(preimage, _) => { // TODO: Persistence
 							2u8.write(writer)?;
 							preimage.write(writer)?;
 						},
@@ -10721,7 +10724,7 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 					holding_cell_skimmed_fees.push(skimmed_fee_msat);
 					holding_cell_blinding_points.push(blinding_point);
 				},
-				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
+				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id, .. } => {
 					1u8.write(writer)?;
 					payment_preimage.write(writer)?;
 					htlc_id.write(writer)?;
@@ -11003,7 +11006,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 								attribution_data: None,
 							}),
 							1 => InboundHTLCRemovalReason::FailMalformed(Readable::read(reader)?),
-							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
+							2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?, None), // TODO: Persistence
 							_ => return Err(DecodeError::InvalidValue),
 						};
 						InboundHTLCState::LocalRemoved(reason)
@@ -11076,6 +11079,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
+					attribution_data: AttributionData::new(),	// TODO: Persistence
 				},
 				2 => HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
@@ -11584,7 +11588,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 	}
 }
 
-fn duration_since_epoch() -> Option<Duration> {
+pub(crate) fn duration_since_epoch() -> Option<Duration> {
 	#[cfg(not(feature = "std"))]
 	let now = None;
 
@@ -12248,6 +12252,7 @@ mod tests {
 		let dummy_holding_cell_claim_htlc = HTLCUpdateAwaitingACK::ClaimHTLC {
 			payment_preimage: PaymentPreimage([42; 32]),
 			htlc_id: 0,
+			attribution_data: AttributionData::new(),
 		};
 		let dummy_holding_cell_failed_htlc = |htlc_id| HTLCUpdateAwaitingACK::FailHTLC {
 			htlc_id, err_packet: msgs::OnionErrorPacket { data: vec![42], attribution_data: Some(AttributionData::new()) }
