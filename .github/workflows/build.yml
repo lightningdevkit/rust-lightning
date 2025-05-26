@@ -305,7 +305,7 @@ jobs:
         run: |
           rustup component add rustfmt
       - name: Run rustfmt checks
-        run: ci/rustfmt.sh
+        run: cargo fmt --check
 
   incremental-mutants:
     runs-on: ubuntu-latest
