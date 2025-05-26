@@ -53,6 +53,8 @@ pub use onion_utils::{create_payment_onion, LocalHTLCFailureReason};
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
 #[cfg(fuzzing)]
+pub use onion_utils::decode_fulfill_attribution_data;
+#[cfg(fuzzing)]
 pub use onion_utils::process_onion_failure;
 
 #[cfg(fuzzing)]
