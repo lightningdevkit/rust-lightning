@@ -1080,6 +1080,8 @@ pub enum Event {
 		///
 		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
 		path: Path,
+		/// The hold times as reported by each hop.
+		hold_times: Option<Vec<u32>>,
 	},
 	/// Indicates an outbound HTLC we sent failed, likely due to an intermediary node being unable to
 	/// handle the HTLC.
@@ -1816,10 +1818,16 @@ impl Writeable for Event {
 					(4, funding_info, required),
 				})
 			},
-			&Event::PaymentPathSuccessful { ref payment_id, ref payment_hash, ref path } => {
+			&Event::PaymentPathSuccessful {
+				ref payment_id,
+				ref payment_hash,
+				ref path,
+				ref hold_times,
+			} => {
 				13u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, hold_times, option),
 					(2, payment_hash, option),
 					(4, path.hops, required_vec),
 					(6, path.blinded_tail, option),
@@ -2308,6 +2316,7 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, hold_times, option),
 						(2, payment_hash, option),
 						(4, path, required_vec),
 						(6, blinded_tail, option),
@@ -2316,6 +2325,7 @@ impl MaybeReadable for Event {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash,
 						path: Path { hops: path, blinded_tail },
+						hold_times,
 					}))
 				};
 				f()
