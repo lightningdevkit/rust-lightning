@@ -242,6 +242,9 @@ where
 /// even if multiple invoices are received.
 const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_OFFERS_MESSAGE_REQUEST_LIMIT: usize = OFFERS_MESSAGE_REQUEST_LIMIT;
+
 /// The default relative expiry for reply paths where a quick response is expected and the reply
 /// path is single-use.
 #[cfg(async_payments)]
@@ -1223,6 +1226,11 @@ where
 	pub(crate) fn get_async_receive_offer(&self) -> Result<(Offer, bool), ()> {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
 		cache.get_async_receive_offer(self.duration_since_epoch())
+	}
+
+	#[cfg(all(test, async_payments))]
+	pub(crate) fn test_get_async_receive_offers(&self) -> Vec<Offer> {
+		self.async_receive_offer_cache.lock().unwrap().test_get_payable_offers()
 	}
 
 	/// Sends out [`OfferPathsRequest`] and [`ServeStaticInvoice`] onion messages if we are an
