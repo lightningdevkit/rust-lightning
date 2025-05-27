@@ -1324,6 +1324,11 @@ where
 		self.offers_handler = offers_handler;
 	}
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn set_async_payments_handler(&mut self, async_payments_handler: APH) {
+		self.async_payments_handler = async_payments_handler;
+	}
+
 	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
 	pub fn send_onion_message<T: OnionMessageContents>(
 		&self, contents: T, instructions: MessageSendInstructions,
@@ -1538,7 +1543,7 @@ where
 	}
 
 	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
+	pub(crate) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		let mut msgs = new_hash_map();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we

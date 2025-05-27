@@ -224,6 +224,9 @@ where
 /// even if multiple invoices are received.
 const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
+#[cfg(all(async_payments, test))]
+pub(crate) const TEST_OFFERS_MESSAGE_REQUEST_LIMIT: usize = OFFERS_MESSAGE_REQUEST_LIMIT;
+
 /// The default relative expiry for reply paths where a quick response is expected and the reply
 /// path is single-use.
 #[cfg(async_payments)]
