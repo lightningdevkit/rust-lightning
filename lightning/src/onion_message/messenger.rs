@@ -1324,6 +1324,11 @@ where
 		self.offers_handler = offers_handler;
 	}
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn set_async_payments_handler(&mut self, async_payments_handler: APH) {
+		self.async_payments_handler = async_payments_handler;
+	}
+
 	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
 	pub fn send_onion_message<T: OnionMessageContents>(
 		&self, contents: T, instructions: MessageSendInstructions,

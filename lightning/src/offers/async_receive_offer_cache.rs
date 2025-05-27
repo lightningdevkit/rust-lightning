@@ -461,6 +461,21 @@ impl AsyncReceiveOfferCache {
 
 		false
 	}
+
+	#[cfg(test)]
+	pub(super) fn test_get_payable_offers(&self) -> Vec<Offer> {
+		self.offers_with_idx()
+			.filter_map(|(_, offer)| {
+				if matches!(offer.status, OfferStatus::Ready { .. })
+					|| matches!(offer.status, OfferStatus::Used)
+				{
+					Some(offer.offer.clone())
+				} else {
+					None
+				}
+			})
+			.collect()
+	}
 }
 
 impl Writeable for AsyncReceiveOfferCache {
