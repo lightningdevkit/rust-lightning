@@ -10,7 +10,7 @@
 //! Contains bLIP-52 / LSPS2 event types
 
 use super::msgs::LSPS2OpeningFeeParams;
-use crate::lsps0::ser::LSPSRequestId;
+use crate::lsps0::ser::{LSPSRequestId, LSPSResponseError};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -60,6 +60,40 @@ pub enum LSPS2ClientEvent {
 		cltv_expiry_delta: u32,
 		/// The initial payment size you specified.
 		payment_size_msat: Option<u64>,
+	},
+	/// A request previously issued via [`LSPS2ClientHandler::request_opening_params`]
+	/// failed as the LSP returned an error response.
+	///
+	/// [`LSPS2ClientHandler::request_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::request_opening_params
+	GetInfoFailed {
+		/// The identifier of the issued LSPS2 `get_info` request, as returned by
+		/// [`LSPS2ClientHandler::request_opening_params`].
+		///
+		/// This can be used to track which request this event corresponds to.
+		///
+		/// [`LSPS2ClientHandler::request_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::request_opening_params
+		request_id: LSPSRequestId,
+		/// The node id of the LSP.
+		counterparty_node_id: PublicKey,
+		/// The error that was returned.
+		error: LSPSResponseError,
+	},
+	/// A request previously issued via [`LSPS2ClientHandler::select_opening_params`]
+	/// failed as the LSP returned an error response.
+	///
+	/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
+	BuyRequestFailed {
+		/// The identifier of the issued LSPS2 `buy` request, as returned by
+		/// [`LSPS2ClientHandler::select_opening_params`].
+		///
+		/// This can be used to track which request this event corresponds to.
+		///
+		/// [`LSPS2ClientHandler::select_opening_params`]: crate::lsps2::client::LSPS2ClientHandler::select_opening_params
+		request_id: LSPSRequestId,
+		/// The node id of the LSP.
+		counterparty_node_id: PublicKey,
+		/// The error that was returned.
+		error: LSPSResponseError,
 	},
 }
 
