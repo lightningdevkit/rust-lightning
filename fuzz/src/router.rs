@@ -401,7 +401,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								encrypted_payload: Vec::new(),
 							});
 						}
-						BlindedPaymentPath::from_raw(
+						BlindedPaymentPath::from_blinded_path_and_payinfo(
 							hop.src_node_id,
 							dummy_pk,
 							blinded_hops,
