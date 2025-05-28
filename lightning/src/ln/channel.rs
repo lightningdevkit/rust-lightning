@@ -4886,6 +4886,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
 
+		// Note that we can't get `anchor_zero_fee_commitments` type here, which requires zero
+		// fees, because we downgrade from this channel type first. If there were a superior
+		// channel type that downgrades to `anchor_zero_fee_commitments`, we'd need to handle
+		// fee setting differently here.
+		assert!(!next_channel_type.supports_anchor_zero_fee_commitments());
 		let conf_target = if next_channel_type.supports_anchors_zero_fee_htlc_tx() {
 			ConfirmationTarget::AnchorChannelFee
 		} else {
