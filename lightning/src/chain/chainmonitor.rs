@@ -36,7 +36,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::events::{self, Event, EventHandler, ReplayEvent};
-use crate::util::async_poll::{poll_or_spawn, AsyncResult, FutureSpawner};
+use crate::util::async_poll::{poll_or_spawn, AsyncResult, AsyncVoid, FutureSpawner};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::persist::MonitorName;
@@ -175,7 +175,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// the archive process. Additionally, because the archive operation could be retried on
 	/// restart, this method must in that case be idempotent, ensuring it can handle scenarios where
 	/// the monitor already exists in the archive.
-	fn archive_persisted_channel(&self, monitor_name: MonitorName);
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) -> AsyncVoid;
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
