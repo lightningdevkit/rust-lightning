@@ -96,6 +96,9 @@ pub(crate) fn dummy_waker() -> Waker {
 	unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
 }
 
+/// A type alias for a future that returns nothing.
+pub type AsyncVoid = Pin<Box<dyn Future<Output = ()> + 'static + Send>>;
+
 /// A type alias for a future that returns a result of type T.
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;
 

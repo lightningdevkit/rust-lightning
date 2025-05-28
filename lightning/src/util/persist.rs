@@ -32,7 +32,7 @@ use crate::sync::Arc;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 
-use super::async_poll::{AsyncResult, AsyncResultType};
+use super::async_poll::{AsyncResult, AsyncResultType, AsyncVoid};
 
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
@@ -136,11 +136,6 @@ pub trait KVStore {
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
 	/// in the store.
-	fn write(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> Result<(), io::Error>;
-
-	/// Asynchronously persists the given data under the given `key`.
 	fn write_async(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
 	) -> AsyncResultType<'static, (), io::Error>;
@@ -193,14 +188,22 @@ pub trait MigratableKVStore: KVStore {
 ///
 /// Will abort and return an error if any IO operation fails. Note that in this case the
 /// `target_store` might get left in an intermediate state.
-pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
+pub async fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	source_store: &mut S, target_store: &mut T,
 ) -> Result<(), io::Error> {
 	let keys_to_migrate = source_store.list_all_keys()?;
 
 	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
 		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
-		target_store.write(primary_namespace, secondary_namespace, key, &data)?;
+		target_store
+			.write_async(primary_namespace, secondary_namespace, key, &data)
+			.await
+			.map_err(|_| {
+				io::Error::new(
+					io::ErrorKind::Other,
+					"Failed to write data to target store during migration",
+				)
+			})?;
 	}
 
 	Ok(())
@@ -218,32 +221,44 @@ where
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error>;
+	fn persist_manager(&self, channel_manager: &CM) -> AsyncResultType<'static, (), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
-	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
+	fn persist_graph(
+		&self, network_graph: &NetworkGraph<L>,
+	) -> AsyncResultType<'static, (), io::Error>;
 
 	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
-	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
+	fn persist_scorer(&self, scorer: &S) -> AsyncResultType<'static, (), io::Error>;
 }
 
-impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: Deref> Persister<'a, CM, L, S> for A
+impl<'a, A: KVStore + ?Sized + Send + Sync + 'static, CM: Deref, L: Deref, S: Deref>
+	Persister<'a, CM, L, S> for Arc<A>
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
 	S::Target: WriteableScore<'a>,
 {
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
-		self.write(
-			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.get_cm().encode(),
-		)
+	fn persist_manager(&self, channel_manager: &CM) -> AsyncResultType<'static, (), io::Error> {
+		let encoded = channel_manager.get_cm().encode();
+		let kv_store = self.clone();
+
+		Box::pin(async move {
+			kv_store
+				.write_async(
+					CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+					CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+					CHANNEL_MANAGER_PERSISTENCE_KEY,
+					&encoded,
+				)
+				.await
+		})
 	}
 
-	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
-		self.write(
+	fn persist_graph(
+		&self, network_graph: &NetworkGraph<L>,
+	) -> AsyncResultType<'static, (), io::Error> {
+		self.write_async(
 			NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 			NETWORK_GRAPH_PERSISTENCE_KEY,
@@ -251,8 +266,8 @@ where
 		)
 	}
 
-	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
-		self.write(
+	fn persist_scorer(&self, scorer: &S) -> AsyncResultType<'static, (), io::Error> {
+		self.write_async(
 			SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 			SCORER_PERSISTENCE_KEY,
@@ -308,31 +323,38 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 		})
 	}
 
-	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		let monitor_key = monitor_name.to_string();
-		let monitor = match self.read(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-		) {
-			Ok(monitor) => monitor,
-			Err(_) => return,
-		};
-		match self.write(
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			&monitor,
-		) {
-			Ok(()) => {},
-			Err(_e) => return,
-		};
-		let _ = self.remove(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			true,
-		);
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) -> AsyncVoid {
+		let kv_store = self.clone();
+
+		Box::pin(async move {
+			let monitor_key = monitor_name.to_string();
+			let monitor = match kv_store.read(
+				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				monitor_key.as_str(),
+			) {
+				Ok(monitor) => monitor,
+				Err(_) => return,
+			};
+			match kv_store
+				.write_async(
+					ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+					ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+					monitor_key.as_str(),
+					&monitor,
+				)
+				.await
+			{
+				Ok(()) => {},
+				Err(_e) => return,
+			};
+			let _ = kv_store.remove(
+				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				monitor_key.as_str(),
+				true,
+			);
+		})
 	}
 }
 
@@ -777,8 +799,13 @@ where
 		})
 	}
 
-	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		self.state.archive_persisted_channel(monitor_name);
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) -> AsyncVoid {
+		let monitor_name = monitor_name;
+		let state = self.state.clone();
+
+		Box::pin(async move {
+			state.archive_persisted_channel(monitor_name).await;
+		})
 	}
 }
 
@@ -925,18 +952,22 @@ where
 		}
 	}
 
-	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+	async fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read_channel_monitor_with_updates(&monitor_key) {
 			Ok((_block_hash, monitor)) => monitor,
 			Err(_) => return,
 		};
-		match self.kv_store.write(
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			&monitor.encode(),
-		) {
+		match self
+			.kv_store
+			.write_async(
+				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				monitor_key.as_str(),
+				&monitor.encode(),
+			)
+			.await
+		{
 			Ok(()) => {},
 			Err(_e) => return,
 		};
