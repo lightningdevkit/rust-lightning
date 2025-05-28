@@ -19,6 +19,7 @@ use core::str::FromStr;
 use crate::prelude::*;
 use crate::{io, log_error};
 
+use crate::sync::{Arc};
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
@@ -31,6 +32,8 @@ use crate::routing::scoring::WriteableScore;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
+
+use super::async_poll::AsyncResult;
 
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
@@ -137,6 +140,11 @@ pub trait KVStore {
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
 	) -> Result<(), io::Error>;
+
+	/// Asynchronously persists the given data under the given `key`.
+	fn write_async(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> AsyncResult<'static, ()>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -254,7 +262,9 @@ where
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
+impl<ChannelSigner: EcdsaChannelSigner + Send, K: KVStore + ?Sized + Sync + Send + 'static>
+	Persist<ChannelSigner> for Arc<K>
+{
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
@@ -262,31 +272,37 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
-	) -> chain::ChannelMonitorUpdateStatus {
-		match self.write(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&monitor_name.to_string(),
-			&monitor.encode(),
-		) {
-			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError,
-		}
+	) -> AsyncResult<'static, ()> {
+		let encoded = monitor.encode();
+		let kv_store = self.clone();
+
+		Box::pin(async move {
+			kv_store.write_async(
+				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				&monitor_name.to_string(),
+				&encoded,
+			)
+			.await
+		})
 	}
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, _update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
-	) -> chain::ChannelMonitorUpdateStatus {
-		match self.write(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&monitor_name.to_string(),
-			&monitor.encode(),
-		) {
-			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError,
-		}
+	) -> AsyncResult<'static, ()> {
+		let encoded = monitor.encode();
+		let kv_store = self.clone();
+
+		Box::pin(async move {
+			kv_store.write_async(
+				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				&monitor_name.to_string(),
+				&encoded,
+			)
+			.await
+		})
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
@@ -455,6 +471,18 @@ where
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator,
 {
+	state: Arc<MonitorUpdatingPersisterState<K, L, ES, SP, BI, FE>>,
+}
+
+struct MonitorUpdatingPersisterState<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
+where
+	K::Target: KVStore,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
 	kv_store: K,
 	logger: L,
 	maximum_pending_updates: u64,
@@ -464,9 +492,10 @@ where
 	fee_estimator: FE,
 }
 
+
 #[allow(dead_code)]
 impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+	MonitorUpdatingPersisterState<K, L, ES, SP, BI, FE>
 where
 	K::Target: KVStore,
 	L::Target: Logger,
@@ -495,7 +524,7 @@ where
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
 	) -> Self {
-		MonitorUpdatingPersister {
+		MonitorUpdatingPersisterState {
 			kv_store,
 			logger,
 			maximum_pending_updates,
@@ -687,19 +716,19 @@ where
 }
 
 impl<
-		ChannelSigner: EcdsaChannelSigner,
-		K: Deref,
-		L: Deref,
-		ES: Deref,
-		SP: Deref,
-		BI: Deref,
-		FE: Deref,
+		ChannelSigner: EcdsaChannelSigner + Send + Sync,
+		K: Deref + Send + Sync + 'static,
+		L: Deref + Send + Sync + 'static,
+		ES: Deref + Send + Sync + 'static,
+		SP: Deref + Send + Sync + 'static,
+		BI: Deref + Send + Sync + 'static,
+		FE: Deref + Send + Sync + 'static,
 	> Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 where
-	K::Target: KVStore,
+	K::Target: KVStore + Sync,
 	L::Target: Logger,
 	ES::Target: EntropySource + Sized,
-	SP::Target: SignerProvider + Sized,
+	SP::Target: SignerProvider + Send + Sync + Sized,
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator,
 {
@@ -707,34 +736,14 @@ where
 	/// parametrized [`KVStore`].
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
-	) -> chain::ChannelMonitorUpdateStatus {
-		// Determine the proper key for this monitor
-		let monitor_key = monitor_name.to_string();
-		// Serialize and write the new monitor
-		let mut monitor_bytes = Vec::with_capacity(
-			MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
-		);
-		monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
-		monitor.write(&mut monitor_bytes).unwrap();
-		match self.kv_store.write(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key.as_str(),
-			&monitor_bytes,
-		) {
-			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(e) => {
-				log_error!(
-					self.logger,
-					"Failed to write ChannelMonitor {}/{}/{} reason: {}",
-					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-					monitor_key.as_str(),
-					e
-				);
-				chain::ChannelMonitorUpdateStatus::UnrecoverableError
-			},
-		}
+	) -> AsyncResult<'static, ()> {
+		let state = self.state.clone();
+
+		let encoded_monitor = Self::encode_monitor(monitor);
+
+		Box::pin(async move {
+			state.persist_new_channel(monitor_name, &encoded_monitor).await
+		})
 	}
 
 	/// Persists a channel update, writing only the update to the parameterized [`KVStore`] if possible.
@@ -749,37 +758,117 @@ where
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> AsyncResult<'static, ()> {
+		let state = self.state.clone();
+
+		let encoded_monitor = Self::encode_monitor(monitor);
+		let encoded_update = update.map(|update| (update.update_id, update.encode()));
+		let monitor_latest_update_id = monitor.get_latest_update_id();
+
+		Box::pin(async move {
+			state.update_persisted_channel(monitor_name, encoded_update, &encoded_monitor, monitor_latest_update_id).await
+		})
+	}
+
+	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+		self.state.archive_persisted_channel(monitor_name);
+	}
+}
+
+
+impl<
+		K: Deref + Send + Sync + 'static,
+		L: Deref + Send + Sync + 'static,
+		ES: Deref + Send + Sync + 'static,
+		SP: Deref + Send + Sync + 'static,
+		BI: Deref + Send + Sync + 'static,
+		FE: Deref + Send + Sync + 'static,
+	> MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+where
+	K::Target: KVStore + Sync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sync + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
+	fn encode_monitor<ChannelSigner: EcdsaChannelSigner + Send + Sync>(
+			monitor: &ChannelMonitor<ChannelSigner>,
+		) -> Vec<u8> {
+			// Serialize and write the new monitor
+			let mut monitor_bytes = Vec::with_capacity(
+				MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
+			);
+			monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
+			monitor.write(&mut monitor_bytes).unwrap();
+
+			monitor_bytes
+		}
+	}
+
+impl<
+		K: Deref + Send + Sync + 'static,
+		L: Deref + Send + Sync + 'static,
+		ES: Deref + Send + Sync + 'static,
+		SP: Deref + Send + Sync + 'static,
+		BI: Deref + Send + Sync + 'static,
+		FE: Deref + Send + Sync + 'static,
+	> MonitorUpdatingPersisterState<K, L, ES, SP, BI, FE>
+where
+	K::Target: KVStore + Sync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sync + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
+	/// Persists a new channel. This means writing the entire monitor to the
+	/// parametrized [`KVStore`].
+	async fn persist_new_channel(
+		self: Arc<Self>, monitor_name: MonitorName, monitor_bytes: &[u8],
+	) -> Result<(), ()> {
+		// Determine the proper key for this monitor
+		let monitor_key = monitor_name.to_string();
+
+		// Serialize and write the new monitor
+		self.kv_store.write_async(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_key.as_str(),
+			&monitor_bytes,
+		).await
+	}
+
+	/// Persists a channel update, writing only the update to the parameterized [`KVStore`] if possible.
+	///
+	/// In some cases, this will forward to [`MonitorUpdatingPersister::persist_new_channel`]:
+	///
+	///   - No full monitor is found in [`KVStore`]
+	///   - The number of pending updates exceeds `maximum_pending_updates` as given to [`Self::new`]
+	///   - LDK commands re-persisting the entire monitor through this function, specifically when
+	///	    `update` is `None`.
+	///   - The update is at [`u64::MAX`], indicating an update generated by pre-0.1 LDK.
+	async fn update_persisted_channel(
+		self: Arc<Self>, monitor_name: MonitorName, update: Option<(u64, Vec<u8>)>,
+		monitor: &[u8], monitor_latest_update_id: u64,
+	) -> Result<(), ()> {
 		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
-		if let Some(update) = update {
-			let persist_update = update.update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID
-				&& update.update_id % self.maximum_pending_updates != 0;
+		if let Some((update_id, update)) = update {
+			let persist_update = update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID
+				&& update_id % self.maximum_pending_updates != 0;
 			if persist_update {
 				let monitor_key = monitor_name.to_string();
-				let update_name = UpdateName::from(update.update_id);
-				match self.kv_store.write(
+				let update_name = UpdateName::from(update_id);
+				self.kv_store.write_async(
 					CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 					monitor_key.as_str(),
 					update_name.as_str(),
-					&update.encode(),
-				) {
-					Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-					Err(e) => {
-						log_error!(
-							self.logger,
-							"Failed to write ChannelMonitorUpdate {}/{}/{} reason: {}",
-							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-							monitor_key.as_str(),
-							update_name.as_str(),
-							e
-						);
-						chain::ChannelMonitorUpdateStatus::UnrecoverableError
-					},
-				}
+					&update,
+				).await
 			} else {
 				// In case of channel-close monitor update, we need to read old monitor before persisting
 				// the new one in order to determine the cleanup range.
-				let maybe_old_monitor = match monitor.get_latest_update_id() {
+				let maybe_old_monitor = match monitor_latest_update_id {
 					LEGACY_CLOSED_CHANNEL_UPDATE_ID => {
 						let monitor_key = monitor_name.to_string();
 						self.read_monitor(&monitor_name, &monitor_key).ok()
@@ -788,11 +877,11 @@ where
 				};
 
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
-				let monitor_update_status = self.persist_new_channel(monitor_name, monitor);
+				let monitor_update_status = self.clone().persist_new_channel(monitor_name, &monitor).await;
 
-				if let chain::ChannelMonitorUpdateStatus::Completed = monitor_update_status {
+				if monitor_update_status.is_ok() {
 					let channel_closed_legacy =
-						monitor.get_latest_update_id() == LEGACY_CLOSED_CHANNEL_UPDATE_ID;
+						monitor_latest_update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID;
 					let cleanup_range = if channel_closed_legacy {
 						// If there is an error while reading old monitor, we skip clean up.
 						maybe_old_monitor.map(|(_, ref old_monitor)| {
@@ -805,7 +894,7 @@ where
 							(start, end)
 						})
 					} else {
-						let end = monitor.get_latest_update_id();
+						let end = monitor_latest_update_id;
 						let start = end.saturating_sub(self.maximum_pending_updates);
 						Some((start, end))
 					};
@@ -819,7 +908,7 @@ where
 			}
 		} else {
 			// There is no update given, so we must persist a new monitor.
-			self.persist_new_channel(monitor_name, monitor)
+			self.persist_new_channel(monitor_name, &monitor).await
 		}
 	}
 
@@ -847,8 +936,9 @@ where
 	}
 }
 
+
 impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
-	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+	MonitorUpdatingPersisterState<K, L, ES, SP, BI, FE>
 where
 	ES::Target: EntropySource + Sized,
 	K::Target: KVStore,

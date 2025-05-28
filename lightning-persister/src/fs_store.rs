@@ -3,6 +3,7 @@ use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
 use lightning::util::persist::{KVStore, MigratableKVStore};
 use lightning::util::string::PrintableString;
+use lightning::util::async_poll::AsyncResult;
 
 use std::collections::HashMap;
 use std::fs;
@@ -10,6 +11,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+
+
 
 #[cfg(target_os = "windows")]
 use {std::ffi::OsStr, std::os::windows::ffi::OsStrExt};
@@ -328,6 +331,12 @@ impl KVStore for FilesystemStore {
 		self.garbage_collect_locks();
 
 		Ok(keys)
+	}
+
+	fn write_async(
+				&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> AsyncResult<'static, ()> {
+		todo!()
 	}
 }
 

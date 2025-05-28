@@ -32,7 +32,7 @@ pub mod ser;
 pub mod sweep;
 pub mod wakers;
 
-pub(crate) mod async_poll;
+pub mod async_poll;
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
 pub mod hash_tables;
