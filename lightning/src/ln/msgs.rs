@@ -735,6 +735,9 @@ pub struct UpdateFulfillHTLC {
 	pub htlc_id: u64,
 	/// The pre-image of the payment hash, allowing HTLC redemption
 	pub payment_preimage: PaymentPreimage,
+
+	/// Optional field for the attribution data that allows the sender to pinpoint the failing node under all conditions
+	pub attribution_data: Option<AttributionData>,
 }
 
 /// A [`peer_storage`] message that can be sent to or received from a peer.
@@ -3088,7 +3091,10 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 	channel_id,
 	htlc_id,
 	payment_preimage
-}, {});
+}, {
+	// Specified TLV key 1 plus 100 during testing phase.
+	(101, attribution_data, option)
+});
 
 impl_writeable_msg!(PeerStorage, { data }, {});
 
@@ -5564,6 +5570,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			payment_preimage: PaymentPreimage([1; 32]),
+			attribution_data: None,
 		};
 		let encoded_value = update_fulfill_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d0101010101010101010101010101010101010101010101010101010101010101").unwrap();
