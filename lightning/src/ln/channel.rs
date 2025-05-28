@@ -9934,9 +9934,9 @@ pub(super) fn channel_type_from_open_channel(
 
 		// We only support the channel types defined by the `ChannelManager` in
 		// `provided_channel_type_features`. The channel type must always support
-		// `static_remote_key`, except for `option_zero_fee_commitments` which
-		// assumes this feature.
-		if !channel_type.requires_static_remote_key() && !channel_type.requires_anchor_zero_fee_commitments(){
+		// `static_remote_key`, either implicitly with `option_zero_fee_commitments`
+		// or explicitly.
+		if !channel_type.requires_static_remote_key() && !channel_type.requires_anchor_zero_fee_commitments() {
 			return Err(ChannelError::close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 		// Make sure we support all of the features behind the channel type.
