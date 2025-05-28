@@ -16167,11 +16167,11 @@ mod tests {
 
 		let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let end_type = ChannelTypeFeatures::only_static_remote_key();
-		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, end_type);
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
 	}
 
 	fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
-		start_type: ChannelTypeFeatures, downgrade_type: ChannelTypeFeatures) {
+		start_type: ChannelTypeFeatures, downgrade_types: Vec<ChannelTypeFeatures>) {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(acceptor_cfg)]);
@@ -16179,28 +16179,30 @@ mod tests {
 		let error_message = "Channel force-closed";
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 		assert_eq!(open_channel_msg.common_fields.channel_type.as_ref().unwrap(), &start_type);
 
-		nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
-		let events = nodes[1].node.get_and_clear_pending_events();
-		match events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
+		for downgrade_type in downgrade_types {
+			nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				Event::OpenChannelRequest { temporary_channel_id, .. } => {
+					nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
+				}
+				_ => panic!("Unexpected event"),
 			}
-			_ => panic!("Unexpected event"),
+
+			let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
+
+			open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+			let channel_type = open_channel_msg.common_fields.channel_type.as_ref().unwrap();
+			assert_eq!(channel_type, &downgrade_type);
+
+			// Since nodes[1] should not have accepted the channel, it should
+			// not have generated any events.
+			assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		}
-
-		let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
-
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		let channel_type = open_channel_msg.common_fields.channel_type.as_ref().unwrap();
-		assert_eq!(channel_type, &downgrade_type);
-
-		// Since nodes[1] should not have accepted the channel, it should
-		// not have generated any events.
-		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
 
 	#[test]
