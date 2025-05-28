@@ -13172,14 +13172,13 @@ mod tests {
 		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
 		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
-		// Assert that we don't get the target channel type when the receiving node does not signal
-		// support.
+		// Assert that we get `static_remotekey` when no custom config is negotiated.
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
 			&config, 0, 42, None, &logger
 		).unwrap();
-		assert!(channel_a.funding.get_channel_type() != &expected_channel_type);
+		assert_eq!(channel_a.funding.get_channel_type(), &ChannelTypeFeatures::only_static_remote_key());
 
 		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
