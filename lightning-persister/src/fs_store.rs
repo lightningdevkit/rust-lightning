@@ -93,6 +93,95 @@ impl FilesystemStore {
 	}
 }
 
+impl FilesystemStore {
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> Result<(), lightning::io::Error> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
+
+		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
+		dest_file_path.push(key);
+
+		let parent_directory = dest_file_path.parent().ok_or_else(|| {
+			let msg =
+				format!("Could not retrieve parent directory of {}.", dest_file_path.display());
+			std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
+		})?;
+		fs::create_dir_all(&parent_directory)?;
+
+		// Do a crazy dance with lots of fsync()s to be overly cautious here...
+		// We never want to end up in a state where we've lost the old data, or end up using the
+		// old data on power loss after we've returned.
+		// The way to atomically write a file on Unix platforms is:
+		// open(tmpname), write(tmpfile), fsync(tmpfile), close(tmpfile), rename(), fsync(dir)
+		let mut tmp_file_path = dest_file_path.clone();
+		let tmp_file_ext = format!("{}.tmp", self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
+		tmp_file_path.set_extension(tmp_file_ext);
+
+		{
+			let mut tmp_file = fs::File::create(&tmp_file_path)?;
+			tmp_file.write_all(&buf)?;
+			tmp_file.sync_all()?;
+		}
+
+		let res = {
+			let inner_lock_ref = {
+				let mut outer_lock = self.locks.lock().unwrap();
+				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
+			};
+			let _guard = inner_lock_ref.write().unwrap();
+
+			#[cfg(not(target_os = "windows"))]
+			{
+				fs::rename(&tmp_file_path, &dest_file_path)?;
+				let dir_file = fs::OpenOptions::new().read(true).open(&parent_directory)?;
+				dir_file.sync_all()?;
+				Ok(())
+			}
+
+			#[cfg(target_os = "windows")]
+			{
+				let res = if dest_file_path.exists() {
+					call!(unsafe {
+						windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
+							path_to_windows_str(&dest_file_path).as_ptr(),
+							path_to_windows_str(&tmp_file_path).as_ptr(),
+							std::ptr::null(),
+							windows_sys::Win32::Storage::FileSystem::REPLACEFILE_IGNORE_MERGE_ERRORS,
+							std::ptr::null_mut() as *const core::ffi::c_void,
+							std::ptr::null_mut() as *const core::ffi::c_void,
+							)
+					})
+				} else {
+					call!(unsafe {
+						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+							path_to_windows_str(&tmp_file_path).as_ptr(),
+							path_to_windows_str(&dest_file_path).as_ptr(),
+							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
+							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
+							)
+					})
+				};
+
+				match res {
+					Ok(()) => {
+						// We fsync the dest file in hopes this will also flush the metadata to disk.
+						let dest_file =
+							fs::OpenOptions::new().read(true).write(true).open(&dest_file_path)?;
+						dest_file.sync_all()?;
+						Ok(())
+					},
+					Err(e) => Err(e.into()),
+				}
+			}
+		};
+
+		self.garbage_collect_locks();
+
+		res
+	}
+}
+
 impl KVStore for FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
@@ -122,99 +211,9 @@ impl KVStore for FilesystemStore {
 	fn write_async(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
 	) -> AsyncResultType<'static, (), lightning::io::Error> {
-		Box::pin(async move {
-			check_namespace_key_validity(
-				primary_namespace,
-				secondary_namespace,
-				Some(key),
-				"write",
-			)?;
+		let res = self.write(primary_namespace, secondary_namespace, key, buf);
 
-			let mut dest_file_path =
-				self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
-			dest_file_path.push(key);
-
-			let parent_directory = dest_file_path.parent().ok_or_else(|| {
-				let msg =
-					format!("Could not retrieve parent directory of {}.", dest_file_path.display());
-				std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
-			})?;
-			fs::create_dir_all(&parent_directory)?;
-
-			// Do a crazy dance with lots of fsync()s to be overly cautious here...
-			// We never want to end up in a state where we've lost the old data, or end up using the
-			// old data on power loss after we've returned.
-			// The way to atomically write a file on Unix platforms is:
-			// open(tmpname), write(tmpfile), fsync(tmpfile), close(tmpfile), rename(), fsync(dir)
-			let mut tmp_file_path = dest_file_path.clone();
-			let tmp_file_ext =
-				format!("{}.tmp", self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
-			tmp_file_path.set_extension(tmp_file_ext);
-
-			{
-				let mut tmp_file = fs::File::create(&tmp_file_path)?;
-				tmp_file.write_all(&buf)?;
-				tmp_file.sync_all()?;
-			}
-
-			let res = {
-				let inner_lock_ref = {
-					let mut outer_lock = self.locks.lock().unwrap();
-					Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
-				};
-				let _guard = inner_lock_ref.write().unwrap();
-
-				#[cfg(not(target_os = "windows"))]
-				{
-					fs::rename(&tmp_file_path, &dest_file_path)?;
-					let dir_file = fs::OpenOptions::new().read(true).open(&parent_directory)?;
-					dir_file.sync_all()?;
-					Ok(())
-				}
-
-				#[cfg(target_os = "windows")]
-				{
-					let res = if dest_file_path.exists() {
-						call!(unsafe {
-							windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
-							path_to_windows_str(&dest_file_path).as_ptr(),
-							path_to_windows_str(&tmp_file_path).as_ptr(),
-							std::ptr::null(),
-							windows_sys::Win32::Storage::FileSystem::REPLACEFILE_IGNORE_MERGE_ERRORS,
-							std::ptr::null_mut() as *const core::ffi::c_void,
-							std::ptr::null_mut() as *const core::ffi::c_void,
-							)
-						})
-					} else {
-						call!(unsafe {
-							windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-							path_to_windows_str(&tmp_file_path).as_ptr(),
-							path_to_windows_str(&dest_file_path).as_ptr(),
-							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
-							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
-							)
-						})
-					};
-
-					match res {
-						Ok(()) => {
-							// We fsync the dest file in hopes this will also flush the metadata to disk.
-							let dest_file = fs::OpenOptions::new()
-								.read(true)
-								.write(true)
-								.open(&dest_file_path)?;
-							dest_file.sync_all()?;
-							Ok(())
-						},
-						Err(e) => Err(e.into()),
-					}
-				}
-			};
-
-			self.garbage_collect_locks();
-
-			res
-		})
+		Box::pin(async move { res })
 	}
 
 	fn remove(
