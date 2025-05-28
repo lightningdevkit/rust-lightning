@@ -12331,6 +12331,7 @@ where
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					Some(chan) => match chan.maybe_handle_error_without_close(
 						self.chain_hash, &self.fee_estimator, &self.logger,
+						&self.default_configuration, &peer_state.latest_features,
 					) {
 						Ok(Some(OpenChannelMessage::V1(msg))) => {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
@@ -16168,6 +16169,31 @@ mod tests {
 		let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let end_type = ChannelTypeFeatures::only_static_remote_key();
 		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
+	}
+
+	#[test]
+	fn test_scid_privacy_downgrade() {
+		// Tests downgrade from `anchors_zero_fee_htlc_tx` with `option_scid_alias` when the
+		// remote node advertises the features but does not accept the channel, asserting that
+		// `option_scid_alias` is the last feature to be downgraded.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		initiator_cfg.channel_handshake_config.negotiate_scid_privacy = true;
+		initiator_cfg.channel_handshake_config.announce_for_forwarding = false;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.channel_handshake_config.negotiate_scid_privacy = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let mut start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		start_type.set_scid_privacy_required();
+		let mut with_scid_privacy = ChannelTypeFeatures::only_static_remote_key();
+		with_scid_privacy.set_scid_privacy_required();
+		let static_remote = ChannelTypeFeatures::only_static_remote_key();
+		let downgrade_types = vec![with_scid_privacy, static_remote];
+
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, downgrade_types);
 	}
 
 	fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
