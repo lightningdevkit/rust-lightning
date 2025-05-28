@@ -10390,8 +10390,10 @@ where
 	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
 	/// - `payer_note` for [`InvoiceRequest::payer_note`].
 	///
-	/// If `max_total_routing_fee_msat` is not specified, The default from
-	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	/// # Custom Routing Parameters
+	///
+	/// Users can customize routing parameters via [`RouteParametersConfig`].
+	/// To use default settings, call the function with [`RouteParametersConfig::default()`].
 	///
 	/// # Payment
 	///
@@ -10552,8 +10554,10 @@ where
 	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
 	/// your normal URI handling.
 	///
-	/// If `max_total_routing_fee_msat` is not specified, the default from
-	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	/// # Custom Routing Parameters
+	///
+	/// Users can customize routing parameters via [`RouteParametersConfig`].
+	/// To use default settings, call the function with [`RouteParametersConfig::default()`].
 	///
 	/// # Payment
 	///
