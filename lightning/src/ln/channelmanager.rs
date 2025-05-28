@@ -16227,6 +16227,23 @@ mod tests {
 		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, downgrade_types);
 	}
 
+	#[test]
+	fn test_zero_fee_commitments_downgrade_to_static_remote() {
+		// Tests that the local node will retry with static remote key when zero fee commitments
+		// are supported (but not accepted), but not legacy anchors.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg .channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		initiator_cfg .channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
+		let end_type = ChannelTypeFeatures::only_static_remote_key();
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
+	}
+
 	fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
 		start_type: ChannelTypeFeatures, downgrade_types: Vec<ChannelTypeFeatures>) {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
