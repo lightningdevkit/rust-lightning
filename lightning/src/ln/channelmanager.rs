@@ -16158,20 +16158,23 @@ mod tests {
 		// Tests that if both nodes support anchors, but the remote node does not want to accept
 		// anchor channels at the moment, an error it sent to the local node such that it can retry
 		// the channel without the anchors feature.
-		let mut anchors_config = test_default_channel_config();
-		anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		anchors_config.manually_accept_inbound_channels = true;
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
 
 		let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let end_type = ChannelTypeFeatures::only_static_remote_key();
-		do_test_channel_type_downgrade(anchors_config, start_type, end_type);
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, end_type);
 	}
 
-	fn do_test_channel_type_downgrade(user_cfg: UserConfig, start_type: ChannelTypeFeatures,
-		downgrade_type: ChannelTypeFeatures) {
+	fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
+		start_type: ChannelTypeFeatures, downgrade_type: ChannelTypeFeatures) {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_cfg.clone()), Some(user_cfg.clone())]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(acceptor_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let error_message = "Channel force-closed";
 
