@@ -721,7 +721,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner + Send + Sync + 'static, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, FS: FutureSpawner>
+impl<ChannelSigner: EcdsaChannelSigner + 'static, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, FS: FutureSpawner>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P, FS>
 where
 	C::Target: chain::Filter,
@@ -750,7 +750,7 @@ where
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner + Sync + Send + 'static, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, FS: FutureSpawner>
+impl<ChannelSigner: EcdsaChannelSigner + 'static, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, FS: FutureSpawner>
 chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P, FS>
 where
 	C::Target: chain::Filter,
@@ -804,7 +804,7 @@ where
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner + Sync + Send + 'static, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref, FS: FutureSpawner + Clone>
+impl<ChannelSigner: EcdsaChannelSigner + 'static, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref, FS: FutureSpawner + Clone>
 chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P, FS>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,

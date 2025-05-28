@@ -106,28 +106,30 @@ pub trait FutureSpawner: Send + Sync + 'static {
 }
 
 /// Polls a future and either returns true if it is ready or spawns it on the tokio runtime if it is not.
-pub fn poll_or_spawn<F, C, S>(mut fut: Pin<Box<F>>, callback: C, future_spawner: &S) -> Result<bool, ()>
+pub fn poll_or_spawn<F, C, S>(
+	mut fut: Pin<Box<F>>, callback: C, future_spawner: &S,
+) -> Result<bool, ()>
 where
-    F: Future<Output = Result<(), ()>> + Send + 'static + ?Sized,
-    C: FnOnce() + Send + 'static,
+	F: Future<Output = Result<(), ()>> + Send + 'static + ?Sized,
+	C: FnOnce() + Send + 'static,
 	S: FutureSpawner,
 {
-    let waker = dummy_waker();
-    let mut cx = Context::from_waker(&waker);
+	let waker = dummy_waker();
+	let mut cx = Context::from_waker(&waker);
 
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(())) => Ok(true),
+	match fut.as_mut().poll(&mut cx) {
+		Poll::Ready(Ok(())) => Ok(true),
 		Poll::Ready(Err(_)) => Err(()),
-        Poll::Pending => {
-            println!("Future not ready, using tokio runtime");
+		Poll::Pending => {
+			println!("Future not ready, using tokio runtime");
 
-            let callback = Box::new(callback);
-            future_spawner.spawn(async move {
-                fut.await;
-                callback();
-            });
+			let callback = Box::new(callback);
+			future_spawner.spawn(async move {
+				fut.await;
+				callback();
+			});
 
-            Ok(false)
-        }
-    }
+			Ok(false)
+		},
+	}
 }
