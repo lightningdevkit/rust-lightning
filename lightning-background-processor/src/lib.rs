@@ -1097,6 +1097,8 @@ impl BackgroundProcessor {
 			// 		)
 			// 	},
 			// )
+
+			Ok(())
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
