@@ -1033,70 +1033,70 @@ impl BackgroundProcessor {
 						.expect("Time should be sometime after 1970");
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = persister.persist_scorer(&scorer).await {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
-						}
+						// if let Err(e) = persister.persist_scorer(&scorer).await {
+						// 	log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+						// }
 					}
 				}
 				event_handler.handle_event(event)
 			};
-			define_run_body!(
-				persister,
-				chain_monitor,
-				chain_monitor.process_pending_events(&event_handler),
-				channel_manager,
-				channel_manager.get_cm().process_pending_events(&event_handler),
-				onion_messenger,
-				if let Some(om) = &onion_messenger {
-					om.get_om().process_pending_events(&event_handler)
-				},
-				peer_manager,
-				gossip_sync,
-				{
-					if let Some(ref sweeper) = sweeper {
-						let _ = sweeper.regenerate_and_broadcast_spend_if_necessary();
-					}
-				},
-				logger,
-				scorer,
-				stop_thread.load(Ordering::Acquire),
-				{
-					let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
-						(Some(om), Some(lm)) => Sleeper::from_four_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-							&om.get_om().get_update_future(),
-							&lm.get_lm().get_pending_msgs_future(),
-						),
-						(Some(om), None) => Sleeper::from_three_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-							&om.get_om().get_update_future(),
-						),
-						(None, Some(lm)) => Sleeper::from_three_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-							&lm.get_lm().get_pending_msgs_future(),
-						),
-						(None, None) => Sleeper::from_two_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-						),
-					};
-					sleeper.wait_timeout(Duration::from_millis(100));
-				},
-				|_| Instant::now(),
-				|time: &Instant, dur| time.elapsed().as_secs() > dur,
-				false,
-				|| {
-					use std::time::SystemTime;
-					Some(
-						SystemTime::now()
-							.duration_since(SystemTime::UNIX_EPOCH)
-							.expect("Time should be sometime after 1970"),
-					)
-				},
-			)
+			// define_run_body!(
+			// 	persister,
+			// 	chain_monitor,
+			// 	chain_monitor.process_pending_events(&event_handler),
+			// 	channel_manager,
+			// 	channel_manager.get_cm().process_pending_events(&event_handler),
+			// 	onion_messenger,
+			// 	if let Some(om) = &onion_messenger {
+			// 		om.get_om().process_pending_events(&event_handler)
+			// 	},
+			// 	peer_manager,
+			// 	gossip_sync,
+			// 	{
+			// 		if let Some(ref sweeper) = sweeper {
+			// 			let _ = sweeper.regenerate_and_broadcast_spend_if_necessary();
+			// 		}
+			// 	},
+			// 	logger,
+			// 	scorer,
+			// 	stop_thread.load(Ordering::Acquire),
+			// 	{
+			// 		let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
+			// 			(Some(om), Some(lm)) => Sleeper::from_four_futures(
+			// 				&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+			// 				&chain_monitor.get_update_future(),
+			// 				&om.get_om().get_update_future(),
+			// 				&lm.get_lm().get_pending_msgs_future(),
+			// 			),
+			// 			(Some(om), None) => Sleeper::from_three_futures(
+			// 				&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+			// 				&chain_monitor.get_update_future(),
+			// 				&om.get_om().get_update_future(),
+			// 			),
+			// 			(None, Some(lm)) => Sleeper::from_three_futures(
+			// 				&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+			// 				&chain_monitor.get_update_future(),
+			// 				&lm.get_lm().get_pending_msgs_future(),
+			// 			),
+			// 			(None, None) => Sleeper::from_two_futures(
+			// 				&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+			// 				&chain_monitor.get_update_future(),
+			// 			),
+			// 		};
+			// 		sleeper.wait_timeout(Duration::from_millis(100));
+			// 	},
+			// 	|_| Instant::now(),
+			// 	|time: &Instant, dur| time.elapsed().as_secs() > dur,
+			// 	false,
+			// 	|| {
+			// 		use std::time::SystemTime;
+			// 		Some(
+			// 			SystemTime::now()
+			// 				.duration_since(SystemTime::UNIX_EPOCH)
+			// 				.expect("Time should be sometime after 1970"),
+			// 		)
+			// 	},
+			// )
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
