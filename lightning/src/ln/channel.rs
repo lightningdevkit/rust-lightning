@@ -13190,6 +13190,21 @@ mod tests {
 		do_test_supports_channel_type(config, expected_channel_type)
 	}
 
+	#[test]
+	fn test_supports_zero_fee_commitments_and_htlc_tx_fee() {
+		// Tests that if both sides support and negotiate `anchors_zero_fee_commitments` and
+		// `anchors_zero_fee_htlc_tx`, the resulting `channel_type` is
+		// `anchors_zero_fee_commitments`.
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+		let mut expected_channel_type = ChannelTypeFeatures::empty();
+		expected_channel_type.set_anchor_zero_fee_commitments_required();
+
+		do_test_supports_channel_type(config, expected_channel_type)
+	}
+
 	fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: ChannelTypeFeatures) {
 		let secp_ctx = Secp256k1::new();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
