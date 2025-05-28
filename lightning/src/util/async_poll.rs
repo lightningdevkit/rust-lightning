@@ -99,6 +99,9 @@ pub(crate) fn dummy_waker() -> Waker {
 /// A type alias for a future that returns a result of type T.
 pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;
 
+/// A type alias for a future that returns a result of type T with error type V.
+pub type AsyncResultType<'a, T, V> = Pin<Box<dyn Future<Output = Result<T, V>> + 'a + Send>>;
+
 /// A type alias for a future that returns a result of type T.
 pub trait FutureSpawner: Send + Sync + 'static {
 	/// Spawns a future on a runtime.

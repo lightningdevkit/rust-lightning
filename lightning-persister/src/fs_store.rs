@@ -1,7 +1,7 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
-use lightning::util::async_poll::AsyncResult;
+use lightning::util::async_poll::{AsyncResult, AsyncResultType};
 use lightning::util::persist::{KVStore, MigratableKVStore};
 use lightning::util::string::PrintableString;
 
@@ -333,7 +333,7 @@ impl KVStore for FilesystemStore {
 
 	fn write_async(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> AsyncResult<'static, ()> {
+	) -> AsyncResultType<'static, (), lightning::io::Error> {
 		todo!()
 	}
 }

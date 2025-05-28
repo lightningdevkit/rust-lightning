@@ -32,7 +32,7 @@ use crate::sync::Arc;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 
-use super::async_poll::AsyncResult;
+use super::async_poll::{AsyncResult, AsyncResultType};
 
 /// The alphabet of characters allowed for namespaces and keys.
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
@@ -143,7 +143,7 @@ pub trait KVStore {
 	/// Asynchronously persists the given data under the given `key`.
 	fn write_async(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> AsyncResult<'static, ()>;
+	) -> AsyncResultType<'static, (), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
 	///
 	/// If the `lazy` flag is set to `true`, the backend implementation might choose to lazily
@@ -284,6 +284,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 					&encoded,
 				)
 				.await
+				.map_err(|_| ())
 		})
 	}
 
@@ -303,6 +304,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 					&encoded,
 				)
 				.await
+				.map_err(|_| ())
 		})
 	}
 
@@ -843,6 +845,7 @@ where
 				&monitor_bytes,
 			)
 			.await
+			.map_err(|_| ())
 	}
 
 	/// Persists a channel update, writing only the update to the parameterized [`KVStore`] if possible.
@@ -873,6 +876,7 @@ where
 						&update,
 					)
 					.await
+					.map_err(|_| ())
 			} else {
 				// In case of channel-close monitor update, we need to read old monitor before persisting
 				// the new one in order to determine the cleanup range.
