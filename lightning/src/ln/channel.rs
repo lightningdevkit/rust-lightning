@@ -2036,16 +2036,11 @@ impl FundingScope {
 struct PendingSplice {
 	/// Intended contributions to the splice from our end
 	pub our_funding_contribution: i64,
-	pub funding_feerate_per_kw: u32,
-	pub locktime: u32,
-	/// The funding inputs that we plan to contributing to the splice.
-	/// Stored between [`splice_channel`] and [`splice_ack`]
-	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
 	/// Set when splice_ack has been processed (on the initiator side),
 	/// used to prevent processing of multiple splice_ack's.
 	awaiting_splice_ack: bool,
 	funding_scope: Option<FundingScope>,
-	funding_negotiation_context: Option<FundingNegotiationContext>,
+	funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
 	interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
@@ -5450,18 +5445,21 @@ impl<SP: Deref> FundedChannel<SP> where
 	fn as_renegotiating_channel(&mut self) -> Result<NegotiatingV2ChannelView<SP>, &'static str> {
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			if let Some(ref mut funding) = &mut pending_splice.funding_scope {
-				if let Some(ref mut funding_negotiation_context) = &mut pending_splice.funding_negotiation_context {
+				if
+					pending_splice.funding_negotiation_context.our_funding_satoshis != 0 ||
+					pending_splice.funding_negotiation_context.their_funding_satoshis.unwrap_or_default() != 0
+				{
 					Ok(NegotiatingV2ChannelView {
 						context: &mut self.context,
 						funding,
-						funding_negotiation_context,
+						funding_negotiation_context: &mut pending_splice.funding_negotiation_context,
 						interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
 						interactive_tx_signing_session: &mut pending_splice.interactive_tx_signing_session,
 						holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
 						is_splice: true,
 					})
 				} else {
-					Err("Channel is not refunding")
+					Err("Channel is not actively refunding")
 				}
 			} else {
 				Err("Channel is not refunding")
@@ -9151,14 +9149,18 @@ impl<SP: Deref> FundedChannel<SP> where
 			funding_inputs.push((tx_in.clone(), tx16));
 		}
 
+		let funding_negotiation_context = FundingNegotiationContext {
+			our_funding_satoshis: 0, // set at later phase
+			their_funding_satoshis: None, // set at later phase
+			funding_tx_locktime: LockTime::from_consensus(locktime),
+			funding_feerate_sat_per_1000_weight: funding_feerate_per_kw,
+			our_funding_inputs: funding_inputs,
+		};
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
-			funding_feerate_per_kw,
-			locktime,
-			our_funding_inputs: funding_inputs,
 			awaiting_splice_ack: true, // we await splice_ack
 			funding_scope: None,
-			funding_negotiation_context: None,
+			funding_negotiation_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
 		});
@@ -9307,12 +9309,9 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution,
-			funding_feerate_per_kw: msg.funding_feerate_per_kw,
-			locktime: msg.locktime,
-			our_funding_inputs: Vec::new(), // inputs go directly to [`FundingNegotiationContext`] above
 			awaiting_splice_ack: false, // we don't need any additional message for the handshake
 			funding_scope: Some(funding_scope),
-			funding_negotiation_context: Some(funding_negotiation_context),
+			funding_negotiation_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
 		});
@@ -9382,24 +9381,15 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let funding_scope = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value);
 
-		let mut funding_negotiation_context = FundingNegotiationContext {
-			our_funding_satoshis,
-			their_funding_satoshis: Some(their_funding_satoshis),
-			funding_tx_locktime: LockTime::from_consensus(pending_splice.locktime),
-			funding_feerate_sat_per_1000_weight: pending_splice.funding_feerate_per_kw,
-			our_funding_inputs: Vec::new(), // set below
-		};
-		if let Some(ref mut pending_splice_mut) = &mut self.pending_splice {
-			funding_negotiation_context.our_funding_inputs = std::mem::take(&mut pending_splice_mut.our_funding_inputs);
-		};
-
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
 		// We need the current funding tx as an extra input
 		let prev_funding_input = Self::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
 		if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			pending_splice.funding_scope = Some(funding_scope);
-			pending_splice.funding_negotiation_context = Some(funding_negotiation_context);
+			// update funding values
+			pending_splice.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
+			pending_splice.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
 			pending_splice.interactive_tx_constructor = None;
 			pending_splice.interactive_tx_signing_session = None;
 			debug_assert!(pending_splice.awaiting_splice_ack);
