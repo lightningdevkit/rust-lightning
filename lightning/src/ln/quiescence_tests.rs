@@ -277,6 +277,60 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 }
 
 #[test]
+fn test_quiescence_on_final_revoke_and_ack_pending_monitor_update() {
+	// Test that we do not let a pending monitor update for a final `revoke_and_ack` prevent us from
+	// entering quiescence. This was caught by the fuzzer, reported as #3805.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let payment_amount = 1_000_000;
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	nodes[1].node.maybe_propose_quiescence(&node_id_0, &chan_id).unwrap();
+	let stfu = get_event_msg!(&nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu);
+
+	let update_add = get_htlc_update_msgs!(&nodes[0], node_id_1);
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update_add.update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update_add.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+
+	let (revoke_and_ack, commit_sig) = get_revoke_commit_msgs!(&nodes[1], node_id_0);
+	nodes[0].node.handle_revoke_and_ack(node_id_1, &revoke_and_ack);
+	check_added_monitors(&nodes[0], 1);
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &commit_sig);
+	check_added_monitors(&nodes[0], 1);
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	let msgs = nodes[0].node.get_and_clear_pending_msg_events();
+	if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &msgs[0] {
+		nodes[1].node.handle_revoke_and_ack(node_id_0, &msg);
+		check_added_monitors(&nodes[1], 1);
+	} else {
+		panic!();
+	}
+	if let MessageSendEvent::SendStfu { msg, .. } = &msgs[1] {
+		nodes[1].node.handle_stfu(node_id_0, &msg);
+	} else {
+		panic!();
+	}
+
+	nodes[0].node.exit_quiescence(&node_id_1, &chan_id).unwrap();
+	nodes[1].node.exit_quiescence(&node_id_0, &chan_id).unwrap();
+}
+
+#[test]
 fn test_quiescence_updates_go_to_holding_cell() {
 	quiescence_updates_go_to_holding_cell(false);
 	quiescence_updates_go_to_holding_cell(true);
