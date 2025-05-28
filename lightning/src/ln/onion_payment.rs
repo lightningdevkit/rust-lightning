@@ -1,3 +1,5 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
+
 //! Utilities to decode payment onions and do contextless validation of incoming payments.
 //!
 //! Primarily features [`peel_payment_onion`], which allows the decoding of an onion statelessly

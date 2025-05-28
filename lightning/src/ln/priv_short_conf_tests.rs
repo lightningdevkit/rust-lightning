@@ -1,3 +1,5 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
+
 // This file is Copyright its original authors, visible in version control
 // history.
 //
