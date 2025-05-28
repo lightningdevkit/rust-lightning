@@ -675,9 +675,9 @@ where
 		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
 		self.best_block_updated_internal(&mut *state_lock, header, height);
 
-		let _ = self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// let _ = self.persist_state(&*state_lock).map_err(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
@@ -699,9 +699,9 @@ where
 			}
 		}
 
-		self.persist_state(&*state_lock).unwrap_or_else(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// self.persist_state(&*state_lock).unwrap_or_else(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 }
 
@@ -721,9 +721,9 @@ where
 	) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
-		self.persist_state(&*state_lock).unwrap_or_else(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// self.persist_state(&*state_lock).unwrap_or_else(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
@@ -744,18 +744,18 @@ where
 				.filter(|o| o.status.confirmation_height() >= Some(unconf_height))
 				.for_each(|o| o.status.unconfirmed());
 
-			self.persist_state(&*state_lock).unwrap_or_else(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-			});
+			// self.persist_state(&*state_lock).unwrap_or_else(|e| {
+			// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+			// });
 		}
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 		self.best_block_updated_internal(&mut *state_lock, header, height);
-		let _ = self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// let _ = self.persist_state(&*state_lock).map_err(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
