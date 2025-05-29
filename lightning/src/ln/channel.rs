@@ -5326,7 +5326,7 @@ fn check_v2_funding_inputs_sufficient(
 	}
 }
 
-/// Context for dual-funded channels.
+/// Context for negotiating channels (dual-funded V2 open, splicing)
 pub(super) struct FundingNegotiationContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,

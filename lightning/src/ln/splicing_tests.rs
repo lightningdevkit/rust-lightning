@@ -246,7 +246,7 @@ fn test_v1_splice_in() {
 	}
 
 	// TODO(splicing): Continue with commitment flow, new tx confirmation
-	/*
+
 	// === Close channel, cooperatively
 	initiator_node.node.close_channel(&channel_id, &acceptor_node.node.get_our_node_id()).unwrap();
 	let node0_shutdown_message = get_event_msg!(
@@ -268,7 +268,6 @@ fn test_v1_splice_in() {
 		MessageSendEvent::SendClosingSigned,
 		acceptor_node.node.get_our_node_id()
 	);
-	*/
 }
 
 #[test]
