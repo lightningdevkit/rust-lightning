@@ -6737,29 +6737,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
-		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
-		let commitment_data = self.context.build_commitment_transaction(
-			&self.funding, self.holder_commitment_point.transaction_number(),
-			&self.holder_commitment_point.current_point(), true, true, logger,
-		);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.funding.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
-		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
-			//TODO: auto-close after a number of failures?
-			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
-			return None;
-		}
-
-		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
-		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
-		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
-			return None;
-		}
-		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+		let can_send_update_fee = core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.all(|funding| self.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
+		if !can_send_update_fee {
 			return None;
 		}
 
@@ -6782,6 +6763,43 @@ impl<SP: Deref> FundedChannel<SP> where
 			channel_id: self.context.channel_id,
 			feerate_per_kw,
 		})
+	}
+
+	fn can_send_update_fee<F: Deref, L: Deref>(
+		&self, funding: &FundingScope, feerate_per_kw: u32,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> bool
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		// Before proposing a feerate update, check that we can actually afford the new fee.
+		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
+		let commitment_data = self.context.build_commitment_transaction(
+			funding, self.holder_commitment_point.transaction_number(),
+			&self.holder_commitment_point.current_point(), true, true, logger,
+		);
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, funding.get_channel_type()) * 1000;
+		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
+		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+			//TODO: auto-close after a number of failures?
+			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
+			return false;
+		}
+
+		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
+			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			return false;
+		}
+		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
+			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			return false;
+		}
+
+		return true;
 	}
 
 	/// Removes any uncommitted inbound HTLCs and resets the state of uncommitted outbound HTLC
