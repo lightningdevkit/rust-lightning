@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -53,24 +51,27 @@
 //!
 //! [`find_route`]: crate::routing::router::find_route
 
+use crate::io::{self, Read};
 use crate::ln::msgs::DecodeError;
-use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId};
-use crate::routing::router::{Path, CandidateRouteHop, PublicHopCandidate};
-use crate::routing::log_approx;
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use crate::util::logger::Logger;
-use crate::prelude::*;
 use crate::prelude::hash_map::Entry;
-use core::{cmp, fmt, mem};
+use crate::prelude::*;
+use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::log_approx;
+use crate::routing::router::{CandidateRouteHop, Path, PublicHopCandidate};
+use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::util::logger::Logger;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use bucketed_history::{
+	DirectedHistoricalLiquidityTracker, HistoricalBucketRangeTracker, HistoricalLiquidityTracker,
+	LegacyHistoricalBucketRangeTracker,
+};
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
-use crate::io::{self, Read};
-use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use bucketed_history::{LegacyHistoricalBucketRangeTracker, HistoricalBucketRangeTracker, DirectedHistoricalLiquidityTracker, HistoricalLiquidityTracker};
+use core::{cmp, fmt, mem};
 #[cfg(not(c_bindings))]
 use {
-	core::cell::{RefCell, RefMut, Ref},
 	crate::sync::{Mutex, MutexGuard},
+	core::cell::{Ref, RefCell, RefMut},
 };
 
 /// We define Score ever-so-slightly differently based on whether we are being built for C bindings
@@ -326,7 +327,8 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
 	type ScoreParams = T::ScoreParams;
-	fn channel_penalty_msat(&self, candidate:&CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
+	fn channel_penalty_msat(
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams,
 	) -> u64 {
 		self.0.channel_penalty_msat(candidate, usage, score_params)
 	}
@@ -357,7 +359,9 @@ impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+	fn payment_path_failed(
+		&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration,
+	) {
 		self.0.payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
@@ -377,7 +381,6 @@ impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
 		self.0.time_passed(duration_since_epoch)
 	}
 }
-
 
 /// Proposed use of a channel passed as a parameter to [`ScoreLookUp::channel_penalty_msat`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -408,16 +411,20 @@ impl FixedPenaltyScorer {
 
 impl ScoreLookUp for FixedPenaltyScorer {
 	type ScoreParams = ();
-	fn channel_penalty_msat(&self, _: &CandidateRouteHop, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(
+		&self, _: &CandidateRouteHop, _: ChannelUsage, _score_params: &Self::ScoreParams,
+	) -> u64 {
 		self.penalty_msat
 	}
 }
 
 impl ScoreUpdate for FixedPenaltyScorer {
+	#[rustfmt::skip]
 	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
 	fn payment_path_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
 
+	#[rustfmt::skip]
 	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64, _duration_since_epoch: Duration) {}
 
 	fn probe_successful(&mut self, _path: &Path, _duration_since_epoch: Duration) {}
@@ -473,7 +480,9 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 /// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_multiplier_msat
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringFeeParameters::historical_liquidity_penalty_amount_multiplier_msat
 pub struct ProbabilisticScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref>
-where L::Target: Logger {
+where
+	L::Target: Logger,
+{
 	decay_params: ProbabilisticScoringDecayParameters,
 	network_graph: G,
 	logger: L,
@@ -491,6 +500,7 @@ impl ChannelLiquidities {
 		Self(new_hash_map())
 	}
 
+	#[rustfmt::skip]
 	fn time_passed(&mut self, duration_since_epoch: Duration, decay_params: ProbabilisticScoringDecayParameters) {
 		self.0.retain(|_scid, liquidity| {
 			liquidity.min_liquidity_offset_msat =
@@ -524,7 +534,9 @@ impl ChannelLiquidities {
 		self.0.get(short_channel_id)
 	}
 
-	fn insert(&mut self, short_channel_id: u64, liquidity: ChannelLiquidity) -> Option<ChannelLiquidity> {
+	fn insert(
+		&mut self, short_channel_id: u64, liquidity: ChannelLiquidity,
+	) -> Option<ChannelLiquidity> {
 		self.0.insert(short_channel_id, liquidity)
 	}
 
@@ -938,7 +950,11 @@ struct ChannelLiquidity {
 }
 
 /// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity.
-struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>> {
+struct DirectedChannelLiquidity<
+	L: Deref<Target = u64>,
+	HT: Deref<Target = HistoricalLiquidityTracker>,
+	T: Deref<Target = Duration>,
+> {
 	min_liquidity_offset_msat: L,
 	max_liquidity_offset_msat: L,
 	liquidity_history: DirectedHistoricalLiquidityTracker<HT>,
@@ -948,10 +964,15 @@ struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = Histo
 	last_datapoint_time: T,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L>
+where
+	L::Target: Logger,
+{
 	/// Creates a new scorer using the given scoring parameters for sending payments from a node
 	/// through a network graph.
-	pub fn new(decay_params: ProbabilisticScoringDecayParameters, network_graph: G, logger: L) -> Self {
+	pub fn new(
+		decay_params: ProbabilisticScoringDecayParameters, network_graph: G, logger: L,
+	) -> Self {
 		Self {
 			decay_params,
 			network_graph,
@@ -971,6 +992,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	///
 	/// Note that this writes roughly one line per channel for which we have a liquidity estimate,
 	/// which may be a substantial amount of log output.
+	#[rustfmt::skip]
 	pub fn debug_log_liquidity_stats(&self) {
 		let graph = self.network_graph.read_only();
 		for (scid, liq) in self.channel_liquidities.iter() {
@@ -1023,7 +1045,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 
 	/// Query the estimated minimum and maximum liquidity available for sending a payment over the
 	/// channel with `scid` towards the given `target` node.
-	pub fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
+	pub fn estimated_channel_liquidity_range(
+		&self, scid: u64, target: &NodeId,
+	) -> Option<(u64, u64)> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
@@ -1064,6 +1088,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	///
 	/// In order to fetch a single success probability from the buckets provided here, as used in
 	/// the scoring model, see [`Self::historical_estimated_payment_success_probability`].
+	#[rustfmt::skip]
 	pub fn historical_estimated_channel_liquidity_probabilities(&self, scid: u64, target: &NodeId)
 	-> Option<([u16; 32], [u16; 32])> {
 		let graph = self.network_graph.read_only();
@@ -1100,6 +1125,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	/// These are the same bounds as returned by
 	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
 	/// [`Self::estimated_channel_liquidity_range`]).
+	#[rustfmt::skip]
 	pub fn historical_estimated_payment_success_probability(
 		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
 		allow_fallback_estimation: bool,
@@ -1130,6 +1156,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 		None
 	}
 
+	#[rustfmt::skip]
 	fn calc_live_prob(
 		&self, scid: u64, source: &NodeId, target: &NodeId, directed_info: DirectedChannelInfo,
 		amt: u64, params: &ProbabilisticScoringFeeParameters,
@@ -1157,6 +1184,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	///
 	/// This will return `Some` for any channel which is present in the [`NetworkGraph`], including
 	/// if we have no bound information beside the channel's capacity.
+	#[rustfmt::skip]
 	pub fn live_estimated_payment_success_probability(
 		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
 	) -> Option<f64> {
@@ -1193,6 +1221,7 @@ impl ChannelLiquidity {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn merge(&mut self, other: &Self) {
 		// Take average for min/max liquidity offsets.
 		self.min_liquidity_offset_msat = (self.min_liquidity_offset_msat + other.min_liquidity_offset_msat) / 2;
@@ -1204,6 +1233,7 @@ impl ChannelLiquidity {
 
 	/// Returns a view of the channel liquidity directed from `source` to `target` assuming
 	/// `capacity_msat`.
+	#[rustfmt::skip]
 	fn as_directed(
 		&self, source: &NodeId, target: &NodeId, capacity_msat: u64,
 	) -> DirectedChannelLiquidity<&u64, &HistoricalLiquidityTracker, &Duration> {
@@ -1228,6 +1258,7 @@ impl ChannelLiquidity {
 
 	/// Returns a mutable view of the channel liquidity directed from `source` to `target` assuming
 	/// `capacity_msat`.
+	#[rustfmt::skip]
 	fn as_directed_mut(
 		&mut self, source: &NodeId, target: &NodeId, capacity_msat: u64,
 	) -> DirectedChannelLiquidity<&mut u64, &mut HistoricalLiquidityTracker, &mut Duration> {
@@ -1297,6 +1328,7 @@ fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 const MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64: u64 = 78;
 
 #[inline(always)]
+#[rustfmt::skip]
 fn linear_success_probability(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	min_zero_implies_no_successes: bool,
@@ -1316,6 +1348,7 @@ fn linear_success_probability(
 
 /// Returns a (numerator, denominator) pair each between 0 and 0.0078125, inclusive.
 #[inline(always)]
+#[rustfmt::skip]
 fn nonlinear_success_probability(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	capacity_msat: u64, min_zero_implies_no_successes: bool,
@@ -1358,6 +1391,7 @@ fn nonlinear_success_probability(
 /// min_zero_implies_no_successes signals that a `min_liquidity_msat` of 0 means we've not
 /// (recently) seen an HTLC successfully complete over this channel.
 #[inline(always)]
+#[rustfmt::skip]
 fn success_probability_float(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
@@ -1379,6 +1413,7 @@ fn success_probability_float(
 /// Identical to [`success_probability_float`] but returns integer numerator and denominators.
 ///
 /// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
+#[rustfmt::skip]
 fn success_probability(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
@@ -1409,10 +1444,15 @@ fn success_probability(
 	}
 }
 
-impl<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>>
-DirectedChannelLiquidity< L, HT, T> {
+impl<
+		L: Deref<Target = u64>,
+		HT: Deref<Target = HistoricalLiquidityTracker>,
+		T: Deref<Target = Duration>,
+	> DirectedChannelLiquidity<L, HT, T>
+{
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
+	#[rustfmt::skip]
 	fn penalty_msat(
 		&self, amount_msat: u64, inflight_htlc_msat: u64, last_update_time: Duration,
 		score_params: &ProbabilisticScoringFeeParameters,
@@ -1513,6 +1553,7 @@ DirectedChannelLiquidity< L, HT, T> {
 
 	/// Computes the liquidity penalty from the penalty multipliers.
 	#[inline(always)]
+	#[rustfmt::skip]
 	fn combined_penalty_msat(amount_msat: u64, mut negative_log10_times_2048: u64,
 		liquidity_penalty_multiplier_msat: u64, liquidity_penalty_amount_multiplier_msat: u64,
 	) -> u64 {
@@ -1537,15 +1578,21 @@ DirectedChannelLiquidity< L, HT, T> {
 
 	/// Returns the upper bound of the channel liquidity balance in this direction.
 	#[inline(always)]
+	#[rustfmt::skip]
 	fn max_liquidity_msat(&self) -> u64 {
 		self.capacity_msat
 			.saturating_sub(*self.max_liquidity_offset_msat)
 	}
 }
 
-impl<L: DerefMut<Target = u64>, HT: DerefMut<Target = HistoricalLiquidityTracker>, T: DerefMut<Target = Duration>>
-DirectedChannelLiquidity<L, HT, T> {
+impl<
+		L: DerefMut<Target = u64>,
+		HT: DerefMut<Target = HistoricalLiquidityTracker>,
+		T: DerefMut<Target = Duration>,
+	> DirectedChannelLiquidity<L, HT, T>
+{
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
+	#[rustfmt::skip]
 	fn failed_at_channel<Log: Deref>(
 		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
 	) where Log::Target: Logger {
@@ -1562,6 +1609,7 @@ DirectedChannelLiquidity<L, HT, T> {
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
+	#[rustfmt::skip]
 	fn failed_downstream<Log: Deref>(
 		&mut self, amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
 	) where Log::Target: Logger {
@@ -1578,6 +1626,7 @@ DirectedChannelLiquidity<L, HT, T> {
 	}
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
+	#[rustfmt::skip]
 	fn successful<Log: Deref>(&mut self,
 		amount_msat: u64, duration_since_epoch: Duration, chan_descr: fmt::Arguments, logger: &Log
 	) where Log::Target: Logger {
@@ -1620,8 +1669,12 @@ DirectedChannelLiquidity<L, HT, T> {
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for ProbabilisticScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for ProbabilisticScorer<G, L>
+where
+	L::Target: Logger,
+{
 	type ScoreParams = ProbabilisticScoringFeeParameters;
+	#[rustfmt::skip]
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
 	) -> u64 {
@@ -1671,7 +1724,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for ProbabilisticScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for ProbabilisticScorer<G, L>
+where
+	L::Target: Logger,
+{
+	#[rustfmt::skip]
 	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
@@ -1714,6 +1771,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for Probabilistic
 		self.last_update_time = duration_since_epoch;
 	}
 
+	#[rustfmt::skip]
 	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
@@ -1767,13 +1825,20 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for Probabilistic
 ///
 /// Note that only the locally acquired data is persisted. After a restart, the external scores will be lost and must be
 /// resupplied.
-pub struct CombinedScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref> where L::Target: Logger {
+pub struct CombinedScorer<G: Deref<Target = NetworkGraph<L>>, L: Deref>
+where
+	L::Target: Logger,
+{
 	local_only_scorer: ProbabilisticScorer<G, L>,
-	scorer:  ProbabilisticScorer<G, L>,
+	scorer: ProbabilisticScorer<G, L>,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref + Clone> CombinedScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref + Clone> CombinedScorer<G, L>
+where
+	L::Target: Logger,
+{
 	/// Create a new combined scorer with the given local scorer.
+	#[rustfmt::skip]
 	pub fn new(local_scorer: ProbabilisticScorer<G, L>) -> Self {
 		let decay_params = local_scorer.decay_params;
 		let network_graph = local_scorer.network_graph.clone();
@@ -1789,7 +1854,9 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref + Clone> CombinedScore
 	}
 
 	/// Merge external channel liquidity information into the scorer.
-	pub fn merge(&mut self, mut external_scores: ChannelLiquidities, duration_since_epoch: Duration) {
+	pub fn merge(
+		&mut self, mut external_scores: ChannelLiquidities, duration_since_epoch: Duration,
+	) {
 		// Decay both sets of scores to make them comparable and mergeable.
 		self.local_only_scorer.time_passed(duration_since_epoch);
 		external_scores.time_passed(duration_since_epoch, self.local_only_scorer.decay_params);
@@ -1811,52 +1878,66 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref + Clone> CombinedScore
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for CombinedScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for CombinedScorer<G, L>
+where
+	L::Target: Logger,
+{
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 
 	fn channel_penalty_msat(
-		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage,
+		score_params: &ProbabilisticScoringFeeParameters,
 	) -> u64 {
 		self.scorer.channel_penalty_msat(candidate, usage, score_params)
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for CombinedScorer<G, L> where L::Target: Logger {
-	fn payment_path_failed(&mut self,path: &Path,short_channel_id:u64,duration_since_epoch:Duration) {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for CombinedScorer<G, L>
+where
+	L::Target: Logger,
+{
+	fn payment_path_failed(
+		&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration,
+	) {
 		self.local_only_scorer.payment_path_failed(path, short_channel_id, duration_since_epoch);
 		self.scorer.payment_path_failed(path, short_channel_id, duration_since_epoch);
 	}
 
-	fn payment_path_successful(&mut self,path: &Path,duration_since_epoch:Duration) {
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.local_only_scorer.payment_path_successful(path, duration_since_epoch);
 		self.scorer.payment_path_successful(path, duration_since_epoch);
 	}
 
-	fn probe_failed(&mut self,path: &Path,short_channel_id:u64,duration_since_epoch:Duration) {
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
 		self.local_only_scorer.probe_failed(path, short_channel_id, duration_since_epoch);
 		self.scorer.probe_failed(path, short_channel_id, duration_since_epoch);
 	}
 
-	fn probe_successful(&mut self,path: &Path,duration_since_epoch:Duration) {
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.local_only_scorer.probe_successful(path, duration_since_epoch);
 		self.scorer.probe_successful(path, duration_since_epoch);
 	}
 
-	fn time_passed(&mut self,duration_since_epoch:Duration) {
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
 		self.local_only_scorer.time_passed(duration_since_epoch);
 		self.scorer.time_passed(duration_since_epoch);
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for CombinedScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for CombinedScorer<G, L>
+where
+	L::Target: Logger,
+{
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		self.local_only_scorer.write(writer)
 	}
 }
 
 #[cfg(c_bindings)]
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L>
-where L::Target: Logger {}
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Score for ProbabilisticScorer<G, L> where
+	L::Target: Logger
+{
+}
 
 #[cfg(feature = "std")]
 #[inline]
@@ -1891,21 +1972,22 @@ mod bucketed_history {
 	impl BucketStartPos {
 		const fn new() -> Self {
 			Self([
-				0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
-				13312, 14336, 15360, 15872, 16128, 16256, 16320, 16352, 16368, 16376, 16380, 16382, 16383, 16384,
+				0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192,
+				10240, 12288, 13312, 14336, 15360, 15872, 16128, 16256, 16320, 16352, 16368, 16376,
+				16380, 16382, 16383, 16384,
 			])
 		}
 	}
 	impl core::ops::Index<usize> for BucketStartPos {
 		type Output = u16;
 		#[inline(always)]
+		#[rustfmt::skip]
 		fn index(&self, index: usize) -> &u16 { &self.0[index] }
 	}
 	const BUCKET_START_POS: BucketStartPos = BucketStartPos::new();
 
-	const LEGACY_TO_BUCKET_RANGE: [(u8, u8); 8] = [
-		(0, 12), (12, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 32)
-	];
+	const LEGACY_TO_BUCKET_RANGE: [(u8, u8); 8] =
+		[(0, 12), (12, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 32)];
 
 	const POSITION_TICKS: u16 = 1 << 14;
 
@@ -1921,6 +2003,7 @@ mod bucketed_history {
 
 	#[cfg(test)]
 	#[test]
+	#[rustfmt::skip]
 	fn check_bucket_maps() {
 		const BUCKET_WIDTH_IN_16384S: [u16; 32] = [
 			1, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1024, 1024, 2048, 2048,
@@ -1947,6 +2030,7 @@ mod bucketed_history {
 	}
 
 	#[inline]
+	#[rustfmt::skip]
 	fn amount_to_pos(amount_msat: u64, capacity_msat: u64) -> u16 {
 		let pos = if amount_msat < u64::max_value() / (POSITION_TICKS as u64) {
 			(amount_msat * (POSITION_TICKS as u64) / capacity_msat.saturating_add(1))
@@ -2001,6 +2085,7 @@ mod bucketed_history {
 	pub const BUCKET_FIXED_POINT_ONE: u16 = 32;
 
 	impl HistoricalBucketRangeTracker {
+		#[rustfmt::skip]
 		pub(super) fn new() -> Self { Self { buckets: [0; 32] } }
 		fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
 			// We have 32 leaky buckets for min and max liquidity. Each bucket tracks the amount of time
@@ -2054,7 +2139,7 @@ mod bucketed_history {
 	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
 	#[derive(Clone, Copy)]
-	#[repr(C)]// Force the fields in memory to be in the order we specify.
+	#[repr(C)] // Force the fields in memory to be in the order we specify.
 	pub(super) struct HistoricalLiquidityTracker {
 		// This struct sits inside a `(u64, ChannelLiquidity)` in memory, and we first read the
 		// liquidity offsets in `ChannelLiquidity` when calculating the non-historical score. This
@@ -2096,6 +2181,7 @@ mod bucketed_history {
 			res
 		}
 
+		#[rustfmt::skip]
 		pub(super) fn has_datapoints(&self) -> bool {
 			self.min_liquidity_offset_history.buckets != [0; 32] ||
 				self.max_liquidity_offset_history.buckets != [0; 32]
@@ -2107,6 +2193,7 @@ mod bucketed_history {
 			self.recalculate_valid_point_count();
 		}
 
+		#[rustfmt::skip]
 		fn recalculate_valid_point_count(&mut self) {
 			let mut total_valid_points_tracked = 0u128;
 			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
@@ -2132,13 +2219,15 @@ mod bucketed_history {
 			&self.max_liquidity_offset_history
 		}
 
-		pub(super) fn as_directed<'a>(&'a self, source_less_than_target: bool)
-		-> DirectedHistoricalLiquidityTracker<&'a HistoricalLiquidityTracker> {
+		pub(super) fn as_directed<'a>(
+			&'a self, source_less_than_target: bool,
+		) -> DirectedHistoricalLiquidityTracker<&'a HistoricalLiquidityTracker> {
 			DirectedHistoricalLiquidityTracker { source_less_than_target, tracker: self }
 		}
 
-		pub(super) fn as_directed_mut<'a>(&'a mut self, source_less_than_target: bool)
-		-> DirectedHistoricalLiquidityTracker<&'a mut HistoricalLiquidityTracker> {
+		pub(super) fn as_directed_mut<'a>(
+			&'a mut self, source_less_than_target: bool,
+		) -> DirectedHistoricalLiquidityTracker<&'a mut HistoricalLiquidityTracker> {
 			DirectedHistoricalLiquidityTracker { source_less_than_target, tracker: self }
 		}
 
@@ -2152,12 +2241,15 @@ mod bucketed_history {
 
 	/// A set of buckets representing the history of where we've seen the minimum- and maximum-
 	/// liquidity bounds for a given channel.
-	pub(super) struct DirectedHistoricalLiquidityTracker<D: Deref<Target = HistoricalLiquidityTracker>> {
+	pub(super) struct DirectedHistoricalLiquidityTracker<
+		D: Deref<Target = HistoricalLiquidityTracker>,
+	> {
 		source_less_than_target: bool,
 		tracker: D,
 	}
 
 	impl<D: DerefMut<Target = HistoricalLiquidityTracker>> DirectedHistoricalLiquidityTracker<D> {
+		#[rustfmt::skip]
 		pub(super) fn track_datapoint(
 			&mut self, min_offset_msat: u64, max_offset_msat: u64, capacity_msat: u64,
 		) {
@@ -2190,6 +2282,7 @@ mod bucketed_history {
 		}
 
 		#[inline]
+		#[rustfmt::skip]
 		pub(super) fn calculate_success_probability_times_billion(
 			&self, params: &ProbabilisticScoringFeeParameters, total_inflight_amount_msat: u64,
 			capacity_msat: u64
@@ -2416,7 +2509,10 @@ mod bucketed_history {
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticScorer<G, L>
+where
+	L::Target: Logger,
+{
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.channel_liquidities.write(w)
@@ -2424,8 +2520,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Writeable for ProbabilisticSc
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref>
-ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorer<G, L> where L::Target: Logger {
+	ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScorer<G, L>
+where
+	L::Target: Logger,
+{
 	#[inline]
+	#[rustfmt::skip]
 	fn read<R: Read>(
 		r: &mut R, args: (ProbabilisticScoringDecayParameters, G, L)
 	) -> Result<Self, DecodeError> {
@@ -2465,6 +2565,7 @@ impl Writeable for ChannelLiquidity {
 
 impl Readable for ChannelLiquidity {
 	#[inline]
+	#[rustfmt::skip]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut min_liquidity_offset_msat = 0;
 		let mut max_liquidity_offset_msat = 0;
@@ -2516,26 +2617,35 @@ impl Readable for ChannelLiquidity {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelLiquidity, HistoricalLiquidityTracker, ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters};
+	use super::{
+		ChannelLiquidity, HistoricalLiquidityTracker, ProbabilisticScorer,
+		ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
+	};
 	use crate::blinded_path::BlindedHop;
 	use crate::util::config::UserConfig;
 
 	use crate::ln::channelmanager;
-	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
+	use crate::ln::msgs::{
+		ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate,
+	};
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-	use crate::routing::router::{BlindedTail, Path, RouteHop, CandidateRouteHop, PublicHopCandidate};
-	use crate::routing::scoring::{ChannelLiquidities, ChannelUsage, CombinedScorer, ScoreLookUp, ScoreUpdate};
+	use crate::routing::router::{
+		BlindedTail, CandidateRouteHop, Path, PublicHopCandidate, RouteHop,
+	};
+	use crate::routing::scoring::{
+		ChannelLiquidities, ChannelUsage, CombinedScorer, ScoreLookUp, ScoreUpdate,
+	};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
 
+	use crate::io;
 	use bitcoin::constants::ChainHash;
-	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::time::Duration;
 	use std::rc::Rc;
-	use crate::io;
 
 	fn source_privkey() -> SecretKey {
 		SecretKey::from_slice(&[42; 32]).unwrap()
@@ -2595,6 +2705,7 @@ mod tests {
 		network_graph
 	}
 
+	#[rustfmt::skip]
 	fn add_channel(
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_1_key: SecretKey,
 		node_2_key: SecretKey
@@ -2668,6 +2779,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn payment_path_for_amount(amount_msat: u64) -> Path {
 		Path {
 			hops: vec![
@@ -2679,6 +2791,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn liquidity_bounds_directed_from_lowest_node_id() {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
@@ -2759,6 +2872,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn resets_liquidity_upper_bound_when_crossed_by_lower_bound() {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
@@ -2820,6 +2934,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn resets_liquidity_lower_bound_when_crossed_by_upper_bound() {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
@@ -2881,6 +2996,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn increased_penalty_nearing_liquidity_upper_bound() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -2933,6 +3049,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn constant_penalty_outside_liquidity_bounds() {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
@@ -2976,6 +3093,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn does_not_further_penalize_own_channel() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3009,6 +3127,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn sets_liquidity_lower_bound_on_downstream_failure() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3048,6 +3167,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn sets_liquidity_upper_bound_on_failure() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3088,6 +3208,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn ignores_channels_after_removed_failed_channel() {
 		// Previously, if we'd tried to send over a channel which was removed from the network
 		// graph before we call `payment_path_failed` (which is the default if the we get a "no
@@ -3181,6 +3302,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn reduces_liquidity_upper_bound_along_path_on_success() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3225,6 +3347,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn decays_liquidity_bounds_over_time() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3316,6 +3439,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn restricts_liquidity_bounds_after_decay() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3368,6 +3492,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn restores_persisted_liquidity_bounds() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3412,6 +3537,7 @@ mod tests {
 		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 	}
 
+	#[rustfmt::skip]
 	fn do_decays_persisted_liquidity_bounds(decay_before_reload: bool) {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3471,6 +3597,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn scores_realistic_payments() {
 		// Shows the scores of "realistic" sends of 100k sats over channels of 1-10m sats (with a
 		// 50k sat reserve).
@@ -3535,6 +3662,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn adds_base_penalty_to_liquidity_penalty() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3576,6 +3704,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn adds_amount_penalty_to_liquidity_penalty() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3610,6 +3739,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn calculates_log10_without_overflowing_u64_max_value() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3635,6 +3765,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn accounts_for_inflight_htlc_usage() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3664,6 +3795,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn removes_uncertainity_when_exact_liquidity_known() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3694,6 +3826,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn remembers_historical_failures() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3855,6 +3988,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn adds_anti_probing_penalty() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -3906,6 +4040,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn scores_with_blinded_path() {
 		// Make sure we'll account for a blinded path's final_value_msat in scoring
 		let logger = TestLogger::new();
@@ -3955,6 +4090,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn realistic_historical_failures() {
 		// The motivation for the unequal sized buckets came largely from attempting to pay 10k
 		// sats over a one bitcoin channel. This tests that case explicitly, ensuring that we score
@@ -4033,6 +4169,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn get_scores() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
@@ -4137,6 +4274,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn probes_for_diversity() {
 		// Tests the probing_diversity_penalty_msat is applied
 		let logger = TestLogger::new();
@@ -4189,10 +4327,11 @@ mod tests {
 #[cfg(ldk_bench)]
 pub mod benches {
 	use super::*;
-	use criterion::Criterion;
 	use crate::routing::router::bench_utils;
 	use crate::util::test_utils::TestLogger;
+	use criterion::Criterion;
 
+	#[rustfmt::skip]
 	pub fn decay_100k_channel_bounds(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (_, mut scorer) = bench_utils::read_graph_scorer(&logger).unwrap();

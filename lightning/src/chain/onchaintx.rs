@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -15,37 +13,41 @@
 //! building, tracking, bumping and notifications functions.
 
 use bitcoin::amount::Amount;
-use bitcoin::locktime::absolute::LockTime;
-use bitcoin::transaction::Transaction;
-use bitcoin::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::script::{Script, ScriptBuf};
-use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hash_types::{Txid, BlockHash};
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
+use bitcoin::transaction::OutPoint as BitcoinOutPoint;
+use bitcoin::transaction::Transaction;
 
-use crate::chain::chaininterface::{ConfirmationTarget, compute_feerate_sat_per_1000_weight};
-use crate::sign::{EntropySource, HTLCDescriptor, SignerProvider, ecdsa::EcdsaChannelSigner};
-use crate::ln::msgs::DecodeError;
-use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
-use crate::chain::ClaimId;
-use crate::chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
+use crate::chain::chaininterface::{compute_feerate_sat_per_1000_weight, ConfirmationTarget};
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
+use crate::chain::ClaimId;
+use crate::ln::chan_utils::{
+	self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
+};
+use crate::ln::msgs::DecodeError;
+use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, HTLCDescriptor, SignerProvider};
 use crate::util::logger::Logger;
-use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, UpgradableRequired, Writer, Writeable};
+use crate::util::ser::{
+	MaybeReadable, Readable, ReadableArgs, UpgradableRequired, Writeable, Writer,
+};
 
 use crate::io;
 use crate::prelude::*;
 use alloc::collections::BTreeMap;
 use core::cmp;
-use core::ops::Deref;
 use core::mem::replace;
 use core::mem::swap;
+use core::ops::Deref;
 
-const MAX_ALLOC_SIZE: usize = 64*1024;
+const MAX_ALLOC_SIZE: usize = 64 * 1024;
 
 /// An entry for an [`OnchainEvent`], stating the block height when the event was observed and the
 /// transaction causing it.
@@ -77,18 +79,14 @@ enum OnchainEvent {
 	/// as the request. This claim can either be ours or from the counterparty. Once the claiming
 	/// transaction has met [`ANTI_REORG_DELAY`] confirmations, we consider it final and remove the
 	/// pending request.
-	Claim {
-		claim_id: ClaimId,
-	},
+	Claim { claim_id: ClaimId },
 	/// The counterparty has claimed an outpoint from one of our pending requests through a
 	/// different transaction than ours. If our transaction was attempting to claim multiple
 	/// outputs, we need to drop the outpoint claimed by the counterparty and regenerate a new claim
 	/// transaction for ourselves. We keep tracking, separately, the outpoint claimed by the
 	/// counterparty up to [`ANTI_REORG_DELAY`] confirmations to ensure we attempt to re-claim it
 	/// if the counterparty's claim is reorged from the chain.
-	ContentiousOutpoint {
-		package: PackageTemplate,
-	}
+	ContentiousOutpoint { package: PackageTemplate },
 }
 
 impl Writeable for OnchainEventEntry {
@@ -104,6 +102,7 @@ impl Writeable for OnchainEventEntry {
 }
 
 impl MaybeReadable for OnchainEventEntry {
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		let mut txid = Txid::all_zeros();
 		let mut height = 0;
@@ -129,6 +128,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 );
 
 impl Readable for Option<Vec<Option<(usize, Signature)>>> {
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
@@ -221,8 +221,8 @@ pub(crate) enum FeerateStrategy {
 /// do RBF bumping if possible.
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
-	channel_value_satoshis: u64, // Deprecated as of 0.2.
-	channel_keys_id: [u8; 32], // Deprecated as of 0.2.
+	channel_value_satoshis: u64,   // Deprecated as of 0.2.
+	channel_keys_id: [u8; 32],     // Deprecated as of 0.2.
 	destination_script: ScriptBuf, // Deprecated as of 0.2.
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
@@ -277,6 +277,7 @@ pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSigner> {
+	#[rustfmt::skip]
 	fn eq(&self, other: &Self) -> bool {
 		// `signer`, `secp_ctx`, and `pending_claim_events` are excluded on purpose.
 		self.channel_value_satoshis == other.channel_value_satoshis &&
@@ -296,6 +297,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
+	#[rustfmt::skip]
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -343,7 +345,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	}
 }
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP, u64, [u8; 32])> for OnchainTxHandler<SP::EcdsaSigner> {
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP, u64, [u8; 32])>
+	for OnchainTxHandler<SP::EcdsaSigner>
+{
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u64, [u8; 32])) -> Result<Self, DecodeError> {
 		let entropy_source = args.0;
 		let signer_provider = args.1;
@@ -438,7 +443,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(
 		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: ScriptBuf,
 		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,
-		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>
+		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>,
 	) -> Self {
 		OnchainTxHandler {
 			channel_value_satoshis,
@@ -476,6 +481,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
 	/// invoking this every 30 seconds, or lower if running in an environment with spotty
 	/// connections, like on mobile.
+	#[rustfmt::skip]
 	pub(super) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Logger>(
 		&mut self, current_height: u32, feerate_strategy: FeerateStrategy, broadcaster: &B,
 		conf_target: ConfirmationTarget, destination_script: &Script,
@@ -532,8 +538,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 	/// Returns true if we are currently tracking any pending claim requests that are not fully
 	/// confirmed yet.
-	pub(super) fn has_pending_claims(&self) -> bool
-	{
+	pub(super) fn has_pending_claims(&self) -> bool {
 		self.pending_claim_requests.len() != 0
 	}
 
@@ -545,6 +550,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	///
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain
 	/// events are not expected to fail, and if they do, we may lose funds.
+	#[rustfmt::skip]
 	fn generate_claim<F: Deref, L: Logger>(
 		&mut self, cur_height: u32, cached_request: &PackageTemplate,
 		feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
@@ -713,6 +719,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		None
 	}
 
+	#[rustfmt::skip]
 	pub fn abandon_claim(&mut self, outpoint: &BitcoinOutPoint) {
 		let claim_id = self.claimable_outpoints.get(outpoint).map(|(claim_id, _)| *claim_id)
 			.or_else(|| {
@@ -741,6 +748,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// `conf_height` represents the height at which the request was generated. This
 	/// does not need to equal the current blockchain tip height, which should be provided via
 	/// `cur_height`, however it must never be higher than `cur_height`.
+	#[rustfmt::skip]
 	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
 		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, conf_target: ConfirmationTarget, destination_script: &Script,
@@ -895,6 +903,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// `conf_height` represents the height at which the transactions in `txn_matched` were
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
+	#[rustfmt::skip]
 	pub(super) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Logger>(
 		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
 		cur_height: u32, broadcaster: &B, conf_target: ConfirmationTarget,
@@ -933,6 +942,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							}
 						}
 
+						#[rustfmt::skip]
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
 								let entry = OnchainEventEntry {
@@ -1081,6 +1091,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(super) fn transaction_unconfirmed<B: Deref, F: Deref, L: Logger>(
 		&mut self,
 		txid: &Txid,
@@ -1108,6 +1119,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Logger>(
 		&mut self, height: u32, broadcaster: B, conf_target: ConfirmationTarget,
 		destination_script: &Script, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
@@ -1190,6 +1202,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		self.claimable_outpoints.get(outpoint).is_some()
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut txids: Vec<(Txid, u32, Option<BlockHash>)> = self.onchain_events_awaiting_threshold_conf
 			.iter()
@@ -1243,6 +1256,7 @@ mod tests {
 	// immediately while claims with locktime greater than the current height are only broadcast
 	// once the locktime is reached.
 	#[test]
+	#[rustfmt::skip]
 	fn test_broadcast_height() {
 		let secp_ctx = Secp256k1::new();
 		let signer = InMemorySigner::new(
