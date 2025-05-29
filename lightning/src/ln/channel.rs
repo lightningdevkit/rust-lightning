@@ -7036,13 +7036,29 @@ impl<SP: Deref> FundedChannel<SP> where
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fee update message while quiescent".to_owned()));
 		}
-		FundedChannel::<SP>::check_remote_fee(self.funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| FundedChannel::<SP>::check_remote_fee(funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger))?;
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| self.validate_update_fee(funding, fee_estimator, msg))
+	}
+
+	fn validate_update_fee<F: Deref>(
+		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		msg: &msgs::UpdateFee,
+	) -> Result<(), ChannelError>
+	where
+		F::Target: FeeEstimator,
+	{
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, None, dust_exposure_limiting_feerate);
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
