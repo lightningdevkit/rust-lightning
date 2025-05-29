@@ -5056,10 +5056,11 @@ where
 	///
 	/// # Handling Invoice Amounts
 	/// Some invoices include a specific amount, while others require you to specify one.
-	/// - If the invoice **includes** an amount, user must not provide `amount_msats`.
+	/// - If the invoice **includes** an amount, user may provide an amount greater or equal to it
+	/// to allow for overpayments.
 	/// - If the invoice **doesn't include** an amount, you'll need to specify `amount_msats`.
 	///
-	/// If these conditions aren’t met, the function will return `Bolt11PaymentError::InvalidAmount`.
+	/// If these conditions aren’t met, the function will return [`Bolt11PaymentError::InvalidAmount`].
 	///
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
