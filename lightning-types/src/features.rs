@@ -1024,6 +1024,15 @@ impl ChannelTypeFeatures {
 		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(&mut ret);
 		ret
 	}
+
+	/// Constructs a ChannelTypeFeatures with zero fee commitment anchors support.
+	pub fn anchors_zero_fee_commitments() -> Self {
+		let mut ret = Self::empty();
+		<sealed::ChannelTypeContext as sealed::AnchorZeroFeeCommitments>::set_required_bit(
+			&mut ret,
+		);
+		ret
+	}
 }
 
 impl<T: sealed::Context> Features<T> {
