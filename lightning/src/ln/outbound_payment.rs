@@ -613,8 +613,6 @@ pub enum Bolt12PaymentError {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	InvalidInvoice,
 	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
-	///
-	/// [`ChannelManager::pay_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt12_invoice
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
