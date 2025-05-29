@@ -8134,7 +8134,20 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, None, dust_exposure_limiting_feerate);
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| self.can_accept_incoming_htlc_for_funding(funding, msg, dust_exposure_limiting_feerate, &logger))
+	}
+
+	fn can_accept_incoming_htlc_for_funding<L: Deref>(
+		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
+		dust_exposure_limiting_feerate: u32, logger: &L,
+	) -> Result<(), LocalHTLCFailureReason>
+	where
+		L::Target: Logger,
+	{
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat;
 		if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
@@ -8143,11 +8156,11 @@ impl<SP: Deref> FundedChannel<SP> where
 				on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 			return Err(LocalHTLCFailureReason::DustLimitCounterparty)
 		}
-		let htlc_success_dust_limit = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+		let htlc_success_dust_limit = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			0
 		} else {
 			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(self.funding.get_channel_type()) / 1000
+			dust_buffer_feerate * htlc_success_tx_weight(funding.get_channel_type()) / 1000
 		};
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
@@ -8159,7 +8172,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		let anchor_outputs_value_msat = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+		let anchor_outputs_value_msat = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
 		} else {
 			0
@@ -8175,11 +8188,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
-			self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
+			funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
 
-		if !self.funding.is_outbound() {
+		if !funding.is_outbound() {
 			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
 			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
 			// side, only on the sender's. Note that with anchor outputs we are no longer as
@@ -8187,11 +8200,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			//
 			// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 			// the incoming HTLC as it has been fully committed by both sides.
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(&self.funding, None, Some(()));
-			if !self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(funding, None, Some(()));
+			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
-			if pending_remote_value_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+			if pending_remote_value_msat.saturating_sub(funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
