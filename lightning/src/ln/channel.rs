@@ -2594,7 +2594,7 @@ impl<'a, SP: Deref> NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerPro
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		change_destination_opt: Option<ScriptBuf>,
+		is_outbound: bool, change_destination_opt: Option<ScriptBuf>,
 		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
@@ -2610,8 +2610,10 @@ impl<'a, SP: Deref> NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerPro
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.funding_negotiation_context.our_funding_inputs, &mut funding_inputs);
 
-		if let Some(prev_funding_input) = prev_funding_input {
-			funding_inputs.push(prev_funding_input);
+		if is_outbound {
+			if let Some(prev_funding_input) = prev_funding_input {
+				funding_inputs.push(prev_funding_input);
+			}
 		}
 
 		// Add output for funding tx
@@ -2625,7 +2627,7 @@ impl<'a, SP: Deref> NegotiatingV2ChannelView<'a, SP> where SP::Target: SignerPro
 			script_pubkey: self.funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		if self.funding.is_outbound() {
+		if is_outbound {
 			funding_outputs.push(
 				OutputOwned::Shared(SharedOwnedOutput::new(
 					shared_funding_output, self.funding_negotiation_context.our_funding_satoshis,
@@ -9330,7 +9332,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Start interactive funding negotiation. No extra input, as we are not the splice initiator
 		let mut refunding = self.as_renegotiating_channel()
 			.map_err(|err| ChannelError::Warn(err.into()))?;
-		let _msg = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, None)
+		let _msg = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), false, None, None)
 			.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
 
 		Ok(splice_ack_msg)
@@ -9417,7 +9419,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Start interactive funding negotiation, with the previous funding transaction as an extra shared input
 		let mut refunding = self.as_renegotiating_channel()
 			.map_err(|err| ChannelError::Warn(err.into()))?;
-		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), None, Some(prev_funding_input))
+		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), true, None, Some(prev_funding_input))
 			.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
 		Ok(tx_msg_opt)
 	}
