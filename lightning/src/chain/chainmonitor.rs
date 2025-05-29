@@ -31,7 +31,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -867,6 +867,16 @@ where C::Target: chain::Filter,
 						panic!("{}", err_str);
 					},
 				}
+
+				// We may need to start monitoring for any alternative funding transactions.
+				if let Some(ref chain_source) = self.chain_source {
+					if update.updates.iter()
+						.any(|update| matches!(update, ChannelMonitorUpdateStep::RenegotiatedFunding { .. }))
+					{
+						monitor.load_outputs_to_watch(chain_source, &self.logger);
+					}
+				}
+
 				if update_res.is_err() {
 					ChannelMonitorUpdateStatus::InProgress
 				} else {
