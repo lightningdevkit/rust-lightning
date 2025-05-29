@@ -8442,7 +8442,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<MessageSendEvent, &'static str>>(
+	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<MessageSendEvent, ChannelError>>(
 		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, tx_msg_handler: HandleTxMsgFn
 	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -8460,9 +8460,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let channel = chan_entry.get_mut();
 				let msg_send_event = match tx_msg_handler(channel) {
 					Ok(msg_send_event) => msg_send_event,
-					Err(tx_msg_str) =>  return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(
-						format!("Got a {tx_msg_str} message with no interactive transaction construction expected or in-progress")
-					), channel_id)),
+					Err(err) =>  return Err(MsgHandleErrInternal::from_chan_no_close(err, channel_id)),
 				};
 				peer_state.pending_msg_events.push(msg_send_event);
 				Ok(())
@@ -8516,10 +8514,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().tx_complete(msg) {
 					Ok(res) => res.into_msg_send_event_or_signing_session(counterparty_node_id),
 					Err(err) => {
-						try_channel_entry!(self, peer_state, Err(ChannelError::Close((
-							err.into(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_entry)
+						try_channel_entry!(self, peer_state, Err(err), chan_entry)
 					}
 				};
 				if let Some(msg_send_event) = msg_send_event_opt {

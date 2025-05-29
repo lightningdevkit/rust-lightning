@@ -1587,53 +1587,58 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSendResult, &'static str> {
+	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_add_input(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
+				.map_err(|err| ChannelError::Warn(err.into()))?
 				.tx_add_input(msg)),
-			_ => Err("Got tx_add_input in an invalid phase"),
+			_ => Err(ChannelError::Warn("Got tx_add_input in an invalid phase".to_owned())),
 		}
 	}
 
-	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<InteractiveTxMessageSendResult, &'static str> {
+	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_add_output(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
+				.map_err(|err| ChannelError::Warn(err.into()))?
 				.tx_add_output(msg)),
-			_ => Err("Got tx_add_output in an invalid phase"),
+			_ => Err(ChannelError::Warn("Got tx_add_output in an invalid phase".to_owned())),
 		}
 	}
 
-	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<InteractiveTxMessageSendResult, &'static str> {
+	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_remove_input(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
+				.map_err(|err| ChannelError::Warn(err.into()))?
 				.tx_remove_input(msg)),
-			_ => Err("Got tx_remove_input in an invalid phase"),
+			_ => Err(ChannelError::Warn("Got tx_remove_input in an invalid phase".to_owned())),
 		}
 	}
 
-	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<InteractiveTxMessageSendResult, &'static str> {
+	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_remove_output(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
+				.map_err(|err| ChannelError::Warn(err.into()))?
 				.tx_remove_output(msg)),
-			_ => Err("Got tx_remove_output in an invalid phase"),
+			_ => Err(ChannelError::Warn("Got tx_remove_output in an invalid phase".to_owned())),
 		}
 	}
 
-	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<HandleTxCompleteResult, &'static str> {
+	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<HandleTxCompleteResult, ChannelError> {
 		match &mut self.phase {
 			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_complete(msg)),
 			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()?
+			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
+				.map_err(|err| ChannelError::Warn(err.into()))?
 				.tx_complete(msg)),
-			_ => Err("Got tx_complete in an invalid phase"),
+			_ => Err(ChannelError::Warn("Got tx_complete in an invalid phase".to_owned())),
 		}
 	}
 
