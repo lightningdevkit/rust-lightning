@@ -6515,7 +6515,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 			}
 		}
-		self.funding.value_to_self_msat = (self.funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+
+		for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+			funding.value_to_self_msat = (funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+		}
 
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
 			match update_state {
