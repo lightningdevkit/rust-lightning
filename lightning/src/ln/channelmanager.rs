@@ -12518,6 +12518,10 @@ where
 						);
 						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
 					},
+					Err(Bolt12PaymentError::InvalidInvoice) => {
+						log_trace!($logger, "Failed paying invalid/incompatible invoice");
+						return None;
+					},
 					Err(Bolt12PaymentError::SendingFailed(e)) => {
 						log_trace!($logger, "Failed paying invoice: {:?}", e);
 						InvoiceError::from_string(format!("{:?}", e))

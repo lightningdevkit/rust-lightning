@@ -1186,7 +1186,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
-	// Re-process the same onion message to ensure idempotency — 
+	// Re-process the same onion message to ensure idempotency —
 	// we should not generate a duplicate `InvoiceReceived` event.
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
@@ -2302,7 +2302,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 
 	// Pay the invoice via keysend now that we have the preimage and make sure the recipient fails it
 	// due to incorrect payment context.
-	let pay_params = PaymentParameters::from_bolt12_invoice(&invoice);
+	let pay_params = PaymentParameters::from_bolt12_invoice(&invoice).unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(pay_params, amt_msat);
 	let keysend_payment_id = PaymentId([2; 32]);
 	let payment_hash = nodes[0].node.send_spontaneous_payment(

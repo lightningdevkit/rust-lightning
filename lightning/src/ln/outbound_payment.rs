@@ -593,6 +593,10 @@ pub enum Bolt11PaymentError {
 	/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
 	/// [`ChannelManager::pay_for_bolt11_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt11_invoice
 	InvalidAmount,
+	/// An invalid or incompatible invoice was provided to [`ChannelManager::pay_for_bolt11_invoice`].
+	///
+	/// [`ChannelManager::pay_for_bolt11_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt11_invoice
+	InvalidInvoice,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
 }
@@ -604,7 +608,13 @@ pub enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+	/// An invalid or incompatible invoice was provided to [`ChannelManager`].
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	InvalidInvoice,
 	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
+	///
+	/// [`ChannelManager::pay_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt12_invoice
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
@@ -902,6 +912,7 @@ impl OutboundPayments {
 		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
 
 		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
+			.map_err(|_| Bolt11PaymentError::InvalidInvoice)?
 			.with_user_config_ignoring_fee_limit(route_params_config);
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, amount);
@@ -949,6 +960,7 @@ impl OutboundPayments {
 
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_bolt12_invoice(&invoice)
+				.map_err(|_| Bolt12PaymentError::InvalidInvoice)?
 				.with_user_config_ignoring_fee_limit(params_config), invoice.amount_msats()
 		);
 		if let Some(max_fee_msat) = params_config.max_total_routing_fee_msat {
@@ -1127,6 +1139,7 @@ impl OutboundPayments {
 					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
 					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
 					let pay_params = PaymentParameters::from_static_invoice(invoice)
+						.map_err(|_| Bolt12PaymentError::InvalidInvoice)?
 						.with_user_config_ignoring_fee_limit(*route_params_config);
 					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
 					route_params.max_total_routing_fee_msat = route_params_config.max_total_routing_fee_msat;
@@ -3034,7 +3047,7 @@ mod tests {
 		assert!(outbound_payments.has_pending_payments());
 
 		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_bolt12_invoice(&invoice),
+			PaymentParameters::from_bolt12_invoice(&invoice).unwrap(),
 			invoice.amount_msats(),
 		);
 		router.expect_find_route(route_params, Err(""));
@@ -3086,7 +3099,7 @@ mod tests {
 			.sign(recipient_sign).unwrap();
 
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
+			payment_params: PaymentParameters::from_bolt12_invoice(&invoice).unwrap(),
 			final_value_msat: invoice.amount_msats(),
 			max_total_routing_fee_msat: Some(1234),
 		};
