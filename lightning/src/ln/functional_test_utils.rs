@@ -846,30 +846,26 @@ pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &
 /// Gets an RAA and CS which were sent in response to a commitment update
 ///
 /// Don't use this, use the identically-named function instead.
-#[rustfmt::skip]
 macro_rules! get_revoke_commit_msgs {
 	($node: expr, $node_id: expr) => {
 		$crate::ln::functional_test_utils::get_revoke_commit_msgs(&$node, &$node_id)
-	}
+	};
 }
 
 /// Get an specific event message from the pending events queue.
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! get_event_msg {
-	($node: expr, $event_type: path, $node_id: expr) => {
-		{
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				$event_type { ref node_id, ref msg } => {
-					assert_eq!(*node_id, $node_id);
-					(*msg).clone()
-				},
-				_ => panic!("Unexpected event {:?}", events[0]),
-			}
+	($node: expr, $event_type: path, $node_id: expr) => {{
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			$event_type { ref node_id, ref msg } => {
+				assert_eq!(*node_id, $node_id);
+				(*msg).clone()
+			},
+			_ => panic!("Unexpected event {:?}", events[0]),
 		}
-	}
+	}};
 }
 
 /// Get an error message from the pending events queue.
@@ -930,11 +926,10 @@ pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::Commitm
 /// Gets an UpdateHTLCs MessageSendEvent
 ///
 /// Don't use this, use the identically-named function instead.
-#[rustfmt::skip]
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
 		$crate::ln::functional_test_utils::get_htlc_update_msgs(&$node, &$node_id)
-	}
+	};
 }
 
 /// Fetches the first `msg_event` to the passed `node_id` in the passed `msg_events` vec.
@@ -1108,24 +1103,19 @@ macro_rules! get_channel_type_features {
 
 /// Returns a channel monitor given a channel id, making some naive assumptions
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! get_monitor {
-	($node: expr, $channel_id: expr) => {
-		{
-			$node.chain_monitor.chain_monitor.get_monitor($channel_id).unwrap()
-		}
-	}
+	($node: expr, $channel_id: expr) => {{
+		$node.chain_monitor.chain_monitor.get_monitor($channel_id).unwrap()
+	}};
 }
 
 /// Returns any local commitment transactions for the channel.
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! get_local_commitment_txn {
-	($node: expr, $channel_id: expr) => {
-		{
-			$crate::get_monitor!($node, $channel_id).unsafe_get_latest_holder_commitment_txn(&$node.logger)
-		}
-	}
+	($node: expr, $channel_id: expr) => {{
+		$crate::get_monitor!($node, $channel_id)
+			.unsafe_get_latest_holder_commitment_txn(&$node.logger)
+	}};
 }
 
 /// Check the error from attempting a payment.
@@ -1176,11 +1166,10 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 ///
 /// Don't use this, use the identically-named function instead.
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
 		$crate::ln::functional_test_utils::check_added_monitors(&$node, $count);
-	}
+	};
 }
 
 #[rustfmt::skip]
@@ -1828,11 +1817,10 @@ pub fn check_closed_broadcast(node: &Node, num_channels: usize, with_error_msg: 
 ///
 /// Don't use this, use the identically-named function instead.
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {
 		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, 1, $with_error_msg).pop()
-	}
+	};
 }
 
 #[derive(Default)]
@@ -1926,15 +1914,27 @@ pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: Clo
 ///
 /// Don't use this, use the identically-named function instead.
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! check_closed_event {
 	($node: expr, $events: expr, $reason: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
-		check_closed_event!($node, $events, $reason, false, $counterparty_node_ids, $channel_capacity);
+		check_closed_event!(
+			$node,
+			$events,
+			$reason,
+			false,
+			$counterparty_node_ids,
+			$channel_capacity
+		);
 	};
 	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr, $counterparty_node_ids: expr, $channel_capacity: expr) => {
-		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason,
-			$is_check_discard_funding, &$counterparty_node_ids, $channel_capacity);
-	}
+		$crate::ln::functional_test_utils::check_closed_event(
+			&$node,
+			$events,
+			$reason,
+			$is_check_discard_funding,
+			&$counterparty_node_ids,
+			$channel_capacity,
+		);
+	};
 }
 
 #[rustfmt::skip]
@@ -2303,7 +2303,6 @@ pub fn get_payment_preimage_hash(recipient: &Node, min_value_msat: Option<u64>, 
 ///
 /// Don't use this, use the identically-named function instead.
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! get_payment_preimage_hash {
 	($dest_node: expr) => {
 		get_payment_preimage_hash!($dest_node, None)
@@ -2312,7 +2311,11 @@ macro_rules! get_payment_preimage_hash {
 		crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
 	};
 	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
-		$crate::ln::functional_test_utils::get_payment_preimage_hash(&$dest_node, $min_value_msat, $min_final_cltv_expiry_delta)
+		$crate::ln::functional_test_utils::get_payment_preimage_hash(
+			&$dest_node,
+			$min_value_msat,
+			$min_final_cltv_expiry_delta,
+		)
 	};
 }
 
@@ -2355,24 +2358,41 @@ macro_rules! get_route {
 }
 
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_bolt11_features($recv_node.node.bolt11_invoice_features()).unwrap();
+		let payment_params = $crate::routing::router::PaymentParameters::from_node_id(
+			$recv_node.node.get_our_node_id(),
+			TEST_FINAL_CLTV,
+		)
+		.with_bolt11_features($recv_node.node.bolt11_invoice_features())
+		.unwrap();
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr) => {{
-		$crate::get_route_and_payment_hash!($send_node, $recv_node, $payment_params, $recv_value, None)
+		$crate::get_route_and_payment_hash!(
+			$send_node,
+			$recv_node,
+			$payment_params,
+			$recv_value,
+			None
+		)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $max_total_routing_fee_msat: expr) => {{
-		let mut route_params = $crate::routing::router::RouteParameters::from_payment_params_and_value($payment_params, $recv_value);
+		let mut route_params =
+			$crate::routing::router::RouteParameters::from_payment_params_and_value(
+				$payment_params,
+				$recv_value,
+			);
 		route_params.max_total_routing_fee_msat = $max_total_routing_fee_msat;
 		let (payment_preimage, payment_hash, payment_secret) =
-			$crate::ln::functional_test_utils::get_payment_preimage_hash(&$recv_node, Some($recv_value), None);
+			$crate::ln::functional_test_utils::get_payment_preimage_hash(
+				&$recv_node,
+				Some($recv_value),
+				None,
+			);
 		let route = $crate::ln::functional_test_utils::get_route(&$send_node, &route_params);
 		(route.unwrap(), payment_hash, payment_preimage, payment_secret)
-	}}
+	}};
 }
 
 #[rustfmt::skip]
@@ -2485,22 +2505,30 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 }
 
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
 		$crate::expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, true)
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
-		$crate::expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true)
+		$crate::expect_payment_sent!(
+			$node,
+			$expected_payment_preimage,
+			$expected_fee_msat_opt,
+			true
+		)
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => {
-		$crate::ln::functional_test_utils::expect_payment_sent(&$node, $expected_payment_preimage,
-			$expected_fee_msat_opt.map(|o| Some(o)), $expect_paths, true)
-	}
+		$crate::ln::functional_test_utils::expect_payment_sent(
+			&$node,
+			$expected_payment_preimage,
+			$expected_fee_msat_opt.map(|o| Some(o)),
+			$expect_paths,
+			true,
+		)
+	};
 }
 
 #[macro_export]
-#[rustfmt::skip]
 macro_rules! expect_payment_path_successful {
 	($node: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -2509,7 +2537,7 @@ macro_rules! expect_payment_path_successful {
 			$crate::events::Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
-	}
+	};
 }
 
 /// Returns the total fee earned by this HTLC forward, in msat.
