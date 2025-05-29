@@ -150,7 +150,9 @@ where
 	/// but MPP can no longer be used to pay it.
 	///
 	/// The client agrees to paying an opening fee equal to
-	/// `max(min_fee_msat, proportional*(payment_size_msat/1_000_000))`.
+	/// `max(min_fee_msat, proportional * (payment_size_msat / 1_000_000))`.
+	///
+	/// Returns the used [`LSPSRequestId`] that was used for the buy request.
 	///
 	/// [`OpeningParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::OpeningParametersReady
 	/// [`InvoiceParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::InvoiceParametersReady
