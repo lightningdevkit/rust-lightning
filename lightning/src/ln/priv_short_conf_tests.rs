@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -15,14 +13,16 @@
 
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
-use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::msgs;
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent, RoutingMessageHandler,
+};
 use crate::ln::onion_utils::LocalHTLCFailureReason;
+use crate::ln::types::ChannelId;
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::types::features::ChannelTypeFeatures;
-use crate::ln::msgs;
-use crate::ln::types::ChannelId;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
 use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 use crate::util::ser::Writeable;
 
@@ -31,6 +31,7 @@ use crate::prelude::*;
 use crate::ln::functional_test_utils::*;
 
 #[test]
+#[rustfmt::skip]
 fn test_priv_forwarding_rejection() {
 	// If we have a private channel with outbound liquidity, and
 	// UserConfig::accept_forwards_to_priv_channels is set to false, we should reject any attempts
@@ -137,6 +138,7 @@ fn test_priv_forwarding_rejection() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], our_payment_preimage);
 }
 
+#[rustfmt::skip]
 fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	// Previously, if the minium_depth config was set to 1, we'd never send a channel_ready. This
 	// tests that we properly send one in that case.
@@ -225,6 +227,7 @@ fn test_1_conf_open() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_routed_scid_alias() {
 	// Trivially test sending a payment which is routed through an SCID alias.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -283,6 +286,7 @@ fn test_routed_scid_alias() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_scid_privacy_on_pub_channel() {
 	// Tests rejecting the scid_privacy feature for public channels and that we don't ever try to
 	// send them.
@@ -307,6 +311,7 @@ fn test_scid_privacy_on_pub_channel() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_scid_privacy_negotiation() {
 	// Tests of the negotiation of SCID alias and falling back to non-SCID-alias if our
 	// counterparty doesn't support it.
@@ -349,6 +354,7 @@ fn test_scid_privacy_negotiation() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_inbound_scid_privacy() {
 	// Tests accepting channels with the scid_privacy feature and rejecting forwards using the
 	// channel's real SCID as required by the channel feature.
@@ -464,6 +470,7 @@ fn test_inbound_scid_privacy() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_scid_alias_returned() {
 	// Tests that when we fail an HTLC (in this case due to attempting to forward more than the
 	// channel's available balance) we use the correct (in this case the aliased) SCID in the
@@ -572,6 +579,7 @@ fn test_simple_0conf_channel() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_0conf_channel_with_async_monitor() {
 	// Test that we properly send out channel_ready in (both inbound- and outbound-) zero-conf
 	// channels if ChannelMonitor updates return a `TemporaryFailure` during the initial channel
@@ -740,6 +748,7 @@ fn test_0conf_channel_with_async_monitor() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_0conf_close_no_early_chan_update() {
 	// Tests that even with a public channel 0conf channel, we don't generate a channel_update on
 	// closing.
@@ -766,6 +775,7 @@ fn test_0conf_close_no_early_chan_update() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_public_0conf_channel() {
 	// Tests that we will announce a public channel (after confirmation) even if its 0conf.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -818,6 +828,7 @@ fn test_public_0conf_channel() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_0conf_channel_reorg() {
 	// If we accept a 0conf channel, which is then confirmed, but then changes SCID in a reorg, we
 	// have to make sure we handle this correctly (or, currently, just force-close the channel).
@@ -869,6 +880,7 @@ fn test_0conf_channel_reorg() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_zero_conf_accept_reject() {
 	let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 	channel_type_features.set_zero_conf_required();
@@ -966,6 +978,7 @@ fn test_zero_conf_accept_reject() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_connect_before_funding() {
 	// Tests for a particularly dumb explicit panic that existed prior to 0.0.111 for 0conf
 	// channels. If we received a block while awaiting funding for 0-conf channels we'd hit an
@@ -1008,6 +1021,7 @@ fn test_connect_before_funding() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_0conf_ann_sigs_racing_conf() {
 	// Previously we had a bug where we'd panic when receiving a counterparty's
 	// announcement_signatures message for a 0conf channel pending confirmation on-chain. Here we

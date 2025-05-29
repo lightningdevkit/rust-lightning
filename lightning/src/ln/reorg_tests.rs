@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -15,21 +13,22 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
-use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 use crate::ln::types::ChannelId;
 use crate::sign::OutputSpender;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
-use bitcoin::script::Builder;
 use bitcoin::opcodes;
+use bitcoin::script::Builder;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
 
+#[rustfmt::skip]
 fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	// Our on-chain HTLC-claim learning has a few properties worth testing:
 	//  * If an upstream HTLC is claimed with a preimage (both against our own commitment
@@ -171,6 +170,7 @@ fn test_onchain_htlc_timeout_delay_remote_commitment() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_counterparty_revoked_reorg() {
 	// Test what happens when a revoked counterparty transaction is broadcast but then reorg'd out
 	// of the main chain. Specifically, HTLCs in the latest commitment transaction which are not
@@ -241,6 +241,7 @@ fn test_counterparty_revoked_reorg() {
 	expect_payment_failed!(nodes[1], payment_hash_4, false);
 }
 
+#[rustfmt::skip]
 fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_unconfirmed: bool, connect_style: ConnectStyle) {
 	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
 	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
@@ -434,6 +435,7 @@ fn test_unconf_chan_via_funding_unconfirmed() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_set_outpoints_partial_claiming() {
 	// - remote party claim tx, new bump tx
 	// - disconnect remote claiming tx, new bump
@@ -529,6 +531,7 @@ fn test_set_outpoints_partial_claiming() {
 	}
 }
 
+#[rustfmt::skip]
 fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	// In previous code, detection of to_remote outputs in a counterparty commitment transaction
 	// was dependent on whether a local commitment transaction had been seen on-chain previously.
@@ -640,6 +643,7 @@ fn test_to_remote_after_local_detection() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reorg() {
 	// We detect a counterparty commitment confirm onchain, followed by a reorg and a confirmation
 	// of a holder commitment. Then, if we learn of the preimage for an HTLC in both commitments,
@@ -703,6 +707,7 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterparty_commitment_reorg() {
 	// We detect a counterparty commitment confirm onchain, followed by a reorg and a
 	// confirmation of the previous (still unrevoked) counterparty commitment. Then, if we learn
@@ -780,6 +785,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	assert_eq!(htlc_preimage_tx.input[0].witness.second_to_last().unwrap(), &payment_preimage.0[..]);
 }
 
+#[rustfmt::skip]
 fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_counterparty_commitment: bool) {
 	// Tests that a node will retry broadcasting its own commitment after seeing a confirmed
 	// counterparty commitment be reorged out.

@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -13,10 +11,10 @@
 //! properly with a signer implementation that asynchronously derives signatures.
 
 use crate::prelude::*;
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{Transaction, TxOut, TxIn, Amount};
 use bitcoin::locktime::absolute::LockTime;
+use bitcoin::secp256k1::Secp256k1;
 use bitcoin::transaction::Version;
+use bitcoin::{Amount, Transaction, TxIn, TxOut};
 
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::ChannelMonitorUpdateStatus;
@@ -30,8 +28,8 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEven
 use crate::ln::{functional_test_utils::*, msgs};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::SignerProvider;
-use crate::util::test_channel_signer::SignerOp;
 use crate::util::logger::Logger;
+use crate::util::test_channel_signer::SignerOp;
 
 #[test]
 fn test_open_channel() {
@@ -39,6 +37,7 @@ fn test_open_channel() {
 	do_test_open_channel(true);
 }
 
+#[rustfmt::skip]
 fn do_test_open_channel(zero_conf: bool) {
 	// Simulate acquiring the commitment point for `open_channel` and `accept_channel` asynchronously.
 	let mut manually_accept_config = test_default_channel_config();
@@ -100,11 +99,13 @@ fn do_test_open_channel(zero_conf: bool) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_funding_created() {
 	do_test_funding_created(vec![SignerOp::SignCounterpartyCommitment, SignerOp::GetPerCommitmentPoint]);
 	do_test_funding_created(vec![SignerOp::GetPerCommitmentPoint, SignerOp::SignCounterpartyCommitment]);
 }
 
+#[rustfmt::skip]
 fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_created` asynchronously.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -160,11 +161,13 @@ fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_funding_signed() {
 	do_test_funding_signed(vec![SignerOp::SignCounterpartyCommitment, SignerOp::GetPerCommitmentPoint]);
 	do_test_funding_signed(vec![SignerOp::GetPerCommitmentPoint, SignerOp::SignCounterpartyCommitment]);
 }
 
+#[rustfmt::skip]
 fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_signed` asynchronously.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -223,6 +226,7 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_async_commitment_signature_for_commitment_signed() {
 	for i in 0..=8 {
 		let enable_signer_op_order = vec![
@@ -234,6 +238,7 @@ fn test_async_commitment_signature_for_commitment_signed() {
 	}
 }
 
+#[rustfmt::skip]
 fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enable_signer_op_order: Vec<SignerOp>) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -294,11 +299,13 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enabl
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_funding_signed_0conf() {
 	do_test_funding_signed_0conf(vec![SignerOp::GetPerCommitmentPoint, SignerOp::SignCounterpartyCommitment]);
 	do_test_funding_signed_0conf(vec![SignerOp::SignCounterpartyCommitment, SignerOp::GetPerCommitmentPoint]);
 }
 
+#[rustfmt::skip]
 fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_signed` asynchronously for a zero-conf channel.
 	let mut manually_accept_config = test_default_channel_config();
@@ -409,6 +416,7 @@ enum UnblockSignerAcrossDisconnectCase {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_async_raa_peer_disconnect() {
 	do_test_async_raa_peer_disconnect(UnblockSignerAcrossDisconnectCase::AtEnd, true);
 	do_test_async_raa_peer_disconnect(UnblockSignerAcrossDisconnectCase::AtEnd, false);
@@ -418,6 +426,7 @@ fn test_async_raa_peer_disconnect() {
 	do_test_async_raa_peer_disconnect(UnblockSignerAcrossDisconnectCase::BeforeReestablish, false);
 }
 
+#[rustfmt::skip]
 fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCase, raa_blocked_by_commit_point: bool) {
 	// `raa_blocked_by_commit_point` determines whether we block the RAA by blocking the
 	// signer on `GetPerCommitmentPoint` or `ReleaseCommitmentSecret`.
@@ -524,7 +533,6 @@ fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCas
 	}
 }
 
-
 #[test]
 fn test_async_commitment_signature_peer_disconnect() {
 	// This tests that if our signer is blocked and gets unblocked
@@ -533,6 +541,7 @@ fn test_async_commitment_signature_peer_disconnect() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_async_commitment_signature_peer_disconnect_signer_restored_before_monitor_completion() {
 	// This tests that if we were pending a monitor update completion across a disconnect,
 	// and needed to send a CS, that if our signer becomes available before the monitor
@@ -542,6 +551,7 @@ fn test_async_commitment_signature_peer_disconnect_signer_restored_before_monito
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_async_commitment_signature_peer_disconnect_signer_restored_before_reestablish() {
 	// This tests that if we tried to send a commitment_signed, but our signer was blocked,
 	// if we disconnect, reconnect, the signer becomes available, then handle channel_reestablish,
@@ -549,6 +559,7 @@ fn test_async_commitment_signature_peer_disconnect_signer_restored_before_reesta
 	do_test_async_commitment_signature_peer_disconnect(UnblockSignerAcrossDisconnectCase::BeforeReestablish);
 }
 
+#[rustfmt::skip]
 fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCase) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -654,6 +665,7 @@ fn test_async_commitment_signature_ordering_monitor_restored() {
 	do_test_async_commitment_signature_ordering(true);
 }
 
+#[rustfmt::skip]
 fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	// Across disconnects we may end up in a situation where we need to send a
 	// commitment_signed and then revoke_and_ack. We need to make sure that if
@@ -807,6 +819,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
+#[rustfmt::skip]
 fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	// Ensures that we can obtain holder signatures for commitment and HTLC transactions
 	// asynchronously by allowing their retrieval to fail and retrying via
@@ -959,6 +972,7 @@ fn test_closing_signed() {
 	do_test_closing_signed(true, true);
 }
 
+#[rustfmt::skip]
 fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	// Based off of `expect_channel_shutdown_state`.
 	// Test that we can asynchronously sign closing transactions.
