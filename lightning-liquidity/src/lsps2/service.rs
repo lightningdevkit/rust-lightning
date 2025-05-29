@@ -32,7 +32,7 @@ use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use lightning::events::HTLCHandlingFailureType;
-use lightning::ln::channelmanager::{AChannelManager, InterceptId};
+use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
@@ -983,6 +983,128 @@ where
 		}
 
 		Ok(())
+	}
+
+	/// Abandons a pending JIT‐open flow for `user_channel_id`, removing all local state.
+	///
+	/// This removes the intercept SCID, any outbound channel state, and associated
+	/// channel‐ID mappings for the specified `user_channel_id`, but only while no payment
+	/// has been forwarded yet and no channel has been opened on-chain.
+	///
+	/// Returns an error if:
+	///  - there is no channel matching `user_channel_id`, or
+	///  - a payment has already been forwarded or a channel has already been opened
+	///
+	/// Note: this does *not* close or roll back any on‐chain channel which may already
+	/// have been opened. The caller must call this before or instead of initiating the channel
+	/// open, as it only affects the local LSPS2 state and doesn't affect any channels that
+	/// might already exist on-chain. Any pending channel open attempts must be managed
+	/// separately.
+	pub fn channel_open_abandoned(
+		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+		let inner_state_lock =
+			outer_state_lock.get(counterparty_node_id).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("No counterparty state for: {}", counterparty_node_id),
+			})?;
+		let mut peer_state = inner_state_lock.lock().unwrap();
+
+		let intercept_scid = peer_state
+			.intercept_scid_by_user_channel_id
+			.get(&user_channel_id)
+			.copied()
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Could not find a channel with user_channel_id {}", user_channel_id),
+			})?;
+
+		let jit_channel = peer_state
+			.outbound_channels_by_intercept_scid
+			.get(&intercept_scid)
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!(
+					"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+					intercept_scid, user_channel_id,
+				),
+			})?;
+
+		let is_pending = matches!(
+			jit_channel.state,
+			OutboundJITChannelState::PendingInitialPayment { .. }
+				| OutboundJITChannelState::PendingChannelOpen { .. }
+		);
+
+		if !is_pending {
+			return Err(APIError::APIMisuseError {
+				err: "Cannot abandon channel open after channel creation or payment forwarding"
+					.to_string(),
+			});
+		}
+
+		peer_state.intercept_scid_by_user_channel_id.remove(&user_channel_id);
+		peer_state.outbound_channels_by_intercept_scid.remove(&intercept_scid);
+		peer_state.intercept_scid_by_channel_id.retain(|_, &mut scid| scid != intercept_scid);
+
+		Ok(())
+	}
+
+	/// Used to fail intercepted HTLCs backwards when a channel open attempt ultimately fails.
+	///
+	/// This function should be called after receiving an [`LSPS2ServiceEvent::OpenChannel`] event
+	/// but only if the channel could not be successfully established. It resets the JIT channel
+	/// state so that the payer may try the payment again.
+	///
+	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
+	pub fn channel_open_failed(
+		&self, counterparty_node_id: &PublicKey, user_channel_id: u128,
+	) -> Result<(), APIError> {
+		let outer_state_lock = self.per_peer_state.read().unwrap();
+
+		let inner_state_lock =
+			outer_state_lock.get(counterparty_node_id).ok_or_else(|| APIError::APIMisuseError {
+				err: format!("No counterparty state for: {}", counterparty_node_id),
+			})?;
+
+		let mut peer_state = inner_state_lock.lock().unwrap();
+
+		let intercept_scid = peer_state
+			.intercept_scid_by_user_channel_id
+			.get(&user_channel_id)
+			.copied()
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Could not find a channel with user_channel_id {}", user_channel_id),
+			})?;
+
+		let jit_channel = peer_state
+			.outbound_channels_by_intercept_scid
+			.get_mut(&intercept_scid)
+			.ok_or_else(|| APIError::APIMisuseError {
+			err: format!(
+				"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+				intercept_scid, user_channel_id,
+			),
+		})?;
+
+		if let OutboundJITChannelState::PendingChannelOpen { payment_queue, .. } =
+			&mut jit_channel.state
+		{
+			let intercepted_htlcs = payment_queue.clear();
+			for htlc in intercepted_htlcs {
+				self.channel_manager.get_cm().fail_htlc_backwards_with_reason(
+					&htlc.payment_hash,
+					FailureCode::TemporaryNodeFailure,
+				);
+			}
+
+			jit_channel.state = OutboundJITChannelState::PendingInitialPayment {
+				payment_queue: PaymentQueue::new(),
+			};
+			Ok(())
+		} else {
+			Err(APIError::APIMisuseError {
+				err: "Channel is not in the PendingChannelOpen state.".to_string(),
+			})
+		}
 	}
 
 	/// Forward [`Event::ChannelReady`] event parameters into this function.
