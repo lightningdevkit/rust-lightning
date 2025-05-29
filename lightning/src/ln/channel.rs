@@ -6364,8 +6364,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			*self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
-			*self.funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+				*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
+				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			}
 		}
 
 		match &self.context.holder_signer {
@@ -6515,7 +6517,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 			}
 		}
-		self.funding.value_to_self_msat = (self.funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+
+		for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+			funding.value_to_self_msat = (funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+		}
 
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
 			match update_state {
