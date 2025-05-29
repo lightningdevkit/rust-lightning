@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -9,19 +7,22 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::ln::msgs::{
+	ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, RoutingMessageHandler, SocketAddress,
+	UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement, MAX_VALUE_MSAT,
+};
 use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
 use crate::types::features::{ChannelFeatures, NodeFeatures};
-use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
-use crate::util::test_utils;
 use crate::util::ser::Writeable;
+use crate::util::test_utils;
 
 use bitcoin::constants::ChainHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::FromHex;
 use bitcoin::network::Network;
-use bitcoin::secp256k1::{PublicKey,SecretKey};
-use bitcoin::secp256k1::{Secp256k1, All};
+use bitcoin::secp256k1::{All, Secp256k1};
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 #[allow(unused)]
 use crate::prelude::*;
@@ -58,6 +59,7 @@ pub(crate) fn channel_announcement(
 }
 
 // Using the same keys for LN and BTC ids
+#[rustfmt::skip]
 pub(crate) fn add_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
@@ -71,6 +73,7 @@ pub(crate) fn add_channel(
 	};
 }
 
+#[rustfmt::skip]
 pub(crate) fn add_or_update_node(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
@@ -99,6 +102,7 @@ pub(crate) fn add_or_update_node(
 	};
 }
 
+#[rustfmt::skip]
 pub(crate) fn update_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
@@ -116,6 +120,7 @@ pub(crate) fn update_channel(
 	};
 }
 
+#[rustfmt::skip]
 pub(super) fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec<SecretKey>, Vec<PublicKey>) {
 	let privkeys: Vec<SecretKey> = (2..22).map(|i| {
 		SecretKey::from_slice(&[i; 32]).unwrap()
@@ -129,6 +134,7 @@ pub(super) fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec
 	(our_privkey, our_id, privkeys, pubkeys)
 }
 
+#[rustfmt::skip]
 pub(super) fn id_to_feature_flags(id: u8) -> Vec<u8> {
 	// Set the feature flags to the id'th odd (ie non-required) feature bit so that we can
 	// test for it later.
@@ -144,6 +150,7 @@ pub(super) fn id_to_feature_flags(id: u8) -> Vec<u8> {
 	}
 }
 
+#[rustfmt::skip]
 pub(super) fn build_line_graph() -> (
 	Secp256k1<All>, sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
@@ -197,6 +204,7 @@ pub(super) fn build_line_graph() -> (
 	(secp_ctx, network_graph, gossip_sync, chain_monitor, logger)
 }
 
+#[rustfmt::skip]
 pub(super) fn build_graph() -> (
 	Secp256k1<All>,
 	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,

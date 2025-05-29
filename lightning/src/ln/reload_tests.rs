@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -11,25 +9,29 @@
 
 //! Functional tests which test for correct behavior across node restarts.
 
-use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
+use crate::chain::transaction::OutPoint;
+use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use crate::ln::channelmanager::{
+	ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, RecipientOnionFields,
+};
+use crate::ln::msgs;
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent, RoutingMessageHandler,
+};
+use crate::ln::types::ChannelId;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::EntropySource;
-use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
-use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, RAACommitmentOrder};
-use crate::ln::msgs;
-use crate::ln::types::ChannelId;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
+use crate::util::config::UserConfig;
+use crate::util::errors::APIError;
+use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils;
-use crate::util::errors::APIError;
-use crate::util::ser::{Writeable, ReadableArgs};
-use crate::util::config::UserConfig;
 
-use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::Hash;
 use types::payment::{PaymentHash, PaymentPreimage};
 
 use crate::prelude::*;
@@ -37,6 +39,7 @@ use crate::prelude::*;
 use crate::ln::functional_test_utils::*;
 
 #[test]
+#[rustfmt::skip]
 fn test_funding_peer_disconnect() {
 	// Test that we can lock in our funding tx while disconnected
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -191,6 +194,7 @@ fn test_funding_peer_disconnect() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_no_txn_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -236,6 +240,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_manager_serialize_deserialize_events() {
 	// This test makes sure the events field in ChannelManager survives de/serialization
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -332,6 +337,7 @@ fn test_manager_serialize_deserialize_events() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_simple_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -358,6 +364,7 @@ fn test_simple_manager_serialize_deserialize() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// Test deserializing a ChannelManager with an out-of-date ChannelMonitor
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -507,6 +514,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 }
 
 #[cfg(feature = "std")]
+#[rustfmt::skip]
 fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, not_stale: bool) {
 	use crate::ln::channelmanager::Retry;
 	use crate::util::string::UntrustedString;
@@ -710,6 +718,7 @@ fn test_data_loss_protect() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_forwardable_regen() {
 	// Tests that if we reload a ChannelManager while forwards are pending we will regenerate the
 	// PendingHTLCsForwardable event automatically, ensuring we don't forget to forward/receive
@@ -785,6 +794,7 @@ fn test_forwardable_regen() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
 }
 
+#[rustfmt::skip]
 fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_restart: bool) {
 	// Test what happens if a node receives an MPP payment, claims it, but crashes before
 	// persisting the ChannelManager. If `persist_both_monitors` is false, also crash after only
@@ -988,6 +998,7 @@ fn test_partial_claim_before_restart() {
 	do_test_partial_claim_before_restart(true, true);
 }
 
+#[rustfmt::skip]
 fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_htlc: bool, use_intercept: bool) {
 	if !use_cs_commitment { assert!(!claim_htlc); }
 	// If we go to forward a payment, and the ChannelMonitor persistence completes, but the
@@ -1165,6 +1176,7 @@ fn intercepted_payment_no_manager_persistence() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn removed_payment_no_manager_persistence() {
 	// If an HTLC is failed to us on a channel, and the ChannelMonitor persistence completes, but
 	// the corresponding ChannelManager persistence does not, we need to ensure that the HTLC is
@@ -1237,6 +1249,7 @@ fn removed_payment_no_manager_persistence() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_reload_partial_funding_batch() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -1300,6 +1313,7 @@ fn test_reload_partial_funding_batch() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_htlc_localremoved_persistence() {
 	// Tests that if we fail an htlc back (update_fail_htlc message) and then restart the node, the node will resend the
 	// exact same fail message.

@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -189,14 +187,20 @@ pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
 ///
 /// Note that this does *not* implement [`FeeEstimator`] to make it harder to accidentally mix the
 /// two.
-pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F) where F::Target: FeeEstimator;
+pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F)
+where
+	F::Target: FeeEstimator;
 
-impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
+impl<F: Deref> LowerBoundedFeeEstimator<F>
+where
+	F::Target: FeeEstimator,
+{
 	/// Creates a new `LowerBoundedFeeEstimator` which wraps the provided fee_estimator
 	pub fn new(fee_estimator: F) -> Self {
 		LowerBoundedFeeEstimator(fee_estimator)
 	}
 
+	#[rustfmt::skip]
 	pub fn bounded_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
 		cmp::max(
 			self.0.get_est_sat_per_1000_weight(confirmation_target),
@@ -207,7 +211,9 @@ impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
 
 #[cfg(test)]
 mod tests {
-	use super::{FEERATE_FLOOR_SATS_PER_KW, LowerBoundedFeeEstimator, ConfirmationTarget, FeeEstimator};
+	use super::{
+		ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, FEERATE_FLOOR_SATS_PER_KW,
+	};
 
 	struct TestFeeEstimator {
 		sat_per_kw: u32,
@@ -220,6 +226,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_fee_estimator_less_than_floor() {
 		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW - 1;
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
@@ -229,6 +236,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_fee_estimator_greater_than_floor() {
 		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW + 1;
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };

@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -14,46 +12,54 @@
 //! returned errors decode to the correct thing.
 
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::events::{Event, HTLCHandlingFailureType, PathFailure, PaymentFailureReason};
-use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
-use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
-use crate::routing::gossip::{NetworkUpdate, RoutingFees};
-use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop, Path, TrampolineHop, BlindedTail, RouteHop};
-use crate::types::features::{InitFeatures, Bolt11InvoiceFeatures};
+use crate::ln::channelmanager::{
+	FailureCode, HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCInfo,
+	PendingHTLCRouting, RecipientOnionFields, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS,
+	MIN_CLTV_EXPIRY_DELTA,
+};
 use crate::ln::functional_test_utils::test_default_channel_config;
 use crate::ln::msgs;
 use crate::ln::msgs::{
-	BaseMessageHandler, ChannelMessageHandler, ChannelUpdate, FinalOnionHopData,
-	OutboundOnionPayload, OutboundTrampolinePayload, MessageSendEvent,
+	BaseMessageHandler, ChannelMessageHandler, ChannelUpdate, FinalOnionHopData, MessageSendEvent,
+	OutboundOnionPayload, OutboundTrampolinePayload,
 };
+use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 use crate::ln::wire::Encode;
+use crate::routing::gossip::{NetworkUpdate, RoutingFees};
+use crate::routing::router::{
+	get_route, BlindedTail, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop,
+	RouteParameters, TrampolineHop,
+};
+use crate::sign::{EntropySource, NodeSigner, Recipient};
+use crate::types::features::{Bolt11InvoiceFeatures, InitFeatures};
+use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::util::config::{ChannelConfig, MaxDustHTLCExposure, UserConfig};
+use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, Writeable, Writer};
 use crate::util::test_utils;
-use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
-use crate::util::errors::APIError;
 
 use bitcoin::constants::ChainHash;
-use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
+use crate::blinded_path::BlindedHop;
 use crate::io;
+use crate::ln::functional_test_utils::*;
+use crate::ln::onion_utils::{construct_trampoline_onion_keys, construct_trampoline_onion_packet};
 use crate::prelude::*;
 use bitcoin::hex::{DisplayHex, FromHex};
 use types::features::{ChannelFeatures, Features, NodeFeatures};
-use crate::blinded_path::BlindedHop;
-use crate::ln::functional_test_utils::*;
-use crate::ln::onion_utils::{construct_trampoline_onion_keys, construct_trampoline_onion_packet};
 
 use super::msgs::OnionErrorPacket;
 use super::onion_utils::AttributionData;
 
+#[rustfmt::skip]
 fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, payment_secret: &PaymentSecret, callback_msg: F1, callback_node: F2, expected_retryable: bool, expected_error_code: Option<LocalHTLCFailureReason>, expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>, expected_failure_type: Option<HTLCHandlingFailureType>)
 	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
 				F2: FnMut(),
@@ -68,6 +74,7 @@ fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, 
 // 3: final node fails backward (but tamper onion payloads from node0)
 // 100: trigger error in the intermediate node and tamper returning fail_htlc
 // 200: trigger error in the final node and tamper returning fail_htlc
+#[rustfmt::skip]
 fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 	_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash,
 	payment_secret: &PaymentSecret, mut callback_msg: F1, mut callback_fail: F2,
@@ -79,6 +86,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
 				F3: FnMut(),
 {
+	#[rustfmt::skip]
 	macro_rules! expect_event {
 		($node: expr, $event_type: path) => {{
 			let events = $node.node.get_and_clear_pending_events();
@@ -90,6 +98,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 		}}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! expect_htlc_forward {
 		($node: expr) => {{
 			expect_event!($node, Event::PendingHTLCsForwardable);
@@ -246,6 +255,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 }
 
 impl msgs::ChannelUpdate {
+	#[rustfmt::skip]
 	fn dummy(short_channel_id: u64) -> msgs::ChannelUpdate {
 		use bitcoin::hash_types::BlockHash;
 		use bitcoin::secp256k1::ffi::Signature as FFISignature;
@@ -270,7 +280,7 @@ impl msgs::ChannelUpdate {
 }
 
 struct BogusOnionHopData {
-	data: Vec<u8>
+	data: Vec<u8>,
 }
 impl BogusOnionHopData {
 	fn new(orig: msgs::OutboundOnionPayload) -> Self {
@@ -284,6 +294,7 @@ impl Writeable for BogusOnionHopData {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_fee_failures() {
 	// Tests that the fee required when forwarding remains consistent over time. This was
 	// previously broken, with forwarding fees floating based on the fee estimator at the time of
@@ -334,6 +345,7 @@ fn test_fee_failures() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_onion_failure() {
 	// When we check for amount_below_minimum below, we want to test that we're using the *right*
 	// amount, thus we need different htlc_minimum_msat values. We set node[2]'s htlc_minimum_msat
@@ -781,6 +793,7 @@ fn test_onion_failure() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_overshoot_final_cltv() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -822,6 +835,7 @@ fn test_overshoot_final_cltv() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
 
+#[rustfmt::skip]
 fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	// Create a network of three nodes and two channels connecting them. We'll be updating the
 	// HTLC relay policy of the second channel, causing forwarding failures at the first hop.
@@ -1001,6 +1015,7 @@ fn test_onion_failure_stale_channel_update() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_always_create_tlv_format_onion_payloads() {
 	// Verify that we always generate tlv onion format payloads, even if the features specifically
 	// specifies no support for variable length onions, as the legacy payload format has been
@@ -1052,6 +1067,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_trampoline_onion_payload_serialization() {
 	// As per https://github.com/lightning/bolts/blob/c01d2e6267d4a8d1095f0f1188970055a9a22d29/bolt04/trampoline-payment-onion-test.json#L3
 	let trampoline_payload = OutboundTrampolinePayload::Forward {
@@ -1071,6 +1087,7 @@ fn test_trampoline_onion_payload_serialization() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_trampoline_onion_payload_assembly_values() {
 	// Test that we produce Trampoline and outer onion payloads that align with our expectations
 	// from the Path argument. Additionally, ensure that the fee and HTLC values using the
@@ -1222,6 +1239,7 @@ fn test_trampoline_onion_payload_assembly_values() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_trampoline_onion_payload_construction_vectors() {
 	// As per https://github.com/lightning/bolts/blob/fa0594ac2af3531d734f1d707a146d6e13679451/bolt04/trampoline-to-blinded-path-payment-onion-test.json#L251
 
@@ -1361,6 +1379,7 @@ fn test_trampoline_onion_payload_construction_vectors() {
 	assert_eq!(outer_onion_packet_hex, "00025fd60556c134ae97e4baedba220a644037754ee67c54fd05e93bf40c17cbb73362fb9dee96001ff229945595b6edb59437a6bc143406d3f90f749892a84d8d430c6890437d26d5bfc599d565316ef51347521075bbab87c59c57bcf20af7e63d7192b46cf171e4f73cb11f9f603915389105d91ad630224bea95d735e3988add1e24b5bf28f1d7128db64284d90a839ba340d088c74b1fb1bd21136b1809428ec5399c8649e9bdf92d2dcfc694deae5046fa5b2bdf646847aaad73f5e95275763091c90e71031cae1f9a770fdea559642c9c02f424a2a28163dd0957e3874bd28a97bec67d18c0321b0e68bc804aa8345b17cb626e2348ca06c8312a167c989521056b0f25c55559d446507d6c491d50605cb79fa87929ce64b0a9860926eeaec2c431d926a1cadb9a1186e4061cb01671a122fc1f57602cbef06d6c194ec4b715c2e3dd4120baca3172cd81900b49fef857fb6d6afd24c983b608108b0a5ac0c1c6c52011f23b8778059ffadd1bb7cd06e2525417365f485a7fd1d4a9ba3818ede7cdc9e71afee8532252d08e2531ca52538655b7e8d912f7ec6d37bbcce8d7ec690709dbf9321e92c565b78e7fe2c22edf23e0902153d1ca15a112ad32fb19695ec65ce11ddf670da7915f05ad4b86c154fb908cb567315d1124f303f75fa075ebde8ef7bb12e27737ad9e4924439097338ea6d7a6fc3721b88c9b830a34e8d55f4c582b74a3895cc848fe57f4fe29f115dabeb6b3175be15d94408ed6771109cfaf57067ae658201082eae7605d26b1449af4425ae8e8f58cdda5c6265f1fd7a386fc6cea3074e4f25b909b96175883676f7610a00fdf34df9eb6c7b9a4ae89b839c69fd1f285e38cdceb634d782cc6d81179759bc9fd47d7fd060470d0b048287764c6837963274e708314f017ac7dc26d0554d59bfcfd3136225798f65f0b0fea337c6b256ebbb63a90b994c0ab93fd8b1d6bd4c74aebe535d6110014cd3d525394027dfe8faa98b4e9b2bee7949eb1961f1b026791092f84deea63afab66603dbe9b6365a102a1fef2f6b9744bc1bb091a8da9130d34d4d39f25dbad191649cfb67e10246364b7ce0c6ec072f9690cabb459d9fda0c849e17535de4357e9907270c75953fca3c845bb613926ecf73205219c7057a4b6bb244c184362bb4e2f24279dc4e60b94a5b1ec11c34081a628428ba5646c995b9558821053ba9c84a05afbf00dabd60223723096516d2f5668f3ec7e11612b01eb7a3a0506189a2272b88e89807943adb34291a17f6cb5516ffd6f945a1c42a524b21f096d66f350b1dad4db455741ae3d0e023309fbda5ef55fb0dc74f3297041448b2be76c525141963934c6afc53d263fb7836626df502d7c2ee9e79cbbd87afd84bbb8dfbf45248af3cd61ad5fac827e7683ca4f91dfad507a8eb9c17b2c9ac5ec051fe645a4a6cb37136f6f19b611e0ea8da7960af2d779507e55f57305bc74b7568928c5dd5132990fe54c22117df91c257d8c7b61935a018a28c1c3b17bab8e4294fa699161ec21123c9fc4e71079df31f300c2822e1246561e04765d3aab333eafd026c7431ac7616debb0e022746f4538e1c6348b600c988eeb2d051fc60c468dca260a84c79ab3ab8342dc345a764672848ea234e17332bc124799daf7c5fcb2e2358514a7461357e1c19c802c5ee32deccf1776885dd825bedd5f781d459984370a6b7ae885d4483a76ddb19b30f47ed47cd56aa5a079a89793dbcad461c59f2e002067ac98dd5a534e525c9c46c2af730741bf1f8629357ec0bfc0bc9ecb31af96777e507648ff4260dc3673716e098d9111dfd245f1d7c55a6de340deb8bd7a053e5d62d760f184dc70ca8fa255b9023b9b9aedfb6e419a5b5951ba0f83b603793830ee68d442d7b88ee1bbf6bbd1bcd6f68cc1af");
 }
 
+#[rustfmt::skip]
 fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1435,6 +1454,7 @@ fn test_fail_htlc_backwards_with_reason() {
 	do_test_fail_htlc_backwards_with_reason(FailureCode::InvalidOnionPayload(None));
 }
 
+#[rustfmt::skip]
 macro_rules! get_phantom_route {
 	($nodes: expr, $amt: expr, $channel: expr) => {{
 		let phantom_pubkey = $nodes[1].keys_manager.get_node_id(Recipient::PhantomNode).unwrap();
@@ -1477,6 +1497,7 @@ macro_rules! get_phantom_route {
 }}
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_onion_hmac_failure() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1538,6 +1559,7 @@ fn test_phantom_onion_hmac_failure() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_invalid_onion_payload() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1616,6 +1638,7 @@ fn test_phantom_invalid_onion_payload() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_final_incorrect_cltv_expiry() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1674,6 +1697,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_failure_too_low_cltv() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1723,6 +1747,7 @@ fn test_phantom_failure_too_low_cltv() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_failure_modified_cltv() {
 	// Test that we fail back phantoms if the upstream node fiddled with the CLTV too much with the
 	// correct error code.
@@ -1774,6 +1799,7 @@ fn test_phantom_failure_modified_cltv() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_failure_expires_too_soon() {
 	// Test that we fail back phantoms if the HTLC got delayed and we got blocks in between with
 	// the correct error code.
@@ -1821,6 +1847,7 @@ fn test_phantom_failure_expires_too_soon() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_failure_too_low_recv_amt() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1873,6 +1900,7 @@ fn test_phantom_dust_exposure_failure() {
 	do_test_phantom_dust_exposure_failure(true);
 }
 
+#[rustfmt::skip]
 fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	// Set the max dust exposure to the dust limit.
 	let max_dust_exposure = 546;
@@ -1926,6 +1954,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_phantom_failure_reject_payment() {
 	// Test that the user can successfully fail back a phantom node payment.
 	let chanmon_cfgs = create_chanmon_cfgs(2);

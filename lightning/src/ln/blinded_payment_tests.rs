@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -9,42 +7,50 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::blinded_path;
+use crate::blinded_path::payment::{
+	BlindedPaymentPath, Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext,
+	PaymentForwardNode, PaymentRelay, UnauthenticatedReceiveTlvs, PAYMENT_PADDING_ROUND_OFF,
+};
+use crate::blinded_path::utils::is_padded;
+use crate::blinded_path::BlindedHop;
+use crate::events::{Event, HTLCHandlingFailureType, PaymentFailureReason};
+use crate::ln::channelmanager;
+use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
+use crate::ln::functional_test_utils::*;
+use crate::ln::inbound_payment::ExpandedKey;
+use crate::ln::msgs;
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, UnsignedGossipMessage,
+};
+use crate::ln::onion_payment;
+use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
+use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
+use crate::ln::types::ChannelId;
+use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::nonce::Nonce;
+use crate::prelude::*;
+use crate::routing::router::Route;
+use crate::routing::router::{
+	BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters, TrampolineHop,
+};
+use crate::sign::{NodeSigner, Recipient};
+use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
+use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::util::config::UserConfig;
+use crate::util::ser::{WithoutLength, Writeable};
+use crate::util::test_utils;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
-use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
-use crate::blinded_path;
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, UnauthenticatedReceiveTlvs, PAYMENT_PADDING_ROUND_OFF};
-use crate::blinded_path::utils::is_padded;
-use crate::events::{Event, HTLCHandlingFailureType, PaymentFailureReason};
-use crate::ln::types::ChannelId;
-use crate::types::payment::{PaymentHash, PaymentSecret};
-use crate::ln::channelmanager;
-use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
-use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
-use crate::ln::functional_test_utils::*;
-use crate::ln::inbound_payment::ExpandedKey;
-use crate::ln::msgs;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, UnsignedGossipMessage, MessageSendEvent};
-use crate::ln::onion_payment;
-use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
-use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
-use crate::offers::invoice::UnsignedBolt12Invoice;
-use crate::offers::nonce::Nonce;
-use crate::prelude::*;
-use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters, TrampolineHop};
-use crate::sign::{NodeSigner, Recipient};
-use crate::util::config::UserConfig;
-use crate::util::ser::{WithoutLength, Writeable};
-use crate::util::test_utils;
+use bitcoin::secp256k1::{schnorr, PublicKey, Scalar, Secp256k1, SecretKey};
 use lightning_invoice::RawBolt11Invoice;
 use types::features::Features;
-use crate::blinded_path::BlindedHop;
-use crate::routing::router::Route;
 
+#[rustfmt::skip]
 pub fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
@@ -98,6 +104,7 @@ pub fn blinded_payment_path(
 	).unwrap()
 }
 
+#[rustfmt::skip]
 pub fn get_blinded_route_parameters(
 	amt_msat: u64, payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
@@ -113,6 +120,7 @@ pub fn get_blinded_route_parameters(
 	)
 }
 
+#[rustfmt::skip]
 pub fn fail_blinded_htlc_backwards(
 	payment_hash: PaymentHash, intro_node_idx: usize, nodes: &[&Node],
 	retry_expected: bool
@@ -154,6 +162,7 @@ fn one_hop_blinded_path() {
 	do_one_hop_blinded_path(false);
 }
 
+#[rustfmt::skip]
 fn do_one_hop_blinded_path(success: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -197,6 +206,7 @@ fn do_one_hop_blinded_path(success: bool) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn mpp_to_one_hop_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -277,6 +287,7 @@ fn mpp_to_one_hop_blinded_path() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn mpp_to_three_hop_blinded_paths() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
@@ -370,6 +381,7 @@ fn forward_checks_failure() {
 	do_forward_checks_failure(ForwardCheckFail::OutboundChannelCheck, false);
 }
 
+#[rustfmt::skip]
 fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	// Ensure we'll fail backwards properly if a forwarding check fails on initial update_add
 	// receipt.
@@ -397,6 +409,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
+	#[rustfmt::skip]
 	macro_rules! cause_error {
 		($src_node_idx: expr, $target_node_idx: expr, $update_add: expr) => {
 			match check {
@@ -507,6 +520,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn failed_backwards_to_intro_node() {
 	// Ensure the intro node will error backwards properly even if the downstream node did not blind
 	// their error.
@@ -577,12 +591,14 @@ enum ProcessPendingHTLCsCheck {
 }
 
 #[test]
+#[rustfmt::skip]
 fn forward_fail_in_process_pending_htlc_fwds() {
 	do_forward_fail_in_process_pending_htlc_fwds(ProcessPendingHTLCsCheck::FwdPeerDisconnected, true);
 	do_forward_fail_in_process_pending_htlc_fwds(ProcessPendingHTLCsCheck::FwdPeerDisconnected, false);
 	do_forward_fail_in_process_pending_htlc_fwds(ProcessPendingHTLCsCheck::FwdChannelClosed, true);
 	do_forward_fail_in_process_pending_htlc_fwds(ProcessPendingHTLCsCheck::FwdChannelClosed, false);
 }
+#[rustfmt::skip]
 fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck, intro_fails: bool) {
 	// Ensure the intro node will error backwards properly if the HTLC fails in
 	// process_pending_htlc_forwards.
@@ -619,6 +635,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 	check_added_monitors!(nodes[1], 0);
 	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, false);
 
+	#[rustfmt::skip]
 	macro_rules! cause_error {
 		($prev_node: expr, $curr_node: expr, $next_node: expr, $failed_chan_id: expr, $failed_scid: expr) => {
 			match check {
@@ -697,6 +714,7 @@ fn blinded_intercept_payment() {
 	do_blinded_intercept_payment(true);
 	do_blinded_intercept_payment(false);
 }
+#[rustfmt::skip]
 fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -779,6 +797,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn two_hop_blinded_path_success() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -800,6 +819,7 @@ fn two_hop_blinded_path_success() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn three_hop_blinded_path_success() {
 	let chanmon_cfgs = create_chanmon_cfgs(5);
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
@@ -829,6 +849,7 @@ fn three_hop_blinded_path_success() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn three_hop_blinded_path_fail() {
 	// Test that an intermediate blinded forwarding node gets failed back to with
 	// malformed and also fails back themselves with malformed.
@@ -888,6 +909,7 @@ fn multi_hop_receiver_fail() {
 	do_multi_hop_receiver_fail(ReceiveCheckFail::PaymentConstraints);
 }
 
+#[rustfmt::skip]
 fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	// Test that the receiver to a multihop blinded path fails back correctly.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -1089,6 +1111,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 }
 
 #[test]
+#[rustfmt::skip]
 fn blinded_path_retries() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	// Make one blinded path's fees slightly higher so they are tried in a deterministic order.
@@ -1139,6 +1162,7 @@ fn blinded_path_retries() {
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]]], amt_msat, payment_hash, payment_secret);
 
+	#[rustfmt::skip]
 	macro_rules! fail_payment_back {
 		($intro_node: expr) => {
 			nodes[3].node.fail_htlc_backwards(&payment_hash);
@@ -1200,6 +1224,7 @@ fn blinded_path_retries() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn min_htlc() {
 	// The min htlc of a blinded path is the max (htlc_min - following_fees) along the path. Make sure
 	// the payment succeeds when we calculate the min htlc this way.
@@ -1276,6 +1301,7 @@ fn min_htlc() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn conditionally_round_fwd_amt() {
 	// Previously, the (rng-found) feerates below caught a bug where an intermediate node would
 	// calculate an amt_to_forward that underpaid them by 1 msat, caused by rounding up the outbound
@@ -1326,8 +1352,8 @@ fn conditionally_round_fwd_amt() {
 	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(expected_fee)), true, true);
 }
 
-
 #[test]
+#[rustfmt::skip]
 fn custom_tlvs_to_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1382,6 +1408,7 @@ fn custom_tlvs_to_blinded_path() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_receive_tlvs_authentication() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1472,6 +1499,7 @@ fn fails_receive_tlvs_authentication() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn blinded_payment_path_padding() {
 	// Make sure that for a blinded payment path, all encrypted payloads are padded to equal lengths.
 	let chanmon_cfgs = create_chanmon_cfgs(5);
@@ -1519,6 +1547,7 @@ fn pubkey_from_hex(hex: &str) -> PublicKey {
 	PublicKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
 }
 
+#[rustfmt::skip]
 fn update_add_msg(
 	amount_msat: u64, cltv_expiry: u32, blinding_point: Option<PublicKey>,
 	onion_routing_packet: msgs::OnionPacket
@@ -1536,6 +1565,7 @@ fn update_add_msg(
 }
 
 #[test]
+#[rustfmt::skip]
 fn route_blinding_spec_test_vector() {
 	let mut secp_ctx = Secp256k1::new();
 	let bob_secret = secret_from_hex("4242424242424242424242424242424242424242424242424242424242424242");
@@ -1626,14 +1656,19 @@ fn route_blinding_spec_test_vector() {
 			}
 			Ok(SharedSecret::new(other_key, &node_secret))
 		}
+		#[rustfmt::skip]
 		fn get_inbound_payment_key(&self) -> ExpandedKey { unreachable!() }
+		#[rustfmt::skip]
 		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
+		#[rustfmt::skip]
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		#[rustfmt::skip]
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
+		#[rustfmt::skip]
 		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
 	}
 	let logger = test_utils::TestLogger::with_id("".to_owned());
@@ -1756,6 +1791,7 @@ fn route_blinding_spec_test_vector() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_combined_trampoline_onion_creation_vectors() {
 	// As per https://github.com/lightning/bolts/blob/fa0594ac2af3531d734f1d707a146d6e13679451/bolt04/trampoline-to-blinded-path-payment-onion-test.json#L251
 
@@ -1839,6 +1875,7 @@ fn test_combined_trampoline_onion_creation_vectors() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_trampoline_inbound_payment_decoding() {
 	let secp_ctx = Secp256k1::new();
 	let session_priv = secret_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
@@ -1935,14 +1972,19 @@ fn test_trampoline_inbound_payment_decoding() {
 			}
 			Ok(SharedSecret::new(other_key, &node_secret))
 		}
+		#[rustfmt::skip]
 		fn get_inbound_payment_key(&self) -> ExpandedKey { unreachable!() }
+		#[rustfmt::skip]
 		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
+		#[rustfmt::skip]
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		#[rustfmt::skip]
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
+		#[rustfmt::skip]
 		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
 	}
 	let logger = test_utils::TestLogger::with_id("".to_owned());
@@ -1981,6 +2023,7 @@ fn test_trampoline_inbound_payment_decoding() {
 	};
 }
 
+#[rustfmt::skip]
 fn do_test_trampoline_single_hop_receive(success: bool) {
 	const TOTAL_NODE_COUNT: usize = 3;
 	let secp_ctx = Secp256k1::new();
@@ -2204,6 +2247,7 @@ fn test_trampoline_single_hop_receive() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_trampoline_unblinded_receive() {
 	// Simulate a payment of A (0) -> B (1) -> C(Trampoline) (2)
 
@@ -2370,6 +2414,7 @@ fn test_trampoline_unblinded_receive() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_trampoline_forward_rejection() {
 	const TOTAL_NODE_COUNT: usize = 3;
 

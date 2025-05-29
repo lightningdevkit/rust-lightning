@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -20,54 +18,78 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
 use bitcoin::block::Header;
-use bitcoin::transaction::Transaction;
 use bitcoin::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
+use bitcoin::transaction::Transaction;
 
-use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 
-use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::{secp256k1, Sequence};
 #[cfg(splicing)]
 use bitcoin::{TxIn, Weight};
 
-use crate::events::{FundingInfo, PaidBolt12Invoice};
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
-use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{
+	AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext,
+	PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs,
+};
+use crate::blinded_path::NodeIdLookUp;
 use crate::chain;
-use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
-use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, MAX_BLOCKS_FOR_CONF, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
+use crate::chain::chaininterface::{
+	BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator,
+};
+use crate::chain::channelmonitor::{
+	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
+	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
+	LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
+};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::events::{self, Event, EventHandler, EventsProvider, InboundChannelFunds, ClosureReason, HTLCHandlingFailureType, PaymentFailureReason, ReplayEvent};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Watch};
+use crate::events::{
+	self, ClosureReason, Event, EventHandler, EventsProvider, HTLCHandlingFailureType,
+	InboundChannelFunds, PaymentFailureReason, ReplayEvent,
+};
+use crate::events::{FundingInfo, PaidBolt12Invoice};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
-use crate::ln::inbound_payment;
-use crate::ln::types::ChannelId;
-use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, ShutdownResult, UpdateFulfillCommitFetch, OutboundV1Channel, ReconnectionMsg, InboundV1Channel, WithChannelContext};
 use crate::ln::channel::PendingV2Channel;
+use crate::ln::channel::{
+	self, Channel, ChannelError, ChannelUpdateStatus, FundedChannel, InboundV1Channel,
+	OutboundV1Channel, ReconnectionMsg, ShutdownResult, UpdateFulfillCommitFetch,
+	WithChannelContext,
+};
 use crate::ln::channel_state::ChannelDetails;
-use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-#[cfg(any(feature = "_test_utils", test))]
-use crate::types::features::Bolt11InvoiceFeatures;
-use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, RouteParametersConfig, Router, FixedRouter, Route};
-use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, HopConnector, InboundHTLCErr, NextPacketDetails, invalid_payment_err_data};
+use crate::ln::inbound_payment;
 use crate::ln::msgs;
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError,
+	MessageSendEvent,
+};
+use crate::ln::onion_payment::{
+	check_incoming_htlc_cltv, create_fwd_pending_htlc_info, create_recv_pending_htlc_info,
+	decode_incoming_update_add_htlc_onion, invalid_payment_err_data, HopConnector, InboundHTLCErr,
+	NextPacketDetails,
+};
 use crate::ln::onion_utils::{self};
 use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MessageSendEvent};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
-use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
+use crate::ln::outbound_payment::{
+	Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest,
+	SendAlongPathArgs, StaleExpiration,
+};
+use crate::ln::types::ChannelId;
+use crate::offers::invoice::{
+	Bolt12Invoice, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder,
+	UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY,
+};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
@@ -75,37 +97,60 @@ use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
-use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
+use crate::onion_message::async_payments::{
+	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
+};
 use crate::onion_message::dns_resolution::HumanReadableName;
-use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
+use crate::onion_message::messenger::{
+	Destination, MessageRouter, MessageSendInstructions, Responder, ResponseInstruction,
+};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
+use crate::routing::router::{
+	BlindedTail, FixedRouter, InFlightHtlcs, Path, Payee, PaymentParameters, Route,
+	RouteParameters, RouteParametersConfig, Router,
+};
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelConfigOverrides, UserConfig};
-use crate::util::wakers::{Future, Notifier};
-use crate::util::scid_utils::fake_scid;
-use crate::util::string::UntrustedString;
-use crate::util::ser::{BigSize, FixedLengthReader, LengthReadable, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
-use crate::util::logger::{Level, Logger, WithContext};
+use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
+#[cfg(any(feature = "_test_utils", test))]
+use crate::types::features::Bolt11InvoiceFeatures;
+use crate::types::features::{
+	Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures,
+};
+use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::util::config::{ChannelConfig, ChannelConfigOverrides, ChannelConfigUpdate, UserConfig};
 use crate::util::errors::APIError;
+use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::scid_utils::fake_scid;
+use crate::util::ser::{
+	BigSize, FixedLengthReader, LengthReadable, MaybeReadable, Readable, ReadableArgs, VecWriter,
+	Writeable, Writer,
+};
+use crate::util::string::UntrustedString;
+use crate::util::wakers::{Future, Notifier};
 
-#[cfg(async_payments)] use {
+#[cfg(async_payments)]
+use {
 	crate::offers::offer::Amount,
-	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
+	crate::offers::static_invoice::{
+		StaticInvoice, StaticInvoiceBuilder,
+		DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY,
+	},
 };
 
 #[cfg(feature = "dnssec")]
 use crate::blinded_path::message::DNSResolverContext;
 #[cfg(feature = "dnssec")]
-use crate::onion_message::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler, DNSSECQuery, DNSSECProof, OMNameResolver};
+use crate::onion_message::dns_resolution::{
+	DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery, OMNameResolver,
+};
 
 #[cfg(not(c_bindings))]
 use {
 	crate::offers::offer::DerivedMetadata,
 	crate::onion_message::messenger::DefaultMessageRouter,
-	crate::routing::router::DefaultRouter,
 	crate::routing::gossip::NetworkGraph,
+	crate::routing::router::DefaultRouter,
 	crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters},
 	crate::sign::KeysManager,
 };
@@ -115,25 +160,30 @@ use {
 	crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder,
 };
 
-use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, CreationError, Currency, Description, InvoiceBuilder as Bolt11InvoiceBuilder, SignOrCreationError, DEFAULT_EXPIRY_TIME};
+use lightning_invoice::{
+	Bolt11Invoice, Bolt11InvoiceDescription, CreationError, Currency, Description,
+	InvoiceBuilder as Bolt11InvoiceBuilder, SignOrCreationError, DEFAULT_EXPIRY_TIME,
+};
 
 use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
+use crate::io::Read;
 use crate::prelude::*;
-use core::{cmp, mem};
+use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
+use bitcoin::hex::impl_fmt_traits;
 use core::borrow::Borrow;
 use core::cell::RefCell;
-use crate::io::Read;
-use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
-use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-use core::time::Duration;
 use core::ops::Deref;
-use bitcoin::hex::impl_fmt_traits;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::time::Duration;
+use core::{cmp, mem};
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
+pub use crate::ln::outbound_payment::{
+	Bolt12PaymentError, ProbeSendFailure, RecipientOnionFields, Retry, RetryableSendFailure,
+};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -288,6 +338,7 @@ pub struct BlindedForward {
 
 impl PendingHTLCRouting {
 	// Used to override the onion failure code and data if the HTLC is blinded.
+	#[rustfmt::skip]
 	fn blinded_failure(&self) -> Option<BlindedFailure> {
 		match self {
 			Self::Forward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
@@ -387,15 +438,8 @@ pub(super) struct PendingAddHTLCInfo {
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 pub(super) enum HTLCForwardInfo {
 	AddHTLC(PendingAddHTLCInfo),
-	FailHTLC {
-		htlc_id: u64,
-		err_packet: msgs::OnionErrorPacket,
-	},
-	FailMalformedHTLC {
-		htlc_id: u64,
-		failure_code: u16,
-		sha256_of_onion: [u8; 32],
-	},
+	FailHTLC { htlc_id: u64, err_packet: msgs::OnionErrorPacket },
+	FailMalformedHTLC { htlc_id: u64, failure_code: u16, sha256_of_onion: [u8; 32] },
 }
 
 /// Whether this blinded HTLC is being failed backwards by the introduction node or a blinded node,
@@ -462,6 +506,7 @@ impl PartialOrd for ClaimableHTLC {
 	}
 }
 impl Ord for ClaimableHTLC {
+	#[rustfmt::skip]
 	fn cmp(&self, other: &ClaimableHTLC) -> cmp::Ordering {
 		let res = (self.prev_hop.channel_id, self.prev_hop.htlc_id).cmp(
 			&(other.prev_hop.channel_id, other.prev_hop.htlc_id)
@@ -568,6 +613,7 @@ impl Verification for PaymentId {
 }
 
 impl PaymentId {
+	#[rustfmt::skip]
 	fn for_inbound_from_htlcs<I: Iterator<Item=(ChannelId, u64)>>(key: &[u8; 32], htlcs: I) -> PaymentId {
 		let mut prev_pair = None;
 		let mut hasher = HmacEngine::new(key);
@@ -634,6 +680,7 @@ pub(crate) enum SentHTLCId {
 	OutboundRoute { session_priv: [u8; SECRET_KEY_SIZE] },
 }
 impl SentHTLCId {
+	#[rustfmt::skip]
 	pub(crate) fn from_source(source: &HTLCSource) -> Self {
 		match source {
 			HTLCSource::PreviousHopData(hop_data) => Self::PreviousHopData {
@@ -705,6 +752,7 @@ pub(crate) use self::fuzzy_channelmanager::*;
 
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 impl core::hash::Hash for HTLCSource {
+	#[rustfmt::skip]
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
 		match self {
 			HTLCSource::PreviousHopData(prev_hop_data) => {
@@ -736,6 +784,7 @@ impl HTLCSource {
 
 	/// Checks whether this HTLCSource could possibly match the given HTLC output in a commitment
 	/// transaction. Useful to ensure different datastructures match up.
+	#[rustfmt::skip]
 	pub(crate) fn possibly_matches_output(&self, htlc: &super::chan_utils::HTLCOutputInCommitment) -> bool {
 		if let HTLCSource::OutboundRoute { first_hop_htlc_msat, .. } = self {
 			*first_hop_htlc_msat == htlc.amount_msat
@@ -781,6 +830,7 @@ pub enum FailureCode {
 }
 
 impl Into<LocalHTLCFailureReason> for FailureCode {
+	#[rustfmt::skip]
 	fn into(self) -> LocalHTLCFailureReason {
 		match self {
 			FailureCode::TemporaryNodeFailure => LocalHTLCFailureReason::TemporaryNodeFailure,
@@ -803,6 +853,7 @@ struct MsgHandleErrInternal {
 }
 impl MsgHandleErrInternal {
 	#[inline]
+	#[rustfmt::skip]
 	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
 		Self {
 			err: LightningError {
@@ -823,6 +874,7 @@ impl MsgHandleErrInternal {
 		Self { err, closes_channel: false, shutdown_finish: None }
 	}
 	#[inline]
+	#[rustfmt::skip]
 	fn from_finish_shutdown(err: String, channel_id: ChannelId, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		let err_msg = msgs::ErrorMessage { channel_id, data: err.clone() };
 		let action = if shutdown_res.monitor_update.is_some() {
@@ -840,6 +892,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
+	#[rustfmt::skip]
 	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
 		Self {
 			err: match err {
@@ -932,6 +985,7 @@ struct ClaimablePayment {
 }
 
 impl ClaimablePayment {
+	#[rustfmt::skip]
 	fn inbound_payment_id(&self, secret: &[u8; 32]) -> PaymentId {
 		PaymentId::for_inbound_from_htlcs(
 			secret,
@@ -942,6 +996,7 @@ impl ClaimablePayment {
 	/// Returns the inbound `(channel_id, user_channel_id)` pairs for all HTLCs associated with the payment.
 	///
 	/// Note: The `user_channel_id` will be `None` for HTLCs created using LDK version 0.0.117 or prior.
+	#[rustfmt::skip]
 	fn via_channel_ids(&self) -> Vec<(ChannelId, Option<u128>)> {
 		self.htlcs.iter().map(|htlc| {
 			(htlc.prev_hop.channel_id, htlc.prev_hop.user_channel_id)
@@ -1023,6 +1078,7 @@ impl ClaimablePayments {
 	/// If `custom_tlvs_known` is true, and a matching payment is found, it will always be moved.
 	///
 	/// If no payment is found, `Err(Vec::new())` is returned.
+	#[rustfmt::skip]
 	fn begin_claiming_payment<L: Deref, S: Deref>(
 		&mut self, payment_hash: PaymentHash, node_signer: &S, logger: &L,
 		inbound_payment_id_secret: &[u8; 32], custom_tlvs_known: bool,
@@ -1097,15 +1153,12 @@ enum BackgroundEvent {
 		counterparty_node_id: PublicKey,
 		funding_txo: OutPoint,
 		channel_id: ChannelId,
-		update: ChannelMonitorUpdate
+		update: ChannelMonitorUpdate,
 	},
 	/// Some [`ChannelMonitorUpdate`] (s) completed before we were serialized but we still have
 	/// them marked pending, thus we need to run any [`MonitorUpdateCompletionAction`] (s) pending
 	/// on a channel.
-	MonitorUpdatesComplete {
-		counterparty_node_id: PublicKey,
-		channel_id: ChannelId,
-	},
+	MonitorUpdatesComplete { counterparty_node_id: PublicKey, channel_id: ChannelId },
 }
 
 /// A pointer to a channel that is unblocked when an event is surfaced
@@ -1302,6 +1355,7 @@ impl_writeable_tlv_based!(PaymentClaimDetails, {
 pub(crate) struct PendingMPPClaimPointer(Arc<Mutex<PendingMPPClaim>>);
 
 impl PartialEq for PendingMPPClaimPointer {
+	#[rustfmt::skip]
 	fn eq(&self, o: &Self) -> bool { Arc::ptr_eq(&self.0, &o.0) }
 }
 impl Eq for PendingMPPClaimPointer {}
@@ -1332,9 +1386,7 @@ pub(crate) enum RAAMonitorUpdateBlockingAction {
 	///
 	/// This variant is *not* written to disk, instead being inferred from [`ChannelMonitor`]
 	/// state.
-	ClaimedMPPPayment {
-		pending_claim: PendingMPPClaimPointer,
-	}
+	ClaimedMPPPayment { pending_claim: PendingMPPClaimPointer },
 }
 
 impl RAAMonitorUpdateBlockingAction {
@@ -1358,7 +1410,10 @@ impl Readable for Option<RAAMonitorUpdateBlockingAction> {
 }
 
 /// State we hold per-peer.
-pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
+pub(super) struct PeerState<SP: Deref>
+where
+	SP::Target: SignerProvider,
+{
 	/// `channel_id` -> `Channel`
 	///
 	/// Holds all channels where the peer is the counterparty.
@@ -1426,10 +1481,14 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	peer_storage: Vec<u8>,
 }
 
-impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
+impl<SP: Deref> PeerState<SP>
+where
+	SP::Target: SignerProvider,
+{
 	/// Indicates that a peer meets the criteria where we're ok to remove it from our storage.
 	/// If true is passed for `require_disconnected`, the function will return false if we haven't
 	/// disconnected from the node already, ie. `PeerState::is_connected` is set to `true`.
+	#[rustfmt::skip]
 	fn ok_to_remove(&self, require_disconnected: bool) -> bool {
 		if require_disconnected && self.is_connected {
 			return false
@@ -1450,6 +1509,7 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 	}
 
 	// Returns a bool indicating if the given `channel_id` matches a channel we have with this peer.
+	#[rustfmt::skip]
 	fn has_channel(&self, channel_id: &ChannelId) -> bool {
 		self.channel_by_id.contains_key(channel_id) ||
 			self.inbound_channel_request_by_id.contains_key(channel_id)
@@ -1525,20 +1585,18 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<F>,
-	Arc<DefaultRouter<
-		Arc<NetworkGraph<Arc<L>>>,
-		Arc<L>,
-		Arc<KeysManager>,
-		Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
-	>>,
-	Arc<DefaultMessageRouter<
-		Arc<NetworkGraph<Arc<L>>>,
-		Arc<L>,
-		Arc<KeysManager>,
-	>>,
-	Arc<L>
+	Arc<
+		DefaultRouter<
+			Arc<NetworkGraph<Arc<L>>>,
+			Arc<L>,
+			Arc<KeysManager>,
+			Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
+			ProbabilisticScoringFeeParameters,
+			ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
+		>,
+	>,
+	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
+	Arc<L>,
 >;
 
 /// [`SimpleRefChannelManager`] is a type alias for a ChannelManager reference, and is the reference
@@ -1553,29 +1611,24 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L> =
-	ChannelManager<
-		&'a M,
-		&'b T,
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L> = ChannelManager<
+	&'a M,
+	&'b T,
+	&'c KeysManager,
+	&'c KeysManager,
+	&'c KeysManager,
+	&'d F,
+	&'e DefaultRouter<
+		&'f NetworkGraph<&'g L>,
+		&'g L,
 		&'c KeysManager,
-		&'c KeysManager,
-		&'c KeysManager,
-		&'d F,
-		&'e DefaultRouter<
-			&'f NetworkGraph<&'g L>,
-			&'g L,
-			&'c KeysManager,
-			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
-		>,
-		&'i DefaultMessageRouter<
-			&'f NetworkGraph<&'g L>,
-			&'g L,
-			&'c KeysManager,
-		>,
-		&'g L
-	>;
+		&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
+		ProbabilisticScoringFeeParameters,
+		ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
+	>,
+	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
+	&'g L,
+>;
 
 /// A trivial trait which describes any [`ChannelManager`].
 ///
@@ -1601,7 +1654,7 @@ pub trait AChannelManager {
 	/// A type implementing [`EcdsaChannelSigner`].
 	type Signer: EcdsaChannelSigner + Sized;
 	/// A type implementing [`SignerProvider`] for [`Self::Signer`].
-	type SignerProvider: SignerProvider<EcdsaSigner= Self::Signer> + ?Sized;
+	type SignerProvider: SignerProvider<EcdsaSigner = Self::Signer> + ?Sized;
 	/// A type that may be dereferenced to [`Self::SignerProvider`].
 	type SP: Deref<Target = Self::SignerProvider>;
 	/// A type implementing [`FeeEstimator`].
@@ -1621,11 +1674,21 @@ pub trait AChannelManager {
 	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
 	/// Returns a reference to the actual [`ChannelManager`] object.
+	#[rustfmt::skip]
 	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::MR, Self::L>;
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> AChannelManager
-for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -1656,6 +1719,7 @@ where
 	type MR = MR;
 	type Logger = L::Target;
 	type L = L;
+	#[rustfmt::skip]
 	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> { self }
 }
 
@@ -2442,8 +2506,17 @@ where
 //               |
 //               |__`pending_background_events`
 //
-pub struct ChannelManager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-where
+pub struct ChannelManager<
+	M: Deref,
+	T: Deref,
+	ES: Deref,
+	NS: Deref,
+	SP: Deref,
+	F: Deref,
+	R: Deref,
+	MR: Deref,
+	L: Deref,
+> where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
@@ -2736,17 +2809,20 @@ struct PersistenceNotifierGuard<'a, F: FnMut() -> NotifyOption> {
 	_read_guard: RwLockReadGuard<'a, ()>,
 }
 
-impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care what the concrete F is here, it's unused
+impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
+	// We don't care what the concrete F is here, it's unused
 	/// Notifies any waiters and indicates that we need to persist, in addition to possibly having
 	/// events to handle.
 	///
 	/// This must always be called if the changes included a `ChannelMonitorUpdate`, as well as in
 	/// other cases where losing the changes on restart may result in a force-close or otherwise
 	/// isn't ideal.
+	#[rustfmt::skip]
 	fn notify_on_drop<C: AChannelManager>(cm: &'a C) -> PersistenceNotifierGuard<'a, impl FnMut() -> NotifyOption> {
 		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
+	#[rustfmt::skip]
 	fn optionally_notify<F: FnMut() -> NotifyOption, C: AChannelManager>(cm: &'a C, mut persist_check: F)
 	-> PersistenceNotifierGuard<'a, impl FnMut() -> NotifyOption> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
@@ -2774,6 +2850,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 	/// Note that if any [`ChannelMonitorUpdate`]s are possibly generated,
 	/// [`ChannelManager::process_background_events`] MUST be called first (or
 	/// [`Self::optionally_notify`] used).
+	#[rustfmt::skip]
 	fn optionally_notify_skipping_background_events<F: Fn() -> NotifyOption, C: AChannelManager>
 	(cm: &'a C, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
@@ -2788,6 +2865,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care w
 }
 
 impl<'a, F: FnMut() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
+	#[rustfmt::skip]
 	fn drop(&mut self) {
 		match (self.should_persist)() {
 			NotifyOption::DoPersist => {
@@ -2822,7 +2900,7 @@ pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 // i.e. the node we forwarded the payment on to should always have enough room to reliably time out
 // the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
 // CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
-pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*8;
+pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6 * 8;
 // This should be long enough to allow a payment path drawn across multiple routing hops with substantial
 // `cltv_expiry_delta`. Indeed, the length of those values is the reaction delay offered to a routing node
 // in case of HTLC on-chain settlement. While appearing less competitive, a node operator could decide to
@@ -2849,7 +2927,8 @@ pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = HTLC_FAIL_BACK_BUFFER as u16 + 3;
 // expiry, i.e. assuming the peer force-closes right at the expiry and we're behind by
 // LATENCY_GRACE_PERIOD_BLOCKS).
 const _CHECK_CLTV_EXPIRY_SANITY: () = assert!(
-	MIN_CLTV_EXPIRY_DELTA as u32 >= 2*LATENCY_GRACE_PERIOD_BLOCKS + 2*MAX_BLOCKS_FOR_CONF + ANTI_REORG_DELAY
+	MIN_CLTV_EXPIRY_DELTA as u32
+		>= 2 * LATENCY_GRACE_PERIOD_BLOCKS + 2 * MAX_BLOCKS_FOR_CONF + ANTI_REORG_DELAY
 );
 
 // Check that our MIN_CLTV_EXPIRY_DELTA gives us enough time to get the HTLC preimage back to our
@@ -2865,7 +2944,8 @@ const _CHECK_COUNTERPARTY_REALISTIC: () =
 	assert!(_ASSUMED_COUNTERPARTY_CLTV_CLAIM_BUFFER >= CLTV_CLAIM_BUFFER);
 
 const _CHECK_CLTV_EXPIRY_OFFCHAIN: () = assert!(
-	MIN_CLTV_EXPIRY_DELTA as u32 >= 2*LATENCY_GRACE_PERIOD_BLOCKS - 1 + _ASSUMED_COUNTERPARTY_CLTV_CLAIM_BUFFER
+	MIN_CLTV_EXPIRY_DELTA as u32
+		>= 2 * LATENCY_GRACE_PERIOD_BLOCKS - 1 + _ASSUMED_COUNTERPARTY_CLTV_CLAIM_BUFFER
 );
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
@@ -2980,6 +3060,7 @@ pub struct PhantomRouteHints {
 	pub real_node_pubkey: PublicKey,
 }
 
+#[rustfmt::skip]
 macro_rules! handle_error {
 	($self: ident, $internal: expr, $counterparty_node_id: expr) => { {
 		// In testing, ensure there are no deadlocks where the lock is already held upon
@@ -3041,6 +3122,7 @@ macro_rules! handle_error {
 ///
 /// Note that this step can be skipped if the channel was never opened (through the creation of a
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
+#[rustfmt::skip]
 macro_rules! locked_close_channel {
 	($self: ident, $peer_state: expr, $channel_context: expr, $shutdown_res_mut: expr) => {{
 		if let Some((_, funding_txo, _, update)) = $shutdown_res_mut.monitor_update.take() {
@@ -3074,6 +3156,7 @@ macro_rules! locked_close_channel {
 }
 
 /// Returns (boolean indicating if we should remove the Channel object from memory, a mapped error)
+#[rustfmt::skip]
 macro_rules! convert_channel_err {
 	($self: ident, $peer_state: expr, $err: expr, $context: expr, $funding: expr, $channel_id: expr, MANUAL_CHANNEL_UPDATE, $channel_update: expr) => {
 		match $err {
@@ -3119,6 +3202,7 @@ macro_rules! convert_channel_err {
 	};
 }
 
+#[rustfmt::skip]
 macro_rules! break_channel_entry {
 	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
 		match $res {
@@ -3135,6 +3219,7 @@ macro_rules! break_channel_entry {
 	}
 }
 
+#[rustfmt::skip]
 macro_rules! try_channel_entry {
 	($self: ident, $peer_state: expr, $res: expr, $entry: expr) => {
 		match $res {
@@ -3151,6 +3236,7 @@ macro_rules! try_channel_entry {
 	}
 }
 
+#[rustfmt::skip]
 macro_rules! remove_channel_entry {
 	($self: ident, $peer_state: expr, $entry: expr, $shutdown_res_mut: expr) => {
 		{
@@ -3196,6 +3282,7 @@ macro_rules! emit_funding_tx_broadcast_safe_event {
 	}
 }
 
+#[rustfmt::skip]
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_pending_event() {
@@ -3212,6 +3299,7 @@ macro_rules! emit_channel_pending_event {
 	}
 }
 
+#[rustfmt::skip]
 macro_rules! emit_channel_ready_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_ready_event() {
@@ -3458,6 +3546,7 @@ macro_rules! handle_new_monitor_update {
 	} };
 }
 
+#[rustfmt::skip]
 macro_rules! process_events_body {
 	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
 		let mut handling_failed = false;
@@ -3542,7 +3631,17 @@ macro_rules! process_events_body {
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -3571,6 +3670,7 @@ where
 	/// [`block_connected`]: chain::Listen::block_connected
 	/// [`block_disconnected`]: chain::Listen::block_disconnected
 	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
+	#[rustfmt::skip]
 	pub fn new(
 		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
@@ -3655,6 +3755,7 @@ where
 		self.create_and_insert_outbound_scid_alias()
 	}
 
+	#[rustfmt::skip]
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
 		let height = self.best_block.read().unwrap().height;
 		let mut outbound_scid_alias = 0;
@@ -3706,6 +3807,7 @@ where
 	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
+	#[rustfmt::skip]
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
@@ -3767,6 +3869,7 @@ where
 		Ok(temporary_channel_id)
 	}
 
+	#[rustfmt::skip]
 	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -3798,6 +3901,7 @@ where
 
 	/// Gets the list of open channels, in random order. See [`ChannelDetails`] field documentation for
 	/// more information.
+	#[rustfmt::skip]
 	pub fn list_channels(&self) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -3837,6 +3941,7 @@ where
 	}
 
 	/// Gets the list of channels we have with a given counterparty, in random order.
+	#[rustfmt::skip]
 	pub fn list_channels_with_counterparty(&self, counterparty_node_id: &PublicKey) -> Vec<ChannelDetails> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -3867,6 +3972,7 @@ where
 	/// [`Event::PaymentSent`] has not been received, you may consider resending the payment.
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	#[rustfmt::skip]
 	pub fn list_recent_payments(&self) -> Vec<RecentPaymentDetails> {
 		self.pending_outbound_payments.pending_outbound_payments.lock().unwrap().iter()
 			.filter_map(|(payment_id, pending_outbound_payment)| match pending_outbound_payment {
@@ -3898,6 +4004,7 @@ where
 			.collect()
 	}
 
+	#[rustfmt::skip]
 	fn close_channel_internal(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -3993,6 +4100,7 @@ where
 	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
+	#[rustfmt::skip]
 	pub fn close_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
 	}
@@ -4026,11 +4134,13 @@ where
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
+	#[rustfmt::skip]
 	pub fn close_channel_with_feerate_and_script(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
 	/// Applies a [`ChannelMonitorUpdate`] which may or may not be for a channel which is closed.
+	#[rustfmt::skip]
 	fn apply_post_close_monitor_update(
 		&self, counterparty_node_id: PublicKey, channel_id: ChannelId, funding_txo: OutPoint,
 		monitor_update: ChannelMonitorUpdate,
@@ -4066,6 +4176,7 @@ where
 	///     the channel-closing action,
 	/// (b) this needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`].
+	#[rustfmt::skip]
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 		#[cfg(debug_assertions)]
@@ -4168,6 +4279,7 @@ where
 
 	/// `peer_msg` should be set when we receive a message from a peer, but not set when the
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
+	#[rustfmt::skip]
 	fn force_close_channel_with_peer(&self, channel_id: &ChannelId, peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
 	-> Result<PublicKey, APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -4221,6 +4333,7 @@ where
 		Ok(counterparty_node_id)
 	}
 
+	#[rustfmt::skip]
 	fn force_close_sending_error(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, broadcast: bool, error_message: String)
 	-> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -4254,6 +4367,7 @@ where
 	///
 	/// Fails if `channel_id` is unknown to the manager, or if the `counterparty_node_id`
 	/// isn't the counterparty of the corresponding channel.
+	#[rustfmt::skip]
 	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
 	-> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, true, error_message)
@@ -4269,6 +4383,7 @@ where
 	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
 	/// You can always broadcast the latest local transaction(s) via
 	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
+	#[rustfmt::skip]
 	pub fn force_close_without_broadcasting_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
 	-> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, false, error_message)
@@ -4279,6 +4394,7 @@ where
 	///
 	/// The provided `error_message` is sent to connected peers for closing channels and should
 	/// be a human-readable description of what went wrong.
+	#[rustfmt::skip]
 	pub fn force_close_all_channels_broadcasting_latest_txn(&self, error_message: String) {
 		for chan in self.list_channels() {
 			let _ = self.force_close_broadcasting_latest_txn(&chan.channel_id, &chan.counterparty.node_id, error_message.clone());
@@ -4290,6 +4406,7 @@ where
 	///
 	/// The provided `error_message` is sent to connected peers for closing channels and
 	/// should be a human-readable description of what went wrong.
+	#[rustfmt::skip]
 	pub fn force_close_all_channels_without_broadcasting_txn(&self, error_message: String) {
 		for chan in self.list_channels() {
 			let _ = self.force_close_without_broadcasting_txn(&chan.channel_id, &chan.counterparty.node_id, error_message.clone());
@@ -4308,6 +4425,7 @@ where
 	///   Includes the witness weight for this input (e.g. P2WPKH_WITNESS_WEIGHT=109 for typical P2WPKH inputs).
 	/// - `locktime`: Optional locktime for the new funding transaction. If None, set to the current block height.
 	#[cfg(splicing)]
+	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
 		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
@@ -4329,6 +4447,7 @@ where
 
 	/// See [`splice_channel`]
 	#[cfg(splicing)]
+	#[rustfmt::skip]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
 		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
@@ -4376,6 +4495,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn can_forward_htlc_to_outgoing_channel(
 		&self, chan: &mut FundedChannel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
 	) -> Result<(), LocalHTLCFailureReason> {
@@ -4418,6 +4538,7 @@ where
 
 	/// Executes a callback `C` that returns some value `X` on the channel found with the given
 	/// `scid`. `None` is returned when the channel is not found.
+	#[rustfmt::skip]
 	fn do_funded_channel_callback<X, C: Fn(&mut FundedChannel<SP>) -> X>(
 		&self, scid: u64, callback: C,
 	) -> Option<X> {
@@ -4438,6 +4559,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn can_forward_htlc(
 		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
 	) -> Result<(), LocalHTLCFailureReason> {
@@ -4470,6 +4592,7 @@ where
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn htlc_failure_from_update_add_err(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
 		reason: LocalHTLCFailureReason, is_intro_node_blinded_forward: bool,
@@ -4522,6 +4645,7 @@ where
 		})
 	}
 
+	#[rustfmt::skip]
 	fn construct_pending_htlc_fail_msg<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
 		shared_secret: [u8; 32], inbound_err: InboundHTLCErr
@@ -4550,6 +4674,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn get_pending_htlc_info<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, shared_secret: [u8; 32],
 		decoded_hop: onion_utils::Hop, allow_underpay: bool,
@@ -4587,6 +4712,7 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
+	#[rustfmt::skip]
 	fn get_channel_update_for_broadcast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.context.should_announce() {
 			return Err(LightningError {
@@ -4613,6 +4739,7 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
+	#[rustfmt::skip]
 	fn get_channel_update_for_unicast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Attempting to generate channel update for channel {}", chan.context.channel_id());
@@ -4652,6 +4779,7 @@ where
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
+	#[rustfmt::skip]
 	pub(crate) fn test_send_payment_along_path(&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
@@ -4660,6 +4788,7 @@ where
 		})
 	}
 
+	#[rustfmt::skip]
 	fn send_payment_along_path(&self, args: SendAlongPathArgs) -> Result<(), APIError> {
 		let SendAlongPathArgs {
 			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
@@ -4756,6 +4885,7 @@ where
 	///
 	/// LDK will not automatically retry this payment, though it may be manually re-sent after an
 	/// [`Event::PaymentFailed`] is generated.
+	#[rustfmt::skip]
 	pub fn send_payment_with_route(
 		&self, mut route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId
@@ -4813,6 +4943,7 @@ where
 	/// [`UpdateHTLCs`]: MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
+	#[rustfmt::skip]
 	pub fn send_payment(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		route_params: RouteParameters, retry_strategy: Retry
@@ -4827,6 +4958,7 @@ where
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
+	#[rustfmt::skip]
 	pub(super) fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -4836,12 +4968,14 @@ where
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
+	#[rustfmt::skip]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, recipient_onion, payment_id, route, None, &self.entropy_source, best_block_height)
 	}
 
 	#[cfg(all(test, async_payments))]
+	#[rustfmt::skip]
 	pub(crate) fn test_modify_pending_payment<Fn>(
 		&self, payment_id: &PaymentId, mut callback: Fn
 	) where Fn: FnMut(&mut PendingOutboundPayment) {
@@ -4853,6 +4987,7 @@ where
 	}
 
 	#[cfg(test)]
+	#[rustfmt::skip]
 	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
@@ -4872,6 +5007,7 @@ where
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
 	/// To use default settings, call the function with `RouteParametersConfig::default()`.
+	#[rustfmt::skip]
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		route_params_config: RouteParametersConfig, retry_strategy: Retry
@@ -4931,6 +5067,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -4945,6 +5082,7 @@ where
 	}
 
 	#[cfg(async_payments)]
+	#[rustfmt::skip]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
@@ -4996,6 +5134,7 @@ where
 	}
 
 	#[cfg(async_payments)]
+	#[rustfmt::skip]
 	fn send_payment_for_static_invoice(
 		&self, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
@@ -5072,6 +5211,7 @@ where
 	///
 	/// [`send_payment`]: Self::send_payment
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
+	#[rustfmt::skip]
 	pub fn send_spontaneous_payment(
 		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
@@ -5087,6 +5227,7 @@ where
 	/// Send a payment that is probing the given route for liquidity. We calculate the
 	/// [`PaymentHash`] of probes based on a static secret and a random [`PaymentId`], which allows
 	/// us to easily discern them from real payments.
+	#[rustfmt::skip]
 	pub fn send_probe(&self, path: Path) -> Result<(PaymentHash, PaymentId), ProbeSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -5098,6 +5239,7 @@ where
 	/// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
 	/// payment probe.
 	#[cfg(test)]
+	#[rustfmt::skip]
 	pub(crate) fn payment_is_probe(&self, payment_hash: &PaymentHash, payment_id: &PaymentId) -> bool {
 		outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret)
 	}
@@ -5106,6 +5248,7 @@ where
 	/// amount to the given `node_id`.
 	///
 	/// See [`ChannelManager::send_preflight_probes`] for more information.
+	#[rustfmt::skip]
 	pub fn send_spontaneous_preflight_probes(
 		&self, node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32,
 		liquidity_limit_multiplier: Option<u64>,
@@ -5214,6 +5357,7 @@ where
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
+	#[rustfmt::skip]
 	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>) -> Result<OutPoint, &'static str>>(
 		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
 		mut find_funding_output: FundingOutput, is_manual_broadcast: bool,
@@ -5225,6 +5369,7 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
+		#[rustfmt::skip]
 		macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
 			let counterparty;
 			let err = if let ChannelError::Close((msg, reason)) = $err {
@@ -5309,6 +5454,7 @@ where
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
+	#[rustfmt::skip]
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
 		let txid = funding_transaction.compute_txid();
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_| {
@@ -5346,10 +5492,10 @@ where
 	///
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
+	#[rustfmt::skip]
 	pub fn funding_transaction_generated(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
 		self.batch_funding_transaction_generated(&[(&temporary_channel_id, &counterparty_node_id)], funding_transaction)
 	}
-
 
 	/// **Unsafe**: This method does not validate the spent output. It is the caller's
 	/// responsibility to ensure the spent outputs are SegWit, as well as making sure the funding
@@ -5378,6 +5524,7 @@ where
 	/// [`Event::FundingTxBroadcastSafe`]: crate::events::Event::FundingTxBroadcastSafe
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	#[rustfmt::skip]
 	pub fn unsafe_manual_funding_transaction_generated(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding: OutPoint) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -5396,11 +5543,13 @@ where
 	/// signature for each channel.
 	///
 	/// If there is an error, all channels in the batch are to be considered closed.
+	#[rustfmt::skip]
 	pub fn batch_funding_transaction_generated(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.batch_funding_transaction_generated_intern(temporary_channels, FundingType::Checked(funding_transaction))
 	}
 
+	#[rustfmt::skip]
 	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding: FundingType) -> Result<(), APIError> {
 		let mut result = Ok(());
 		if let FundingType::Checked(funding_transaction) = &funding {
@@ -5556,6 +5705,7 @@ where
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
+	#[rustfmt::skip]
 	pub fn update_partial_channel_config(
 		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config_update: &ChannelConfigUpdate,
 	) -> Result<(), APIError> {
@@ -5633,6 +5783,7 @@ where
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
+	#[rustfmt::skip]
 	pub fn update_channel_config(
 		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
 	) -> Result<(), APIError> {
@@ -5664,6 +5815,7 @@ where
 	/// [`HTLCIntercepted::expected_outbound_amount_msat`]: events::Event::HTLCIntercepted::expected_outbound_amount_msat
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
+	#[rustfmt::skip]
 	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &ChannelId, next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -5738,6 +5890,7 @@ where
 	/// backwards.
 	///
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
+	#[rustfmt::skip]
 	pub fn fail_intercepted_htlc(&self, intercept_id: InterceptId) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -5768,6 +5921,7 @@ where
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn process_pending_update_add_htlcs(&self) {
 		let mut decode_update_add_htlcs = new_hash_map();
 		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());
@@ -5914,6 +6068,7 @@ where
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
 	/// Will likely generate further events.
+	#[rustfmt::skip]
 	pub fn process_pending_htlc_forwards(&self) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -5979,6 +6134,7 @@ where
 												}
 											}
 										}
+										#[rustfmt::skip]
 										macro_rules! failed_payment {
 											($msg: expr, $reason: expr, $err_data: expr, $phantom_ss: expr) => {
 												{
@@ -6281,6 +6437,7 @@ where
 
 								let mut committed_to_claimable = false;
 
+								#[rustfmt::skip]
 								macro_rules! fail_htlc {
 									($htlc: expr, $payment_hash: expr) => {
 										debug_assert!(!committed_to_claimable);
@@ -6310,6 +6467,7 @@ where
 										.expect("Failed to get node_id for phantom node recipient");
 								}
 
+								#[rustfmt::skip]
 								macro_rules! check_total_value {
 									($purpose: expr) => {{
 										let mut payment_claimable_generated = false;
@@ -6526,6 +6684,7 @@ where
 	/// Free the background events, generally called from [`PersistenceNotifierGuard`] constructors.
 	///
 	/// Expects the caller to have a total_consistency_lock read lock.
+	#[rustfmt::skip]
 	fn process_background_events(&self) -> NotifyOption {
 		debug_assert_ne!(self.total_consistency_lock.held_by_thread(), LockHeldState::NotHeldByThread);
 
@@ -6573,6 +6732,7 @@ where
 		let _ = self.process_background_events();
 	}
 
+	#[rustfmt::skip]
 	fn update_channel_fee(&self, chan_id: &ChannelId, chan: &mut FundedChannel<SP>, new_feerate: u32) -> NotifyOption {
 		if !chan.funding.is_outbound() { return NotifyOption::SkipPersistNoEvents; }
 
@@ -6599,6 +6759,7 @@ where
 	/// timer_tick_occurred, but we can't generate the disabled channel updates as it considers
 	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what
 	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
+	#[rustfmt::skip]
 	pub fn maybe_update_chan_fees(&self) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
@@ -6648,6 +6809,7 @@ where
 	///
 	/// [`ChannelUpdate`]: msgs::ChannelUpdate
 	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
+	#[rustfmt::skip]
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let mut should_persist = NotifyOption::SkipPersistNoEvents;
@@ -6904,6 +7066,7 @@ where
 	/// [`ChannelManager::claim_funds`]), you should still monitor for
 	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
 	/// startup during which time claims that were in-progress at shutdown may be replayed.
+	#[rustfmt::skip]
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
 		self.fail_htlc_backwards_with_reason(payment_hash, FailureCode::IncorrectOrUnknownPaymentDetails);
 	}
@@ -6912,6 +7075,7 @@ where
 	/// reason for the failure.
 	///
 	/// See [`FailureCode`] for valid failure codes.
+	#[rustfmt::skip]
 	pub fn fail_htlc_backwards_with_reason(&self, payment_hash: &PaymentHash, failure_code: FailureCode) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -6927,6 +7091,7 @@ where
 	}
 
 	/// Gets error data to form an [`HTLCFailReason`] given a [`FailureCode`] and [`ClaimableHTLC`].
+	#[rustfmt::skip]
 	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
 		match failure_code {
 			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code.into()),
@@ -6971,6 +7136,7 @@ where
 	// Fail a list of HTLCs that were just freed from the holding cell. The HTLCs need to be
 	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
 	// be surfaced to the user.
+	#[rustfmt::skip]
 	fn fail_holding_cell_htlcs(
 		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: ChannelId,
 		counterparty_node_id: &PublicKey
@@ -7004,6 +7170,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCHandlingFailureType) {
 		let push_forward_event = self.fail_htlc_backwards_internal_without_forward_event(source, payment_hash, onion_error, destination);
 		if push_forward_event { self.push_pending_forwards_ev(); }
@@ -7011,6 +7178,7 @@ where
 
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
+	#[rustfmt::skip]
 	fn fail_htlc_backwards_internal_without_forward_event(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, failure_type: HTLCHandlingFailureType) -> bool {
 		// Ensure that no peer state channel storage lock is held when calling this function.
 		// This ensures that future code doesn't introduce a lock-order requirement for
@@ -7132,6 +7300,7 @@ where
 		self.claim_payment_internal(payment_preimage, true);
 	}
 
+	#[rustfmt::skip]
 	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 
@@ -7267,6 +7436,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn claim_funds_from_hop<
 		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
 	>(
@@ -7287,6 +7457,7 @@ where
 		self.claim_mpp_part(htlc_source, payment_preimage, payment_info, completion_action)
 	}
 
+	#[rustfmt::skip]
 	fn claim_mpp_part<
 		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
 	>(
@@ -7472,6 +7643,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.pending_outbound_payments.finalize_claims(sources, &self.pending_events);
 	}
 
+	#[rustfmt::skip]
 	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		startup_replay: bool, next_channel_counterparty_node_id: PublicKey,
@@ -7553,6 +7725,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.our_network_pubkey
 	}
 
+	#[rustfmt::skip]
 	fn handle_monitor_update_completion_actions<I: IntoIterator<Item=MonitorUpdateCompletionAction>>(&self, actions: I) {
 		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.claimable_payments.held_by_thread(), LockHeldState::HeldByThread);
@@ -7661,6 +7834,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	/// Handles a channel reentering a functional state, either due to reconnect or a monitor
 	/// update completion.
+	#[rustfmt::skip]
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
 		channel: &mut FundedChannel<SP>, raa: Option<msgs::RevokeAndACK>,
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
@@ -7720,6 +7894,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			});
 		}
 
+		#[rustfmt::skip]
 		macro_rules! handle_cs { () => {
 			if let Some(update) = commitment_update {
 				pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
@@ -7729,6 +7904,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				});
 			}
 		} }
+		#[rustfmt::skip]
 		macro_rules! handle_raa { () => {
 			if let Some(revoke_and_ack) = raa {
 				pending_msg_events.push(MessageSendEvent::SendRevokeAndACK {
@@ -7776,6 +7952,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		(htlc_forwards, decode_update_add_htlcs)
 	}
 
+	#[rustfmt::skip]
 	fn channel_monitor_updated(&self, channel_id: &ChannelId, highest_applied_update_id: u64, counterparty_node_id: &PublicKey) {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
@@ -7840,6 +8017,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	#[rustfmt::skip]
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id, config_overrides)
 	}
@@ -7862,11 +8040,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	#[rustfmt::skip]
 	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id, config_overrides)
 	}
 
 	/// TODO(dual_funding): Allow contributions, pass intended amount and inputs
+	#[rustfmt::skip]
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
 		user_channel_id: u128, config_overrides: Option<ChannelConfigOverrides>
@@ -8022,6 +8202,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// The filter is called for each peer and provided with the number of unfunded, inbound, and
 	/// non-0-conf channels we have with the peer.
+	#[rustfmt::skip]
 	fn peers_without_funded_channels<Filter>(&self, maybe_count_peer: Filter) -> usize
 	where Filter: Fn(&PeerState<SP>) -> bool {
 		let mut peers_without_funded_channels = 0;
@@ -8040,6 +8221,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		return peers_without_funded_channels;
 	}
 
+	#[rustfmt::skip]
 	fn unfunded_channel_count(
 		peer: &PeerState<SP>, best_block_height: u32
 	) -> usize {
@@ -8080,6 +8262,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
 	}
 
+	#[rustfmt::skip]
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, msg: OpenChannelMessageRef<'_>) -> Result<(), MsgHandleErrInternal> {
 		let common_fields = match msg {
 			OpenChannelMessageRef::V1(msg) => &msg.common_fields,
@@ -8230,6 +8413,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_accept_channel(&self, counterparty_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
 		// Note that the ChannelManager is NOT re-persisted on disk after this, so any changes are
 		// likely to be lost on restart!
@@ -8268,6 +8452,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 
@@ -8310,6 +8495,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let funded_channel_id = chan.context.channel_id();
 
+		#[rustfmt::skip]
 		macro_rules! fail_chan { ($err: expr) => { {
 			// Note that at this point we've filled in the funding outpoint on our
 			// channel, but its actually in conflict with another channel. Thus, if
@@ -8355,6 +8541,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, _msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
 		// TODO: Decrypt and check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
@@ -8366,6 +8553,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		), ChannelId([0; 32])))
 	}
 
+	#[rustfmt::skip]
 	fn internal_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
@@ -8401,6 +8589,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -8442,6 +8631,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut Channel<SP>) -> Result<MessageSendEvent, &'static str>>(
 		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, tx_msg_handler: HandleTxMsgFn
 	) -> Result<(), MsgHandleErrInternal> {
@@ -8476,6 +8666,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
@@ -8487,6 +8678,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
@@ -8498,6 +8690,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
@@ -8509,6 +8702,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
@@ -8520,6 +8714,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
@@ -8575,6 +8770,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxSignatures)
 	-> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -8621,6 +8817,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_tx_abort(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort)
 	-> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -8683,6 +8880,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) -> Result<(), MsgHandleErrInternal> {
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
@@ -8738,6 +8936,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
 		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
 		let mut finish_shutdown = None;
@@ -8804,6 +9003,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -8867,6 +9067,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), MsgHandleErrInternal> {
 		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
 		//determine the state of the payment based on our response/if we forward anything/the time
@@ -8902,6 +9103,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
 		let funding_txo;
 		let next_user_channel_id;
@@ -8952,6 +9154,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
@@ -8977,6 +9180,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
@@ -9006,6 +9210,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9052,6 +9257,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn internal_commitment_signed_batch(&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, batch: &BTreeMap<Txid, msgs::CommitmentSigned>) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -9084,6 +9290,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
+	#[rustfmt::skip]
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
 		let mut push_forward_event = self.forward_htlcs.lock().unwrap().is_empty();
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
@@ -9097,12 +9304,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[inline]
+	#[rustfmt::skip]
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) {
 		let push_forward_event = self.forward_htlcs_without_forward_event(per_source_pending_forwards);
 		if push_forward_event { self.push_pending_forwards_ev() }
 	}
 
 	#[inline]
+	#[rustfmt::skip]
 	fn forward_htlcs_without_forward_event(&self, per_source_pending_forwards: &mut [(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) -> bool {
 		let mut push_forward_event = false;
 		for &mut (prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
@@ -9197,6 +9406,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		push_forward_event
 	}
 
+	#[rustfmt::skip]
 	fn push_pending_forwards_ev(&self) {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let is_processing_events = self.pending_events_processor.load(Ordering::Acquire);
@@ -9220,6 +9430,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// [`msgs::RevokeAndACK`] should be held for the given channel until some other action
 	/// completes. Note that this needs to happen in the same [`PeerState`] mutex as any release of
 	/// the [`ChannelMonitorUpdate`] in question.
+	#[rustfmt::skip]
 	fn raa_monitor_updates_held(&self,
 		actions_blocking_raa_monitor_updates: &BTreeMap<ChannelId, Vec<RAAMonitorUpdateBlockingAction>>,
 		channel_funding_outpoint: OutPoint, channel_id: ChannelId, counterparty_node_id: PublicKey
@@ -9236,6 +9447,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
+	#[rustfmt::skip]
 	pub(crate) fn test_raa_monitor_updates_held(&self,
 		counterparty_node_id: PublicKey, channel_id: ChannelId
 	) -> bool {
@@ -9252,6 +9464,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		false
 	}
 
+	#[rustfmt::skip]
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
 		let htlcs_to_fail = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9292,6 +9505,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -9316,6 +9530,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn internal_stfu(&self, counterparty_node_id: &PublicKey, msg: &msgs::Stfu) -> Result<bool, MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
@@ -9368,6 +9583,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(sent_stfu)
 	}
 
+	#[rustfmt::skip]
 	fn internal_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -9404,6 +9620,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Returns DoPersist if anything changed, otherwise either SkipPersistNoEvents or an Err.
+	#[rustfmt::skip]
 	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let (chan_counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
 			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
@@ -9455,6 +9672,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(NotifyOption::DoPersist)
 	}
 
+	#[rustfmt::skip]
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let need_lnd_workaround = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9557,6 +9775,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	/// Handle incoming splice request, transition channel to splice-pending (unless some check fails).
 	#[cfg(splicing)]
+	#[rustfmt::skip]
 	fn internal_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -9596,6 +9815,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
 	#[cfg(splicing)]
+	#[rustfmt::skip]
 	fn internal_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -9631,6 +9851,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
+	#[rustfmt::skip]
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
@@ -9718,6 +9939,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
 	/// Returns whether there were any updates such as if pending HTLCs were freed or a monitor
 	/// update was applied.
+	#[rustfmt::skip]
 	fn check_free_holding_cells(&self) -> bool {
 		let mut has_monitor_update = false;
 		let mut failed_htlcs = Vec::new();
@@ -9772,6 +9994,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// attempted in every channel, or in the specifically provided channel.
 	///
 	/// [`ChannelSigner`]: crate::sign::ChannelSigner
+	#[rustfmt::skip]
 	pub fn signer_unblocked(&self, channel_opt: Option<(PublicKey, ChannelId)>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -9894,6 +10117,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// Check whether any channels have finished removing all pending updates after a shutdown
 	/// exchange and can now send a closing_signed.
 	/// Returns whether any closing_signed messages were generated.
+	#[rustfmt::skip]
 	fn maybe_generate_initial_closing_signed(&self) -> bool {
 		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
 		let mut has_update = false;
@@ -9962,6 +10186,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		has_update
 	}
 
+	#[rustfmt::skip]
 	fn maybe_send_stfu(&self) {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
@@ -9991,6 +10216,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[cfg(any(test, fuzzing))]
+	#[rustfmt::skip]
 	pub fn maybe_propose_quiescence(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) -> Result<(), APIError> {
 		let mut result = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
@@ -10049,6 +10275,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[cfg(any(test, fuzzing))]
+	#[rustfmt::skip]
 	pub fn exit_quiescence(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) -> Result<bool, APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -10078,6 +10305,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	/// storing any additional state. It achieves this by including a [`PaymentSecret`] in the
 	/// invoice which it uses to verify that the invoice has not expired and the payment amount is
 	/// sufficient, reproducing the [`PaymentPreimage`] if applicable.
+	#[rustfmt::skip]
 	pub fn create_bolt11_invoice(
 		&self, params: Bolt11InvoiceParameters,
 	) -> Result<Bolt11Invoice, SignOrCreationError<()>> {
@@ -10358,7 +10586,17 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 /// even if multiple invoices are received.
 const OFFERS_MESSAGE_REQUEST_LIMIT: usize = 10;
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -10389,6 +10627,7 @@ where
 	///    [`Offer`] plus the returned [`Nonce`], and provide the static invoice to the
 	///    aforementioned always-online node.
 	#[cfg(async_payments)]
+	#[rustfmt::skip]
 	pub fn create_async_receive_offer_builder(
 		&self, message_paths_to_always_online_node: Vec<BlindedMessagePath>
 	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError> {
@@ -10417,6 +10656,7 @@ where
 	/// created via [`Self::create_async_receive_offer_builder`]. If `relative_expiry` is unset, the
 	/// invoice's expiry will default to [`STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY`].
 	#[cfg(async_payments)]
+	#[rustfmt::skip]
 	pub fn create_static_invoice_builder<'a>(
 		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
@@ -10516,6 +10756,7 @@ where
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	#[rustfmt::skip]
 	pub fn pay_for_offer(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
@@ -10537,6 +10778,7 @@ where
 		})
 	}
 
+	#[rustfmt::skip]
 	fn pay_for_offer_intern<CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>>(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId,
@@ -10584,6 +10826,7 @@ where
 		self.enqueue_invoice_request(invoice_request, reply_paths)
 	}
 
+	#[rustfmt::skip]
 	fn enqueue_invoice_request(
 		&self,
 		invoice_request: InvoiceRequest,
@@ -10634,6 +10877,7 @@ where
 	///   the invoice.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	#[rustfmt::skip]
 	pub fn request_refund_payment(
 		&self, refund: &Refund
 	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
@@ -10745,6 +10989,7 @@ where
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	#[cfg(feature = "dnssec")]
+	#[rustfmt::skip]
 	pub fn pay_for_offer_from_human_readable_name(
 		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
 		retry_strategy: Retry, route_params_config: RouteParametersConfig,
@@ -10801,6 +11046,7 @@ where
 	/// [`PaymentClaimable::purpose`]: events::Event::PaymentClaimable::purpose
 	/// [`PaymentPurpose::preimage`]: events::PaymentPurpose::preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	#[rustfmt::skip]
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 		min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()> {
 		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs,
@@ -10854,6 +11100,7 @@ where
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
+	#[rustfmt::skip]
 	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>,
 		invoice_expiry_delta_secs: u32, min_final_cltv_expiry: Option<u16>) -> Result<PaymentSecret, ()> {
 		inbound_payment::create_from_hash(&self.inbound_payment_key, min_value_msat, payment_hash,
@@ -10865,6 +11112,7 @@ where
 	/// previously returned from [`create_inbound_payment`].
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	#[rustfmt::skip]
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
@@ -10888,6 +11136,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(super) fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(
@@ -10905,6 +11154,7 @@ where
 	/// [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
+	#[rustfmt::skip]
 	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
@@ -10926,6 +11176,7 @@ where
 	/// [`MessageRouter::create_compact_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
+	#[rustfmt::skip]
 	fn create_compact_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
@@ -10952,6 +11203,7 @@ where
 
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
+	#[rustfmt::skip]
 	fn create_blinded_payment_paths(
 		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
 		relative_expiry_seconds: u32
@@ -10987,6 +11239,7 @@ where
 	}
 
 	#[cfg(all(test, async_payments))]
+	#[rustfmt::skip]
 	pub(super) fn test_create_blinded_payment_paths(
 		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
 		relative_expiry_seconds: u32
@@ -11000,6 +11253,7 @@ where
 	/// are used when constructing the phantom invoice's route hints.
 	///
 	/// [phantom node payments]: crate::sign::PhantomKeysManager
+	#[rustfmt::skip]
 	pub fn get_phantom_scid(&self) -> u64 {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
@@ -11030,6 +11284,7 @@ where
 	///
 	/// Note that this method is not guaranteed to return unique values, you may need to call it a few
 	/// times to get a unique scid.
+	#[rustfmt::skip]
 	pub fn get_intercept_scid(&self) -> u64 {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
@@ -11063,6 +11318,7 @@ where
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
+	#[rustfmt::skip]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
@@ -11130,6 +11386,7 @@ where
 	/// [`Event`] being handled) completes, this should be called to restore the channel to normal
 	/// operation. It will double-check that nothing *else* is also blocking the same channel from
 	/// making progress and then let any blocked [`ChannelMonitorUpdate`]s fly.
+	#[rustfmt::skip]
 	fn handle_monitor_update_release(&self, counterparty_node_id: PublicKey,
 		channel_funding_outpoint: OutPoint, channel_id: ChannelId,
 		mut completed_blocker: Option<RAAMonitorUpdateBlockingAction>) {
@@ -11190,6 +11447,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn handle_post_event_actions(&self, actions: Vec<EventCompletionAction>) {
 		for action in actions {
 			match action {
@@ -11206,6 +11464,7 @@ where
 	/// using the given event handler.
 	///
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
+	#[rustfmt::skip]
 	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
@@ -11214,7 +11473,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11234,6 +11503,7 @@ where
 		provided_init_features(&self.default_configuration)
 	}
 
+	#[rustfmt::skip]
 	fn peer_disconnected(&self, counterparty_node_id: PublicKey) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(
 			self, || NotifyOption::SkipPersistHandleEvents);
@@ -11336,6 +11606,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn peer_connected(&self, counterparty_node_id: PublicKey, init_msg: &msgs::Init, inbound: bool) -> Result<(), ()> {
 		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), None, None);
 		if !init_msg.features.supports_static_remote_key() {
@@ -11503,7 +11774,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11519,13 +11800,24 @@ where
 	///
 	/// An [`EventHandler`] may safely call back to the provider in order to handle an event.
 	/// However, it must not call [`Writeable::write`] as doing so would result in a deadlock.
+	#[rustfmt::skip]
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		let mut ev;
 		process_events_body!(self, ev, handler.handle_event(ev));
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11550,6 +11842,7 @@ where
 		self.best_block_updated(header, height);
 	}
 
+	#[rustfmt::skip]
 	fn block_disconnected(&self, header: &Header, height: u32) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
@@ -11568,7 +11861,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11580,6 +11883,7 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -11601,6 +11905,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -11647,6 +11952,7 @@ where
 			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
 		});
 
+		#[rustfmt::skip]
 		macro_rules! max_time {
 			($timestamp: expr) => {
 				loop {
@@ -11670,6 +11976,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
 		for (_cp_id, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
@@ -11687,6 +11994,7 @@ where
 		res
 	}
 
+	#[rustfmt::skip]
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
@@ -11701,7 +12009,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11716,6 +12034,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
+	#[rustfmt::skip]
 	fn do_chain_event<FN: Fn(&mut FundedChannel<SP>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
@@ -11984,8 +12303,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-	ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11997,6 +12325,7 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	#[rustfmt::skip]
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
@@ -12015,6 +12344,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_open_channel_v2(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannelV2) {
 		if !self.init_features().supports_dual_fund() {
 			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
@@ -12039,6 +12369,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_accept_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::AcceptChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// accept_channel message - pre-funded channels are never written so there should be no
@@ -12049,27 +12380,32 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_accept_channel_v2(&self, counterparty_node_id: PublicKey, msg: &msgs::AcceptChannelV2) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Dual-funded channels not supported".to_owned(),
 			msg.common_fields.temporary_channel_id.clone())), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_funding_created(&self, counterparty_node_id: PublicKey, msg: &msgs::FundingCreated) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_funding_created(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_funding_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::FundingSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_funding_signed(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
 		let _ = handle_error!(self, self.internal_peer_storage(counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_peer_storage_retrieval(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
 		let _ = handle_error!(self, self.internal_peer_storage_retrieval(counterparty_node_id, msg), counterparty_node_id);
@@ -12091,6 +12427,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_stfu(&self, counterparty_node_id: PublicKey, msg: &msgs::Stfu) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_stfu(&counterparty_node_id, msg);
@@ -12137,17 +12474,20 @@ where
 	}
 
 	#[cfg(splicing)]
+	#[rustfmt::skip]
 	fn handle_splice_locked(&self, counterparty_node_id: PublicKey, msg: &msgs::SpliceLocked) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Splicing not supported (splice_locked)".to_owned(),
 			msg.channel_id)), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_shutdown(&self, counterparty_node_id: PublicKey, msg: &msgs::Shutdown) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_shutdown(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_closing_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::ClosingSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_closing_signed(&counterparty_node_id, msg), counterparty_node_id);
@@ -12169,6 +12509,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_update_fulfill_htlc(&counterparty_node_id, msg), counterparty_node_id);
@@ -12190,6 +12531,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_update_fail_malformed_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// update_fail_malformed_htlc message - the message itself doesn't change our channel state
@@ -12206,16 +12548,19 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_commitment_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_commitment_signed(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_commitment_signed_batch(&self, counterparty_node_id: PublicKey, channel_id: ChannelId, batch: BTreeMap<Txid, msgs::CommitmentSigned>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, &batch), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_revoke_and_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_revoke_and_ack(&counterparty_node_id, msg), counterparty_node_id);
@@ -12237,11 +12582,13 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_announcement_signatures(&self, counterparty_node_id: PublicKey, msg: &msgs::AnnouncementSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_announcement_signatures(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_channel_update(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelUpdate) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			if let Ok(persist) = handle_error!(self, self.internal_channel_update(&counterparty_node_id, msg), counterparty_node_id) {
@@ -12252,6 +12599,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_channel_reestablish(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReestablish) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_channel_reestablish(&counterparty_node_id, msg);
@@ -12265,6 +12613,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_error(&self, counterparty_node_id: PublicKey, msg: &msgs::ErrorMessage) {
 		match &msg.data as &str {
 			"cannot co-op close channel w/ active htlcs"|
@@ -12377,6 +12726,7 @@ where
 		Some(vec![self.chain_hash])
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// tx_add_input message - interactive transaction construction does not need to
@@ -12387,6 +12737,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// tx_add_output message - interactive transaction construction does not need to
@@ -12397,6 +12748,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// tx_remove_input message - interactive transaction construction does not need to
@@ -12407,6 +12759,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// tx_remove_output message - interactive transaction construction does not need to
@@ -12417,6 +12770,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// tx_complete message - interactive transaction construction does not need to
@@ -12427,23 +12781,27 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_signatures(&self, counterparty_node_id: PublicKey, msg: &msgs::TxSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let _ = handle_error!(self, self.internal_tx_signatures(&counterparty_node_id, msg), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_init_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxInitRbf) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Dual-funded channels not supported".to_owned(),
 			msg.channel_id.clone())), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_ack_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAckRbf) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Dual-funded channels not supported".to_owned(),
 			msg.channel_id.clone())), counterparty_node_id);
 	}
 
+	#[rustfmt::skip]
 	fn handle_tx_abort(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAbort) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// tx_abort message - interactive transaction construction does not need to
@@ -12454,6 +12812,7 @@ where
 		});
 	}
 
+	#[rustfmt::skip]
 	fn message_received(&self) {
 		for (payment_id, retryable_invoice_request) in self
 			.pending_outbound_payments
@@ -12488,8 +12847,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12507,6 +12875,7 @@ where
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
+		#[rustfmt::skip]
 		macro_rules! handle_pay_invoice_res {
 			($res: expr, $invoice: expr, $logger: expr) => {{
 				let error = match $res {
@@ -12557,7 +12926,9 @@ where
 
 				let invoice_request = match nonce {
 					Some(nonce) => match invoice_request.verify_using_recipient_data(
-						nonce, expanded_key, secp_ctx,
+						nonce,
+						expanded_key,
+						secp_ctx,
 					) {
 						Ok(invoice_request) => invoice_request,
 						Err(()) => return None,
@@ -12569,50 +12940,61 @@ where
 				};
 
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-					&invoice_request.inner
+					&invoice_request.inner,
 				) {
 					Ok(amount_msats) => amount_msats,
-					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
+					Err(error) => {
+						return Some((
+							OffersMessage::InvoiceError(error.into()),
+							responder.respond(),
+						))
+					},
 				};
 
 				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
-				let (payment_hash, payment_secret) = match self.create_inbound_payment(
-					Some(amount_msats), relative_expiry, None
-				) {
-					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
-					Err(()) => {
-						let error = Bolt12SemanticError::InvalidAmount;
-						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
-					},
-				};
+				let (payment_hash, payment_secret) =
+					match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
+						Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
+						Err(()) => {
+							let error = Bolt12SemanticError::InvalidAmount;
+							return Some((
+								OffersMessage::InvoiceError(error.into()),
+								responder.respond(),
+							));
+						},
+					};
 
 				let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 					offer_id: invoice_request.offer_id,
 					invoice_request: invoice_request.fields(),
 				});
 				let payment_paths = match self.create_blinded_payment_paths(
-					Some(amount_msats), payment_secret, payment_context, relative_expiry
+					Some(amount_msats),
+					payment_secret,
+					payment_context,
+					relative_expiry,
 				) {
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
 						let error = Bolt12SemanticError::MissingPaths;
-						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
+						return Some((
+							OffersMessage::InvoiceError(error.into()),
+							responder.respond(),
+						));
 					},
 				};
 
 				#[cfg(not(feature = "std"))]
-				let created_at = Duration::from_secs(
-					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
-				);
+				let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
 
 				let response = if invoice_request.keys.is_some() {
 					#[cfg(feature = "std")]
-					let builder = invoice_request.respond_using_derived_keys(
-						payment_paths, payment_hash
-					);
+					let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
 					#[cfg(not(feature = "std"))]
 					let builder = invoice_request.respond_using_derived_keys_no_std(
-						payment_paths, payment_hash, created_at
+						payment_paths,
+						payment_hash,
+						created_at,
 					);
 					builder
 						.map(InvoiceBuilder::<DerivedSigningPubkey>::from)
@@ -12622,9 +13004,7 @@ where
 					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_with(payment_paths, payment_hash);
 					#[cfg(not(feature = "std"))]
-					let builder = invoice_request.respond_with_no_std(
-						payment_paths, payment_hash, created_at
-					);
+					let builder = invoice_request.respond_with_no_std(payment_paths, payment_hash, created_at);
 					builder
 						.map(InvoiceBuilder::<ExplicitSigningPubkey>::from)
 						.and_then(|builder| builder.allow_mpp().build())
@@ -12633,9 +13013,9 @@ where
 							#[cfg(c_bindings)]
 							let mut invoice = invoice;
 							invoice
-								.sign(|invoice: &UnsignedBolt12Invoice|
+								.sign(|invoice: &UnsignedBolt12Invoice| {
 									self.node_signer.sign_bolt12_invoice(invoice)
-								)
+								})
 								.map_err(InvoiceError::from)
 						})
 				};
@@ -12644,10 +13024,19 @@ where
 					Ok(invoice) => {
 						let nonce = Nonce::from_entropy_source(&*self.entropy_source);
 						let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-						let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash, nonce, hmac });
-						Some((OffersMessage::Invoice(invoice), responder.respond_with_reply_path(context)))
+						let context = MessageContext::Offers(OffersContext::InboundPayment {
+							payment_hash,
+							nonce,
+							hmac,
+						});
+						Some((
+							OffersMessage::Invoice(invoice),
+							responder.respond_with_reply_path(context),
+						))
 					},
-					Err(error) => Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
+					Err(error) => {
+						Some((OffersMessage::InvoiceError(error.into()), responder.respond()))
+					},
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
@@ -12656,19 +13045,18 @@ where
 					Err(()) => return None,
 				};
 
-				let logger = WithContext::from(
-					&self.logger, None, None, Some(invoice.payment_hash()),
-				);
+				let logger =
+					WithContext::from(&self.logger, None, None, Some(invoice.payment_hash()));
 
 				if self.default_configuration.manually_handle_bolt12_invoices {
 					// Update the corresponding entry in `PendingOutboundPayment` for this invoice.
 					// This ensures that event generation remains idempotent in case we receive
 					// the same invoice multiple times.
-					self.pending_outbound_payments.mark_invoice_received(&invoice, payment_id).ok()?;
+					self.pending_outbound_payments
+						.mark_invoice_received(&invoice, payment_id)
+						.ok()?;
 
-					let event = Event::InvoiceReceived {
-						payment_id, invoice, context, responder,
-					};
+					let event = Event::InvoiceReceived { payment_id, invoice, context, responder };
 					self.pending_events.lock().unwrap().push_back((event, None));
 					return None;
 				}
@@ -12679,13 +13067,17 @@ where
 			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
+					Some(OffersContext::OutboundPayment {
+						payment_id,
+						nonce,
+						hmac: Some(hmac),
+					}) => {
 						if payment_id.verify_for_offer_payment(hmac, nonce, expanded_key).is_err() {
-							return None
+							return None;
 						}
 						payment_id
 					},
-					_ => return None
+					_ => return None,
 				};
 				let res = self.initiate_async_payment(&invoice, payment_id);
 				handle_pay_invoice_res!(res, invoice, self.logger);
@@ -12705,10 +13097,17 @@ where
 				log_trace!(logger, "Received invoice_error: {}", invoice_error);
 
 				match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify_for_offer_payment(hmac, nonce, expanded_key) {
+					Some(OffersContext::OutboundPayment {
+						payment_id,
+						nonce,
+						hmac: Some(hmac),
+					}) => {
+						if let Ok(()) =
+							payment_id.verify_for_offer_payment(hmac, nonce, expanded_key)
+						{
 							self.abandon_payment_with_reason(
-								payment_id, PaymentFailureReason::InvoiceRequestRejected,
+								payment_id,
+								PaymentFailureReason::InvoiceRequestRejected,
 							);
 						}
 					},
@@ -12725,8 +13124,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12738,6 +13146,7 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	#[rustfmt::skip]
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>
@@ -12758,6 +13167,7 @@ where
 		return None
 	}
 
+	#[rustfmt::skip]
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)] {
 			let (payment_id, nonce, hmac) = match _context {
@@ -12781,8 +13191,17 @@ where
 }
 
 #[cfg(feature = "dnssec")]
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12800,6 +13219,7 @@ where
 		None
 	}
 
+	#[rustfmt::skip]
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
 		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
 		#[cfg_attr(not(feature = "_test_utils"), allow(unused_mut))]
@@ -12844,8 +13264,17 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12862,6 +13291,7 @@ where
 	}
 }
 
+#[rustfmt::skip]
 fn enqueue_onion_message_with_reply_paths<T: OnionMessageContents + Clone>(
 	message: T, message_paths: &[BlindedMessagePath], reply_paths: Vec<BlindedMessagePath>,
 	queue: &mut Vec<(T, MessageSendInstructions)>
@@ -13013,8 +13443,8 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(10, skimmed_fee_msat, option),
 });
 
-
 impl Writeable for HTLCFailureMsg {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			HTLCFailureMsg::Relay(msgs::UpdateFailHTLC { channel_id, htlc_id, reason, attribution_data }) => {
@@ -13042,6 +13472,7 @@ impl Writeable for HTLCFailureMsg {
 }
 
 impl Readable for HTLCFailureMsg {
+	#[rustfmt::skip]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let id: u8 = Readable::read(reader)?;
 		match id {
@@ -13112,6 +13543,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 });
 
 impl Writeable for ClaimableHTLC {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let (payment_data, keysend_preimage) = match &self.onion_payload {
 			OnionPayload::Invoice { _legacy_hop_data } => {
@@ -13135,6 +13567,7 @@ impl Writeable for ClaimableHTLC {
 }
 
 impl Readable for ClaimableHTLC {
+	#[rustfmt::skip]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, prev_hop, required),
@@ -13184,6 +13617,7 @@ impl Readable for ClaimableHTLC {
 }
 
 impl Readable for HTLCSource {
+	#[rustfmt::skip]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let id: u8 = Readable::read(reader)?;
 		match id {
@@ -13235,6 +13669,7 @@ impl Readable for HTLCSource {
 }
 
 impl Writeable for HTLCSource {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
 			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, bolt12_invoice } => {
@@ -13306,6 +13741,7 @@ impl Writeable for HTLCForwardInfo {
 }
 
 impl Readable for HTLCForwardInfo {
+	#[rustfmt::skip]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let id: u8 = Readable::read(r)?;
 		Ok(match id {
@@ -13350,7 +13786,17 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13362,6 +13808,7 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
@@ -13593,6 +14040,7 @@ where
 }
 
 impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u64).write(w)?;
 		for (event, action) in self.iter() {
@@ -13614,6 +14062,7 @@ impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
 	}
 }
 impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
+	#[rustfmt::skip]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let len: u64 = Readable::read(reader)?;
 		const MAX_ALLOC_SIZE: u64 = 1024 * 16;
@@ -13668,8 +14117,18 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
-pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-where
+pub struct ChannelManagerReadArgs<
+	'a,
+	M: Deref,
+	T: Deref,
+	ES: Deref,
+	NS: Deref,
+	SP: Deref,
+	F: Deref,
+	R: Deref,
+	MR: Deref,
+	L: Deref,
+> where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
 	ES::Target: EntropySource,
@@ -13732,11 +14191,22 @@ where
 	/// this struct.
 	///
 	/// This is not exported to bindings users because we have no HashMap bindings
-	pub channel_monitors: HashMap<ChannelId, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+	pub channel_monitors:
+		HashMap<ChannelId, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 }
 
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-		ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+impl<
+		'a,
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13751,6 +14221,7 @@ where
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
+	#[rustfmt::skip]
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
@@ -13769,8 +14240,19 @@ where
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>> for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+impl<
+		'a,
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
+	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13782,14 +14264,26 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	#[rustfmt::skip]
 	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>> for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+impl<
+		'a,
+		M: Deref,
+		T: Deref,
+		ES: Deref,
+		NS: Deref,
+		SP: Deref,
+		F: Deref,
+		R: Deref,
+		MR: Deref,
+		L: Deref,
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
+	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13801,6 +14295,7 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
+	#[rustfmt::skip]
 	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -14190,6 +14685,7 @@ where
 		//
 		// Because the actual handling of the in-flight updates is the same, it's macro'ized here:
 		let mut pending_background_events = Vec::new();
+		#[rustfmt::skip]
 		macro_rules! handle_in_flight_updates {
 			($counterparty_node_id: expr, $chan_in_flight_upds: expr, $monitor: expr,
 			 $peer_state: expr, $logger: expr, $channel_info_log: expr
@@ -15070,27 +15566,34 @@ where
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use bitcoin::secp256k1::ecdh::SharedSecret;
-	use core::sync::atomic::Ordering;
-	use crate::events::{Event, HTLCHandlingFailureType, ClosureReason};
-	use crate::ln::onion_utils::AttributionData;
-	use crate::ln::types::ChannelId;
-	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{create_recv_pending_htlc_info, inbound_payment, ChannelConfigOverrides, HTLCForwardInfo, InterceptId, PaymentId, RecipientOnionFields};
+	use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+	use crate::ln::channelmanager::{
+		create_recv_pending_htlc_info, inbound_payment, ChannelConfigOverrides, HTLCForwardInfo,
+		InterceptId, PaymentId, RecipientOnionFields,
+	};
 	use crate::ln::functional_test_utils::*;
-	use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, AcceptChannel, ErrorAction, MessageSendEvent};
+	use crate::ln::msgs::{
+		self, AcceptChannel, BaseMessageHandler, ChannelMessageHandler, ErrorAction,
+		MessageSendEvent,
+	};
+	use crate::ln::onion_utils::AttributionData;
 	use crate::ln::onion_utils::{self, LocalHTLCFailureReason};
 	use crate::ln::outbound_payment::Retry;
+	use crate::ln::types::ChannelId;
 	use crate::prelude::*;
-	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
+	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
+	use crate::sign::EntropySource;
+	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
+	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
-	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
-	use crate::sign::EntropySource;
+	use bitcoin::secp256k1::ecdh::SharedSecret;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use core::sync::atomic::Ordering;
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_notify_limits() {
 		// Check that a few cases which don't require the persistence of a new ChannelManager,
 		// indeed, do not cause the persistence of a new ChannelManager.
@@ -15171,6 +15674,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_keysend_dup_hash_partial_mpp() {
 		// Test that a keysend payment with a duplicate hash to an existing partial MPP payment fails as
 		// expected.
@@ -15290,6 +15794,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_peer_storage() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -15354,6 +15859,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_keysend_dup_payment_hash() {
 		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
 		//      outbound regular payment fails as expected.
@@ -15502,6 +16008,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_keysend_hash_mismatch() {
 		// Test that if we receive a keysend `update_add_htlc` msg, we fail as expected if the keysend
 		// preimage doesn't match the msg's payment hash.
@@ -15550,6 +16057,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_multi_hop_missing_secret() {
 		let chanmon_cfgs = create_chanmon_cfgs(4);
 		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -15587,6 +16095,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_channel_update_cached() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -15642,6 +16151,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_drop_disconnected_peers_when_removing_channels() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -15676,6 +16186,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_drop_peers_when_removing_unfunded_channels() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -15701,6 +16212,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn bad_inbound_payment_hash() {
 		// Add coverage for checking that a user-provided payment hash matches the payment secret.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -15729,16 +16241,19 @@ mod tests {
 		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
 
+	#[rustfmt::skip]
 	fn check_not_connected_to_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
 		let expected_message = format!("Not connected to node: {}", expected_public_key);
 		check_api_error_message(expected_message, res_err)
 	}
 
+	#[rustfmt::skip]
 	fn check_unkown_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
 		let expected_message = format!("Can't find a peer matching the passed counterparty node_id {}", expected_public_key);
 		check_api_error_message(expected_message, res_err)
 	}
 
+	#[rustfmt::skip]
 	fn check_channel_unavailable_error<T>(res_err: Result<T, APIError>, expected_channel_id: ChannelId, peer_node_id: PublicKey) {
 		let expected_message = format!("Channel with id {} not found for the passed counterparty node_id {}", expected_channel_id, peer_node_id);
 		check_api_error_message(expected_message, res_err)
@@ -15763,6 +16278,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_api_calls_with_unkown_counterparty_node() {
 		// Tests that our API functions that expects a `counterparty_node_id` as input, behaves as
 		// expected if the `counterparty_node_id` is an unkown peer in the
@@ -15795,6 +16311,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_api_calls_with_unavailable_channel() {
 		// Tests that our API functions that expects a `counterparty_node_id` and a `channel_id`
 		// as input, behaves as expected if the `counterparty_node_id` is a known peer in the
@@ -15826,6 +16343,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_connection_limiting() {
 		// Test that we limit un-channel'd peers and un-funded channels properly.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -15941,6 +16459,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_outbound_chans_unlimited() {
 		// Test that we never refuse an outbound channel even if a peer is unfuned-channel-limited
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -15976,6 +16495,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_0conf_limiting() {
 		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
 		// flag set and (sometimes) accept channels as 0conf.
@@ -16045,6 +16565,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn reject_excessively_underpaying_htlcs() {
 		let chanmon_cfg = create_chanmon_cfgs(1);
 		let node_cfg = create_node_cfgs(1, &chanmon_cfg);
@@ -16099,6 +16620,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_final_incorrect_cltv(){
 		let chanmon_cfg = create_chanmon_cfgs(1);
 		let node_cfg = create_node_cfgs(1, &chanmon_cfg);
@@ -16155,6 +16677,7 @@ mod tests {
 		assert_eq!(accept_message.channel_reserve_satoshis, 2_000);
 	}
 
+	#[rustfmt::skip]
 	fn test_inbound_anchors_manual_acceptance_with_override(config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
 		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
 		// flag set and (sometimes) accept channels as 0conf.
@@ -16199,6 +16722,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_anchors_zero_fee_htlc_tx_fallback() {
 		// Tests that if both nodes support anchors, but the remote node does not want to accept
 		// anchor channels at the moment, an error it sent to the local node such that it can retry
@@ -16237,6 +16761,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_update_channel_config() {
 		let chanmon_cfg = create_chanmon_cfgs(2);
 		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
@@ -16314,6 +16839,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_payment_display() {
 		let payment_id = PaymentId([42; 32]);
 		assert_eq!(format!("{}", &payment_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
@@ -16324,6 +16850,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_trigger_lnd_force_close() {
 		let chanmon_cfg = create_chanmon_cfgs(2);
 		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
@@ -16386,6 +16913,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_malformed_forward_htlcs_ser() {
 		// Ensure that `HTLCForwardInfo::FailMalformedHTLC`s are (de)serialized properly.
 		let chanmon_cfg = create_chanmon_cfgs(1);
@@ -16449,52 +16977,72 @@ mod tests {
 
 #[cfg(ldk_bench)]
 pub mod bench {
-	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
-	use crate::sign::{KeysManager, InMemorySigner};
+	use crate::chain::Listen;
 	use crate::events::Event;
-	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
+	use crate::ln::channelmanager::{
+		BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentId, PaymentPreimage,
+		RecipientOnionFields, Retry,
+	};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
+	use crate::sign::{InMemorySigner, KeysManager};
+	use crate::util::config::{MaxDustHTLCExposure, UserConfig};
 	use crate::util::test_utils;
-	use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 	use bitcoin::amount::Amount;
-	use bitcoin::locktime::absolute::LockTime;
-	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::{Transaction, TxOut};
+	use bitcoin::hashes::Hash;
+	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::transaction::Version;
+	use bitcoin::{Transaction, TxOut};
 
 	use crate::sync::{Arc, RwLock};
 
 	use criterion::Criterion;
 
 	type Manager<'a, P> = ChannelManager<
-		&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
-			&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
-			&'a test_utils::TestLogger, &'a P>,
-		&'a test_utils::TestBroadcaster, &'a KeysManager, &'a KeysManager, &'a KeysManager,
-		&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
-		&'a test_utils::TestMessageRouter<'a>, &'a test_utils::TestLogger>;
+		&'a ChainMonitor<
+			InMemorySigner,
+			&'a test_utils::TestChainSource,
+			&'a test_utils::TestBroadcaster,
+			&'a test_utils::TestFeeEstimator,
+			&'a test_utils::TestLogger,
+			&'a P,
+		>,
+		&'a test_utils::TestBroadcaster,
+		&'a KeysManager,
+		&'a KeysManager,
+		&'a KeysManager,
+		&'a test_utils::TestFeeEstimator,
+		&'a test_utils::TestRouter<'a>,
+		&'a test_utils::TestMessageRouter<'a>,
+		&'a test_utils::TestLogger,
+	>;
 
 	struct ANodeHolder<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> {
 		node: &'node_cfg Manager<'chan_mon_cfg, P>,
 	}
-	impl<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> NodeHolder for ANodeHolder<'node_cfg, 'chan_mon_cfg, P> {
+	impl<'node_cfg, 'chan_mon_cfg: 'node_cfg, P: Persist<InMemorySigner>> NodeHolder
+		for ANodeHolder<'node_cfg, 'chan_mon_cfg, P>
+	{
 		type CM = Manager<'chan_mon_cfg, P>;
 		#[inline]
+		#[rustfmt::skip]
 		fn node(&self) -> &Manager<'chan_mon_cfg, P> { self.node }
 		#[inline]
+		#[rustfmt::skip]
 		fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { None }
 	}
 
+	#[rustfmt::skip]
 	pub fn bench_sends(bench: &mut Criterion) {
 		bench_two_sends(bench, "bench_sends", test_utils::TestPersister::new(), test_utils::TestPersister::new());
 	}
 
+	#[rustfmt::skip]
 	pub fn bench_two_sends<P: Persist<InMemorySigner>>(bench: &mut Criterion, bench_name: &str, persister_a: P, persister_b: P) {
 		// Do a simple benchmark of sending a payment back and forth between two nodes.
 		// Note that this is unrealistic as each payment send will require at least two fsync
@@ -16611,6 +17159,7 @@ pub mod bench {
 		}
 
 		let mut payment_count: u64 = 0;
+		#[rustfmt::skip]
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
