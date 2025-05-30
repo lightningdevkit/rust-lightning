@@ -608,9 +608,8 @@ where
 	Ok((next_hop, next_packet_details))
 }
 
-#[rustfmt::skip]
 pub(super) fn check_incoming_htlc_cltv(
-	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32
+	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32,
 ) -> Result<(), LocalHTLCFailureReason> {
 	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
 		return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
@@ -741,10 +740,9 @@ mod tests {
 		};
 	}
 
-	#[rustfmt::skip]
 	fn make_update_add_msg(
 		amount_msat: u64, cltv_expiry: u32, payment_hash: PaymentHash,
-		onion_routing_packet: msgs::OnionPacket
+		onion_routing_packet: msgs::OnionPacket,
 	) -> msgs::UpdateAddHTLC {
 		msgs::UpdateAddHTLC {
 			channel_id: ChannelId::from_bytes([0; 32]),

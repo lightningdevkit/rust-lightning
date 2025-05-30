@@ -144,8 +144,9 @@ pub fn confirm_transactions_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: 
 	connect_block(node, &block);
 	scid_utils::scid_from_parts(conf_height as u64, block.txdata.len() as u64 - 1, 0).unwrap()
 }
-#[rustfmt::skip]
-pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) -> u64 {
+pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32,
+) -> u64 {
 	confirm_transactions_at(node, &[tx], conf_height)
 }
 
@@ -275,8 +276,9 @@ fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	}
 }
 
-#[rustfmt::skip]
-fn do_connect_block_with_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
+fn do_connect_block_with_consistency_checks<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool,
+) {
 	call_claimable_balances(node);
 	do_connect_block_without_consistency_checks(node, block, skip_intermediaries);
 	call_claimable_balances(node);
@@ -539,8 +541,9 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// Toggles this node's signer to be available for the given signer operation.
 	/// This is useful for testing behavior for restoring an async signer that previously
 	/// could not return a signature immediately.
-	#[rustfmt::skip]
-	pub fn enable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
+	pub fn enable_channel_signer_op(
+		&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp,
+	) {
 		self.set_channel_signer_ops(peer_id, chan_id, signer_op, true);
 	}
 
@@ -548,8 +551,9 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// This is useful for testing behavior for an async signer that cannot return a signature
 	/// immediately.
 	#[cfg(test)]
-	#[rustfmt::skip]
-	pub fn disable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
+	pub fn disable_channel_signer_op(
+		&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp,
+	) {
 		self.set_channel_signer_ops(peer_id, chan_id, signer_op, false);
 	}
 
@@ -778,8 +782,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	}
 }
 
-#[rustfmt::skip]
-pub fn create_chan_between_nodes<'a, 'b, 'c: 'd, 'd>(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+pub fn create_chan_between_nodes<'a, 'b, 'c: 'd, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
+) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
 	create_chan_between_nodes_with_value(node_a, node_b, 100000, 10001)
 }
 
@@ -1158,8 +1163,7 @@ pub fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64, channel_type_features: &
 }
 
 /// Check whether N channel monitor(s) have been added.
-#[rustfmt::skip]
-pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize) {
+pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &H, count: usize) {
 	if let Some(chain_monitor) = node.chain_monitor() {
 		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
 		let n = added_monitors.len();
@@ -1191,8 +1195,9 @@ fn claimed_htlc_matches_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, path: &
 		ch.counterparty.node_id == prev.get_our_node_id()
 }
 
-#[rustfmt::skip]
-fn check_claimed_htlcs_match_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: &[&[&Node<'a, 'b, 'c>]], htlcs: &[ClaimedHTLC]) {
+fn check_claimed_htlcs_match_route<'a, 'b, 'c>(
+	origin_node: &Node<'a, 'b, 'c>, route: &[&[&Node<'a, 'b, 'c>]], htlcs: &[ClaimedHTLC],
+) {
 	assert_eq!(route.len(), htlcs.len());
 	for path in route {
 		let mut found_matching_htlc = false;
@@ -1498,8 +1503,9 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: 
 	create_chan_id
 }
 
-#[rustfmt::skip]
-pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64) -> Transaction {
+pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(
+	node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64,
+) -> Transaction {
 	let create_chan_id = exchange_open_accept_chan(node_a, node_b, channel_value, push_msat);
 	sign_funding_transaction(node_a, node_b, channel_value, create_chan_id)
 }
@@ -1549,8 +1555,9 @@ pub fn create_chan_between_nodes_with_value_confirm<'a, 'b, 'c: 'd, 'd>(node_a: 
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
-#[rustfmt::skip]
-pub fn create_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64) -> ((msgs::ChannelReady, msgs::AnnouncementSignatures), ChannelId, Transaction) {
+pub fn create_chan_between_nodes_with_value_a<'a, 'b, 'c: 'd, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64,
+) -> ((msgs::ChannelReady, msgs::AnnouncementSignatures), ChannelId, Transaction) {
 	let tx = create_chan_between_nodes_with_value_init(node_a, node_b, channel_value, push_msat);
 	let (msgs, chan_id) = create_chan_between_nodes_with_value_confirm(node_a, node_b, &tx);
 	(msgs, chan_id, tx)
@@ -1591,8 +1598,9 @@ pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(node_a: &Node<'a, 'b, 
 	((*announcement).clone(), as_update, bs_update)
 }
 
-#[rustfmt::skip]
-pub fn create_announced_chan_between_nodes<'a, 'b, 'c: 'd, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
+pub fn create_announced_chan_between_nodes<'a, 'b, 'c: 'd, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize,
+) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction) {
 	create_announced_chan_between_nodes_with_value(nodes, a, b, 100000, 10001)
 }
 
@@ -1668,8 +1676,10 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	(as_channel_ready, tx)
 }
 
-#[rustfmt::skip]
-pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement, upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate) {
+pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement,
+	upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate,
+) {
 	for node in nodes {
 		let node_id_a = nodes[a].node.get_our_node_id();
 		let node_id_b = nodes[b].node.get_our_node_id();
@@ -1837,8 +1847,9 @@ pub struct ExpectedCloseEvent {
 }
 
 impl ExpectedCloseEvent {
-	#[rustfmt::skip]
-	pub fn from_id_reason(channel_id: ChannelId, discard_funding: bool, reason: ClosureReason) -> Self {
+	pub fn from_id_reason(
+		channel_id: ChannelId, discard_funding: bool, reason: ClosureReason,
+	) -> Self {
 		Self {
 			channel_capacity_sats: None,
 			channel_id: Some(channel_id),
@@ -2589,8 +2600,9 @@ macro_rules! expect_channel_shutdown_state {
 }
 
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
-#[rustfmt::skip]
-pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) -> ChannelId {
+pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey,
+) -> ChannelId {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
@@ -2665,8 +2677,9 @@ impl<'a> PaymentFailedConditions<'a> {
 		self.expected_blamed_chan_closed = Some(closed);
 		self
 	}
-	#[rustfmt::skip]
-	pub fn expected_htlc_error_data(mut self, reason: LocalHTLCFailureReason, data: &'a [u8]) -> Self {
+	pub fn expected_htlc_error_data(
+		mut self, reason: LocalHTLCFailureReason, data: &'a [u8],
+	) -> Self {
 		self.expected_htlc_error_data = Some((reason, data));
 		self
 	}
@@ -3314,8 +3327,9 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 	(res.0, res.1, res.2, res.3)
 }
 
-#[rustfmt::skip]
-pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
+pub fn send_payment<'a, 'b, 'c>(
+	origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64,
+) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let res = route_payment(&origin, expected_route, recv_value);
 	claim_payment(&origin, expected_route, res.0);
 	res
@@ -3440,8 +3454,10 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	check_added_monitors!(expected_paths[0].last().unwrap(), 0);
 }
 
-#[rustfmt::skip]
-pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], our_payment_hash: PaymentHash)  {
+pub fn fail_payment<'a, 'b, 'c>(
+	origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>],
+	our_payment_hash: PaymentHash,
+) {
 	fail_payment_along_route(origin_node, &[&expected_path[..]], false, our_payment_hash);
 }
 
@@ -3725,8 +3741,9 @@ pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>
 	assert!(node_txn.is_empty());
 }
 
-#[rustfmt::skip]
-pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<Transaction>) -> Vec<Transaction>  {
+pub fn check_preimage_claim<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, prev_txn: &Vec<Transaction>,
+) -> Vec<Transaction> {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let mut txn_seen = new_hash_set();
 	node_txn.retain(|tx| txn_seen.insert(tx.compute_txid()));

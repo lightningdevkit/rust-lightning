@@ -440,11 +440,10 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
-	#[rustfmt::skip]
 	pub(crate) fn new(
 		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: ScriptBuf,
 		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,
-		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>
+		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>,
 	) -> Self {
 		OnchainTxHandler {
 			channel_value_satoshis,
@@ -539,9 +538,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 	/// Returns true if we are currently tracking any pending claim requests that are not fully
 	/// confirmed yet.
-	#[rustfmt::skip]
-	pub(super) fn has_pending_claims(&self) -> bool
-	{
+	pub(super) fn has_pending_claims(&self) -> bool {
 		self.pending_claim_requests.len() != 0
 	}
 

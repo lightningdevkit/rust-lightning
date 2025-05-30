@@ -828,8 +828,9 @@ pub(super) struct OutboundPayments {
 }
 
 impl OutboundPayments {
-	#[rustfmt::skip]
-	pub(super) fn new(pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>) -> Self {
+	pub(super) fn new(
+		pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>,
+	) -> Self {
 		let has_invoice_requests = pending_outbound_payments.values().any(|payment| {
 			matches!(
 				payment,
@@ -1727,9 +1728,8 @@ impl OutboundPayments {
 	}
 
 	#[cfg(test)]
-	#[rustfmt::skip]
 	pub(super) fn test_set_payment_metadata(
-		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>
+		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>,
 	) {
 		match self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id).unwrap() {
 			PendingOutboundPayment::Retryable { payment_metadata, .. } => {
@@ -1833,8 +1833,9 @@ impl OutboundPayments {
 	}
 
 	#[cfg(feature = "dnssec")]
-	#[rustfmt::skip]
-	pub(super) fn amt_msats_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<u64, ()> {
+	pub(super) fn amt_msats_for_payment_awaiting_offer(
+		&self, payment_id: PaymentId,
+	) -> Result<u64, ()> {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::AwaitingOffer { amount_msats, .. } => Ok(*amount_msats),
@@ -1869,10 +1870,10 @@ impl OutboundPayments {
 		}
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn add_new_awaiting_invoice(
 		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
-		route_params_config: RouteParametersConfig, retryable_invoice_request: Option<RetryableInvoiceRequest>
+		route_params_config: RouteParametersConfig,
+		retryable_invoice_request: Option<RetryableInvoiceRequest>,
 	) -> Result<(), ()> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
@@ -2456,10 +2457,9 @@ impl OutboundPayments {
 		invoice_requests
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn insert_from_monitor_on_startup<L: Logger>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, session_priv_bytes: [u8; 32],
-		path: &Path, best_block_height: u32, logger: L
+		path: &Path, best_block_height: u32, logger: L,
 	) {
 		let path_amt = path.final_value_msat();
 		let path_fee = path.fee_msat();
@@ -2491,11 +2491,10 @@ impl OutboundPayments {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(mut entry) => {
 				let newly_added = match entry.get() {
-					PendingOutboundPayment::AwaitingOffer { .. } |
-						PendingOutboundPayment::AwaitingInvoice { .. } |
-						PendingOutboundPayment::InvoiceReceived { .. } |
-						PendingOutboundPayment::StaticInvoiceReceived { .. } =>
-					{
+					PendingOutboundPayment::AwaitingOffer { .. }
+					| PendingOutboundPayment::AwaitingInvoice { .. }
+					| PendingOutboundPayment::InvoiceReceived { .. }
+					| PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 						// If we've reached this point, it means we initiated a payment to a BOLT 12 invoice and
 						// locked the htlc(s) into the `ChannelMonitor`(s), but failed to persist the
 						// `ChannelManager` after transitioning from this state to `Retryable` prior to shutdown.
@@ -2504,13 +2503,12 @@ impl OutboundPayments {
 						*entry.get_mut() = new_retryable!();
 						true
 					},
-					PendingOutboundPayment::Legacy { .. } |
-						PendingOutboundPayment::Retryable { .. } |
-						PendingOutboundPayment::Fulfilled { .. } |
-						PendingOutboundPayment::Abandoned { .. } =>
-					{
+					PendingOutboundPayment::Legacy { .. }
+					| PendingOutboundPayment::Retryable { .. }
+					| PendingOutboundPayment::Fulfilled { .. }
+					| PendingOutboundPayment::Abandoned { .. } => {
 						entry.get_mut().insert(session_priv_bytes, &path)
-					}
+					},
 				};
 				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
 					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
@@ -2519,17 +2517,16 @@ impl OutboundPayments {
 				entry.insert(new_retryable!());
 				log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
 					path_amt, payment_hash,  log_bytes!(session_priv_bytes));
-			}
+			},
 		}
 	}
 }
 
 /// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
 /// payment probe.
-#[rustfmt::skip]
-pub(super) fn payment_is_probe(payment_hash: &PaymentHash, payment_id: &PaymentId,
-	probing_cookie_secret: [u8; 32]) -> bool
-{
+pub(super) fn payment_is_probe(
+	payment_hash: &PaymentHash, payment_id: &PaymentId, probing_cookie_secret: [u8; 32],
+) -> bool {
 	let target_payment_hash = probing_cookie_from_id(payment_id, probing_cookie_secret);
 	target_payment_hash == *payment_hash
 }

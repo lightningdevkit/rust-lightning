@@ -607,9 +607,9 @@ pub(crate) struct HolderFundingOutput {
 }
 
 impl HolderFundingOutput {
-	#[rustfmt::skip]
 	pub(crate) fn build(
-		commitment_tx: HolderCommitmentTransaction, channel_parameters: ChannelTransactionParameters,
+		commitment_tx: HolderCommitmentTransaction,
+		channel_parameters: ChannelTransactionParameters,
 	) -> Self {
 		let funding_redeemscript = channel_parameters.make_funding_redeemscript();
 		let funding_amount_sats = channel_parameters.channel_value_satoshis;
@@ -1179,8 +1179,9 @@ impl PackageTemplate {
 			}
 		}
 	}
-	#[rustfmt::skip]
-	pub(crate) fn merge_package(&mut self, mut merge_from: PackageTemplate, cur_height: u32) -> Result<(), PackageTemplate> {
+	pub(crate) fn merge_package(
+		&mut self, mut merge_from: PackageTemplate, cur_height: u32,
+	) -> Result<(), PackageTemplate> {
 		if !self.can_merge_with(&merge_from, cur_height) {
 			return Err(merge_from);
 		}

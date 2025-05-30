@@ -158,10 +158,11 @@ impl UtxoFuture {
 	///
 	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	#[rustfmt::skip]
-	pub fn resolve_without_forwarding<L: Deref>(&self,
-		graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
-	where L::Target: Logger {
+	pub fn resolve_without_forwarding<L: Deref>(
+		&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>,
+	) where
+		L::Target: Logger,
+	{
 		self.do_resolve(graph, result);
 	}
 
@@ -176,10 +177,17 @@ impl UtxoFuture {
 	///
 	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	#[rustfmt::skip]
-	pub fn resolve<L: Deref, G: Deref<Target=NetworkGraph<L>>, U: Deref, GS: Deref<Target = P2PGossipSync<G, U, L>>>(&self,
-		graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>
-	) where L::Target: Logger, U::Target: UtxoLookup {
+	pub fn resolve<
+		L: Deref,
+		G: Deref<Target = NetworkGraph<L>>,
+		U: Deref,
+		GS: Deref<Target = P2PGossipSync<G, U, L>>,
+	>(
+		&self, graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>,
+	) where
+		L::Target: Logger,
+		U::Target: UtxoLookup,
+	{
 		let mut res = self.do_resolve(graph, result);
 		for msg_opt in res.iter_mut() {
 			if let Some(msg) = msg_opt.take() {

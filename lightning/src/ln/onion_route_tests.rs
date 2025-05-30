@@ -74,17 +74,17 @@ fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, 
 // 3: final node fails backward (but tamper onion payloads from node0)
 // 100: trigger error in the intermediate node and tamper returning fail_htlc
 // 200: trigger error in the final node and tamper returning fail_htlc
-#[rustfmt::skip]
-fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
+fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 	_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash,
 	payment_secret: &PaymentSecret, mut callback_msg: F1, mut callback_fail: F2,
-	mut callback_node: F3, expected_retryable: bool, expected_error_reason: Option<LocalHTLCFailureReason>,
+	mut callback_node: F3, expected_retryable: bool,
+	expected_error_reason: Option<LocalHTLCFailureReason>,
 	expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>,
 	expected_failure_type: Option<HTLCHandlingFailureType>,
-)
-	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
-				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
-				F3: FnMut(),
+) where
+	F1: for<'a> FnMut(&'a mut msgs::UpdateAddHTLC),
+	F2: for<'a> FnMut(&'a mut msgs::UpdateFailHTLC),
+	F3: FnMut(),
 {
 	#[rustfmt::skip]
 	macro_rules! expect_event {
@@ -108,8 +108,15 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 
 	// 0 ~~> 2 send payment
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
-	nodes[0].node.send_payment_with_route(route.clone(), *payment_hash,
-		RecipientOnionFields::secret_only(*payment_secret), payment_id).unwrap();
+	nodes[0]
+		.node
+		.send_payment_with_route(
+			route.clone(),
+			*payment_hash,
+			RecipientOnionFields::secret_only(*payment_secret),
+			payment_id,
+		)
+		.unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	// temper update_add (0 => 1)
@@ -123,15 +130,24 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	let update_1_0 = match test_case {
-		0|100 => { // intermediate node failure; fail backward to 0
+		0 | 100 => {
+			// intermediate node failure; fail backward to 0
 			expect_pending_htlcs_forwardable!(nodes[1]);
-			expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[expected_failure_type.clone().unwrap()]);
+			expect_htlc_handling_failed_destinations!(
+				nodes[1].node.get_and_clear_pending_events(),
+				&[expected_failure_type.clone().unwrap()]
+			);
 			check_added_monitors(&nodes[1], 1);
 			let update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-			assert!(update_1_0.update_fail_htlcs.len()+update_1_0.update_fail_malformed_htlcs.len()==1 && (update_1_0.update_fail_htlcs.len()==1 || update_1_0.update_fail_malformed_htlcs.len()==1));
+			assert!(
+				update_1_0.update_fail_htlcs.len() + update_1_0.update_fail_malformed_htlcs.len()
+					== 1 && (update_1_0.update_fail_htlcs.len() == 1
+					|| update_1_0.update_fail_malformed_htlcs.len() == 1)
+			);
 			update_1_0
 		},
-		1|2|3|200 => { // final node failure; forwarding to 2
+		1 | 2 | 3 | 200 => {
+			// final node failure; forwarding to 2
 			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 			// forwarding on 1
 			if test_case != 200 {
@@ -156,10 +172,16 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 				expect_htlc_forward!(&nodes[2]);
 				expect_event!(&nodes[2], Event::PaymentClaimable);
 				callback_node();
-				expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash.clone() }]);
+				expect_pending_htlcs_forwardable_and_htlc_handling_failed!(
+					nodes[2],
+					vec![HTLCHandlingFailureType::Receive { payment_hash: payment_hash.clone() }]
+				);
 			} else if test_case == 1 || test_case == 3 {
 				expect_htlc_forward!(&nodes[2]);
-				expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), vec![expected_failure_type.clone().unwrap()]);
+				expect_htlc_handling_failed_destinations!(
+					nodes[2].node.get_and_clear_pending_events(),
+					vec![expected_failure_type.clone().unwrap()]
+				);
 			}
 			check_added_monitors!(&nodes[2], 1);
 
@@ -191,14 +213,24 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 		}
 		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	} else {
-		nodes[0].node.handle_update_fail_malformed_htlc(nodes[1].node.get_our_node_id(), &update_1_0.update_fail_malformed_htlcs[0]);
+		nodes[0].node.handle_update_fail_malformed_htlc(
+			nodes[1].node.get_our_node_id(),
+			&update_1_0.update_fail_malformed_htlcs[0],
+		);
 	};
 
 	commitment_signed_dance!(nodes[0], nodes[1], update_1_0.commitment_signed, false, true);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
-	if let &Event::PaymentPathFailed { ref payment_failed_permanently, ref short_channel_id, ref error_code, failure: PathFailure::OnPath { ref network_update }, .. } = &events[0] {
+	if let &Event::PaymentPathFailed {
+		ref payment_failed_permanently,
+		ref short_channel_id,
+		ref error_code,
+		failure: PathFailure::OnPath { ref network_update },
+		..
+	} = &events[0]
+	{
 		assert_eq!(*payment_failed_permanently, !expected_retryable);
 		assert_eq!(error_code.is_none(), expected_error_reason.is_none());
 		if let Some(expected_reason) = expected_error_reason {
@@ -208,7 +240,11 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 			match network_update {
 				Some(update) => match update {
 					&NetworkUpdate::ChannelFailure { ref short_channel_id, ref is_permanent } => {
-						if let NetworkUpdate::ChannelFailure { short_channel_id: ref expected_short_channel_id, is_permanent: ref expected_is_permanent } = expected_channel_update.unwrap() {
+						if let NetworkUpdate::ChannelFailure {
+							short_channel_id: ref expected_short_channel_id,
+							is_permanent: ref expected_is_permanent,
+						} = expected_channel_update.unwrap()
+						{
 							assert!(*short_channel_id == *expected_short_channel_id);
 							assert!(*is_permanent == *expected_is_permanent);
 						} else {
@@ -216,14 +252,18 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 						}
 					},
 					&NetworkUpdate::NodeFailure { ref node_id, ref is_permanent } => {
-						if let NetworkUpdate::NodeFailure { node_id: ref expected_node_id, is_permanent: ref expected_is_permanent } = expected_channel_update.unwrap() {
+						if let NetworkUpdate::NodeFailure {
+							node_id: ref expected_node_id,
+							is_permanent: ref expected_is_permanent,
+						} = expected_channel_update.unwrap()
+						{
 							assert!(*node_id == *expected_node_id);
 							assert!(*is_permanent == *expected_is_permanent);
 						} else {
 							panic!("Unexpected message event");
 						}
 					},
-				}
+				},
 				None => panic!("Expected channel update"),
 			}
 		} else {
@@ -241,15 +281,22 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 		panic!("Unexpected event");
 	}
 	match events[1] {
-		Event::PaymentFailed { payment_hash: ev_payment_hash, payment_id: ev_payment_id, reason: ref ev_reason } => {
+		Event::PaymentFailed {
+			payment_hash: ev_payment_hash,
+			payment_id: ev_payment_id,
+			reason: ref ev_reason,
+		} => {
 			assert_eq!(Some(*payment_hash), ev_payment_hash);
 			assert_eq!(payment_id, ev_payment_id);
-			assert_eq!(if expected_retryable {
-				PaymentFailureReason::RetriesExhausted
-			} else {
-				PaymentFailureReason::RecipientRejected
-			}, ev_reason.unwrap());
-		}
+			assert_eq!(
+				if expected_retryable {
+					PaymentFailureReason::RetriesExhausted
+				} else {
+					PaymentFailureReason::RecipientRejected
+				},
+				ev_reason.unwrap()
+			);
+		},
 		_ => panic!("Unexpected second event"),
 	}
 }

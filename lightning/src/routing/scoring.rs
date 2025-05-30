@@ -327,8 +327,8 @@ impl<'a, T: 'a + Score> Deref for MultiThreadedScoreLockRead<'a, T> {
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
 	type ScoreParams = T::ScoreParams;
-	#[rustfmt::skip]
-	fn channel_penalty_msat(&self, candidate:&CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
+	fn channel_penalty_msat(
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams,
 	) -> u64 {
 		self.0.channel_penalty_msat(candidate, usage, score_params)
 	}
@@ -359,8 +359,9 @@ impl<'a, T: 'a + Score> DerefMut for MultiThreadedScoreLockWrite<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score> ScoreUpdate for MultiThreadedScoreLockWrite<'a, T> {
-	#[rustfmt::skip]
-	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
+	fn payment_path_failed(
+		&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration,
+	) {
 		self.0.payment_path_failed(path, short_channel_id, duration_since_epoch)
 	}
 
@@ -410,8 +411,9 @@ impl FixedPenaltyScorer {
 
 impl ScoreLookUp for FixedPenaltyScorer {
 	type ScoreParams = ();
-	#[rustfmt::skip]
-	fn channel_penalty_msat(&self, _: &CandidateRouteHop, _: ChannelUsage, _score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(
+		&self, _: &CandidateRouteHop, _: ChannelUsage, _score_params: &Self::ScoreParams,
+	) -> u64 {
 		self.penalty_msat
 	}
 }
@@ -532,8 +534,9 @@ impl ChannelLiquidities {
 		self.0.get(short_channel_id)
 	}
 
-	#[rustfmt::skip]
-	fn insert(&mut self, short_channel_id: u64, liquidity: ChannelLiquidity) -> Option<ChannelLiquidity> {
+	fn insert(
+		&mut self, short_channel_id: u64, liquidity: ChannelLiquidity,
+	) -> Option<ChannelLiquidity> {
 		self.0.insert(short_channel_id, liquidity)
 	}
 
@@ -967,8 +970,9 @@ where
 {
 	/// Creates a new scorer using the given scoring parameters for sending payments from a node
 	/// through a network graph.
-	#[rustfmt::skip]
-	pub fn new(decay_params: ProbabilisticScoringDecayParameters, network_graph: G, logger: L) -> Self {
+	pub fn new(
+		decay_params: ProbabilisticScoringDecayParameters, network_graph: G, logger: L,
+	) -> Self {
 		Self {
 			decay_params,
 			network_graph,
@@ -1041,8 +1045,9 @@ where
 
 	/// Query the estimated minimum and maximum liquidity available for sending a payment over the
 	/// channel with `scid` towards the given `target` node.
-	#[rustfmt::skip]
-	pub fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
+	pub fn estimated_channel_liquidity_range(
+		&self, scid: u64, target: &NodeId,
+	) -> Option<(u64, u64)> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
@@ -1849,8 +1854,9 @@ where
 	}
 
 	/// Merge external channel liquidity information into the scorer.
-	#[rustfmt::skip]
-	pub fn merge(&mut self, mut external_scores: ChannelLiquidities, duration_since_epoch: Duration) {
+	pub fn merge(
+		&mut self, mut external_scores: ChannelLiquidities, duration_since_epoch: Duration,
+	) {
 		// Decay both sets of scores to make them comparable and mergeable.
 		self.local_only_scorer.time_passed(duration_since_epoch);
 		external_scores.time_passed(duration_since_epoch, self.local_only_scorer.decay_params);
@@ -1878,9 +1884,9 @@ where
 {
 	type ScoreParams = ProbabilisticScoringFeeParameters;
 
-	#[rustfmt::skip]
 	fn channel_penalty_msat(
-		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage,
+		score_params: &ProbabilisticScoringFeeParameters,
 	) -> u64 {
 		self.scorer.channel_penalty_msat(candidate, usage, score_params)
 	}
@@ -1890,32 +1896,29 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreUpdate for CombinedScore
 where
 	L::Target: Logger,
 {
-	#[rustfmt::skip]
-	fn payment_path_failed(&mut self,path: &Path,short_channel_id:u64,duration_since_epoch:Duration) {
+	fn payment_path_failed(
+		&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration,
+	) {
 		self.local_only_scorer.payment_path_failed(path, short_channel_id, duration_since_epoch);
 		self.scorer.payment_path_failed(path, short_channel_id, duration_since_epoch);
 	}
 
-	#[rustfmt::skip]
-	fn payment_path_successful(&mut self,path: &Path,duration_since_epoch:Duration) {
+	fn payment_path_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.local_only_scorer.payment_path_successful(path, duration_since_epoch);
 		self.scorer.payment_path_successful(path, duration_since_epoch);
 	}
 
-	#[rustfmt::skip]
-	fn probe_failed(&mut self,path: &Path,short_channel_id:u64,duration_since_epoch:Duration) {
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64, duration_since_epoch: Duration) {
 		self.local_only_scorer.probe_failed(path, short_channel_id, duration_since_epoch);
 		self.scorer.probe_failed(path, short_channel_id, duration_since_epoch);
 	}
 
-	#[rustfmt::skip]
-	fn probe_successful(&mut self,path: &Path,duration_since_epoch:Duration) {
+	fn probe_successful(&mut self, path: &Path, duration_since_epoch: Duration) {
 		self.local_only_scorer.probe_successful(path, duration_since_epoch);
 		self.scorer.probe_successful(path, duration_since_epoch);
 	}
 
-	#[rustfmt::skip]
-	fn time_passed(&mut self,duration_since_epoch:Duration) {
+	fn time_passed(&mut self, duration_since_epoch: Duration) {
 		self.local_only_scorer.time_passed(duration_since_epoch);
 		self.scorer.time_passed(duration_since_epoch);
 	}
@@ -2216,15 +2219,15 @@ mod bucketed_history {
 			&self.max_liquidity_offset_history
 		}
 
-		#[rustfmt::skip]
-		pub(super) fn as_directed<'a>(&'a self, source_less_than_target: bool)
-		-> DirectedHistoricalLiquidityTracker<&'a HistoricalLiquidityTracker> {
+		pub(super) fn as_directed<'a>(
+			&'a self, source_less_than_target: bool,
+		) -> DirectedHistoricalLiquidityTracker<&'a HistoricalLiquidityTracker> {
 			DirectedHistoricalLiquidityTracker { source_less_than_target, tracker: self }
 		}
 
-		#[rustfmt::skip]
-		pub(super) fn as_directed_mut<'a>(&'a mut self, source_less_than_target: bool)
-		-> DirectedHistoricalLiquidityTracker<&'a mut HistoricalLiquidityTracker> {
+		pub(super) fn as_directed_mut<'a>(
+			&'a mut self, source_less_than_target: bool,
+		) -> DirectedHistoricalLiquidityTracker<&'a mut HistoricalLiquidityTracker> {
 			DirectedHistoricalLiquidityTracker { source_less_than_target, tracker: self }
 		}
 
