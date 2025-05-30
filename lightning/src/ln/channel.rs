@@ -8137,8 +8137,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.map(|funding| self.can_accept_incoming_htlc_for_funding(funding, msg, dust_exposure_limiting_feerate, &logger))
-			.collect::<Result<(), LocalHTLCFailureReason>>()
+			.try_for_each(|funding| self.can_accept_incoming_htlc_for_funding(funding, msg, dust_exposure_limiting_feerate, &logger))
 	}
 
 	fn can_accept_incoming_htlc_for_funding<L: Deref>(
