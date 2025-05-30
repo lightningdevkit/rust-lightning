@@ -7039,16 +7039,14 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.map(|funding| FundedChannel::<SP>::check_remote_fee(funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger))
-			.collect::<Result<(), ChannelError>>()?;
+			.try_for_each(|funding| FundedChannel::<SP>::check_remote_fee(funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger))?;
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
 
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.map(|funding| self.validate_update_fee(funding, fee_estimator, msg))
-			.collect::<Result<(), ChannelError>>()
+			.try_for_each(|funding| self.validate_update_fee(funding, fee_estimator, msg))
 	}
 
 	fn validate_update_fee<F: Deref>(
