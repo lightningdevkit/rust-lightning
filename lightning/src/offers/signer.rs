@@ -55,6 +55,16 @@ const PAYMENT_TLVS_HMAC_INPUT: &[u8; 16] = &[8; 16];
 #[cfg(async_payments)]
 const ASYNC_PAYMENTS_HELD_HTLC_HMAC_INPUT: &[u8; 16] = &[9; 16];
 
+// HMAC input used in `AsyncPaymentsContext::OfferPaths` to authenticate inbound offer_paths onion
+// messages.
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_OFFER_PATHS_INPUT: &[u8; 16] = &[10; 16];
+
+// HMAC input used in `AsyncPaymentsContext::StaticInvoicePersisted` to authenticate inbound
+// static_invoice_persisted onion messages.
+#[cfg(async_payments)]
+const ASYNC_PAYMENTS_STATIC_INV_PERSISTED_INPUT: &[u8; 16] = &[11; 16];
+
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
 #[derive(Clone)]
@@ -565,6 +575,54 @@ pub(crate) fn verify_held_htlc_available_context(
 	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
 ) -> Result<(), ()> {
 	if hmac_for_held_htlc_available_context(nonce, expanded_key) == hmac {
+		Ok(())
+	} else {
+		Err(())
+	}
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_offer_paths_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer Paths~";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_OFFER_PATHS_INPUT);
+
+	Hmac::from_engine(hmac)
+}
+
+#[cfg(async_payments)]
+pub(crate) fn verify_offer_paths_context(
+	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_offer_paths_context(nonce, expanded_key) == hmac {
+		Ok(())
+	} else {
+		Err(())
+	}
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_static_invoice_persisted_context(
+	nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK InvPersisted";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENTS_STATIC_INV_PERSISTED_INPUT);
+
+	Hmac::from_engine(hmac)
+}
+
+#[cfg(async_payments)]
+pub(crate) fn verify_static_invoice_persisted_context(
+	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_static_invoice_persisted_context(nonce, expanded_key) == hmac {
 		Ok(())
 	} else {
 		Err(())
