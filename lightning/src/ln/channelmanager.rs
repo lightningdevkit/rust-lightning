@@ -613,8 +613,9 @@ impl Verification for PaymentId {
 }
 
 impl PaymentId {
-	#[rustfmt::skip]
-	fn for_inbound_from_htlcs<I: Iterator<Item=(ChannelId, u64)>>(key: &[u8; 32], htlcs: I) -> PaymentId {
+	fn for_inbound_from_htlcs<I: Iterator<Item = (ChannelId, u64)>>(
+		key: &[u8; 32], htlcs: I,
+	) -> PaymentId {
 		let mut prev_pair = None;
 		let mut hasher = HmacEngine::new(key);
 		for (channel_id, htlc_id) in htlcs {
@@ -784,8 +785,9 @@ impl HTLCSource {
 
 	/// Checks whether this HTLCSource could possibly match the given HTLC output in a commitment
 	/// transaction. Useful to ensure different datastructures match up.
-	#[rustfmt::skip]
-	pub(crate) fn possibly_matches_output(&self, htlc: &super::chan_utils::HTLCOutputInCommitment) -> bool {
+	pub(crate) fn possibly_matches_output(
+		&self, htlc: &super::chan_utils::HTLCOutputInCommitment,
+	) -> bool {
 		if let HTLCSource::OutboundRoute { first_hop_htlc_msat, .. } = self {
 			*first_hop_htlc_msat == htlc.amount_msat
 		} else {
@@ -874,8 +876,10 @@ impl MsgHandleErrInternal {
 		Self { err, closes_channel: false, shutdown_finish: None }
 	}
 	#[inline]
-	#[rustfmt::skip]
-	fn from_finish_shutdown(err: String, channel_id: ChannelId, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(
+		err: String, channel_id: ChannelId, shutdown_res: ShutdownResult,
+		channel_update: Option<msgs::ChannelUpdate>,
+	) -> Self {
 		let err_msg = msgs::ErrorMessage { channel_id, data: err.clone() };
 		let action = if shutdown_res.monitor_update.is_some() {
 			// We have a closing `ChannelMonitorUpdate`, which means the channel was funded and we
@@ -1674,8 +1678,19 @@ pub trait AChannelManager {
 	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
 	/// Returns a reference to the actual [`ChannelManager`] object.
-	#[rustfmt::skip]
-	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::MR, Self::L>;
+	fn get_cm(
+		&self,
+	) -> &ChannelManager<
+		Self::M,
+		Self::T,
+		Self::ES,
+		Self::NS,
+		Self::SP,
+		Self::F,
+		Self::R,
+		Self::MR,
+		Self::L,
+	>;
 }
 
 impl<
@@ -2817,8 +2832,9 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// This must always be called if the changes included a `ChannelMonitorUpdate`, as well as in
 	/// other cases where losing the changes on restart may result in a force-close or otherwise
 	/// isn't ideal.
-	#[rustfmt::skip]
-	fn notify_on_drop<C: AChannelManager>(cm: &'a C) -> PersistenceNotifierGuard<'a, impl FnMut() -> NotifyOption> {
+	fn notify_on_drop<C: AChannelManager>(
+		cm: &'a C,
+	) -> PersistenceNotifierGuard<'a, impl FnMut() -> NotifyOption> {
 		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
@@ -2850,9 +2866,9 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// Note that if any [`ChannelMonitorUpdate`]s are possibly generated,
 	/// [`ChannelManager::process_background_events`] MUST be called first (or
 	/// [`Self::optionally_notify`] used).
-	#[rustfmt::skip]
-	fn optionally_notify_skipping_background_events<F: Fn() -> NotifyOption, C: AChannelManager>
-	(cm: &'a C, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
+	fn optionally_notify_skipping_background_events<F: Fn() -> NotifyOption, C: AChannelManager>(
+		cm: &'a C, persist_check: F,
+	) -> PersistenceNotifierGuard<'a, F> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
 
 		PersistenceNotifierGuard {
@@ -4100,8 +4116,9 @@ where
 	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`SendShutdown`]: MessageSendEvent::SendShutdown
-	#[rustfmt::skip]
-	pub fn close_channel(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+	pub fn close_channel(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
+	) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
 	}
 
@@ -4367,9 +4384,9 @@ where
 	///
 	/// Fails if `channel_id` is unknown to the manager, or if the `counterparty_node_id`
 	/// isn't the counterparty of the corresponding channel.
-	#[rustfmt::skip]
-	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
-	-> Result<(), APIError> {
+	pub fn force_close_broadcasting_latest_txn(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String,
+	) -> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, true, error_message)
 	}
 
@@ -4383,9 +4400,9 @@ where
 	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
 	/// You can always broadcast the latest local transaction(s) via
 	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
-	#[rustfmt::skip]
-	pub fn force_close_without_broadcasting_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
-	-> Result<(), APIError> {
+	pub fn force_close_without_broadcasting_txn(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String,
+	) -> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, false, error_message)
 	}
 
@@ -4987,8 +5004,9 @@ where
 	}
 
 	#[cfg(test)]
-	#[rustfmt::skip]
-	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
+	pub(crate) fn test_set_payment_metadata(
+		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>,
+	) {
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
 
@@ -5239,8 +5257,9 @@ where
 	/// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
 	/// payment probe.
 	#[cfg(test)]
-	#[rustfmt::skip]
-	pub(crate) fn payment_is_probe(&self, payment_hash: &PaymentHash, payment_id: &PaymentId) -> bool {
+	pub(crate) fn payment_is_probe(
+		&self, payment_hash: &PaymentHash, payment_id: &PaymentId,
+	) -> bool {
 		outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret)
 	}
 
@@ -7432,9 +7451,11 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
 	fn claim_funds_from_hop<
-		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
+		ComplFunc: FnOnce(
+			Option<u64>,
+			bool,
+		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
@@ -8659,8 +8680,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_add_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_add_input(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
 				Some(unfunded_channel) => {
@@ -11795,8 +11817,10 @@ where
 	///
 	/// An [`EventHandler`] may safely call back to the provider in order to handle an event.
 	/// However, it must not call [`Writeable::write`] as doing so would result in a deadlock.
-	#[rustfmt::skip]
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
+	fn process_pending_events<H: Deref>(&self, handler: H)
+	where
+		H::Target: EventHandler,
+	{
 		let mut ev;
 		process_events_body!(self, ev, handler.handle_event(ev));
 	}
@@ -12525,8 +12549,9 @@ where
 		});
 	}
 
-	#[rustfmt::skip]
-	fn handle_update_fail_malformed_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
+	fn handle_update_fail_malformed_htlc(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFailMalformedHTLC,
+	) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// update_fail_malformed_htlc message - the message itself doesn't change our channel state
 		// only the `commitment_signed` message afterwards will.
@@ -12593,8 +12618,9 @@ where
 		});
 	}
 
-	#[rustfmt::skip]
-	fn handle_channel_reestablish(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReestablish) {
+	fn handle_channel_reestablish(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReestablish,
+	) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_channel_reestablish(&counterparty_node_id, msg);
 			let persist = match &res {
@@ -16204,8 +16230,9 @@ mod tests {
 		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
 
-	#[rustfmt::skip]
-	fn check_not_connected_to_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
+	fn check_not_connected_to_peer_error<T>(
+		res_err: Result<T, APIError>, expected_public_key: PublicKey,
+	) {
 		let expected_message = format!("Not connected to node: {}", expected_public_key);
 		check_api_error_message(expected_message, res_err)
 	}
