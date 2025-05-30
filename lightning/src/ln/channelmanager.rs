@@ -11717,7 +11717,7 @@ where
 						.zip(historical_scids.iter().skip(1).chain(core::iter::once(&current_scid)))
 					{
 						let funding_height = block_from_scid(*next_scid);
-						let retain_scid = funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY > height;
+						let retain_scid = funding_height + CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY - 1 > height;
 						if !retain_scid {
 							short_to_chan_info.remove(scid);
 						}
