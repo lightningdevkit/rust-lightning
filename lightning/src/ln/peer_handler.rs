@@ -1840,7 +1840,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			let message_batch = MessageBatch {
 				channel_id: msg.channel_id,
-				batch_size: msg.batch_size as usize,
+				batch_size,
 				messages: MessageBatchImpl::Unknown,
 			};
 			peer_lock.message_batch = Some(message_batch);
