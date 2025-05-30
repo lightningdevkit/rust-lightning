@@ -5745,34 +5745,19 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
 
-	pub fn update_add_htlc<F: Deref>(
-		&mut self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> Result<(), ChannelError> where F::Target: FeeEstimator {
-		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
-			return Err(ChannelError::WarnAndDisconnect("Got add HTLC message while quiescent".to_owned()));
-		}
-		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
-		}
-		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
-		if self.context.channel_state.is_remote_shutdown_sent() {
-			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
-		}
-		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close("Peer sent update_add_htlc when we needed a channel_reestablish".to_owned()));
-		}
-		if msg.amount_msat > self.funding.get_value_satoshis() * 1000 {
+	fn validate_update_add_htlc<F: Deref>(
+		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> Result<(), ChannelError>
+	where
+		F::Target: FeeEstimator,
+	{
+		if msg.amount_msat > funding.get_value_satoshis() * 1000 {
 			return Err(ChannelError::close("Remote side tried to send more than the total value of the channel".to_owned()));
-		}
-		if msg.amount_msat == 0 {
-			return Err(ChannelError::close("Remote side tried to send a 0-msat HTLC".to_owned()));
-		}
-		if msg.amount_msat < self.context.holder_htlc_minimum_msat {
-			return Err(ChannelError::close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.context.holder_htlc_minimum_msat, msg.amount_msat)));
 		}
 
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, None, dust_exposure_limiting_feerate);
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		if htlc_stats.pending_inbound_htlcs + 1 > self.context.holder_max_accepted_htlcs as usize {
 			return Err(ChannelError::close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
@@ -5802,9 +5787,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
-			self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
+			funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
 		if pending_remote_value_msat < msg.amount_msat {
 			return Err(ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()));
 		}
@@ -5812,11 +5797,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Check that the remote can afford to pay for this HTLC on-chain at the current
 		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
 		{
-			let remote_commit_tx_fee_msat = if self.funding.is_outbound() { 0 } else {
+			let remote_commit_tx_fee_msat = if funding.is_outbound() { 0 } else {
 				let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-				self.context.next_remote_commit_tx_fee_msat(&self.funding, Some(htlc_candidate), None) // Don't include the extra fee spike buffer HTLC in calculations
+				self.context.next_remote_commit_tx_fee_msat(funding, Some(htlc_candidate), None) // Don't include the extra fee spike buffer HTLC in calculations
 			};
-			let anchor_outputs_value_msat = if !self.funding.is_outbound() && self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			let anchor_outputs_value_msat = if !funding.is_outbound() && funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
 			} else {
 				0
@@ -5824,23 +5809,49 @@ impl<SP: Deref> FundedChannel<SP> where
 			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(anchor_outputs_value_msat) < remote_commit_tx_fee_msat {
 				return Err(ChannelError::close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
 			};
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < self.funding.holder_selected_channel_reserve_satoshis * 1000 {
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < funding.holder_selected_channel_reserve_satoshis * 1000 {
 				return Err(ChannelError::close("Remote HTLC add would put them under remote reserve value".to_owned()));
 			}
 		}
 
-		let anchor_outputs_value_msat = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+		let anchor_outputs_value_msat = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
 		} else {
 			0
 		};
-		if self.funding.is_outbound() {
+		if funding.is_outbound() {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(&self.funding, htlc_candidate, None);
-			if self.funding.value_to_self_msat < self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
+			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(funding, htlc_candidate, None);
+			if funding.value_to_self_msat < funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
 				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
+		}
+
+		Ok(())
+	}
+
+	pub fn update_add_htlc<F: Deref>(
+		&mut self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>,
+	) -> Result<(), ChannelError> where F::Target: FeeEstimator {
+		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
+			return Err(ChannelError::WarnAndDisconnect("Got add HTLC message while quiescent".to_owned()));
+		}
+		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
+			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
+		}
+		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
+		if self.context.channel_state.is_remote_shutdown_sent() {
+			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
+		}
+		if self.context.channel_state.is_peer_disconnected() {
+			return Err(ChannelError::close("Peer sent update_add_htlc when we needed a channel_reestablish".to_owned()));
+		}
+		if msg.amount_msat == 0 {
+			return Err(ChannelError::close("Remote side tried to send a 0-msat HTLC".to_owned()));
+		}
+		if msg.amount_msat < self.context.holder_htlc_minimum_msat {
+			return Err(ChannelError::close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.context.holder_htlc_minimum_msat, msg.amount_msat)));
 		}
 		if self.context.next_counterparty_htlc_id != msg.htlc_id {
 			return Err(ChannelError::close(format!("Remote skipped HTLC ID (skipped ID: {})", self.context.next_counterparty_htlc_id)));
@@ -5848,6 +5859,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		if msg.cltv_expiry >= 500000000 {
 			return Err(ChannelError::close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
 		}
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| self.validate_update_add_htlc(funding, msg, fee_estimator))?;
 
 		// Now update local state:
 		self.context.next_counterparty_htlc_id += 1;
@@ -6345,8 +6360,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			*self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
-			*self.funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+				*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
+				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			}
 		}
 
 		match &self.context.holder_signer {
@@ -6496,7 +6513,10 @@ impl<SP: Deref> FundedChannel<SP> where
 				}
 			}
 		}
-		self.funding.value_to_self_msat = (self.funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+
+		for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+			funding.value_to_self_msat = (funding.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
+		}
 
 		if let Some((feerate, update_state)) = self.context.pending_update_fee {
 			match update_state {
@@ -6713,29 +6733,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
-		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
-		let commitment_data = self.context.build_commitment_transaction(
-			&self.funding, self.holder_commitment_point.transaction_number(),
-			&self.holder_commitment_point.current_point(), true, true, logger,
-		);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.funding.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
-		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + self.funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
-			//TODO: auto-close after a number of failures?
-			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
-			return None;
-		}
-
-		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
-		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
-		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
-			return None;
-		}
-		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
-			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+		let can_send_update_fee = core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.all(|funding| self.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
+		if !can_send_update_fee {
 			return None;
 		}
 
@@ -6758,6 +6759,43 @@ impl<SP: Deref> FundedChannel<SP> where
 			channel_id: self.context.channel_id,
 			feerate_per_kw,
 		})
+	}
+
+	fn can_send_update_fee<F: Deref, L: Deref>(
+		&self, funding: &FundingScope, feerate_per_kw: u32,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> bool
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		// Before proposing a feerate update, check that we can actually afford the new fee.
+		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
+		let commitment_data = self.context.build_commitment_transaction(
+			funding, self.holder_commitment_point.transaction_number(),
+			&self.holder_commitment_point.current_point(), true, true, logger,
+		);
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_data.tx.nondust_htlcs().len() + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, funding.get_channel_type()) * 1000;
+		let holder_balance_msat = commitment_data.stats.local_balance_before_fee_anchors_msat - htlc_stats.outbound_holding_cell_msat;
+		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+			//TODO: auto-close after a number of failures?
+			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
+			return false;
+		}
+
+		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
+		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
+			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			return false;
+		}
+		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
+			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			return false;
+		}
+
+		return true;
 	}
 
 	/// Removes any uncommitted inbound HTLCs and resets the state of uncommitted outbound HTLC
@@ -7012,13 +7050,29 @@ impl<SP: Deref> FundedChannel<SP> where
 		if self.context.channel_state.is_remote_stfu_sent() || self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Got fee update message while quiescent".to_owned()));
 		}
-		FundedChannel::<SP>::check_remote_fee(self.funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| FundedChannel::<SP>::check_remote_fee(funding.get_channel_type(), fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger))?;
 
 		self.context.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.context.update_time_counter += 1;
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| self.validate_update_fee(funding, fee_estimator, msg))
+	}
+
+	fn validate_update_fee<F: Deref>(
+		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		msg: &msgs::UpdateFee,
+	) -> Result<(), ChannelError>
+	where
+		F::Target: FeeEstimator,
+	{
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, None, dust_exposure_limiting_feerate);
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
@@ -8076,7 +8130,20 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
-		let htlc_stats = self.context.get_pending_htlc_stats(&self.funding, None, dust_exposure_limiting_feerate);
+
+		core::iter::once(&self.funding)
+			.chain(self.pending_funding.iter())
+			.try_for_each(|funding| self.can_accept_incoming_htlc_for_funding(funding, msg, dust_exposure_limiting_feerate, &logger))
+	}
+
+	fn can_accept_incoming_htlc_for_funding<L: Deref>(
+		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
+		dust_exposure_limiting_feerate: u32, logger: &L,
+	) -> Result<(), LocalHTLCFailureReason>
+	where
+		L::Target: Logger,
+	{
+		let htlc_stats = self.context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat;
 		if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
@@ -8085,11 +8152,11 @@ impl<SP: Deref> FundedChannel<SP> where
 				on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
 			return Err(LocalHTLCFailureReason::DustLimitCounterparty)
 		}
-		let htlc_success_dust_limit = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+		let htlc_success_dust_limit = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			0
 		} else {
 			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(self.funding.get_channel_type()) / 1000
+			dust_buffer_feerate * htlc_success_tx_weight(funding.get_channel_type()) / 1000
 		};
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
@@ -8101,7 +8168,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		}
 
-		let anchor_outputs_value_msat = if self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+		let anchor_outputs_value_msat = if funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
 		} else {
 			0
@@ -8117,11 +8184,11 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
+			funding.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
-			self.funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
+			funding.get_value_satoshis() * 1000 - pending_value_to_self_msat;
 
-		if !self.funding.is_outbound() {
+		if !funding.is_outbound() {
 			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
 			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
 			// side, only on the sender's. Note that with anchor outputs we are no longer as
@@ -8129,11 +8196,11 @@ impl<SP: Deref> FundedChannel<SP> where
 			//
 			// A `None` `HTLCCandidate` is used as in this case because we're already accounting for
 			// the incoming HTLC as it has been fully committed by both sides.
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(&self.funding, None, Some(()));
-			if !self.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(funding, None, Some(()));
+			if !funding.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 			}
-			if pending_remote_value_msat.saturating_sub(self.funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+			if pending_remote_value_msat.saturating_sub(funding.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
 				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
 				return Err(LocalHTLCFailureReason::FeeSpikeBuffer);
 			}
@@ -9068,11 +9135,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		{
 			return Err((LocalHTLCFailureReason::ChannelNotReady,
 				"Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
-		}
-		let channel_total_msat = self.funding.get_value_satoshis() * 1000;
-		if amount_msat > channel_total_msat {
-			return Err((LocalHTLCFailureReason::AmountExceedsCapacity,
-				format!("Cannot send amount {}, because it is more than the total value of the channel {}", amount_msat, channel_total_msat)));
 		}
 
 		if amount_msat == 0 {
