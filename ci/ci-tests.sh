@@ -27,6 +27,15 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # proptest 1.3.0 requires rustc 1.64.0
 [ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p proptest --precise "1.2.0" --verbose
 
+# parking_lot 0.12.4 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p parking_lot --precise "0.12.3" --verbose
+
+# parking_lot_core 0.9.11 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p parking_lot_core --precise "0.9.10" --verbose
+
+# lock_api 0.4.13 requires rustc 1.64.0
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p lock_api --precise "0.4.12" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
