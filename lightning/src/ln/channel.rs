@@ -8604,10 +8604,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		};
 
 		match pending_splice.sent_funding_txid {
-			Some(sent_funding_txid) if confirmed_funding_txid == sent_funding_txid => {
-				debug_assert!(false);
-				None
-			},
+			Some(sent_funding_txid) if confirmed_funding_txid == sent_funding_txid => None,
 			_ => {
 				Some(msgs::SpliceLocked {
 					channel_id: self.context.channel_id(),
