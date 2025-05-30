@@ -8892,6 +8892,13 @@ impl<SP: Deref> FundedChannel<SP> where
 
 				funding.funding_tx_confirmation_height = 0;
 
+				// Check if we sent splice_locked for the unconfirmed transaction
+				if let Some(pending_splice) = &mut self.pending_splice {
+					if pending_splice.sent_funding_txid == Some(*txid) {
+						pending_splice.sent_funding_txid = None;
+					}
+				}
+
 				match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
 					Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
 						assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
