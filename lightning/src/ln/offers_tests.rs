@@ -153,16 +153,16 @@ fn announce_node_address<'a, 'b, 'c>(
 	}
 }
 
-#[rustfmt::skip]
-fn resolve_introduction_node<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &BlindedMessagePath) -> PublicKey {
+fn resolve_introduction_node<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, path: &BlindedMessagePath,
+) -> PublicKey {
 	path.public_introduction_node_id(&node.network_graph.read_only())
 		.and_then(|node_id| node_id.as_pubkey().ok())
 		.unwrap()
 }
 
-#[rustfmt::skip]
 fn route_bolt12_payment<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice,
 ) {
 	// Monitor added when handling the invoice onion message.
 	check_added_monitors(node, 1);
@@ -180,9 +180,9 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 	do_pass_along_path(args);
 }
 
-#[rustfmt::skip]
 fn claim_bolt12_payment<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext, invoice: &Bolt12Invoice
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext,
+	invoice: &Bolt12Invoice,
 ) {
 	let recipient = &path[path.len() - 1];
 	let payment_purpose = match get_event!(recipient, Event::PaymentClaimable) {

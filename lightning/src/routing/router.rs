@@ -89,8 +89,9 @@ where
 	ES::Target: EntropySource,
 {
 	/// Creates a new router.
-	#[rustfmt::skip]
-	pub fn new(network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP) -> Self {
+	pub fn new(
+		network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP,
+	) -> Self {
 		Self { network_graph, logger, entropy_source, scorer, score_params }
 	}
 }
@@ -235,20 +236,16 @@ impl FixedRouter {
 }
 
 impl Router for FixedRouter {
-	#[rustfmt::skip]
 	fn find_route(
 		&self, _payer: &PublicKey, _route_params: &RouteParameters,
-		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
 	) -> Result<Route, &'static str> {
 		self.route.lock().unwrap().take().ok_or("Can't use this router to return multiple routes")
 	}
 
-	#[rustfmt::skip]
-	fn create_blinded_payment_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	> (
+	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>
+		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		// Should be unreachable as this router is only intended to provide a one-time payment route.
 		debug_assert!(false);
@@ -275,11 +272,10 @@ pub trait Router {
 	///
 	/// Includes a [`PaymentHash`] and a [`PaymentId`] to be able to correlate the request with a specific
 	/// payment.
-	#[rustfmt::skip]
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
-		_payment_hash: PaymentHash, _payment_id: PaymentId
+		_payment_hash: PaymentHash, _payment_id: PaymentId,
 	) -> Result<Route, &'static str> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
 	}
@@ -287,12 +283,9 @@ pub trait Router {
 	/// Creates [`BlindedPaymentPath`]s for payment to the `recipient` node. The channels in `first_hops`
 	/// are assumed to be with the `recipient`'s peers. The payment secret and any constraints are
 	/// given in `tlvs`.
-	#[rustfmt::skip]
-	fn create_blinded_payment_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	> (
+	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 }
 
@@ -404,8 +397,9 @@ impl InFlightHtlcs {
 
 	/// Adds a known HTLC given the public key of the HTLC source, target, and short channel
 	/// id.
-	#[rustfmt::skip]
-	pub fn add_inflight_htlc(&mut self, source: &NodeId, target: &NodeId, channel_scid: u64, used_msat: u64){
+	pub fn add_inflight_htlc(
+		&mut self, source: &NodeId, target: &NodeId, channel_scid: u64, used_msat: u64,
+	) {
 		self.0
 			.entry((channel_scid, source < target))
 			.and_modify(|used_liquidity_msat| *used_liquidity_msat += used_msat)
@@ -414,8 +408,9 @@ impl InFlightHtlcs {
 
 	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
 	/// id.
-	#[rustfmt::skip]
-	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
+	pub fn used_liquidity_msat(
+		&self, source: &NodeId, target: &NodeId, channel_scid: u64,
+	) -> Option<u64> {
 		self.0.get(&(channel_scid, source < target)).map(|v| *v)
 	}
 }
@@ -1125,8 +1120,9 @@ impl PaymentParameters {
 	/// a power of 1/2. See [`PaymentParameters::max_channel_saturation_power_of_half`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
-	#[rustfmt::skip]
-	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
+	pub fn with_max_channel_saturation_power_of_half(
+		self, max_channel_saturation_power_of_half: u8,
+	) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
 
@@ -1215,8 +1211,9 @@ impl RouteParametersConfig {
 	/// a power of 1/2. See [`PaymentParameters::max_channel_saturation_power_of_half`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
-	#[rustfmt::skip]
-	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
+	pub fn with_max_channel_saturation_power_of_half(
+		self, max_channel_saturation_power_of_half: u8,
+	) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
 }
@@ -3813,7 +3810,6 @@ fn build_route_from_hops_internal<L: Deref>(
 
 	impl ScoreLookUp for HopScorer {
 		type ScoreParams = ();
-		#[rustfmt::skip]
 		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop,
 			_usage: ChannelUsage, _score_params: &Self::ScoreParams) -> u64
 		{
@@ -9064,9 +9060,15 @@ pub(crate) mod bench_utils {
 		return Ok((graph_res?, scorer_res?));
 	}
 
-	#[rustfmt::skip]
-	pub(crate) fn read_graph_scorer(logger: &TestLogger)
-	-> Result<(Arc<NetworkGraph<&TestLogger>>, ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>), &'static str> {
+	pub(crate) fn read_graph_scorer(
+		logger: &TestLogger,
+	) -> Result<
+		(
+			Arc<NetworkGraph<&TestLogger>>,
+			ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>,
+		),
+		&'static str,
+	> {
 		let (mut graph_file, mut scorer_file) = get_graph_scorer_file()?;
 		let mut graph_buffer = Vec::new();
 		let mut scorer_buffer = Vec::new();

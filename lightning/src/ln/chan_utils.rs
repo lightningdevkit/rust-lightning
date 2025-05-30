@@ -423,8 +423,9 @@ impl Readable for CounterpartyCommitmentSecrets {
 
 /// Derives a per-commitment-transaction private key (eg an htlc key or delayed_payment key)
 /// from the base secret and the per_commitment_point.
-#[rustfmt::skip]
-pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> SecretKey {
+pub fn derive_private_key<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey,
+) -> SecretKey {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
@@ -553,8 +554,10 @@ impl TxCreationKeys {
 
 	/// Generate per-state keys from channel static keys.
 	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
-	#[rustfmt::skip]
-	pub fn from_channel_static_keys<T: secp256k1::Signing + secp256k1::Verification>(per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> TxCreationKeys {
+	pub fn from_channel_static_keys<T: secp256k1::Signing + secp256k1::Verification>(
+		per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys,
+		countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>,
+	) -> TxCreationKeys {
 		TxCreationKeys::derive_new(
 			&secp_ctx,
 			&per_commitment_point,
@@ -594,8 +597,9 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 
 /// Returns the script for the counterparty's output on a holder's commitment transaction based on
 /// the channel type.
-#[rustfmt::skip]
-pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
+pub fn get_counterparty_payment_script(
+	channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey,
+) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
 		get_to_countersigner_keyed_anchor_redeemscript(payment_key).to_p2wsh()
 	} else {
@@ -736,8 +740,9 @@ pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, channel_type_feature
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
 /// Note that the order of funding public keys does not matter.
-#[rustfmt::skip]
-pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &PublicKey) -> ScriptBuf {
+pub fn make_funding_redeemscript(
+	broadcaster: &PublicKey, countersignatory: &PublicKey,
+) -> ScriptBuf {
 	let broadcaster_funding_key = broadcaster.serialize();
 	let countersignatory_funding_key = countersignatory.serialize();
 
@@ -862,8 +867,9 @@ pub fn build_htlc_input_witness(
 /// [`CounterpartyReceivedHTLCOutput`]: crate::chain::package::CounterpartyReceivedHTLCOutput
 /// [`HolderHTLCOutput`]: crate::chain::package::HolderHTLCOutput
 /// [`HolderFundingOutput`]: crate::chain::package::HolderFundingOutput
-#[rustfmt::skip]
-pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features(features: &ChannelTypeFeatures) -> Option<()> {
+pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features(
+	features: &ChannelTypeFeatures,
+) -> Option<()> {
 	let mut legacy_version_bit_set = ChannelTypeFeatures::only_static_remote_key();
 	legacy_version_bit_set.set_scid_privacy_required();
 	legacy_version_bit_set.set_zero_conf_required();
@@ -925,8 +931,9 @@ pub(crate) fn get_keyed_anchor_output<'a>(commitment_tx: &'a Transaction, fundin
 
 /// Returns the witness required to satisfy and spend a keyed anchor (non-zero-fee-commitments)
 /// input.
-#[rustfmt::skip]
-pub fn build_keyed_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
+pub fn build_keyed_anchor_input_witness(
+	funding_key: &PublicKey, funding_sig: &Signature,
+) -> Witness {
 	let anchor_redeem_script = get_keyed_anchor_redeemscript(funding_key);
 	let mut ret = Witness::new();
 	ret.push_ecdsa_signature(&BitcoinSignature::sighash_all(*funding_sig));
@@ -1324,18 +1331,22 @@ impl BuiltCommitmentTransaction {
 	}
 
 	/// Signs the counterparty's commitment transaction.
-	#[rustfmt::skip]
-	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(
+		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		secp_ctx: &Secp256k1<T>,
+	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
 	}
 
 	/// Signs the holder commitment transaction because we are about to broadcast it.
-	#[rustfmt::skip]
 	pub fn sign_holder_commitment<T: secp256k1::Signing, ES: Deref>(
 		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Signature where ES::Target: EntropySource {
+		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+	) -> Signature
+	where
+		ES::Target: EntropySource,
+	{
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign_with_aux_rand(secp_ctx, &sighash, funding_key, entropy_source)
 	}
@@ -1465,8 +1476,10 @@ impl<'a> TrustedClosingTransaction<'a> {
 
 	/// Sign a transaction, either because we are counter-signing the counterparty's transaction or
 	/// because we are about to broadcast a holder transaction.
-	#[rustfmt::skip]
-	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn sign<T: secp256k1::Signing>(
+		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		secp_ctx: &Secp256k1<T>,
+	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
 	}
@@ -2085,10 +2098,8 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 ///
 /// This function gets the shared secret from relevant channel public keys and can be used to
 /// "decrypt" the commitment transaction number given a commitment transaction on-chain.
-#[rustfmt::skip]
 pub fn get_commitment_transaction_number_obscure_factor(
-	broadcaster_payment_basepoint: &PublicKey,
-	countersignatory_payment_basepoint: &PublicKey,
+	broadcaster_payment_basepoint: &PublicKey, countersignatory_payment_basepoint: &PublicKey,
 	outbound_from_broadcaster: bool,
 ) -> u64 {
 	let mut sha = Sha256::engine();
@@ -2184,8 +2195,9 @@ mod tests {
 			)
 		}
 
-		#[rustfmt::skip]
-		fn verify<'a>(&self, tx: &'a CommitmentTransaction) -> Result<TrustedCommitmentTransaction<'a>, ()> {
+		fn verify<'a>(
+			&self, tx: &'a CommitmentTransaction,
+		) -> Result<TrustedCommitmentTransaction<'a>, ()> {
 			tx.verify(&self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx)
 		}
 	}

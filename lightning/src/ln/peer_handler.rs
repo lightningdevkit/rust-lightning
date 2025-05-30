@@ -170,8 +170,10 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	#[rustfmt::skip]
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+	fn handle_message(
+		&self, _message: OffersMessage, _context: Option<OffersContext>,
+		_responder: Option<Responder>,
+	) -> Option<(OffersMessage, ResponseInstruction)> {
 		None
 	}
 }
@@ -194,13 +196,18 @@ impl DNSResolverMessageHandler for IgnoringMessageHandler {
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	#[rustfmt::skip]
-	fn handle_custom_message(&self, _message: Infallible, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
+	fn handle_custom_message(
+		&self, _message: Infallible, _context: Option<Vec<u8>>, _responder: Option<Responder>,
+	) -> Option<(Infallible, ResponseInstruction)> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
-	#[rustfmt::skip]
-	fn read_custom_message<R: io::Read>(&self, _msg_type: u64, _buffer: &mut R) -> Result<Option<Infallible>, msgs::DecodeError> where Self: Sized {
+	fn read_custom_message<R: io::Read>(
+		&self, _msg_type: u64, _buffer: &mut R,
+	) -> Result<Option<Infallible>, msgs::DecodeError>
+	where
+		Self: Sized,
+	{
 		Ok(None)
 	}
 	fn release_pending_custom_messages(&self) -> Vec<(Infallible, MessageSendInstructions)> {
@@ -240,15 +247,17 @@ impl Writeable for Infallible {
 
 impl wire::CustomMessageReader for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	#[rustfmt::skip]
-	fn read<R: io::Read>(&self, _message_type: u16, _buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+	fn read<R: io::Read>(
+		&self, _message_type: u16, _buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 		Ok(None)
 	}
 }
 
 impl CustomMessageHandler for IgnoringMessageHandler {
-	#[rustfmt::skip]
-	fn handle_custom_message(&self, _msg: Infallible, _sender_node_id: PublicKey) -> Result<(), LightningError> {
+	fn handle_custom_message(
+		&self, _msg: Infallible, _sender_node_id: PublicKey,
+	) -> Result<(), LightningError> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
@@ -372,8 +381,9 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_update_fail_htlc(&self, their_node_id: PublicKey, msg: &msgs::UpdateFailHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	#[rustfmt::skip]
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
+	fn handle_update_fail_malformed_htlc(
+		&self, their_node_id: PublicKey, msg: &msgs::UpdateFailMalformedHTLC,
+	) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_commitment_signed(&self, their_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
@@ -391,8 +401,9 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_update_fee(&self, their_node_id: PublicKey, msg: &msgs::UpdateFee) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	#[rustfmt::skip]
-	fn handle_announcement_signatures(&self, their_node_id: PublicKey, msg: &msgs::AnnouncementSignatures) {
+	fn handle_announcement_signatures(
+		&self, their_node_id: PublicKey, msg: &msgs::AnnouncementSignatures,
+	) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_channel_reestablish(&self, their_node_id: PublicKey, msg: &msgs::ChannelReestablish) {
@@ -846,8 +857,9 @@ pub trait APeerManager {
 	type NST: NodeSigner + ?Sized;
 	type NS: Deref<Target = Self::NST>;
 	/// Gets a reference to the underlying [`PeerManager`].
-	#[rustfmt::skip]
-	fn as_ref(&self) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
+	fn as_ref(
+		&self,
+	) -> &PeerManager<Self::Descriptor, Self::CM, Self::RM, Self::OM, Self::L, Self::CMH, Self::NS>;
 }
 
 impl<
@@ -1135,8 +1147,10 @@ where
 	/// incremented irregularly internally. In general it is best to simply use the current UNIX
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
-	#[rustfmt::skip]
-	pub fn new(message_handler: MessageHandler<CM, RM, OM, CMH>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
+	pub fn new(
+		message_handler: MessageHandler<CM, RM, OM, CMH>, current_time: u32,
+		ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS,
+	) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -3124,8 +3138,9 @@ mod tests {
 
 	impl wire::CustomMessageReader for TestCustomMessageHandler {
 		type CustomMessage = Infallible;
-		#[rustfmt::skip]
-		fn read<R: io::Read>(&self, _: u16, _: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+		fn read<R: io::Read>(
+			&self, _: u16, _: &mut R,
+		) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 			Ok(None)
 		}
 	}
@@ -3142,8 +3157,9 @@ mod tests {
 			self.conn_tracker.peer_disconnected(their_node_id);
 		}
 
-		#[rustfmt::skip]
-		fn peer_connected(&self, their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+		fn peer_connected(
+			&self, their_node_id: PublicKey, _msg: &Init, _inbound: bool,
+		) -> Result<(), ()> {
 			self.conn_tracker.peer_connected(their_node_id)
 		}
 

@@ -1547,10 +1547,9 @@ fn pubkey_from_hex(hex: &str) -> PublicKey {
 	PublicKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
 }
 
-#[rustfmt::skip]
 fn update_add_msg(
 	amount_msat: u64, cltv_expiry: u32, blinding_point: Option<PublicKey>,
-	onion_routing_packet: msgs::OnionPacket
+	onion_routing_packet: msgs::OnionPacket,
 ) -> msgs::UpdateAddHTLC {
 	msgs::UpdateAddHTLC {
 		channel_id: ChannelId::from_bytes([0; 32]),

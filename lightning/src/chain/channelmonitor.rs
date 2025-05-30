@@ -1002,8 +1002,9 @@ impl HolderCommitment {
 		self.tx.nondust_htlcs().iter().chain(self.dust_htlcs.iter().map(|(htlc, _)| htlc))
 	}
 
-	#[rustfmt::skip]
-	fn htlcs_with_sources(&self) -> impl Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> {
+	fn htlcs_with_sources(
+		&self,
+	) -> impl Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> {
 		let mut sources = self.nondust_htlc_sources.iter();
 		let nondust_htlcs = self.tx.nondust_htlcs().iter().map(move |htlc| {
 			let mut source = None;
@@ -1526,8 +1527,9 @@ impl<'a, L: Deref> WithChannelMonitor<'a, L>
 where
 	L::Target: Logger,
 {
-	#[rustfmt::skip]
-	pub(crate) fn from<S: EcdsaChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>, payment_hash: Option<PaymentHash>) -> Self {
+	pub(crate) fn from<S: EcdsaChannelSigner>(
+		logger: &'a L, monitor: &ChannelMonitor<S>, payment_hash: Option<PaymentHash>,
+	) -> Self {
 		Self::from_impl(logger, &*monitor.inner.lock().unwrap(), payment_hash)
 	}
 
@@ -1696,10 +1698,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// This is used to provide the counterparty commitment transaction directly to the monitor
 	/// before the initial persistence of a new channel.
-	#[rustfmt::skip]
 	pub(crate) fn provide_initial_counterparty_commitment_tx<L: Deref>(
 		&self, commitment_tx: CommitmentTransaction, logger: &L,
-	) where L::Target: Logger
+	) where
+		L::Target: Logger,
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
@@ -1771,13 +1773,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	#[rustfmt::skip]
 	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(
-		&self,
-		updates: &ChannelMonitorUpdate,
-		broadcaster: &B,
-		fee_estimator: &F,
-		logger: &L,
+		&self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L,
 	) -> Result<(), ()>
 	where
 		B::Target: BroadcasterInterface,
@@ -1873,9 +1870,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// [`SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	/// [`BumpTransaction`]: crate::events::Event::BumpTransaction
-	#[rustfmt::skip]
-	pub fn process_pending_events<H: Deref, L: Deref>(&self, handler: &H, logger: &L)
-	-> Result<(), ReplayEvent> where H::Target: EventHandler, L::Target: Logger {
+	pub fn process_pending_events<H: Deref, L: Deref>(
+		&self, handler: &H, logger: &L,
+	) -> Result<(), ReplayEvent>
+	where
+		H::Target: EventHandler,
+		L::Target: Logger,
+	{
 		let mut ev;
 		process_events_body!(Some(self), logger, ev, handler.handle_event(ev))
 	}
@@ -1883,13 +1884,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Processes any events asynchronously.
 	///
 	/// See [`Self::process_pending_events`] for more information.
-	#[rustfmt::skip]
 	pub async fn process_pending_events_async<
-		Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future,
+		Future: core::future::Future<Output = Result<(), ReplayEvent>>,
+		H: Fn(Event) -> Future,
 		L: Deref,
 	>(
 		&self, handler: &H, logger: &L,
-	) -> Result<(), ReplayEvent> where L::Target: Logger {
+	) -> Result<(), ReplayEvent>
+	where
+		L::Target: Logger,
+	{
 		let mut ev;
 		process_events_body!(Some(self), logger, ev, { handler(ev).await })
 	}
@@ -1939,8 +1943,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// may have been created prior to upgrading.
 	///
 	/// [`Persist::update_persisted_channel`]: crate::chain::chainmonitor::Persist::update_persisted_channel
-	#[rustfmt::skip]
-	pub fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+	pub fn counterparty_commitment_txs_from_update(
+		&self, update: &ChannelMonitorUpdate,
+	) -> Vec<CommitmentTransaction> {
 		self.inner.lock().unwrap().counterparty_commitment_txs_from_update(update)
 	}
 
@@ -2021,9 +2026,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
 	/// revoked commitment transaction.
 	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
-	#[rustfmt::skip]
 	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
-	where L::Target: Logger {
+	where
+		L::Target: Logger,
+	{
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.unsafe_get_latest_holder_commitment_txn(&logger)
@@ -2213,9 +2219,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Returns true if the monitor has pending claim requests that are not fully confirmed yet.
-	#[rustfmt::skip]
-	pub fn has_pending_claims(&self) -> bool
-	{
+	pub fn has_pending_claims(&self) -> bool {
 		self.inner.lock().unwrap().onchain_tx_handler.has_pending_claims()
 	}
 
@@ -2898,8 +2902,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		res
 	}
 
-	#[rustfmt::skip]
-	pub(crate) fn get_stored_preimages(&self) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
+	pub(crate) fn get_stored_preimages(
+		&self,
+	) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
 		self.inner.lock().unwrap().payment_preimages.clone()
 	}
 }
@@ -4147,8 +4152,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// revoked using data in holder_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
 	/// Returns None unless the transaction is definitely one of our commitment transactions.
-	#[rustfmt::skip]
-	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L) -> Option<(Vec<PackageTemplate>, TransactionOutputs)> where L::Target: Logger {
+	fn check_spend_holder_transaction<L: Deref>(
+		&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L,
+	) -> Option<(Vec<PackageTemplate>, TransactionOutputs)>
+	where
+		L::Target: Logger,
+	{
 		let commitment_txid = tx.compute_txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -4168,12 +4177,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if self.funding.current_holder_commitment.tx.trust().txid() == commitment_txid {
 			is_holder_tx = true;
 			log_info!(logger, "Got broadcast of latest holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
-			let res = self.get_broadcasted_holder_claims(&self.funding.current_holder_commitment.tx, height);
-			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.funding.current_holder_commitment.tx);
+			let res = self
+				.get_broadcasted_holder_claims(&self.funding.current_holder_commitment.tx, height);
+			let mut to_watch = self
+				.get_broadcasted_holder_watch_outputs(&self.funding.current_holder_commitment.tx);
 			append_onchain_update!(res, to_watch);
 			fail_unbroadcast_htlcs!(
-				self, "latest holder", commitment_txid, tx, height, block_hash,
-				self.funding.current_holder_commitment.htlcs_with_sources(), logger
+				self,
+				"latest holder",
+				commitment_txid,
+				tx,
+				height,
+				block_hash,
+				self.funding.current_holder_commitment.htlcs_with_sources(),
+				logger
 			);
 		} else if let &Some(ref holder_commitment) = &self.funding.prev_holder_commitment {
 			if holder_commitment.tx.trust().txid() == commitment_txid {
@@ -4183,8 +4200,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(&holder_commitment.tx);
 				append_onchain_update!(res, to_watch);
 				fail_unbroadcast_htlcs!(
-					self, "previous holder", commitment_txid, tx, height, block_hash,
-					holder_commitment.htlcs_with_sources(), logger
+					self,
+					"previous holder",
+					commitment_txid,
+					tx,
+					height,
+					block_hash,
+					holder_commitment.htlcs_with_sources(),
+					logger
 				);
 			}
 		}
@@ -4873,10 +4896,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	/// Check if any transaction broadcasted is resolving HTLC output by a success or timeout on a holder
 	/// or counterparty commitment tx, if so send back the source, preimage if found and payment_hash of resolved HTLC
-	#[rustfmt::skip]
 	fn is_resolving_htlc_output<L: Deref>(
-		&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &WithChannelMonitor<L>,
-	) where L::Target: Logger {
+		&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash,
+		logger: &WithChannelMonitor<L>,
+	) where
+		L::Target: Logger,
+	{
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
 			let htlc_claim = HTLCClaim::from_witness(&input.witness);
@@ -4985,8 +5010,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
-			if input.previous_output.txid == self.funding.current_holder_commitment.tx.trust().txid() {
-				let htlcs_with_sources = self.funding.current_holder_commitment.htlcs_with_sources();
+			if input.previous_output.txid
+				== self.funding.current_holder_commitment.tx.trust().txid()
+			{
+				let htlcs_with_sources =
+					self.funding.current_holder_commitment.htlcs_with_sources();
 				scan_commitment!(htlcs_with_sources, "our latest holder commitment tx", true);
 			}
 			if let Some(ref prev_holder_commitment) = self.funding.prev_holder_commitment {
@@ -4995,17 +5023,29 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					scan_commitment!(htlcs_with_sources, "our previous holder commitment tx", true);
 				}
 			}
-			if let Some(ref htlc_outputs) = self.funding.counterparty_claimable_outpoints.get(&input.previous_output.txid) {
-				scan_commitment!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))),
-					"counterparty commitment tx", false);
+			if let Some(ref htlc_outputs) =
+				self.funding.counterparty_claimable_outpoints.get(&input.previous_output.txid)
+			{
+				scan_commitment!(
+					htlc_outputs
+						.iter()
+						.map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))),
+					"counterparty commitment tx",
+					false
+				);
 			}
 
 			// Check that scan_commitment, above, decided there is some source worth relaying an
 			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
 			if let Some((source, payment_hash, amount_msat)) = payment_data {
 				if accepted_preimage_claim {
-					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
+					if !self.pending_monitor_events.iter().any(|update| {
+						if let &MonitorEvent::HTLCEvent(ref upd) = update {
+							upd.source == source
+						} else {
+							false
+						}
+					}) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.compute_txid(),
 							height,
@@ -5025,10 +5065,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						}));
 					}
 				} else if offered_preimage_claim {
-					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+					if !self.pending_monitor_events.iter().any(|update| {
+						if let &MonitorEvent::HTLCEvent(ref upd) = update {
 							upd.source == source
-						} else { false }) {
+						} else {
+							false
+						}
+					}) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.compute_txid(),
 							transaction: Some(tx.clone()),
@@ -5049,7 +5092,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}
 				} else {
 					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
-						if entry.height != height { return true; }
+						if entry.height != height {
+							return true;
+						}
 						match entry.event {
 							OnchainEvent::HTLCUpdate { source: ref htlc_source, .. } => {
 								*htlc_source != source

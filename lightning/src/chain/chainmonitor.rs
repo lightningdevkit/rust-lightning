@@ -402,8 +402,9 @@ where
 	/// pre-filter blocks or only fetch blocks matching a compact filter. Otherwise, clients may
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
-	#[rustfmt::skip]
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
+	pub fn new(
+		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
+	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
 			chain_source,
@@ -446,8 +447,9 @@ where
 	///
 	/// Note that the result holds a mutex over our monitor set, and should not be held
 	/// indefinitely.
-	#[rustfmt::skip]
-	pub fn get_monitor(&self, channel_id: ChannelId) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
+	pub fn get_monitor(
+		&self, channel_id: ChannelId,
+	) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
 		let lock = self.monitors.read().unwrap();
 		if lock.get(&channel_id).is_some() {
 			Ok(LockedChannelMonitor { lock, channel_id })
