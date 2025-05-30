@@ -6737,11 +6737,13 @@ impl<SP: Deref> FundedChannel<SP> where
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
-		core::iter::once(&self.funding)
+		let can_send_update_fee = core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.map(|funding| self.validate_send_update_fee(funding, feerate_per_kw, fee_estimator, logger))
-			.collect::<Result<(), ()>>()
-			.ok()?;
+			.map(|funding| self.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger))
+			.all(|can_send_update_fee| can_send_update_fee);
+		if !can_send_update_fee {
+			return None;
+		}
 
 		// Some of the checks of `can_generate_new_commitment` have already been done above, but
 		// it's much more brittle to not use it in favor of checking the remaining flags left, as it
@@ -6764,10 +6766,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		})
 	}
 
-	fn validate_send_update_fee<F: Deref, L: Deref>(
+	fn can_send_update_fee<F: Deref, L: Deref>(
 		&self, funding: &FundingScope, feerate_per_kw: u32,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
-	) -> Result<(), ()>
+	) -> bool
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -6784,21 +6786,21 @@ impl<SP: Deref> FundedChannel<SP> where
 		if holder_balance_msat < buffer_fee_msat + commitment_data.stats.total_anchors_sat * 1000 + funding.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
-			return Err(());
+			return false;
 		}
 
 		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
-			return Err(());
+			return false;
 		}
 		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
-			return Err(());
+			return false;
 		}
 
-		Ok(())
+		return true;
 	}
 
 	/// Removes any uncommitted inbound HTLCs and resets the state of uncommitted outbound HTLC
