@@ -921,41 +921,46 @@ impl PaymentParameters {
 	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
-	pub fn from_bolt11_invoice(invoice: &Bolt11Invoice) -> Self {
+	///
+	/// Will return an error if an incompatible invoice is provided.
+	pub fn from_bolt11_invoice(invoice: &Bolt11Invoice) -> Result<Self, ()>{
 		let mut payment_params = Self::from_node_id(
 			invoice.recover_payee_pub_key(),
 			invoice.min_final_cltv_expiry_delta() as u32,
 		)
-		.with_route_hints(invoice.route_hints())
-		.unwrap();
+		.with_route_hints(invoice.route_hints())?;
 
 		if let Some(expiry) = invoice.expires_at() {
 			payment_params = payment_params.with_expiry_time(expiry.as_secs());
 		}
 		if let Some(features) = invoice.features() {
-			payment_params = payment_params.with_bolt11_features(features.clone()).unwrap();
+			payment_params = payment_params.with_bolt11_features(features.clone())?;
 		}
 
-		payment_params
+		Ok(payment_params)
 	}
 
 	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
-	pub fn from_bolt12_invoice(invoice: &Bolt12Invoice) -> Self {
-		Self::blinded(invoice.payment_paths().to_vec())
-			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
-			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
+	///
+	/// Will return an error if an incompatible invoice is provided.
+	pub fn from_bolt12_invoice(invoice: &Bolt12Invoice) -> Result<Self, ()> {
+		Ok(Self::blinded(invoice.payment_paths().to_vec())
+			.with_bolt12_features(invoice.invoice_features().clone())?
+			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs())))
 	}
 
 	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
+	///
+	/// Will return an error if an incompatible invoice is provided.
 	#[cfg(async_payments)]
-	pub fn from_static_invoice(invoice: &StaticInvoice) -> Self {
-		Self::blinded(invoice.payment_paths().to_vec())
-			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
-			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
+	pub fn from_static_invoice(invoice: &StaticInvoice) -> Result<Self, ()> {
+		Ok(Self::blinded(invoice.payment_paths().to_vec())
+			.with_bolt12_features(invoice.invoice_features().clone())?
+			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs())))
 	}
 
 	/// Creates parameters for paying to a blinded payee from the provided blinded route hints.
@@ -1075,7 +1080,7 @@ impl PaymentParameters {
 }
 
 /// A struct for configuring parameters for routing the payment.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct RouteParametersConfig {
 	/// The maximum total fees, in millisatoshi, that may accrue during route finding.
 	///

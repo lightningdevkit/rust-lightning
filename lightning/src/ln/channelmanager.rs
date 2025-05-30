@@ -66,7 +66,7 @@ use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MessageSendEvent};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{Bolt11PaymentError, OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
@@ -131,7 +131,7 @@ use core::time::Duration;
 use core::ops::Deref;
 use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub use crate::ln::outbound_payment::{Bolt11PaymentError, Bolt12PaymentError, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 #[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) use crate::ln::outbound_payment::PaymentSendFailure;
 use crate::ln::script::ShutdownScript;
@@ -4864,10 +4864,11 @@ where
 	///
 	/// # Handling Invoice Amounts
 	/// Some invoices include a specific amount, while others require you to specify one.
-	/// - If the invoice **includes** an amount, user must not provide `amount_msats`.
+	/// - If the invoice **includes** an amount, user may provide an amount greater or equal to it
+	/// to allow for overpayments.
 	/// - If the invoice **doesn't include** an amount, you'll need to specify `amount_msats`.
 	///
-	/// If these conditions aren’t met, the function will return `Bolt11PaymentError::InvalidAmount`.
+	/// If these conditions aren’t met, the function will return [`Bolt11PaymentError::InvalidAmount`].
 	///
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
@@ -12516,6 +12517,10 @@ where
 							$invoice.invoice_features()
 						);
 						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
+					},
+					Err(Bolt12PaymentError::InvalidInvoice) => {
+						log_trace!($logger, "Failed paying invalid/incompatible invoice");
+						return None;
 					},
 					Err(Bolt12PaymentError::SendingFailed(e)) => {
 						log_trace!($logger, "Failed paying invoice: {:?}", e);
