@@ -150,7 +150,9 @@ where
 	/// but MPP can no longer be used to pay it.
 	///
 	/// The client agrees to paying an opening fee equal to
-	/// `max(min_fee_msat, proportional*(payment_size_msat/1_000_000))`.
+	/// `max(min_fee_msat, proportional * (payment_size_msat / 1_000_000))`.
+	///
+	/// Returns the used [`LSPSRequestId`] that was used for the buy request.
 	///
 	/// [`OpeningParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::OpeningParametersReady
 	/// [`InvoiceParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::InvoiceParametersReady
@@ -230,8 +232,9 @@ where
 
 	fn handle_get_info_error(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
-		_error: LSPSResponseError,
+		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
+		let event_queue_notifier = self.pending_events.notifier();
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -247,7 +250,21 @@ where
 					});
 				}
 
-				Ok(())
+				let lightning_error = LightningError {
+					err: format!(
+						"Received get_info error response for request {:?}: {:?}",
+						request_id, error
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Error),
+				};
+
+				event_queue_notifier.enqueue(LSPS2ClientEvent::GetInfoFailed {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					error,
+				});
+
+				Err(lightning_error)
 			},
 			None => {
 				return Err(LightningError { err: format!("Received error response for a get_info request from an unknown counterparty ({:?})",counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
@@ -308,8 +325,9 @@ where
 
 	fn handle_buy_error(
 		&self, request_id: LSPSRequestId, counterparty_node_id: &PublicKey,
-		_error: LSPSResponseError,
+		error: LSPSResponseError,
 	) -> Result<(), LightningError> {
+		let event_queue_notifier = self.pending_events.notifier();
 		let outer_state_lock = self.per_peer_state.read().unwrap();
 		match outer_state_lock.get(counterparty_node_id) {
 			Some(inner_state_lock) => {
@@ -320,7 +338,21 @@ where
 					action: ErrorAction::IgnoreAndLog(Level::Info),
 				})?;
 
-				Ok(())
+				let lightning_error = LightningError {
+					err: format!(
+						"Received buy error response for request {:?}: {:?}",
+						request_id, error
+					),
+					action: ErrorAction::IgnoreAndLog(Level::Error),
+				};
+
+				event_queue_notifier.enqueue(LSPS2ClientEvent::BuyRequestFailed {
+					request_id,
+					counterparty_node_id: *counterparty_node_id,
+					error,
+				});
+
+				Err(lightning_error)
 			},
 			None => {
 				return Err(LightningError { err: format!("Received error response for a buy request from an unknown counterparty ({:?})", counterparty_node_id), action: ErrorAction::IgnoreAndLog(Level::Info)});
