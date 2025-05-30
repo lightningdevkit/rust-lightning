@@ -6364,8 +6364,10 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		#[cfg(any(test, fuzzing))]
 		{
-			*self.funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
-			*self.funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			for funding in core::iter::once(&mut self.funding).chain(self.pending_funding.iter_mut()) {
+				*funding.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
+				*funding.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
+			}
 		}
 
 		match &self.context.holder_signer {
