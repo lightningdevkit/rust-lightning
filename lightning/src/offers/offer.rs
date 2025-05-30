@@ -1216,6 +1216,15 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 			return Err(Bolt12SemanticError::MissingDescription);
 		}
 
+		if let Some(currency_bytes) = currency {
+			let currency_str = core::str::from_utf8(&currency_bytes)
+				.map_err(|_| Bolt12SemanticError::InvalidCurrencyCode)?;
+
+			if !currency_str.chars().all(|c| c.is_ascii_uppercase()) {
+				return Err(Bolt12SemanticError::InvalidCurrencyCode);
+			}
+		}
+
 		let features = features.unwrap_or_else(OfferFeatures::empty);
 
 		let absolute_expiry =
@@ -1818,6 +1827,36 @@ mod tests {
 			Err(e) => assert_eq!(
 				e,
 				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(1000);
+		tlv_stream.0.currency = Some(b"\xFF\xFE\xFD"); // invalid UTF-8 bytes
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidCurrencyCode)
+			),
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(1000);
+		tlv_stream.0.currency = Some(b"usd"); // invalid ISO 4217 code
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidCurrencyCode)
 			),
 		}
 	}
