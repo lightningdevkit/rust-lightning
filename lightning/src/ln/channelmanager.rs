@@ -16211,8 +16211,8 @@ mod tests {
 		// Tests that the local node will retry without zero fee commitments in the case where the
 		// remote node supports the feature but does not accept it.
 		let mut initiator_cfg = test_default_channel_config();
-		initiator_cfg .channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-		initiator_cfg .channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 
 		let mut receiver_cfg = test_default_channel_config();
 		receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
@@ -16232,8 +16232,8 @@ mod tests {
 		// Tests that the local node will retry with static remote key when zero fee commitments
 		// are supported (but not accepted), but not legacy anchors.
 		let mut initiator_cfg = test_default_channel_config();
-		initiator_cfg .channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
-		initiator_cfg .channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 
 		let mut receiver_cfg = test_default_channel_config();
 		receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
