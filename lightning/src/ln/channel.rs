@@ -9141,14 +9141,6 @@ impl<SP: Deref> FundedChannel<SP> where
 				"Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
 
-		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
-			let channel_total_msat = funding.get_value_satoshis() * 1000;
-			if amount_msat > channel_total_msat {
-				return Err((LocalHTLCFailureReason::AmountExceedsCapacity,
-					format!("Cannot send amount {}, because it is more than the total value of the channel {}", amount_msat, channel_total_msat)));
-			}
-		}
-
 		if amount_msat == 0 {
 			return Err((LocalHTLCFailureReason::ZeroAmount, "Cannot send 0-msat HTLC".to_owned()));
 		}
