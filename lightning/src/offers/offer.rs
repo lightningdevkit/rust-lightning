@@ -999,7 +999,9 @@ impl OfferContents {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(*amount_msats)),
-			Some(Amount::Currency { iso4217_code, amount }) => (Some(iso4217_code), Some(*amount)),
+			Some(Amount::Currency { iso4217_code, amount }) => {
+				(Some(iso4217_code.as_bytes()), Some(*amount))
+			},
 		};
 
 		let features = {
@@ -1076,7 +1078,59 @@ pub enum Amount {
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
-pub type CurrencyCode = [u8; 3];
+///
+/// Currency codes must be exactly 3 ASCII uppercase letters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CurrencyCode([u8; 3]);
+
+impl CurrencyCode {
+	/// Creates a new `CurrencyCode` from a 3-byte array.
+	///
+	/// Returns an error if the bytes are not valid UTF-8 or not all ASCII uppercase.
+	pub fn new(code: [u8; 3]) -> Result<Self, CurrencyCodeError> {
+		if !code.iter().all(|c| c.is_ascii_uppercase()) {
+			return Err(CurrencyCodeError);
+		}
+
+		Ok(Self(code))
+	}
+
+	/// Returns the currency code as a byte array.
+	pub fn as_bytes(&self) -> &[u8; 3] {
+		&self.0
+	}
+
+	/// Returns the currency code as a string slice.
+	pub fn as_str(&self) -> &str {
+		core::str::from_utf8(&self.0).expect("currency code is always valid UTF-8")
+	}
+}
+
+impl FromStr for CurrencyCode {
+	type Err = CurrencyCodeError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		if s.len() != 3 {
+			return Err(CurrencyCodeError);
+		}
+
+		let mut code = [0u8; 3];
+		code.copy_from_slice(s.as_bytes());
+		Self::new(code)
+	}
+}
+
+impl AsRef<[u8]> for CurrencyCode {
+	fn as_ref(&self) -> &[u8] {
+		&self.0
+	}
+}
+
+impl core::fmt::Display for CurrencyCode {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
 
 /// Quantity of items supported by an [`Offer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1115,7 +1169,7 @@ const OFFER_ISSUER_ID_TYPE: u64 = 22;
 tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
 	(OFFER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
-	(6, currency: CurrencyCode),
+	(6, currency: [u8; 3]),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(10, description: (String, WithoutLength)),
 	(12, features: (OfferFeatures, WithoutLength)),
@@ -1209,7 +1263,11 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 			},
 			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
 			(Some(_), None) => return Err(Bolt12SemanticError::MissingAmount),
-			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
+			(Some(currency_bytes), Some(amount)) => {
+				let iso4217_code = CurrencyCode::new(currency_bytes)
+					.map_err(|_| Bolt12SemanticError::InvalidCurrencyCode)?;
+				Some(Amount::Currency { iso4217_code, amount })
+			},
 		};
 
 		if amount.is_some() && description.is_none() {
@@ -1256,6 +1314,20 @@ impl core::fmt::Display for Offer {
 	}
 }
 
+/// An error indicating that a currency code is invalid.
+///
+/// A valid currency code must follow the ISO 4217 standard:
+/// - Exactly 3 characters in length.
+/// - Consist only of uppercase ASCII letters (A–Z).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurrencyCodeError;
+
+impl core::fmt::Display for CurrencyCodeError {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "invalid currency code: must be 3 uppercase ASCII letters (ISO 4217)")
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	#[cfg(not(c_bindings))]
@@ -1273,6 +1345,7 @@ mod tests {
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::nonce::Nonce;
+	use crate::offers::offer::CurrencyCode;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::types::features::OfferFeatures;
@@ -1541,7 +1614,8 @@ mod tests {
 	#[test]
 	fn builds_offer_with_amount() {
 		let bitcoin_amount = Amount::Bitcoin { amount_msats: 1000 };
-		let currency_amount = Amount::Currency { iso4217_code: *b"USD", amount: 10 };
+		let currency_amount =
+			Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 };
 
 		let offer = OfferBuilder::new(pubkey(42)).amount_msats(1000).build().unwrap();
 		let tlv_stream = offer.as_tlv_stream();
@@ -1818,6 +1892,36 @@ mod tests {
 			Err(e) => assert_eq!(
 				e,
 				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)
+			),
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(1000);
+		tlv_stream.0.currency = Some(b"\xFF\xFE\xFD"); // invalid UTF-8 bytes
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidCurrencyCode)
+			),
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.amount = Some(1000);
+		tlv_stream.0.currency = Some(b"usd"); // invalid ISO 4217 code
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidCurrencyCode)
 			),
 		}
 	}
