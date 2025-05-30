@@ -246,19 +246,27 @@ impl BlindedPaymentPath {
 		Self { inner_path, payinfo }
 	}
 
-	#[cfg(any(test, fuzzing))]
-	pub fn from_raw(
+	/// Builds a new [`BlindedPaymentPath`] from its constituent parts.
+	///
+	/// Useful when reconstructing a blinded path from previously serialized components.
+	///
+	/// Parameters:
+	/// * `introduction_node_id`: The public key of the introduction node in the path.
+	/// * `blinding_point`: The public key used for blinding the path.
+	/// * `blinded_hops`: The encrypted routing information for each hop in the path.
+	/// * `payinfo`: The [`BlindedPayInfo`] for the blinded path.
+	pub fn from_blinded_path_and_payinfo(
 		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>,
 		payinfo: BlindedPayInfo,
 	) -> Self {
-		Self {
-			inner_path: BlindedPath {
+		Self::from_parts(
+			BlindedPath {
 				introduction_node: IntroductionNode::NodeId(introduction_node_id),
 				blinding_point,
 				blinded_hops,
 			},
 			payinfo,
-		}
+		)
 	}
 
 	#[cfg(test)]

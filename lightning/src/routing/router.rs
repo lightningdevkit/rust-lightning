@@ -3827,7 +3827,7 @@ mod tests {
 	}
 
 	fn dummy_blinded_path(intro_node: PublicKey, payinfo: BlindedPayInfo) -> BlindedPaymentPath {
-		BlindedPaymentPath::from_raw(
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			intro_node, ln_test_utils::pubkey(42),
 			vec![
 				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
@@ -3838,7 +3838,7 @@ mod tests {
 	}
 
 	fn dummy_one_hop_blinded_path(intro_node: PublicKey, payinfo: BlindedPayInfo) -> BlindedPaymentPath {
-		BlindedPaymentPath::from_raw(
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			intro_node, ln_test_utils::pubkey(42),
 			vec![
 				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
@@ -7871,7 +7871,9 @@ mod tests {
 			cltv_expiry_delta: 15,
 			features: BlindedHopFeatures::empty(),
 		};
-		let blinded_path = BlindedPaymentPath::from_raw(nodes[2], ln_test_utils::pubkey(42), blinded_hops, blinded_payinfo.clone());
+		let blinded_path = BlindedPaymentPath::from_blinded_path_and_payinfo(
+			nodes[2], ln_test_utils::pubkey(42), blinded_hops, blinded_payinfo.clone()
+		);
 		let payment_params = PaymentParameters::blinded(vec![blinded_path.clone(), blinded_path.clone()]);
 
 		// Make sure we can round-trip read and write blinded payment params.
@@ -7992,7 +7994,9 @@ mod tests {
 
 		let mut blinded_payinfo_2 = blinded_payinfo_1;
 		blinded_payinfo_2.htlc_maximum_msat = 70_000;
-		let blinded_path_2 = BlindedPaymentPath::from_raw(nodes[2], ln_test_utils::pubkey(43),
+		let blinded_path_2 = BlindedPaymentPath::from_blinded_path_and_payinfo(
+			nodes[2],
+			ln_test_utils::pubkey(43),
 			vec![
 				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() },
 				BlindedHop { blinded_node_id: ln_test_utils::pubkey(42 as u8), encrypted_payload: Vec::new() }

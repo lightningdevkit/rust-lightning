@@ -74,7 +74,7 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 
 pub(crate) fn payment_paths() -> Vec<BlindedPaymentPath> {
 	vec![
-		BlindedPaymentPath::from_raw(
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			pubkey(40),
 			pubkey(41),
 			vec![
@@ -90,7 +90,7 @@ pub(crate) fn payment_paths() -> Vec<BlindedPaymentPath> {
 				features: BlindedHopFeatures::empty(),
 			},
 		),
-		BlindedPaymentPath::from_raw(
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			pubkey(40),
 			pubkey(41),
 			vec![

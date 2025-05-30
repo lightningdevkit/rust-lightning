@@ -375,7 +375,7 @@ fn bolt12_invoice_too_large_blinded_paths() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	nodes[1].router.expect_blinded_payment_paths(vec![
-		BlindedPaymentPath::from_raw(
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			PublicKey::from_slice(&[2; 33]).unwrap(), PublicKey::from_slice(&[2; 33]).unwrap(),
 			vec![
 				BlindedHop {
