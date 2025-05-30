@@ -551,10 +551,6 @@ struct MessageBatch {
 
 /// The representation of the message batch, which may different for each message type.
 enum MessageBatchImpl {
-	/// Used before the first message in the batch is received, since the type of messages in the
-	/// batch is not yet known.
-	Unknown,
-
 	/// A batch of `commitment_signed` messages, where each has a unique `funding_txid`.
 	CommitmentSigned(BTreeMap<Txid, msgs::CommitmentSigned>),
 }
@@ -1838,10 +1834,29 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				}.into());
 			}
 
+			let messages = match msg.message_type {
+				Some(message_type) if message_type == msgs::CommitmentSigned::TYPE => {
+					MessageBatchImpl::CommitmentSigned(BTreeMap::new())
+				},
+				_ => {
+					let error = format!("Peer {} sent start_batch for channel {} without a known message type", log_pubkey!(their_node_id), &msg.channel_id);
+					log_debug!(logger, "{}", error);
+					return Err(LightningError {
+						err: error.clone(),
+						action: msgs::ErrorAction::DisconnectPeerWithWarning {
+							msg: msgs::WarningMessage {
+								channel_id: msg.channel_id,
+								data: error,
+							},
+						},
+					}.into());
+				},
+			};
+
 			let message_batch = MessageBatch {
 				channel_id: msg.channel_id,
 				batch_size,
-				messages: MessageBatchImpl::Unknown,
+				messages,
 			};
 			peer_lock.message_batch = Some(message_batch);
 
@@ -1850,12 +1865,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		if let wire::Message::CommitmentSigned(msg) = message {
 			if let Some(message_batch) = &mut peer_lock.message_batch {
-				if let MessageBatchImpl::Unknown = message_batch.messages {
-					message_batch.messages = MessageBatchImpl::CommitmentSigned(BTreeMap::new());
-				}
-
 				let buffer = match &mut message_batch.messages {
-					MessageBatchImpl::Unknown => unreachable!(),
 					MessageBatchImpl::CommitmentSigned(ref mut messages) => messages,
 				};
 
@@ -1892,7 +1902,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				if buffer.len() == message_batch.batch_size {
 					let MessageBatch { channel_id, batch_size: _, messages } = peer_lock.message_batch.take().expect("batch should have been inserted");
 					let batch = match messages {
-						MessageBatchImpl::Unknown => unreachable!(),
 						MessageBatchImpl::CommitmentSigned(messages) => messages,
 					};
 
@@ -1905,9 +1914,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 		} else if let Some(message_batch) = &peer_lock.message_batch {
 			match message_batch.messages {
-				MessageBatchImpl::Unknown => {
-					log_debug!(logger, "Peer {} sent an unexpected message for a batch", log_pubkey!(their_node_id));
-				},
 				MessageBatchImpl::CommitmentSigned(_) => {
 					log_debug!(logger, "Peer {} sent an unexpected message for a commitment_signed batch", log_pubkey!(their_node_id));
 				},
@@ -2512,6 +2518,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								let msg = msgs::StartBatch {
 									channel_id: *channel_id,
 									batch_size: commitment_signed.len() as u16,
+									message_type: Some(msgs::CommitmentSigned::TYPE),
 								};
 								self.enqueue_message(&mut *peer, &msg);
 							}
