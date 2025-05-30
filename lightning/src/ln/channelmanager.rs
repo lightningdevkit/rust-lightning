@@ -4871,7 +4871,7 @@ where
 	///
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
-	/// To use default settings, call the function with `RouteParametersConfig::default()`.
+	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		route_params_config: RouteParametersConfig, retry_strategy: Retry
@@ -10478,7 +10478,7 @@ where
 	/// # Custom Routing Parameters
 	///
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
-	/// To use default settings, call the function with [`RouteParametersConfig::default()`].
+	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	///
 	/// # Payment
 	///
@@ -10717,7 +10717,7 @@ where
 	/// # Custom Routing Parameters
 	///
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
-	/// To use default settings, call the function with [`RouteParametersConfig::default()`].
+	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	///
 	/// # Payment
 	///
