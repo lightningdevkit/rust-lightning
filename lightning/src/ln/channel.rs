@@ -5866,8 +5866,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.map(|funding| self.validate_update_add_htlc(funding, msg, fee_estimator))
-			.collect::<Result<(), ChannelError>>()?;
+			.try_for_each(|funding| self.validate_update_add_htlc(funding, msg, fee_estimator))?;
 
 		// Now update local state:
 		self.context.next_counterparty_htlc_id += 1;
