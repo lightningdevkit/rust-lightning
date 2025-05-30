@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -14,31 +12,34 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
+use crate::chain::channelmonitor::{ChannelMonitor, ANTI_REORG_DELAY};
+use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
+use crate::ln::channel::AnnouncementSigsState;
+use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
+use crate::ln::msgs;
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
+};
+use crate::ln::types::ChannelId;
+use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::test_channel_signer::TestChannelSigner;
+use crate::util::test_utils::TestBroadcaster;
 use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
-use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
-use crate::events::{Event, PaymentPurpose, ClosureReason, HTLCHandlingFailureType};
-use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
-use crate::ln::channel::AnnouncementSigsState;
-use crate::ln::msgs;
-use crate::ln::types::ChannelId;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, MessageSendEvent};
-use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::ser::{ReadableArgs, Writeable};
-use crate::util::test_utils::TestBroadcaster;
 
 use crate::ln::functional_test_utils::*;
 
 use crate::util::test_utils;
 
 use crate::io;
-use bitcoin::hashes::Hash;
 use crate::prelude::*;
 use crate::sync::{Arc, Mutex};
+use bitcoin::hashes::Hash;
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_and_persister_update_fail() {
 	// Test that if both updating the `ChannelMonitor` and persisting the updated
 	// `ChannelMonitor` fail, then the failure from updating the `ChannelMonitor`
@@ -119,6 +120,7 @@ fn test_monitor_and_persister_update_fail() {
 	expect_payment_sent(&nodes[0], preimage, None, false, false);
 }
 
+#[rustfmt::skip]
 fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// Test that we can recover from a simple temporary monitor update failure optionally with
 	// a disconnect in between
@@ -226,6 +228,7 @@ fn test_simple_monitor_temporary_update_fail() {
 	do_test_simple_monitor_temporary_update_fail(true);
 }
 
+#[rustfmt::skip]
 fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let disconnect_flags = 8 | 16;
 
@@ -319,6 +322,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
+	#[rustfmt::skip]
 	macro_rules! disconnect_reconnect_peers { () => { {
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
@@ -452,6 +456,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let as_commitment_update;
 	let bs_second_commitment_update;
 
+	#[rustfmt::skip]
 	macro_rules! handle_bs_raa { () => {
 		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_revoke_and_ack);
 		as_commitment_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -463,6 +468,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		check_added_monitors!(nodes[0], 1);
 	} }
 
+	#[rustfmt::skip]
 	macro_rules! handle_initial_raa { () => {
 		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &initial_revoke_and_ack);
 		bs_second_commitment_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -599,6 +605,7 @@ fn test_monitor_temporary_update_fail_c() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_update_fail_cs() {
 	// Tests handling of a monitor update failure when processing an incoming commitment_signed
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -691,6 +698,7 @@ fn test_monitor_update_fail_cs() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_update_fail_no_rebroadcast() {
 	// Tests handling of a monitor update failure when no message rebroadcasting on
 	// channel_monitor_updated() is required. Backported from chanmon_fail_consistency
@@ -739,6 +747,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_update_raa_while_paused() {
 	// Tests handling of an RAA while monitor updating has already been marked failed.
 	// Backported from chanmon_fail_consistency fuzz tests as this used to be broken.
@@ -813,6 +822,7 @@ fn test_monitor_update_raa_while_paused() {
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_2);
 }
 
+#[rustfmt::skip]
 fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Tests handling of a monitor update failure when processing an incoming RAA
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -1085,6 +1095,7 @@ fn test_monitor_update_fail_raa() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_update_fail_reestablish() {
 	// Simple test for message retransmission after monitor update failure on
 	// channel_reestablish generating a monitor update (which comes from freeing holding cell
@@ -1179,6 +1190,7 @@ fn test_monitor_update_fail_reestablish() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn raa_no_response_awaiting_raa_state() {
 	// This is a rather convoluted test which ensures that if handling of an RAA does not happen
 	// due to a previous monitor update failure, we still set AwaitingRemoteRevoke on the channel
@@ -1298,6 +1310,7 @@ fn raa_no_response_awaiting_raa_state() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn claim_while_disconnected_monitor_update_fail() {
 	// Test for claiming a payment while disconnected and then having the resulting
 	// channel-update-generated monitor update fail. This kind of thing isn't a particularly
@@ -1418,6 +1431,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn monitor_failed_no_reestablish_response() {
 	// Test for receiving a channel_reestablish after a monitor update failure resulted in no
 	// response to a commitment_signed.
@@ -1499,6 +1513,7 @@ fn monitor_failed_no_reestablish_response() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn first_message_on_recv_ordering() {
 	// Test that if the initial generator of a monitor-update-frozen state doesn't generate
 	// messages, we're willing to flip the order of response messages if neccessary in resposne to
@@ -1596,6 +1611,7 @@ fn first_message_on_recv_ordering() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_update_fail_claim() {
 	// Basic test for monitor update failures when processing claim_funds calls.
 	// We set up a simple 3-node network, sending a payment from A to B and failing B's monitor
@@ -1718,6 +1734,7 @@ fn test_monitor_update_fail_claim() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_monitor_update_on_pending_forwards() {
 	// Basic test for monitor update failures when processing pending HTLC fail/add forwards.
 	// We do this with a simple 3-node network, sending a payment from A to C and one from C to A.
@@ -1793,6 +1810,7 @@ fn test_monitor_update_on_pending_forwards() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn monitor_update_claim_fail_no_response() {
 	// Test for claim_funds resulting in both a monitor update failure and no message response (due
 	// to channel being AwaitingRAA).
@@ -1849,6 +1867,7 @@ fn monitor_update_claim_fail_no_response() {
 
 // restore_b_before_conf has no meaning if !confirm_a_first
 // restore_b_before_lock has no meaning if confirm_a_first
+#[rustfmt::skip]
 fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: bool, restore_b_before_lock: bool) {
 	// Test that if the monitor update generated by funding_transaction_generated fails we continue
 	// the channel setup happily after the update is restored.
@@ -1976,6 +1995,7 @@ fn during_funding_monitor_fail() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_path_paused_mpp() {
 	// Simple test of sending a multi-part payment where one path is currently blocked awaiting
 	// monitor update
@@ -2032,6 +2052,7 @@ fn test_path_paused_mpp() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_pending_update_fee_ack_on_reconnect() {
 	// In early versions of our automated fee update patch, nodes did not correctly use the
 	// previous channel feerate after sending an undelivered revoke_and_ack when re-sending an
@@ -2127,6 +2148,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_fail_htlc_on_broadcast_after_claim() {
 	// In an earlier version of 7e78fa660cec8a73286c94c1073ee588140e7a01 we'd also fail the inbound
 	// channel backwards if we received an HTLC failure after a HTLC fulfillment. Here we test a
@@ -2172,6 +2194,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	expect_payment_path_successful!(nodes[0]);
 }
 
+#[rustfmt::skip]
 fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 	// In early versions we did not handle resending of update_fee on reconnect correctly. The
 	// chanmon_consistency fuzz target, of course, immediately found it, but we test a few cases
@@ -2273,6 +2296,7 @@ fn update_fee_resend_test() {
 	do_update_fee_resend_test(true, true);
 }
 
+#[rustfmt::skip]
 fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	// Tests that, when we serialize a channel with AddHTLC entries in the holding cell, we
 	// properly free them on reconnect. We previously failed such HTLCs upon serialization, but
@@ -2469,6 +2493,7 @@ enum HTLCStatusAtDupClaim {
 	HoldingCell,
 	Cleared,
 }
+#[rustfmt::skip]
 fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_fails: bool) {
 	// When receiving an update_fulfill_htlc message, we immediately forward the claim backwards
 	// along the payment path before waiting for a full commitment_signed dance. This is great, but
@@ -2588,6 +2613,7 @@ fn test_reconnect_dup_htlc_claims() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_temporary_error_during_shutdown() {
 	// Test that temporary failures when updating the monitor's shutdown script delay cooperative
 	// close.
@@ -2643,6 +2669,7 @@ fn test_temporary_error_during_shutdown() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn double_temp_error() {
 	// Test that it's OK to have multiple `ChainMonitor::update_channel` calls fail in a row.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2753,6 +2780,7 @@ fn double_temp_error() {
 	expect_payment_sent!(nodes[0], payment_preimage_2);
 }
 
+#[rustfmt::skip]
 fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	// Test that if the monitor update generated in funding_signed is stored async and we restart
 	// with the latest ChannelManager but the ChannelMonitor persistence never completed we happily
@@ -2844,6 +2872,7 @@ fn test_outbound_reload_without_init_mon() {
 	do_test_outbound_reload_without_init_mon(false);
 }
 
+#[rustfmt::skip]
 fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: bool) {
 	// Test that if the monitor update generated by funding_transaction_generated is stored async
 	// and we restart with the latest ChannelManager but the ChannelMonitor persistence never
@@ -2935,6 +2964,7 @@ fn test_inbound_reload_without_init_mon() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_blocked_chan_preimage_release() {
 	// Test that even if a channel's `ChannelMonitorUpdate` flow is blocked waiting on an event to
 	// be handled HTLC preimage `ChannelMonitorUpdate`s will still go out.
@@ -3007,6 +3037,7 @@ fn test_blocked_chan_preimage_release() {
 	expect_payment_sent(&nodes[2], payment_preimage_2, None, true, true);
 }
 
+#[rustfmt::skip]
 fn do_test_inverted_mon_completion_order(with_latest_manager: bool, complete_bc_commitment_dance: bool) {
 	// When we forward a payment and receive `update_fulfill_htlc`+`commitment_signed` messages
 	// from the downstream channel, we immediately claim the HTLC on the upstream channel, before
@@ -3174,6 +3205,7 @@ fn test_inverted_mon_completion_order() {
 	do_test_inverted_mon_completion_order(false, false);
 }
 
+#[rustfmt::skip]
 fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, close_only_a: bool, hold_post_reload_mon_update: bool) {
 	// Test that we can apply a `ChannelMonitorUpdate` with a payment preimage even if the channel
 	// is force-closed between when we generate the update on reload and when we go to handle the
@@ -3345,6 +3377,7 @@ fn test_durable_preimages_on_closed_channel() {
 	do_test_durable_preimages_on_closed_channel(false, false, false);
 }
 
+#[rustfmt::skip]
 fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	// Test that if a `ChannelMonitorUpdate` completes but a `ChannelManager` isn't serialized
 	// before restart we run the monitor update completion action on startup.
@@ -3448,6 +3481,7 @@ fn test_reload_mon_update_completion_actions() {
 	do_test_reload_mon_update_completion_actions(false);
 }
 
+#[rustfmt::skip]
 fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 	// Test that if a peer manages to send an `update_fulfill_htlc` message without a
 	// `commitment_signed`, disconnects, then replays the `update_fulfill_htlc` message it doesn't
@@ -3558,6 +3592,7 @@ fn test_glacial_peer_cant_hang() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_partial_claim_mon_update_compl_actions() {
 	// Test that if we have an MPP claim that we ensure the preimage for the claim is retained in
 	// all the `ChannelMonitor`s until the preimage reaches every `ChannelMonitor` for a channel
@@ -3671,8 +3706,8 @@ fn test_partial_claim_mon_update_compl_actions() {
 	assert!(!get_monitor!(nodes[3], chan_4_id).get_stored_preimages().contains_key(&payment_hash));
 }
 
-
 #[test]
+#[rustfmt::skip]
 fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	// One of the last features for async persistence we implemented was the correct blocking of
 	// RAA(s) which remove a preimage from an outbound channel for a forwarded payment until the
@@ -3736,6 +3771,7 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_claim_to_closed_channel_blocks_claimed_event() {
 	// One of the last features for async persistence we implemented was the correct blocking of
 	// event(s) until the preimage for a claimed HTLC is durably on disk in a ChannelMonitor for a
@@ -3781,6 +3817,7 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 
 #[test]
 #[cfg(all(feature = "std", not(target_os = "windows")))]
+#[rustfmt::skip]
 fn test_single_channel_multiple_mpp() {
 	use std::sync::atomic::{AtomicBool, Ordering};
 

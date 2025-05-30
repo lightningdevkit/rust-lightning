@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -11,35 +9,43 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,LATENCY_GRACE_PERIOD_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, Balance, BalanceSource, ChannelMonitorUpdateStep};
+use crate::chain::chaininterface::{
+	compute_feerate_sat_per_1000_weight, ConfirmationTarget, LowerBoundedFeeEstimator,
+};
+use crate::chain::channelmonitor::{
+	Balance, BalanceSource, ChannelMonitorUpdateStep, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS,
+	COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS,
+};
 use crate::chain::transaction::OutPoint;
-use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
-use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
-use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
-use crate::ln::channel;
-use crate::ln::types::ChannelId;
-use crate::ln::chan_utils;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::crypto::utils::sign;
-use crate::util::ser::Writeable;
+use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use crate::ln::chan_utils;
+use crate::ln::channel;
+use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, BREAKDOWN_TIMEOUT};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::ln::types::ChannelId;
+use crate::sign::{
+	ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor,
+};
 use crate::util::scid_utils::block_from_scid;
+use crate::util::ser::Writeable;
 
-use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
-use bitcoin::locktime::absolute::LockTime;
-use bitcoin::script::Builder;
-use bitcoin::opcodes;
 use bitcoin::hex::FromHex;
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::opcodes;
+use bitcoin::script::Builder;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use bitcoin::sighash::{SighashCache, EcdsaSighashType};
+use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::transaction::Version;
+use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
 
 use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
 
 #[test]
+#[rustfmt::skip]
 fn chanmon_fail_from_stale_commitment() {
 	// If we forward an HTLC to our counterparty, but we force-closed the channel before our
 	// counterparty provides us an updated commitment transaction, we'll end up with a commitment
@@ -97,6 +103,7 @@ fn chanmon_fail_from_stale_commitment() {
 	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
 }
 
+#[rustfmt::skip]
 fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction, has_anchors_htlc_event: bool) -> Vec<SpendableOutputDescriptor> {
 	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable.len(), if has_anchors_htlc_event { 2 } else { 1 });
@@ -114,6 +121,7 @@ fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_t
 }
 
 #[test]
+#[rustfmt::skip]
 fn revoked_output_htlc_resolution_timing() {
 	// Tests that HTLCs which were present in a broadcasted remote revoked commitment transaction
 	// are resolved only after a spend of the HTLC output reaches six confirmations. Previously
@@ -168,6 +176,7 @@ fn revoked_output_htlc_resolution_timing() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn archive_fully_resolved_monitors() {
 	// Test we archive fully resolved channel monitors at the right time.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -305,6 +314,7 @@ fn archive_fully_resolved_monitors() {
 	}
 }
 
+#[rustfmt::skip]
 fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	// Tests `get_claimable_balances` returns the correct values across a simple cooperative claim.
 	// Specifically, this tests that the channel non-HTLC balances show up in
@@ -443,6 +453,7 @@ fn fuzzy_assert_eq<V: core::convert::TryInto<u64>>(a: V, b: V) {
 	assert!(b_u64 >= a_u64 - 5);
 }
 
+#[rustfmt::skip]
 fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// Tests `get_claimable_balances` with an HTLC across a force-close.
 	// We build a channel with an HTLC pending, then force close the channel and check that the
@@ -847,6 +858,7 @@ fn test_claim_value_force_close() {
 	do_test_claim_value_force_close(true, false);
 }
 
+#[rustfmt::skip]
 fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	// Previously, when handling the broadcast of a local commitment transactions (with associated
 	// CSV delays prior to spendability), we incorrectly handled the CSV delays on HTLC
@@ -1104,6 +1116,7 @@ fn test_balances_on_local_commitment_htlcs() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_no_preimage_inbound_htlc_balances() {
 	// Tests that MaybePreimageClaimableHTLC are generated for inbound HTLCs for which we do not
 	// have a preimage.
@@ -1347,6 +1360,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances().is_empty());
 }
 
+#[rustfmt::skip]
 fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_spend_first: bool) {
 	// Tests `get_claimable_balances` for revoked counterparty commitment transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1637,6 +1651,7 @@ fn test_revoked_counterparty_commitment_balances() {
 	do_test_revoked_counterparty_commitment_balances(true, false);
 }
 
+#[rustfmt::skip]
 fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	// Tests `get_claimable_balances` for revocation spends of HTLC transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1933,6 +1948,7 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	do_test_revoked_counterparty_htlc_tx_balances(true);
 }
 
+#[rustfmt::skip]
 fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	// Tests `get_claimable_balances` for revoked counterparty commitment transactions when
 	// claiming with an aggregated claim transaction.
@@ -2219,6 +2235,7 @@ fn test_revoked_counterparty_aggregated_claims() {
 	do_test_revoked_counterparty_aggregated_claims(true);
 }
 
+#[rustfmt::skip]
 fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: bool, anchors: bool) {
 	// Previously when a user fetched their balances via `get_claimable_balances` after forwarding a
 	// payment, but before it cleared, and summed up their balance using `Balance::claimable_amount_satoshis`
@@ -2313,6 +2330,7 @@ fn test_claimable_balance_correct_while_payment_pending() {
 	do_test_claimable_balance_correct_while_payment_pending(true, true);
 }
 
+#[rustfmt::skip]
 fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool) {
 	// Tests that we'll retry packages that were previously timelocked after we've restored them.
 	let node0_key_id = <[u8; 32]>::from_hex("0000000000000000000000004D49E5DA0000000000000000000000000000002A").unwrap();
@@ -2393,6 +2411,7 @@ fn test_restored_packages_retry() {
 	do_test_restored_packages_retry(true);
 }
 
+#[rustfmt::skip]
 fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// Test that we will retry broadcasting pending claims for a force-closed channel on every
 	// `ChainMonitor::rebroadcast_pending_claims` call.
@@ -2522,6 +2541,7 @@ fn test_monitor_timer_based_claim() {
 	do_test_monitor_rebroadcast_pending_claims(true);
 }
 
+#[rustfmt::skip]
 fn do_test_yield_anchors_events(have_htlcs: bool) {
 	// Tests that two parties supporting anchor outputs can open a channel, route payments over
 	// it, and finalize its resolution uncooperatively. Once the HTLCs are locked in, one side will
@@ -2717,6 +2737,7 @@ fn test_yield_anchors_events() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_anchors_aggregated_revoked_htlc_tx() {
 	// Test that `ChannelMonitor`s can properly detect and claim funds from a counterparty claiming
 	// multiple HTLCs from multiple channels in a single transaction via the success path from a
@@ -3024,6 +3045,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).len(), 6);
 }
 
+#[rustfmt::skip]
 fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_commitment_before_reload: bool) {
 	// Tests that we'll fix a ChannelMonitor's `counterparty_payment_script` for an anchor outputs
 	// channel upon deserialization.
@@ -3112,6 +3134,7 @@ fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
 }
 
 #[cfg(not(ldk_test_vectors))]
+#[rustfmt::skip]
 fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterparty_commitment: bool) {
 	// Tests that our monitor claims will always use fresh random signatures (ensuring a unique
 	// wtxid) to prevent certain classes of transaction replacement at the bitcoin P2P layer.
@@ -3220,6 +3243,7 @@ fn test_monitor_claims_with_random_signatures() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_event_replay_causing_monitor_replay() {
 	// In LDK 0.0.121 there was a bug where if a `PaymentSent` event caused an RAA
 	// `ChannelMonitorUpdate` hold and then the node was restarted after the `PaymentSent` event
@@ -3259,6 +3283,7 @@ fn test_event_replay_causing_monitor_replay() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_update_replay_panics() {
 	// Tests that replaying a `ChannelMonitorUpdate` or applying them out-of-order causes a panic.
 	let chanmon_cfgs = create_chanmon_cfgs(2);

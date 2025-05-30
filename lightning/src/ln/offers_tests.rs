@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -42,33 +40,44 @@
 //! Nodes without channels are disconnected and connected as needed to ensure that deterministic
 //! blinded paths are used.
 
-use bitcoin::network::Network;
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
-use core::time::Duration;
-use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
-use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::OffersContext;
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry, self};
-use crate::types::features::Bolt12InvoiceFeatures;
+use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
+use crate::blinded_path::IntroductionNode;
+use crate::events::{
+	ClosureReason, Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason,
+	PaymentPurpose,
+};
+use crate::ln::channelmanager::{
+	self, Bolt12PaymentError, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry,
+	MAX_SHORT_LIVED_RELATIVE_EXPIRY,
+};
 use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
+use crate::ln::msgs::{
+	BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage,
+	OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage,
+	UnsignedNodeAnnouncement,
+};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{Destination, PeeledOnion, MessageSendInstructions};
+use crate::onion_message::messenger::{Destination, MessageSendInstructions, PeeledOnion};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
+use crate::types::features::Bolt12InvoiceFeatures;
 use crate::util::ser::Writeable;
+use bitcoin::network::Network;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use core::time::Duration;
 
 use crate::prelude::*;
 
+#[rustfmt::skip]
 macro_rules! expect_recent_payment {
 	($node: expr, $payment_state: path, $payment_id: expr) => {
 		match $node.node.list_recent_payments().first() {
@@ -111,6 +120,7 @@ fn disconnect_peers<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b
 	}
 }
 
+#[rustfmt::skip]
 fn announce_node_address<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b, 'c>], address: SocketAddress,
 ) {
@@ -143,14 +153,16 @@ fn announce_node_address<'a, 'b, 'c>(
 	}
 }
 
-fn resolve_introduction_node<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &BlindedMessagePath) -> PublicKey {
+fn resolve_introduction_node<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, path: &BlindedMessagePath,
+) -> PublicKey {
 	path.public_introduction_node_id(&node.network_graph.read_only())
 		.and_then(|node_id| node_id.as_pubkey().ok())
 		.unwrap()
 }
 
 fn route_bolt12_payment<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice,
 ) {
 	// Monitor added when handling the invoice onion message.
 	check_added_monitors(node, 1);
@@ -169,7 +181,8 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 }
 
 fn claim_bolt12_payment<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext, invoice: &Bolt12Invoice
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext,
+	invoice: &Bolt12Invoice,
 ) {
 	let recipient = &path[path.len() - 1];
 	let payment_purpose = match get_event!(recipient, Event::PaymentClaimable) {
@@ -196,6 +209,7 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 	};
 }
 
+#[rustfmt::skip]
 fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Offers(_, Some(OffersContext::InvoiceRequest { nonce }), _)) => nonce,
@@ -206,6 +220,7 @@ fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessa
 	}
 }
 
+#[rustfmt::skip]
 pub(super) fn extract_invoice_request<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> (InvoiceRequest, BlindedMessagePath) {
@@ -223,6 +238,7 @@ pub(super) fn extract_invoice_request<'a, 'b, 'c>(
 	}
 }
 
+#[rustfmt::skip]
 fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> (Bolt12Invoice, BlindedMessagePath) {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Offers(message, _, reply_path)) => match message {
@@ -238,6 +254,7 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 	}
 }
 
+#[rustfmt::skip]
 fn extract_invoice_error<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> InvoiceError {
@@ -257,6 +274,7 @@ fn extract_invoice_error<'a, 'b, 'c>(
 
 /// Checks that blinded paths without Tor-only nodes are preferred when constructing an offer.
 #[test]
+#[rustfmt::skip]
 fn prefers_non_tor_nodes_in_blinded_paths() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -326,6 +344,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 
 /// Checks that blinded paths prefer an introduction node that is the most connected.
 #[test]
+#[rustfmt::skip]
 fn prefers_more_connected_nodes_in_blinded_paths() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -377,6 +396,7 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 
 /// Checks that blinded paths are compact for short-lived offers.
 #[test]
+#[rustfmt::skip]
 fn creates_short_lived_offer() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -404,6 +424,7 @@ fn creates_short_lived_offer() {
 
 /// Checks that blinded paths are not compact for long-lived offers.
 #[test]
+#[rustfmt::skip]
 fn creates_long_lived_offer() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -439,6 +460,7 @@ fn creates_long_lived_offer() {
 
 /// Checks that blinded paths are compact for short-lived refunds.
 #[test]
+#[rustfmt::skip]
 fn creates_short_lived_refund() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -468,6 +490,7 @@ fn creates_short_lived_refund() {
 
 /// Checks that blinded paths are not compact for long-lived refunds.
 #[test]
+#[rustfmt::skip]
 fn creates_long_lived_refund() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -496,6 +519,7 @@ fn creates_long_lived_refund() {
 /// Checks that an offer can be paid through blinded paths and that ephemeral pubkeys are used
 /// rather than exposing a node's pubkey.
 #[test]
+#[rustfmt::skip]
 fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -604,6 +628,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 /// Checks that a refund can be paid through blinded paths and that ephemeral pubkeys are used
 /// rather than exposing a node's pubkey.
 #[test]
+#[rustfmt::skip]
 fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -688,6 +713,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 /// used rather than exposing a node's pubkey. However, the node's pubkey is still used as the
 /// introduction node of the blinded path.
 #[test]
+#[rustfmt::skip]
 fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -755,6 +781,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 /// used rather than exposing a node's pubkey. However, the node's pubkey is still used as the
 /// introduction node of the blinded path.
 #[test]
+#[rustfmt::skip]
 fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -811,6 +838,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 /// the requested is sent directly using the node's pubkey, the response and the payment still use
 /// blinded paths as required by the spec.
 #[test]
+#[rustfmt::skip]
 fn pays_for_offer_without_blinded_paths() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -864,6 +892,7 @@ fn pays_for_offer_without_blinded_paths() {
 /// Checks that a refund without any blinded paths can be paid. Note that while the invoice is sent
 /// directly using the node's pubkey, the payment still use blinded paths as required by the spec.
 #[test]
+#[rustfmt::skip]
 fn pays_for_refund_without_blinded_paths() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -907,6 +936,7 @@ fn pays_for_refund_without_blinded_paths() {
 /// This test checks that when multiple potential introduction nodes are available for the payer,
 /// multiple `invoice_request` messages are sent for the offer, each with a different `reply_path`.
 #[test]
+#[rustfmt::skip]
 fn send_invoice_requests_with_distinct_reply_path() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -991,6 +1021,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 /// This test checks that when multiple potential introduction nodes are available for the payee,
 /// multiple `Invoice` messages are sent for the Refund, each with a different `reply_path`.
 #[test]
+#[rustfmt::skip]
 fn send_invoice_for_refund_with_distinct_reply_path() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -1071,6 +1102,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 /// Verifies that the invoice request message can be retried if it fails to reach the
 /// payee on the first attempt.
 #[test]
+#[rustfmt::skip]
 fn creates_and_pays_for_offer_with_retry() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1144,6 +1176,7 @@ fn creates_and_pays_for_offer_with_retry() {
 
 /// Checks that a deferred invoice can be paid asynchronously from an Event::InvoiceReceived.
 #[test]
+#[rustfmt::skip]
 fn pays_bolt12_invoice_asynchronously() {
 	let mut manually_pay_cfg = test_default_channel_config();
 	manually_pay_cfg.manually_handle_bolt12_invoices = true;
@@ -1239,6 +1272,7 @@ fn pays_bolt12_invoice_asynchronously() {
 /// is intended for the unannounced node or that the node is actually announced (e.g., an LSP) but
 /// the recipient doesn't have a network graph.
 #[test]
+#[rustfmt::skip]
 fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1305,6 +1339,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 /// is intended for the unannounced node or that the node is actually announced (e.g., an LSP) but
 /// the sender doesn't have a network graph.
 #[test]
+#[rustfmt::skip]
 fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1347,6 +1382,7 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 /// Check that authentication fails when an invoice request is handled using the wrong context
 /// (i.e., was sent directly or over an unexpected blinded path).
 #[test]
+#[rustfmt::skip]
 fn fails_authentication_when_handling_invoice_request() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -1459,6 +1495,7 @@ fn fails_authentication_when_handling_invoice_request() {
 /// Check that authentication fails when an invoice is handled using the wrong context (i.e., was
 /// sent over an unexpected blinded path).
 #[test]
+#[rustfmt::skip]
 fn fails_authentication_when_handling_invoice_for_offer() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -1567,6 +1604,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 /// Check that authentication fails when an invoice is handled using the wrong context (i.e., was
 /// sent directly or over an unexpected blinded path).
 #[test]
+#[rustfmt::skip]
 fn fails_authentication_when_handling_invoice_for_refund() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -1672,6 +1710,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 /// Fails creating or paying an offer when a blinded path cannot be created because no peers are
 /// connected.
 #[test]
+#[rustfmt::skip]
 fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
@@ -1731,6 +1770,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 /// Fails creating or sending an invoice for a refund when a blinded path cannot be created because
 /// no peers are connected.
 #[test]
+#[rustfmt::skip]
 fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -1794,6 +1834,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 
 /// Fails creating an invoice request when the offer contains an unsupported chain.
 #[test]
+#[rustfmt::skip]
 fn fails_creating_invoice_request_for_unsupported_chain() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1820,6 +1861,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 
 /// Fails requesting a payment when the refund contains an unsupported chain.
 #[test]
+#[rustfmt::skip]
 fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1847,6 +1889,7 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 
 /// Fails creating an invoice request when a blinded reply path cannot be created.
 #[test]
+#[rustfmt::skip]
 fn fails_creating_invoice_request_without_blinded_reply_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
@@ -1880,6 +1923,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_creating_invoice_request_with_duplicate_payment_id() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
@@ -1920,6 +1964,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_creating_refund_with_duplicate_payment_id() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1948,6 +1993,7 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -2023,6 +2069,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -2069,6 +2116,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_paying_invoice_more_than_once() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -2157,6 +2205,7 @@ fn fails_paying_invoice_more_than_once() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn fails_paying_invoice_with_unknown_required_features() {
 	let mut accept_forward_cfg = test_default_channel_config();
 	accept_forward_cfg.accept_forwards_to_priv_channels = true;
@@ -2264,6 +2313,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn rejects_keysend_to_non_static_invoice_path() {
 	// Test that we'll fail a keysend payment that was sent over a non-static BOLT 12 invoice path.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2326,6 +2376,7 @@ fn rejects_keysend_to_non_static_invoice_path() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn no_double_pay_with_stale_channelmanager() {
 	// This tests the following bug:
 	// - An outbound payment is AwaitingInvoice

@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -13,36 +11,38 @@
 //! packages are attached metadata, guiding their aggregable or fee-bumping re-schedule. This file
 //! also includes witness weight computation and fee computation methods.
 
-
-use bitcoin::{Sequence, Witness};
 use bitcoin::amount::Amount;
 use bitcoin::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::locktime::absolute::LockTime;
-use bitcoin::transaction::{TxOut,TxIn, Transaction};
-use bitcoin::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
-use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::script::{Script, ScriptBuf};
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::sighash::EcdsaSighashType;
+use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::transaction::Version;
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::{Sequence, Witness};
 
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
-use crate::types::payment::PaymentPreimage;
-use crate::ln::chan_utils::{
-	self, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys,
-	HTLCOutputInCommitment,
+use crate::chain::chaininterface::{
+	compute_feerate_sat_per_1000_weight, ConfirmationTarget, FeeEstimator,
+	FEERATE_FLOOR_SATS_PER_KW, INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT,
 };
-use crate::types::features::ChannelTypeFeatures;
+use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
+use crate::chain::onchaintx::{FeerateStrategy, OnchainTxHandler};
+use crate::chain::transaction::MaybeSignedTransaction;
+use crate::ln::chan_utils::{
+	self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	TxCreationKeys,
+};
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
-use crate::chain::channelmonitor::COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE;
-use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
-use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::chain::onchaintx::{FeerateStrategy, OnchainTxHandler};
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
+use crate::types::features::ChannelTypeFeatures;
+use crate::types::payment::PaymentPreimage;
 use crate::util::logger::Logger;
-use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable, RequiredWrapper};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 
 use crate::io;
 use core::cmp;
@@ -53,9 +53,9 @@ use crate::prelude::*;
 
 use super::chaininterface::LowerBoundedFeeEstimator;
 
-const MAX_ALLOC_SIZE: usize = 64*1024;
+const MAX_ALLOC_SIZE: usize = 64 * 1024;
 
-
+#[rustfmt::skip]
 pub(crate) fn weight_revoked_offered_htlc(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 	const WEIGHT_REVOKED_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 + 133;
@@ -63,6 +63,7 @@ pub(crate) fn weight_revoked_offered_htlc(channel_type_features: &ChannelTypeFea
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { WEIGHT_REVOKED_OFFERED_HTLC_ANCHORS } else { WEIGHT_REVOKED_OFFERED_HTLC }
 }
 
+#[rustfmt::skip]
 pub(crate) fn weight_revoked_received_htlc(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 	const WEIGHT_REVOKED_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 +  139;
@@ -70,6 +71,7 @@ pub(crate) fn weight_revoked_received_htlc(channel_type_features: &ChannelTypeFe
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { WEIGHT_REVOKED_RECEIVED_HTLC_ANCHORS } else { WEIGHT_REVOKED_RECEIVED_HTLC }
 }
 
+#[rustfmt::skip]
 pub(crate) fn weight_offered_htlc(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	// number_of_witness_elements + sig_length + counterpartyhtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
 	const WEIGHT_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 32 + 1 + 133;
@@ -77,6 +79,7 @@ pub(crate) fn weight_offered_htlc(channel_type_features: &ChannelTypeFeatures) -
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { WEIGHT_OFFERED_HTLC_ANCHORS } else { WEIGHT_OFFERED_HTLC }
 }
 
+#[rustfmt::skip]
 pub(crate) fn weight_received_htlc(channel_type_features: &ChannelTypeFeatures) -> u64 {
 	// number_of_witness_elements + sig_length + counterpartyhtlc_sig + empty_vec_length + empty_vec + witness_script_length + witness_script
 	const WEIGHT_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 139;
@@ -85,6 +88,7 @@ pub(crate) fn weight_received_htlc(channel_type_features: &ChannelTypeFeatures) 
 }
 
 /// Verifies deserializable channel type features
+#[rustfmt::skip]
 pub(crate) fn verify_channel_type_features(channel_type_features: &Option<ChannelTypeFeatures>, additional_permitted_features: Option<&ChannelTypeFeatures>) -> Result<(), DecodeError> {
 	if let Some(features) = channel_type_features.as_ref() {
 		if features.requires_unknown_bits() {
@@ -142,6 +146,7 @@ pub(crate) struct RevokedOutput {
 }
 
 impl RevokedOutput {
+	#[rustfmt::skip]
 	pub(crate) fn build(
 		per_commitment_point: PublicKey, per_commitment_key: SecretKey, amount: Amount,
 		is_counterparty_balance_on_anchors: bool, channel_parameters: ChannelTransactionParameters,
@@ -277,6 +282,7 @@ impl CounterpartyOfferedHTLCOutput {
 }
 
 impl Writeable for CounterpartyOfferedHTLCOutput {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
@@ -369,6 +375,7 @@ impl CounterpartyReceivedHTLCOutput {
 }
 
 impl Writeable for CounterpartyReceivedHTLCOutput {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
@@ -436,6 +443,7 @@ pub(crate) struct HolderHTLCOutput {
 }
 
 impl HolderHTLCOutput {
+	#[rustfmt::skip]
 	pub(crate) fn build(htlc_descriptor: HTLCDescriptor) -> Self {
 		let amount_msat = htlc_descriptor.htlc.amount_msat;
 		let channel_type_features = htlc_descriptor.channel_derivation_parameters
@@ -457,6 +465,7 @@ impl HolderHTLCOutput {
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn get_htlc_descriptor<ChannelSigner: EcdsaChannelSigner>(
 		&self, onchain_tx_handler: &OnchainTxHandler<ChannelSigner>, outp: &::bitcoin::OutPoint,
 	) -> Option<HTLCDescriptor> {
@@ -499,6 +508,7 @@ impl HolderHTLCOutput {
 			.or_else(|| onchain_tx_handler.prev_holder_commitment_tx().and_then(|c| get_htlc_descriptor(c)))
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn get_maybe_signed_htlc_tx<ChannelSigner: EcdsaChannelSigner>(
 		&self, onchain_tx_handler: &mut OnchainTxHandler<ChannelSigner>, outp: &::bitcoin::OutPoint,
 	) -> Option<MaybeSignedTransaction> {
@@ -535,6 +545,7 @@ impl HolderHTLCOutput {
 }
 
 impl Writeable for HolderHTLCOutput {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
@@ -595,10 +606,10 @@ pub(crate) struct HolderFundingOutput {
 	pub(crate) channel_parameters: Option<ChannelTransactionParameters>,
 }
 
-
 impl HolderFundingOutput {
 	pub(crate) fn build(
-		commitment_tx: HolderCommitmentTransaction, channel_parameters: ChannelTransactionParameters,
+		commitment_tx: HolderCommitmentTransaction,
+		channel_parameters: ChannelTransactionParameters,
 	) -> Self {
 		let funding_redeemscript = channel_parameters.make_funding_redeemscript();
 		let funding_amount_sats = channel_parameters.channel_value_satoshis;
@@ -612,6 +623,7 @@ impl HolderFundingOutput {
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn get_maybe_signed_commitment_tx<Signer: EcdsaChannelSigner>(
 		&self, onchain_tx_handler: &mut OnchainTxHandler<Signer>,
 	) -> MaybeSignedTransaction {
@@ -632,6 +644,7 @@ impl HolderFundingOutput {
 }
 
 impl Writeable for HolderFundingOutput {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let legacy_deserialization_prevention_marker = chan_utils::legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
 		write_tlv_fields!(writer, {
@@ -693,6 +706,7 @@ pub(crate) enum PackageSolvingData {
 }
 
 impl PackageSolvingData {
+	#[rustfmt::skip]
 	fn amount(&self) -> u64 {
 		let amt = match self {
 			PackageSolvingData::RevokedOutput(ref outp) => outp.amount.to_sat(),
@@ -710,6 +724,7 @@ impl PackageSolvingData {
 		};
 		amt
 	}
+	#[rustfmt::skip]
 	fn weight(&self) -> usize {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => outp.weight as usize,
@@ -733,6 +748,7 @@ impl PackageSolvingData {
 	/// Checks if this and `other` are spending types of inputs which could have descended from the
 	/// same commitment transaction(s) and thus could both be spent without requiring a
 	/// double-spend.
+	#[rustfmt::skip]
 	fn is_possibly_from_same_tx_tree(&self, other: &PackageSolvingData) -> bool {
 		match self {
 			PackageSolvingData::RevokedOutput(_)|PackageSolvingData::RevokedHTLCOutput(_) => {
@@ -761,6 +777,7 @@ impl PackageSolvingData {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn as_tx_input(&self, previous_output: BitcoinOutPoint) -> TxIn {
 		let sequence = match self {
 			PackageSolvingData::RevokedOutput(_) => Sequence::ENABLE_RBF_NO_LOCKTIME,
@@ -787,6 +804,7 @@ impl PackageSolvingData {
 			witness: Witness::new(),
 		}
 	}
+	#[rustfmt::skip]
 	fn finalize_input<Signer: EcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		let channel_parameters = onchain_handler.channel_parameters();
 		match self {
@@ -901,6 +919,7 @@ impl PackageSolvingData {
 		}
 		true
 	}
+	#[rustfmt::skip]
 	fn get_maybe_finalized_tx<Signer: EcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
@@ -915,6 +934,7 @@ impl PackageSolvingData {
 	}
 	/// Some output types are locked with CHECKLOCKTIMEVERIFY and the spending transaction must
 	/// have a minimum locktime, which is returned here.
+	#[rustfmt::skip]
 	fn minimum_locktime(&self) -> Option<u32> {
 		match self {
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => Some(outp.htlc.cltv_expiry),
@@ -935,6 +955,7 @@ impl PackageSolvingData {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn map_output_type_flags(&self) -> PackageMalleability {
 		// We classify claims into not-mergeable (i.e. transactions that have to be broadcasted
 		// as-is) or merge-able (i.e. transactions we can merge with others and claim in batches),
@@ -1038,6 +1059,7 @@ pub struct PackageTemplate {
 }
 
 impl PackageTemplate {
+	#[rustfmt::skip]
 	pub(crate) fn can_merge_with(&self, other: &PackageTemplate, cur_height: u32) -> bool {
 		match (self.malleability, other.malleability) {
 			(PackageMalleability::Untractable, _) => false,
@@ -1125,6 +1147,7 @@ impl PackageTemplate {
 	pub(crate) fn inputs(&self) -> impl ExactSizeIterator<Item = &PackageSolvingData> {
 		self.inputs.iter().map(|(_, i)| i)
 	}
+	#[rustfmt::skip]
 	pub(crate) fn split_package(&mut self, split_outp: &BitcoinOutPoint) -> Option<PackageTemplate> {
 		match self.malleability {
 			PackageMalleability::Malleable(cluster) => {
@@ -1156,7 +1179,9 @@ impl PackageTemplate {
 			}
 		}
 	}
-	pub(crate) fn merge_package(&mut self, mut merge_from: PackageTemplate, cur_height: u32) -> Result<(), PackageTemplate> {
+	pub(crate) fn merge_package(
+		&mut self, mut merge_from: PackageTemplate, cur_height: u32,
+	) -> Result<(), PackageTemplate> {
 		if !self.can_merge_with(&merge_from, cur_height) {
 			return Err(merge_from);
 		}
@@ -1182,6 +1207,7 @@ impl PackageTemplate {
 		}
 		amounts
 	}
+	#[rustfmt::skip]
 	fn signed_locktime(&self) -> Option<u32> {
 		let signed_locktime = self.inputs.iter().find_map(|(_, outp)| outp.signed_locktime());
 		#[cfg(debug_assertions)]
@@ -1190,6 +1216,7 @@ impl PackageTemplate {
 		}
 		signed_locktime
 	}
+	#[rustfmt::skip]
 	pub(crate) fn package_locktime(&self, current_height: u32) -> u32 {
 		let minimum_locktime = self.inputs.iter().filter_map(|(_, outp)| outp.minimum_locktime()).max();
 
@@ -1214,6 +1241,7 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		(inputs_weight + witnesses_weight + transaction_weight + output_weight) as u64
 	}
+	#[rustfmt::skip]
 	pub(crate) fn construct_malleable_package_with_external_funding<Signer: EcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
 	) -> Option<Vec<HTLCDescriptor>> {
@@ -1232,6 +1260,7 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
+	#[rustfmt::skip]
 	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: EcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: Amount,
 		destination_script: ScriptBuf, logger: &L
@@ -1255,6 +1284,7 @@ impl PackageTemplate {
 		}
 		Some(MaybeSignedTransaction(bumped_tx))
 	}
+	#[rustfmt::skip]
 	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: EcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
 	) -> Option<MaybeSignedTransaction> {
@@ -1272,6 +1302,7 @@ impl PackageTemplate {
 	///
 	/// As the deadline with which to get a claim confirmed approaches, the rate at which the timer
 	/// ticks increases.
+	#[rustfmt::skip]
 	pub(crate) fn get_height_timer(&self, current_height: u32) -> u32 {
 		let mut height_timer = current_height + LOW_FREQUENCY_BUMP_INTERVAL;
 		let timer_for_target_conf = |target_conf| -> u32 {
@@ -1349,6 +1380,7 @@ impl PackageTemplate {
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
+	#[rustfmt::skip]
 	pub(crate) fn compute_package_output<F: Deref, L: Logger>(
 		&self, predicted_weight: u64, dust_limit_sats: u64, feerate_strategy: &FeerateStrategy,
 		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
@@ -1376,6 +1408,7 @@ impl PackageTemplate {
 	}
 
 	/// Computes a feerate based on the given confirmation target and feerate strategy.
+	#[rustfmt::skip]
 	pub(crate) fn compute_package_feerate<F: Deref>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, conf_target: ConfirmationTarget,
 		feerate_strategy: &FeerateStrategy,
@@ -1409,6 +1442,7 @@ impl PackageTemplate {
 
 	/// Determines whether a package contains an input which must have additional external inputs
 	/// attached to help the spending transaction reach confirmation.
+	#[rustfmt::skip]
 	pub(crate) fn requires_external_funding(&self) -> bool {
 		self.inputs.iter().find(|input| match input.1 {
 			PackageSolvingData::HolderFundingOutput(ref outp) => outp.channel_type_features.supports_anchors_zero_fee_htlc_tx(),
@@ -1417,7 +1451,10 @@ impl PackageTemplate {
 		}).is_some()
 	}
 
-	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, counterparty_spendable_height: u32) -> Self {
+	pub(crate) fn build_package(
+		txid: Txid, vout: u32, input_solving_data: PackageSolvingData,
+		counterparty_spendable_height: u32,
+	) -> Self {
 		let malleability = PackageSolvingData::map_output_type_flags(&input_solving_data);
 		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
@@ -1449,6 +1486,7 @@ impl Writeable for PackageTemplate {
 }
 
 impl Readable for PackageTemplate {
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inputs_count = <u64 as Readable>::read(reader)?;
 		let mut inputs: Vec<(BitcoinOutPoint, PackageSolvingData)> = Vec::with_capacity(cmp::min(inputs_count as usize, MAX_ALLOC_SIZE / 128));
@@ -1499,6 +1537,7 @@ impl Readable for PackageTemplate {
 /// If the proposed fee is less than the available spent output's values, we return the proposed
 /// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`],
 /// we return nothing.
+#[rustfmt::skip]
 fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 	input_amounts: u64, predicted_weight: u64, conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 ) -> Option<(u64, u64)>
@@ -1524,6 +1563,7 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
 /// the previous feerate. If a feerate bump did happen, we also verify that those bumping heuristics
 /// respect BIP125 rules 3) and 4) and if required adjust the new fee to meet the RBF policy
 /// requirement.
+#[rustfmt::skip]
 fn feerate_bump<F: Deref, L: Logger>(
 	predicted_weight: u64, input_amounts: u64, dust_limit_sats: u64, previous_feerate: u64,
 	feerate_strategy: &FeerateStrategy, conf_target: ConfirmationTarget,
@@ -1596,13 +1636,17 @@ where
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc, feerate_bump};
+	use crate::chain::package::{
+		feerate_bump, weight_offered_htlc, weight_received_htlc, CounterpartyOfferedHTLCOutput,
+		CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData,
+		PackageTemplate, RevokedHTLCOutput, RevokedOutput, WEIGHT_REVOKED_OUTPUT,
+	};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::{
-		ChannelTransactionParameters, HolderCommitmentTransaction, HTLCOutputInCommitment,
+		ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
 	};
-	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
+	use crate::types::payment::{PaymentHash, PaymentPreimage};
 
 	use bitcoin::absolute::LockTime;
 	use bitcoin::amount::Amount;
@@ -1614,13 +1658,16 @@ mod tests {
 
 	use bitcoin::hex::FromHex;
 
-	use bitcoin::secp256k1::{PublicKey,SecretKey};
-	use bitcoin::secp256k1::Secp256k1;
-	use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, FEERATE_FLOOR_SATS_PER_KW, LowerBoundedFeeEstimator};
+	use crate::chain::chaininterface::{
+		ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, FEERATE_FLOOR_SATS_PER_KW,
+	};
 	use crate::chain::onchaintx::FeerateStrategy;
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::util::test_utils::TestLogger;
+	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
+	#[rustfmt::skip]
 	fn fake_txid(n: u64) -> Txid {
 		Transaction {
 			version: Version(0),
@@ -1633,6 +1680,7 @@ mod tests {
 		}.compute_txid()
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_revk_output {
 		($is_counterparty_balance_on_anchors: expr) => {
 			{
@@ -1648,6 +1696,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_revk_htlc_output {
 		() => {
 			{
@@ -1666,6 +1715,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_counterparty_received_output {
 		($amt: expr, $expiry: expr, $features: expr) => {
 			{
@@ -1683,6 +1733,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_counterparty_offered_output {
 		($amt: expr, $features: expr) => {
 			{
@@ -1701,6 +1752,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_accepted_htlc_output {
 		($features: expr) => {
 			{
@@ -1736,6 +1788,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_offered_htlc_output {
 		($cltv_expiry: expr, $features: expr) => {
 			{
@@ -1770,6 +1823,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	macro_rules! dumb_funding_output {
 		() => {{
 			let commitment_tx = HolderCommitmentTransaction::dummy(0, Vec::new());
@@ -1782,6 +1836,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_merge_package_untractable_funding_output() {
 		let funding_outp = dumb_funding_output!();
 		let htlc_outp = dumb_accepted_htlc_output!(ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
@@ -1797,6 +1852,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_merge_empty_package() {
 		let revk_outp = dumb_revk_htlc_output!();
 
@@ -1808,6 +1864,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_merge_package_different_signed_locktimes() {
 		// Malleable HTLC transactions are signed over the locktime, and can't be aggregated with
 		// different locktimes.
@@ -1831,6 +1888,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_merge_package_different_effective_locktimes() {
 		// Spends of outputs can have different minimum locktimes, and are not mergeable if they are in the
 		// future.
@@ -1856,6 +1914,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_merge_package_holder_htlc_output_clusters() {
 		// Signed locktimes of 0.
 		let unpinnable_1 = dumb_accepted_htlc_output!(ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
@@ -1915,6 +1974,7 @@ mod tests {
 
 	#[test]
 	#[should_panic]
+	#[rustfmt::skip]
 	fn test_merge_package_different_tx_trees() {
 		let offered_htlc = dumb_offered_htlc_output!(900, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
 		let mut offered_htlc_package = PackageTemplate::build_package(fake_txid(1), 0, offered_htlc.clone(), 0);
@@ -1926,6 +1986,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_package_split_malleable() {
 		let revk_outp_one = dumb_revk_output!(false);
 		let revk_outp_two = dumb_revk_output!(false);
@@ -1950,6 +2011,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_package_split_untractable() {
 		let htlc_outp_one = dumb_accepted_htlc_output!(ChannelTypeFeatures::only_static_remote_key());
 
@@ -1969,6 +2031,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_package_amounts() {
 		let counterparty_outp = dumb_counterparty_received_output!(1_000_000, 1000, ChannelTypeFeatures::only_static_remote_key());
 
@@ -1977,6 +2040,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_package_weight() {
 		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR + witness marker (2)
 		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR as u64 + 2;
@@ -2015,6 +2079,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_feerate_bump() {
 		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW;
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };

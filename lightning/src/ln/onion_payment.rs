@@ -1,25 +1,26 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 //! Utilities to decode payment onions and do contextless validation of incoming payments.
 //!
 //! Primarily features [`peel_payment_onion`], which allows the decoding of an onion statelessly
 //! and can be used to predict whether we'd accept a payment.
 
-use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 
 use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::types::payment::PaymentHash;
-use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
-use crate::types::features::BlindedHopFeatures;
+use crate::ln::channelmanager::{
+	BlindedFailure, BlindedForward, HTLCFailureMsg, PendingHTLCInfo, PendingHTLCRouting,
+	CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA,
+};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::onion_utils::{HTLCFailReason, ONION_DATA_LEN, LocalHTLCFailureReason};
+use crate::ln::onion_utils::{HTLCFailReason, LocalHTLCFailureReason, ONION_DATA_LEN};
 use crate::sign::{NodeSigner, Recipient};
+use crate::types::features::BlindedHopFeatures;
+use crate::types::payment::PaymentHash;
 use crate::util::logger::Logger;
 
 #[allow(unused_imports)]
@@ -39,13 +40,14 @@ pub struct InboundHTLCErr {
 }
 
 /// Writes payment data for invalid or unknown payment error code.
-pub (super) fn invalid_payment_err_data(amt_msat: u64, current_height: u32) -> Vec<u8>{
+pub(super) fn invalid_payment_err_data(amt_msat: u64, current_height: u32) -> Vec<u8> {
 	let mut err_data = Vec::with_capacity(12);
 	err_data.extend_from_slice(&amt_msat.to_be_bytes());
 	err_data.extend_from_slice(&current_height.to_be_bytes());
 	err_data
 }
 
+#[rustfmt::skip]
 fn check_blinded_payment_constraints(
 	amt_msat: u64, cltv_expiry: u32, constraints: &PaymentConstraints
 ) -> Result<(), ()> {
@@ -55,6 +57,7 @@ fn check_blinded_payment_constraints(
 	Ok(())
 }
 
+#[rustfmt::skip]
 fn check_blinded_forward(
 	inbound_amt_msat: u64, inbound_cltv_expiry: u32, payment_relay: &PaymentRelay,
 	payment_constraints: &PaymentConstraints, features: &BlindedHopFeatures
@@ -75,7 +78,7 @@ enum RoutingInfo {
 	Direct {
 		short_channel_id: u64,
 		new_packet_bytes: [u8; ONION_DATA_LEN],
-		next_hop_hmac: [u8; 32]
+		next_hop_hmac: [u8; 32],
 	},
 	Trampoline {
 		next_trampoline: PublicKey,
@@ -83,10 +86,11 @@ enum RoutingInfo {
 		new_packet_bytes: Vec<u8>,
 		next_hop_hmac: [u8; 32],
 		shared_secret: SharedSecret,
-		current_path_key: Option<PublicKey>
-	}
+		current_path_key: Option<PublicKey>,
+	},
 }
 
+#[rustfmt::skip]
 pub(super) fn create_fwd_pending_htlc_info(
 	msg: &msgs::UpdateAddHTLC, hop_data: onion_utils::Hop, shared_secret: [u8; 32],
 	next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
@@ -239,6 +243,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 	})
 }
 
+#[rustfmt::skip]
 pub(super) fn create_recv_pending_htlc_info(
 	hop_data: onion_utils::Hop, shared_secret: [u8; 32], payment_hash: PaymentHash,
 	amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
@@ -422,6 +427,7 @@ pub(super) fn create_recv_pending_htlc_info(
 /// channel, will generate an [`Event::PaymentClaimable`].
 ///
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
+#[rustfmt::skip]
 pub fn peel_payment_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 	cur_height: u32, allow_skimmed_fees: bool,
@@ -494,6 +500,7 @@ pub(super) struct NextPacketDetails {
 	pub(super) outgoing_cltv_value: u32,
 }
 
+#[rustfmt::skip]
 pub(super) fn decode_incoming_update_add_htlc_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 ) -> Result<(onion_utils::Hop, Option<NextPacketDetails>), (HTLCFailureMsg, LocalHTLCFailureReason)>
@@ -602,7 +609,7 @@ where
 }
 
 pub(super) fn check_incoming_htlc_cltv(
-	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32
+	cur_height: u32, outgoing_cltv_value: u32, cltv_expiry: u32,
 ) -> Result<(), LocalHTLCFailureReason> {
 	if (cltv_expiry as u64) < (outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
 		return Err(LocalHTLCFailureReason::IncorrectCLTVExpiry);
@@ -633,20 +640,21 @@ pub(super) fn check_incoming_htlc_cltv(
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use crate::ln::types::ChannelId;
-	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
-	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs;
 	use crate::ln::onion_utils::create_payment_onion;
+	use crate::ln::types::ChannelId;
 	use crate::routing::router::{Path, RouteHop};
+	use crate::types::features::{ChannelFeatures, NodeFeatures};
+	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::test_utils;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::Hash;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	#[test]
+	#[rustfmt::skip]
 	fn fail_construct_onion_on_too_big_payloads() {
 		// Ensure that if we call `construct_onion_packet` and friends where payloads are too large for
 		// the allotted packet length, we'll fail to construct. Previously, senders would happily
@@ -679,6 +687,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_peel_payment_onion() {
 		use super::*;
 		let secp_ctx = Secp256k1::new();
@@ -733,7 +742,7 @@ mod tests {
 
 	fn make_update_add_msg(
 		amount_msat: u64, cltv_expiry: u32, payment_hash: PaymentHash,
-		onion_routing_packet: msgs::OnionPacket
+		onion_routing_packet: msgs::OnionPacket,
 	) -> msgs::UpdateAddHTLC {
 		msgs::UpdateAddHTLC {
 			channel_id: ChannelId::from_bytes([0; 32]),
@@ -747,6 +756,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn payment_onion_args(hop_pk: PublicKey, recipient_pk: PublicKey) -> (
 		SecretKey, u64, u32, RecipientOnionFields, PaymentPreimage, PaymentHash, [u8; 32],
 		Vec<RouteHop>, u64, PaymentSecret,
@@ -790,5 +800,4 @@ mod tests {
 		(session_priv, total_amt_msat, cur_height, recipient_onion, preimage, payment_hash,
 			prng_seed, hops, recipient_amount, pay_secret)
 	}
-
 }

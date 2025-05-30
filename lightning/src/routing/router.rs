@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -11,33 +9,40 @@
 
 //! The router finds paths within a [`NetworkGraph`] for a payment.
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 use lightning_invoice::Bolt11Invoice;
 
+use crate::blinded_path::payment::{
+	BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay,
+	ReceiveTlvs,
+};
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay, ReceiveTlvs};
-use crate::types::payment::{PaymentHash, PaymentPreimage};
+use crate::crypto::chacha20::ChaCha20;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
-use crate::types::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
+use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
+use crate::offers::invoice::Bolt12Invoice;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
-use crate::offers::invoice::Bolt12Invoice;
-use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
+use crate::routing::gossip::{
+	DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId, ReadOnlyNetworkGraph,
+};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
 use crate::sync::Mutex;
-use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
+use crate::types::features::{
+	BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures,
+};
+use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::logger::Logger;
-use crate::crypto::chacha20::ChaCha20;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
 use crate::io;
 use crate::prelude::*;
 use alloc::collections::BinaryHeap;
-use core::{cmp, fmt};
 use core::ops::Deref;
+use core::{cmp, fmt};
 
 use lightning_types::routing::RoutingFees;
 
@@ -51,9 +56,16 @@ pub use lightning_types::routing::{RouteHint, RouteHintHop};
 /// it will create a one-hop path using the recipient as the introduction node if it is a announced
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// payment, and thus an `Err` is returned.
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
+pub struct DefaultRouter<
+	G: Deref<Target = NetworkGraph<L>>,
+	L: Deref,
+	ES: Deref,
+	S: Deref,
+	SP: Sized,
+	Sc: ScoreLookUp<ScoreParams = SP>,
+> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
 {
 	network_graph: G,
@@ -63,22 +75,41 @@ pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref
 	score_params: SP,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, ES, S, SP, Sc> where
+impl<
+		G: Deref<Target = NetworkGraph<L>>,
+		L: Deref,
+		ES: Deref,
+		S: Deref,
+		SP: Sized,
+		Sc: ScoreLookUp<ScoreParams = SP>,
+	> DefaultRouter<G, L, ES, S, SP, Sc>
+where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
 {
 	/// Creates a new router.
-	pub fn new(network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP) -> Self {
+	pub fn new(
+		network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP,
+	) -> Self {
 		Self { network_graph, logger, entropy_source, scorer, score_params }
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, ES, S, SP, Sc> where
+impl<
+		G: Deref<Target = NetworkGraph<L>>,
+		L: Deref,
+		ES: Deref,
+		S: Deref,
+		SP: Sized,
+		Sc: ScoreLookUp<ScoreParams = SP>,
+	> Router for DefaultRouter<G, L, ES, S, SP, Sc>
+where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for<'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
 {
+	#[rustfmt::skip]
 	fn find_route(
 		&self,
 		payer: &PublicKey,
@@ -95,6 +126,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 		)
 	}
 
+	#[rustfmt::skip]
 	fn create_blinded_payment_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
@@ -206,16 +238,14 @@ impl FixedRouter {
 impl Router for FixedRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _route_params: &RouteParameters,
-		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
 	) -> Result<Route, &'static str> {
 		self.route.lock().unwrap().take().ok_or("Can't use this router to return multiple routes")
 	}
 
-	fn create_blinded_payment_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	> (
+	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>
+		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		// Should be unreachable as this router is only intended to provide a one-time payment route.
 		debug_assert!(false);
@@ -229,6 +259,7 @@ pub trait Router {
 	///
 	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]
 	/// and [`RouteParameters::final_value_msat`], respectively.
+	#[rustfmt::skip]
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
@@ -244,7 +275,7 @@ pub trait Router {
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
-		_payment_hash: PaymentHash, _payment_id: PaymentId
+		_payment_hash: PaymentHash, _payment_id: PaymentId,
 	) -> Result<Route, &'static str> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
 	}
@@ -252,11 +283,9 @@ pub trait Router {
 	/// Creates [`BlindedPaymentPath`]s for payment to the `recipient` node. The channels in `first_hops`
 	/// are assumed to be with the `recipient`'s peers. The payment secret and any constraints are
 	/// given in `tlvs`.
-	fn create_blinded_payment_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	> (
+	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 }
 
@@ -266,13 +295,20 @@ pub trait Router {
 /// [`find_route`].
 ///
 /// [`ScoreLookUp`]: crate::routing::scoring::ScoreLookUp
-pub struct ScorerAccountingForInFlightHtlcs<'a, S: Deref> where S::Target: ScoreLookUp {
+pub struct ScorerAccountingForInFlightHtlcs<'a, S: Deref>
+where
+	S::Target: ScoreLookUp,
+{
 	scorer: S,
 	// Maps a channel's short channel id and its direction to the liquidity used up.
 	inflight_htlcs: &'a InFlightHtlcs,
 }
-impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
+impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S>
+where
+	S::Target: ScoreLookUp,
+{
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
+	#[rustfmt::skip]
 	pub fn new(scorer: S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
 			scorer,
@@ -281,8 +317,12 @@ impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: Scor
 	}
 }
 
-impl<'a, S: Deref> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
+impl<'a, S: Deref> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, S>
+where
+	S::Target: ScoreLookUp,
+{
 	type ScoreParams = <S::Target as ScoreLookUp>::ScoreParams;
+	#[rustfmt::skip]
 	fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
 		let target = match candidate.target() {
 			Some(target) => target,
@@ -316,14 +356,16 @@ pub struct InFlightHtlcs(
 	// is traveling in. The direction boolean is determined by checking if the HTLC source's public
 	// key is less than its destination. See `InFlightHtlcs::used_liquidity_msat` for more
 	// details.
-	HashMap<(u64, bool), u64>
+	HashMap<(u64, bool), u64>,
 );
 
 impl InFlightHtlcs {
 	/// Constructs an empty `InFlightHtlcs`.
+	#[rustfmt::skip]
 	pub fn new() -> Self { InFlightHtlcs(new_hash_map()) }
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
+	#[rustfmt::skip]
 	pub fn process_path(&mut self, path: &Path, payer_node_id: PublicKey) {
 		if path.hops.is_empty() { return };
 
@@ -355,7 +397,9 @@ impl InFlightHtlcs {
 
 	/// Adds a known HTLC given the public key of the HTLC source, target, and short channel
 	/// id.
-	pub fn add_inflight_htlc(&mut self, source: &NodeId, target: &NodeId, channel_scid: u64, used_msat: u64){
+	pub fn add_inflight_htlc(
+		&mut self, source: &NodeId, target: &NodeId, channel_scid: u64, used_msat: u64,
+	) {
 		self.0
 			.entry((channel_scid, source < target))
 			.and_modify(|used_liquidity_msat| *used_liquidity_msat += used_msat)
@@ -364,12 +408,15 @@ impl InFlightHtlcs {
 
 	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
 	/// id.
-	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
+	pub fn used_liquidity_msat(
+		&self, source: &NodeId, target: &NodeId, channel_scid: u64,
+	) -> Option<u64> {
 		self.0.get(&(channel_scid, source < target)).map(|v| *v)
 	}
 }
 
 impl Writeable for InFlightHtlcs {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
 }
 
@@ -495,6 +542,7 @@ pub struct Path {
 
 impl Path {
 	/// Gets the fees for a given path, excluding any excess paid to the recipient.
+	#[rustfmt::skip]
 	pub fn fee_msat(&self) -> u64 {
 		match &self.blinded_tail {
 			Some(_) => self.hops.iter().map(|hop| hop.fee_msat).sum::<u64>(),
@@ -507,6 +555,7 @@ impl Path {
 	}
 
 	/// Gets the total amount paid on this [`Path`], excluding the fees.
+	#[rustfmt::skip]
 	pub fn final_value_msat(&self) -> u64 {
 		match &self.blinded_tail {
 			Some(blinded_tail) => blinded_tail.final_value_msat,
@@ -515,6 +564,7 @@ impl Path {
 	}
 
 	/// Gets the final hop's CLTV expiry delta.
+	#[rustfmt::skip]
 	pub fn final_cltv_expiry_delta(&self) -> Option<u32> {
 		match &self.blinded_tail {
 			Some(_) => None,
@@ -552,6 +602,7 @@ impl Route {
 	/// [`RouteParameters::final_value_msat`], if we had to reach the [`htlc_minimum_msat`] limits.
 	///
 	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
+	#[rustfmt::skip]
 	pub fn get_total_fees(&self) -> u64 {
 		let overpaid_value_msat = self.route_params.as_ref()
 			.map_or(0, |p| self.get_total_amount().saturating_sub(p.final_value_msat));
@@ -579,6 +630,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for Route {
+	#[rustfmt::skip]
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
@@ -611,6 +663,7 @@ impl Writeable for Route {
 }
 
 impl Readable for Route {
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		let path_count: u64 = Readable::read(reader)?;
@@ -678,12 +731,14 @@ impl RouteParameters {
 	/// Constructs [`RouteParameters`] from the given [`PaymentParameters`] and a payment amount.
 	///
 	/// [`Self::max_total_routing_fee_msat`] defaults to 1% of the payment amount + 50 sats
+	#[rustfmt::skip]
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
 		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
 	}
 
 	/// Sets the maximum number of hops that can be included in a payment path, based on the provided
 	/// [`RecipientOnionFields`] and blinded paths.
+	#[rustfmt::skip]
 	pub fn set_max_path_length(
 		&mut self, recipient_onion: &RecipientOnionFields, is_keysend: bool, best_block_height: u32
 	) -> Result<(), ()> {
@@ -807,6 +862,7 @@ pub struct PaymentParameters {
 }
 
 impl Writeable for PaymentParameters {
+	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let mut clear_hints = &vec![];
 		let mut blinded_hints = None;
@@ -836,6 +892,7 @@ impl Writeable for PaymentParameters {
 }
 
 impl ReadableArgs<u32> for PaymentParameters {
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, default_final_cltv_expiry_delta: u32) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payee_pubkey, option),
@@ -882,12 +939,12 @@ impl ReadableArgs<u32> for PaymentParameters {
 	}
 }
 
-
 impl PaymentParameters {
 	/// Creates a payee with the node id of the given `pubkey`.
 	///
 	/// The `final_cltv_expiry_delta` should match the expected final CLTV delta the recipient has
 	/// provided.
+	#[rustfmt::skip]
 	pub fn from_node_id(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
 		Self {
 			payee: Payee::Clear { node_id: payee_pubkey, route_hints: vec![], features: None, final_cltv_expiry_delta },
@@ -912,6 +969,7 @@ impl PaymentParameters {
 	/// [`RecipientOnionFields::secret_only`].
 	///
 	/// [`RecipientOnionFields::secret_only`]: crate::ln::channelmanager::RecipientOnionFields::secret_only
+	#[rustfmt::skip]
 	pub fn for_keysend(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32, allow_mpp: bool) -> Self {
 		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta)
 			.with_bolt11_features(Bolt11InvoiceFeatures::for_keysend(allow_mpp))
@@ -942,6 +1000,7 @@ impl PaymentParameters {
 	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
+	#[rustfmt::skip]
 	pub fn from_bolt12_invoice(invoice: &Bolt12Invoice) -> Self {
 		Self::blinded(invoice.payment_paths().to_vec())
 			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
@@ -952,6 +1011,7 @@ impl PaymentParameters {
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
 	#[cfg(async_payments)]
+	#[rustfmt::skip]
 	pub fn from_static_invoice(invoice: &StaticInvoice) -> Self {
 		Self::blinded(invoice.payment_paths().to_vec())
 			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
@@ -978,6 +1038,7 @@ impl PaymentParameters {
 	/// We *do not* apply `max_total_routing_fee_msat` here, as it is unique to each route.
 	/// Instead, we apply only the parameters that are common across multiple route-finding sessions
 	/// for a payment across retries.
+	#[rustfmt::skip]
 	pub(crate) fn with_user_config_ignoring_fee_limit(self, params_config: RouteParametersConfig) -> Self {
 		Self {
 			max_total_cltv_expiry_delta: params_config.max_total_cltv_expiry_delta,
@@ -991,6 +1052,7 @@ impl PaymentParameters {
 	/// [`PaymentParameters::from_bolt12_invoice`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
+	#[rustfmt::skip]
 	pub fn with_bolt12_features(self, features: Bolt12InvoiceFeatures) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Clear { .. } => Err(()),
@@ -1003,6 +1065,7 @@ impl PaymentParameters {
 	/// [`PaymentParameters::from_bolt12_invoice`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
+	#[rustfmt::skip]
 	pub fn with_bolt11_features(self, features: Bolt11InvoiceFeatures) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
@@ -1019,6 +1082,7 @@ impl PaymentParameters {
 	/// [`PaymentParameters::from_bolt12_invoice`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
+	#[rustfmt::skip]
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Result<Self, ()> {
 		match self.payee {
 			Payee::Blinded { .. } => Err(()),
@@ -1056,10 +1120,13 @@ impl PaymentParameters {
 	/// a power of 1/2. See [`PaymentParameters::max_channel_saturation_power_of_half`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
-	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
+	pub fn with_max_channel_saturation_power_of_half(
+		self, max_channel_saturation_power_of_half: u8,
+	) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn insert_previously_failed_blinded_path(&mut self, failed_blinded_tail: &BlindedTail) {
 		let mut found_blinded_tail = false;
 		for (idx, path) in self.payee.blinded_route_hints().iter().enumerate() {
@@ -1144,7 +1211,9 @@ impl RouteParametersConfig {
 	/// a power of 1/2. See [`PaymentParameters::max_channel_saturation_power_of_half`].
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
-	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
+	pub fn with_max_channel_saturation_power_of_half(
+		self, max_channel_saturation_power_of_half: u8,
+	) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
 }
@@ -1208,6 +1277,7 @@ impl Payee {
 			Self::Blinded { features, .. } => features.as_ref().map(|f| f.to_context()),
 		}
 	}
+	#[rustfmt::skip]
 	fn supports_basic_mpp(&self) -> bool {
 		match self {
 			Self::Clear { features, .. } => features.as_ref().map_or(false, |f| f.supports_basic_mpp()),
@@ -1226,6 +1296,7 @@ impl Payee {
 			_ => None,
 		}
 	}
+	#[rustfmt::skip]
 	pub(crate) fn blinded_route_hints(&self) -> &[BlindedPaymentPath] {
 		match self {
 			Self::Blinded { route_hints, .. } => &route_hints[..],
@@ -1233,6 +1304,7 @@ impl Payee {
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn blinded_route_hints_mut(&mut self) -> &mut [BlindedPaymentPath] {
 		match self {
 			Self::Blinded { route_hints, .. } => &mut route_hints[..],
@@ -1240,6 +1312,7 @@ impl Payee {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn unblinded_route_hints(&self) -> &[RouteHint] {
 		match self {
 			Self::Blinded { .. } => &[],
@@ -1282,6 +1355,7 @@ impl<'a> Writeable for FeaturesRef<'a> {
 }
 
 impl ReadableArgs<bool> for Features {
+	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, bolt11: bool) -> Result<Self, DecodeError> {
 		if bolt11 { return Ok(Self::Bolt11(Readable::read(reader)?)) }
 		Ok(Self::Bolt12(Readable::read(reader)?))
@@ -1336,6 +1410,7 @@ struct RouteGraphNode {
 }
 
 impl cmp::Ord for RouteGraphNode {
+	#[rustfmt::skip]
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
 		other.score.cmp(&self.score)
 			.then_with(|| self.value_contribution_msat.cmp(&other.value_contribution_msat))
@@ -1558,6 +1633,7 @@ impl<'a> CandidateRouteHop<'a> {
 	/// from the public network graph), and thus the short channel ID we have for this channel is
 	/// globally unique and identifies this channel in a global namespace.
 	#[inline]
+	#[rustfmt::skip]
 	pub fn globally_unique_short_channel_id(&self) -> Option<u64> {
 		match self {
 			CandidateRouteHop::FirstHop(hop) => if hop.details.is_announced { hop.details.short_channel_id } else { None },
@@ -1631,6 +1707,7 @@ impl<'a> CandidateRouteHop<'a> {
 
 	/// Returns the fees that must be paid to route an HTLC over this channel.
 	#[inline]
+	#[rustfmt::skip]
 	pub fn fees(&self) -> RoutingFees {
 		match self {
 			CandidateRouteHop::FirstHop(_) => RoutingFees {
@@ -1653,6 +1730,7 @@ impl<'a> CandidateRouteHop<'a> {
 	///
 	/// Note that this may be somewhat expensive, so calls to this should be limited and results
 	/// cached!
+	#[rustfmt::skip]
 	fn effective_capacity(&self) -> EffectiveCapacity {
 		match self {
 			CandidateRouteHop::FirstHop(hop) => EffectiveCapacity::ExactLiquidity {
@@ -1673,6 +1751,7 @@ impl<'a> CandidateRouteHop<'a> {
 	///
 	/// See the docs on [`CandidateHopId`] for when this is, or is not, unique.
 	#[inline]
+	#[rustfmt::skip]
 	fn id(&self) -> CandidateHopId {
 		match self {
 			CandidateRouteHop::Blinded(hop) => CandidateHopId::Blinded(hop.hint_idx),
@@ -1680,6 +1759,7 @@ impl<'a> CandidateRouteHop<'a> {
 			_ => CandidateHopId::Clear((self.short_channel_id().unwrap(), self.source() < self.target().unwrap())),
 		}
 	}
+	#[rustfmt::skip]
 	fn blinded_path(&self) -> Option<&'a BlindedPaymentPath> {
 		match self {
 			CandidateRouteHop::Blinded(BlindedPathCandidate { hint, .. }) | CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, .. }) => {
@@ -1688,6 +1768,7 @@ impl<'a> CandidateRouteHop<'a> {
 			_ => None,
 		}
 	}
+	#[rustfmt::skip]
 	fn blinded_hint_idx(&self) -> Option<usize> {
 		match self {
 			Self::Blinded(BlindedPathCandidate { hint_idx, .. }) |
@@ -1793,6 +1874,7 @@ impl<'a> NodeCountersBuilder<'a> {
 		counter
 	}
 
+	#[rustfmt::skip]
 	fn select_node_counter_for_id(&mut self, node_id: NodeId) -> u32 {
 		// For any node_id, we first have to check if its in the existing network graph, and then
 		// ensure that we always look up in our internal map first.
@@ -1805,10 +1887,12 @@ impl<'a> NodeCountersBuilder<'a> {
 			})
 	}
 
+	#[rustfmt::skip]
 	fn build(self) -> NodeCounters<'a> { self.0 }
 }
 
 impl<'a> NodeCounters<'a> {
+	#[rustfmt::skip]
 	fn max_counter(&self) -> u32 {
 		self.network_graph.max_node_counter() +
 			self.private_node_id_to_node_counter.len() as u32
@@ -1818,6 +1902,7 @@ impl<'a> NodeCounters<'a> {
 		self.private_hop_key_cache.get(pubkey)
 	}
 
+	#[rustfmt::skip]
 	fn node_counter_from_id(&self, node_id: &NodeId) -> Option<(&NodeId, u32)> {
 		self.private_node_id_to_node_counter.get_key_value(node_id).map(|(a, b)| (a, *b))
 			.or_else(|| {
@@ -1829,6 +1914,7 @@ impl<'a> NodeCounters<'a> {
 
 /// Calculates the introduction point for each blinded path in the given [`PaymentParameters`], if
 /// they can be found.
+#[rustfmt::skip]
 fn calculate_blinded_path_intro_points<'a, L: Deref>(
 	payment_params: &PaymentParameters, node_counters: &'a NodeCounters,
 	network_graph: &ReadOnlyNetworkGraph, logger: &L, our_node_id: NodeId,
@@ -1898,6 +1984,7 @@ where L::Target: Logger {
 }
 
 #[inline]
+#[rustfmt::skip]
 fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_power_of_half: u8) -> u64 {
 	let saturation_shift: u32 = max_channel_saturation_power_of_half as u32;
 	match capacity {
@@ -1914,6 +2001,7 @@ fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_po
 	}
 }
 
+#[rustfmt::skip]
 fn iter_equal<I1: Iterator, I2: Iterator>(mut iter_a: I1, mut iter_b: I2)
 -> bool where I1::Item: PartialEq<I2::Item> {
 	loop {
@@ -1980,9 +2068,11 @@ struct PathBuildingHop<'a> {
 }
 
 const _NODE_MAP_SIZE_TWO_CACHE_LINES: usize = 128 - core::mem::size_of::<Option<PathBuildingHop>>();
-const _NODE_MAP_SIZE_EXACTLY_TWO_CACHE_LINES: usize = core::mem::size_of::<Option<PathBuildingHop>>() - 128;
+const _NODE_MAP_SIZE_EXACTLY_TWO_CACHE_LINES: usize =
+	core::mem::size_of::<Option<PathBuildingHop>>() - 128;
 
 impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
+	#[rustfmt::skip]
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		let mut debug_struct = f.debug_struct("PathBuildingHop");
 		debug_struct
@@ -2052,6 +2142,7 @@ impl<'a> PaymentPath<'a> {
 	//
 	// Returns the amount that this path contributes to the total payment value, which may be greater
 	// than `value_msat` if we had to overpay to meet the final node's `htlc_minimum_msat`.
+	#[rustfmt::skip]
 	fn update_value_and_recompute_fees(&mut self, value_msat: u64) -> u64 {
 		let mut extra_contribution_msat = 0;
 		let mut total_fee_paid_msat = 0 as u64;
@@ -2128,6 +2219,7 @@ impl<'a> PaymentPath<'a> {
 	/// contribution this path can make to the final value of the payment.
 	/// May be slightly lower than the actual max due to rounding errors when aggregating fees
 	/// along the path.
+	#[rustfmt::skip]
 	fn max_final_value_msat(
 		&self, used_liquidities: &HashMap<CandidateHopId, u64>, channel_saturation_pow_half: u8
 	) -> (usize, u64) {
@@ -2169,6 +2261,7 @@ impl<'a> PaymentPath<'a> {
 
 #[inline(always)]
 /// Calculate the fees required to route the given amount over a channel with the given fees.
+#[rustfmt::skip]
 fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 	amount_msat.checked_mul(channel_fees.proportional_millionths as u64)
 		.and_then(|part| (channel_fees.base_msat as u64).checked_add(part / 1_000_000))
@@ -2177,6 +2270,7 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 #[inline(always)]
 /// Calculate the fees required to route the given amount over a channel with the given fees,
 /// saturating to [`u64::max_value`].
+#[rustfmt::skip]
 fn compute_fees_saturating(amount_msat: u64, channel_fees: RoutingFees) -> u64 {
 	amount_msat.checked_mul(channel_fees.proportional_millionths as u64)
 		.map(|prop| prop / 1_000_000).unwrap_or(u64::max_value())
@@ -2196,6 +2290,7 @@ fn default_node_features() -> NodeFeatures {
 
 struct LoggedPayeePubkey(Option<PublicKey>);
 impl fmt::Display for LoggedPayeePubkey {
+	#[rustfmt::skip]
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self.0 {
 			Some(pk) => {
@@ -2211,6 +2306,7 @@ impl fmt::Display for LoggedPayeePubkey {
 
 struct LoggedCandidateHop<'a>(&'a CandidateRouteHop<'a>);
 impl<'a> fmt::Display for LoggedCandidateHop<'a> {
+	#[rustfmt::skip]
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self.0 {
 			CandidateRouteHop::Blinded(BlindedPathCandidate { hint, .. }) | CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, .. }) => {
@@ -2248,6 +2344,7 @@ impl<'a> fmt::Display for LoggedCandidateHop<'a> {
 }
 
 #[inline]
+#[rustfmt::skip]
 fn sort_first_hop_channels(
 	channels: &mut Vec<&ChannelDetails>, used_liquidities: &HashMap<CandidateHopId, u64>,
 	recommended_value_msat: u64, our_node_pubkey: &PublicKey
@@ -2307,6 +2404,7 @@ fn sort_first_hop_channels(
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
 /// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 /// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
+#[rustfmt::skip]
 pub fn find_route<L: Deref, GL: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
@@ -2320,6 +2418,7 @@ where L::Target: Logger, GL::Target: Logger {
 	Ok(route)
 }
 
+#[rustfmt::skip]
 pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network_graph: &ReadOnlyNetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &S::ScoreParams,
@@ -2981,6 +3080,7 @@ where L::Target: Logger {
 	// $fee_to_target_msat represents how much it costs to reach to this node from the payee,
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
+	#[rustfmt::skip]
 	macro_rules! add_entries_to_cheapest_to_target_node {
 		( $node: expr, $node_counter: expr, $node_id: expr, $next_hops_value_contribution: expr,
 		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => {
@@ -3593,6 +3693,7 @@ where L::Target: Logger {
 // destination, if the remaining CLTV expiry delta exactly matches a feasible path in the network
 // graph. In order to improve privacy, this method obfuscates the CLTV expiry deltas along the
 // payment path by adding a randomized 'shadow route' offset to the final hop.
+#[rustfmt::skip]
 fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 	network_graph: &ReadOnlyNetworkGraph, random_seed_bytes: &[u8; 32]
 ) {
@@ -3683,6 +3784,7 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 /// exclude the payer, but include the payee). This may be useful, e.g., for probing the chosen path.
 ///
 /// Re-uses logic from `find_route`, so the restrictions described there also apply here.
+#[rustfmt::skip]
 pub fn build_route_from_hops<L: Deref, GL: Deref>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, logger: L, random_seed_bytes: &[u8; 32]
@@ -3695,6 +3797,7 @@ where L::Target: Logger, GL::Target: Logger {
 	Ok(route)
 }
 
+#[rustfmt::skip]
 fn build_route_from_hops_internal<L: Deref>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &ReadOnlyNetworkGraph, logger: L, random_seed_bytes: &[u8; 32],
@@ -3727,6 +3830,7 @@ fn build_route_from_hops_internal<L: Deref>(
 
 	impl<'a> Writeable for HopScorer {
 		#[inline]
+		#[rustfmt::skip]
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> {
 			unreachable!();
 		}
@@ -3749,43 +3853,53 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
-	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
-	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
-	use crate::routing::utxo::UtxoResult;
-	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
-		BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
-		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE, RouteParameters, CandidateRouteHop, PublicHopCandidate};
-	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, ScoreLookUp, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
-	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
+	use crate::blinded_path::BlindedHop;
 	use crate::chain::transaction::OutPoint;
-	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
-	use crate::ln::types::ChannelId;
-	use crate::types::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
-	use crate::ln::channelmanager;
-	use crate::util::config::UserConfig;
-	use crate::util::test_utils as ln_test_utils;
 	use crate::crypto::chacha20::ChaCha20;
-	use crate::util::ser::{FixedLengthReader, Readable, ReadableArgs, Writeable};
+	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
+	use crate::ln::channelmanager;
+	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::types::ChannelId;
+	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
+	use crate::routing::router::{
+		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
+		BlindedTail, CandidateRouteHop, InFlightHtlcs, Path, PaymentParameters, PublicHopCandidate,
+		Route, RouteHint, RouteHintHop, RouteHop, RouteParameters, RoutingFees,
+		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
+	};
+	use crate::routing::scoring::{
+		ChannelUsage, FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringDecayParameters,
+		ProbabilisticScoringFeeParameters, ScoreLookUp,
+	};
+	use crate::routing::test_utils::{
+		add_channel, add_or_update_node, build_graph, build_line_graph, get_nodes,
+		id_to_feature_flags, update_channel,
+	};
+	use crate::routing::utxo::UtxoResult;
+	use crate::types::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
+	use crate::util::config::UserConfig;
 	#[cfg(c_bindings)]
 	use crate::util::ser::Writer;
+	use crate::util::ser::{FixedLengthReader, Readable, ReadableArgs, Writeable};
+	use crate::util::test_utils as ln_test_utils;
 
 	use bitcoin::amount::Amount;
-	use bitcoin::hashes::Hash;
-	use bitcoin::network::Network;
 	use bitcoin::constants::ChainHash;
-	use bitcoin::script::Builder;
-	use bitcoin::opcodes;
-	use bitcoin::transaction::TxOut;
+	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
-	use bitcoin::secp256k1::{PublicKey,SecretKey};
+	use bitcoin::network::Network;
+	use bitcoin::opcodes;
+	use bitcoin::script::Builder;
 	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
+	use bitcoin::transaction::TxOut;
 
 	use crate::io::Cursor;
 	use crate::prelude::*;
 	use crate::sync::Arc;
 
+	#[rustfmt::skip]
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
 			features: InitFeatures, outbound_capacity_msat: u64) -> ChannelDetails {
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
@@ -3826,6 +3940,7 @@ mod tests {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn dummy_blinded_path(intro_node: PublicKey, payinfo: BlindedPayInfo) -> BlindedPaymentPath {
 		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			intro_node, ln_test_utils::pubkey(42),
@@ -3837,6 +3952,7 @@ mod tests {
 		)
 	}
 
+	#[rustfmt::skip]
 	fn dummy_one_hop_blinded_path(intro_node: PublicKey, payinfo: BlindedPayInfo) -> BlindedPaymentPath {
 		BlindedPaymentPath::from_blinded_path_and_payinfo(
 			intro_node, ln_test_utils::pubkey(42),
@@ -3848,6 +3964,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn simple_route_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -3891,6 +4008,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn invalid_first_hop_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -3915,6 +4033,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn htlc_minimum_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4054,6 +4173,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn htlc_minimum_overpay_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4209,6 +4329,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn htlc_minimum_recipient_overpay_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4271,6 +4392,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn disable_channels_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4339,6 +4461,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn disable_node_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4389,6 +4512,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn our_chans_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -4448,6 +4572,7 @@ mod tests {
 		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(13));
 	}
 
+	#[rustfmt::skip]
 	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
@@ -4481,6 +4606,7 @@ mod tests {
 		}])]
 	}
 
+	#[rustfmt::skip]
 	fn last_hops_multi_private_channels(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
@@ -4525,6 +4651,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn partial_route_hint_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -4607,6 +4734,7 @@ mod tests {
 		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
+	#[rustfmt::skip]
 	fn empty_last_hop(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
@@ -4632,6 +4760,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn ignores_empty_last_hops_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -4685,6 +4814,7 @@ mod tests {
 
 	/// Builds a trivial last-hop hint that passes through the two nodes given, with channel 0xff00
 	/// and 0xff01.
+	#[rustfmt::skip]
 	fn multi_hop_last_hops_hint(hint_hops: [PublicKey; 2]) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
@@ -4711,6 +4841,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn multi_hint_last_hops_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4790,6 +4921,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn private_multi_hint_last_hops_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -4865,6 +4997,7 @@ mod tests {
 		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
+	#[rustfmt::skip]
 	fn last_hops_with_public_channel(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
@@ -4905,6 +5038,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn last_hops_with_public_channel_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -4959,6 +5093,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn our_chans_last_hop_connect_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -5075,6 +5210,7 @@ mod tests {
 		assert_eq!(route.paths[0].hops[4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
+	#[rustfmt::skip]
 	fn do_unannounced_path_test(last_hop_htlc_max: Option<u64>, last_hop_fee_prop: u32, outbound_capacity_msat: u64, route_val: u64) -> Result<Route, &'static str> {
 		let source_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02}", 41).repeat(32)).unwrap()[..]).unwrap());
 		let middle_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02}", 42).repeat(32)).unwrap()[..]).unwrap());
@@ -5106,6 +5242,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn unannounced_path_test() {
 		// We should be able to send a payment to a destination without any help of a routing graph
 		// if we have a channel with a common counterparty that appears in the first and last hop
@@ -5132,6 +5269,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn overflow_unannounced_path_test_liquidity_underflow() {
 		// Previously, when we had a last-hop hint connected directly to a first-hop channel, where
 		// the last-hop had a fee which overflowed a u64, we'd panic.
@@ -5143,6 +5281,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn overflow_unannounced_path_test_feerate_overflow() {
 		// This tests for the same case as above, except instead of hitting a subtraction
 		// underflow, we hit a case where the fee charged at a hop overflowed.
@@ -5150,6 +5289,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn available_amount_while_routing_test() {
 		// Tests whether we choose the correct available channel amount while routing.
 
@@ -5470,6 +5610,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn available_liquidity_last_hop_test() {
 		// Check that available liquidity properly limits the path even when only
 		// one of the latter hops is limited.
@@ -5614,6 +5755,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn ignore_fee_first_hop_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -5666,6 +5808,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn simple_mpp_route_test() {
 		let (secp_ctx, _, _, _, _) = build_graph();
 		let (_, _, _, nodes) = get_nodes(&secp_ctx);
@@ -5709,7 +5852,7 @@ mod tests {
 		do_simple_mpp_route_test(two_hop_blinded_payment_params);
 	}
 
-
+	#[rustfmt::skip]
 	fn do_simple_mpp_route_test(payment_params: PaymentParameters) {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -5945,6 +6088,7 @@ mod tests {
 		assert!(do_mpp_route_tests(300_001).is_err());
 	}
 
+	#[rustfmt::skip]
 	fn do_mpp_route_tests(amt: u64) -> Result<Route, &'static str> {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -6115,6 +6259,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn fees_on_mpp_route_test() {
 		// This test makes sure that MPP algorithm properly takes into account
 		// fees charged on the channels, by making the fees impactful:
@@ -6327,6 +6472,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn mpp_with_last_hops() {
 		// Previously, if we tried to send an MPP payment to a destination which was only reachable
 		// via a single last-hop route hint, we'd fail to route if we first collected routes
@@ -6437,6 +6583,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn drop_lowest_channel_mpp_route_test() {
 		// This test checks that low-capacity channel is dropped when after
 		// path finding we realize that we found more capacity than we need.
@@ -6589,6 +6736,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn min_criteria_consistency() {
 		// Test that we don't use an inconsistent metric between updating and walking nodes during
 		// our Dijkstra's pass. In the initial version of MPP, the "best source" for a given node
@@ -6762,8 +6910,8 @@ mod tests {
 		}
 	}
 
-
 	#[test]
+	#[rustfmt::skip]
 	fn exact_fee_liquidity_limit() {
 		// Test that if, while walking the graph, we find a hop that has exactly enough liquidity
 		// for us, including later hop fees, we take it. In the first version of our MPP algorithm
@@ -6832,6 +6980,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn htlc_max_reduction_below_min() {
 		// Test that if, while walking the graph, we reduce the value being sent to meet an
 		// htlc_maximum_msat, we don't end up undershooting a later htlc_minimum_msat. In the
@@ -6905,6 +7054,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn multiple_direct_first_hops() {
 		// Previously we'd only ever considered one first hop path per counterparty.
 		// However, as we don't restrict users to one channel per peer, we really need to support
@@ -6988,6 +7138,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn prefers_shorter_route_with_higher_fees() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7026,10 +7177,12 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl Writeable for BadChannelScorer {
+		#[rustfmt::skip]
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 	impl ScoreLookUp for BadChannelScorer {
 		type ScoreParams = ();
+		#[rustfmt::skip]
 		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
 			if candidate.short_channel_id() == Some(self.short_channel_id) { u64::max_value()  } else { 0  }
 		}
@@ -7041,17 +7194,20 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl Writeable for BadNodeScorer {
+		#[rustfmt::skip]
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 
 	impl ScoreLookUp for BadNodeScorer {
 		type ScoreParams = ();
+		#[rustfmt::skip]
 		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
 			if candidate.target() == Some(self.node_id) { u64::max_value() } else { 0 }
 		}
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn avoids_routing_through_bad_channels_and_nodes() {
 		let (secp_ctx, network, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7164,6 +7320,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn limits_total_cltv_delta() {
 		let (secp_ctx, network, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7200,6 +7357,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn avoids_recently_failed_paths() {
 		// Ensure that the router always avoids all of the `previously_failed_channels` channels by
 		// randomly inserting channels into it until we can't find a route anymore.
@@ -7235,6 +7393,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn limits_path_length() {
 		let (secp_ctx, network, _, _, logger) = build_line_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7267,6 +7426,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn adds_and_limits_cltv_offset() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7301,6 +7461,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn adds_plausible_cltv_offset() {
 		let (secp_ctx, network, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7368,6 +7529,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn builds_correct_path_from_hops() {
 		let (secp_ctx, network, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7387,6 +7549,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn avoids_saturating_channels() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -7450,6 +7613,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn generate_routes() {
 		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
@@ -7469,6 +7633,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn generate_routes_mpp() {
 		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
@@ -7488,6 +7653,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn generate_large_mpp_routes() {
 		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
@@ -7507,6 +7673,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn honors_manual_penalties() {
 		let (secp_ctx, network_graph, _, _, logger) = build_line_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
@@ -7553,6 +7720,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn abide_by_route_hint_max_htlc() {
 		// Check that we abide by any htlc_maximum_msat provided in the route hints of the payment
 		// params in the final route.
@@ -7611,6 +7779,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn direct_channel_to_hints_with_max_htlc() {
 		// Check that if we have a first hop channel peer that's connected to multiple provided route
 		// hints, that we properly split the payment between the route hints if needed.
@@ -7707,6 +7876,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn blinded_route_ser() {
 		// (De)serialize a Route with 1 blinded path out of two total paths.
 		let mut route = Route { paths: vec![Path {
@@ -7763,6 +7933,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn blinded_path_inflight_processing() {
 		// Ensure we'll score the channel that's inbound to a blinded path's introduction node, and
 		// account for the blinded tail's final amount_msat.
@@ -7800,6 +7971,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn blinded_path_cltv_shadow_offset() {
 		// Make sure we add a shadow offset when sending to blinded paths.
 		let mut route = Route { paths: vec![Path {
@@ -7848,6 +8020,7 @@ mod tests {
 		do_simple_blinded_route_hints(3);
 	}
 
+	#[rustfmt::skip]
 	fn do_simple_blinded_route_hints(num_blinded_hops: usize) {
 		// Check that we can generate a route to a blinded path with the expected hops.
 		let (secp_ctx, network, _, _, logger) = build_graph();
@@ -7911,6 +8084,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn blinded_path_routing_errors() {
 		// Check that we can generate a route to a blinded path with the expected hops.
 		let (secp_ctx, network, _, _, logger) = build_graph();
@@ -7970,6 +8144,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn matching_intro_node_paths_provided() {
 		// Check that if multiple blinded paths with the same intro node are provided in payment
 		// parameters, we'll return the correct paths in the resulting MPP route.
@@ -8027,6 +8202,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn direct_to_intro_node() {
 		// This previously caused a debug panic in the router when asserting
 		// `used_liquidity_msat <= hop_max_msat`, because when adding first_hop<>blinded_route_hint
@@ -8111,6 +8287,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn direct_to_matching_intro_nodes() {
 		// This previously caused us to enter `unreachable` code in the following situation:
 		// 1. We add a route candidate for intro_node contributing a high amount
@@ -8169,6 +8346,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn we_are_intro_node_candidate_hops() {
 		// This previously led to a panic in the router because we'd generate a Path with only a
 		// BlindedTail and 0 unblinded hops, due to the only candidate hops being blinded route hints
@@ -8210,6 +8388,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn we_are_intro_node_bp_in_final_path_fee_calc() {
 		// This previously led to a debug panic in the router because we'd find an invalid Path with
 		// 0 unblinded hops and a blinded tail, leading to the generation of a final
@@ -8261,6 +8440,7 @@ mod tests {
 		do_min_htlc_overpay_violates_max_htlc(true);
 		do_min_htlc_overpay_violates_max_htlc(false);
 	}
+	#[rustfmt::skip]
 	fn do_min_htlc_overpay_violates_max_htlc(blinded_payee: bool) {
 		// Test that if overpaying to meet a later hop's min_htlc and causes us to violate an earlier
 		// hop's max_htlc, we don't consider that candidate hop valid. Previously we would add this hop
@@ -8327,11 +8507,13 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn previously_used_liquidity_violates_max_htlc() {
 		do_previously_used_liquidity_violates_max_htlc(true);
 		do_previously_used_liquidity_violates_max_htlc(false);
 
 	}
+	#[rustfmt::skip]
 	fn do_previously_used_liquidity_violates_max_htlc(blinded_payee: bool) {
 		// Test that if a candidate first_hop<>route_hint_src_node channel does not have enough
 		// contribution amount to cover the next hop's min_htlc plus fees, we will not consider that
@@ -8405,6 +8587,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn candidate_path_min() {
 		// Test that if a candidate first_hop<>network_node channel does not have enough contribution
 		// amount to cover the next channel's min htlc plus fees, we will not consider that candidate.
@@ -8470,6 +8653,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn path_contribution_includes_min_htlc_overpay() {
 		// Previously, the fuzzer hit a debug panic because we wouldn't include the amount overpaid to
 		// meet a last hop's min_htlc in the total collected paths value. We now include this value and
@@ -8523,6 +8707,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn first_hop_preferred_over_hint() {
 		// Check that if we have a first hop to a peer we'd always prefer that over a route hint
 		// they gave us, but we'd still consider all subsequent hints if they are more attractive.
@@ -8672,6 +8857,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_max_final_contribution() {
 		// When `compute_max_final_value_contribution` was added, it had a bug where it would
 		// over-estimate the maximum value contribution of a hop by using `ceil` rather than
@@ -8765,6 +8951,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn allow_us_being_first_hint() {
 		// Check that we consider a route hint even if we are the src of the first hop.
 		let secp_ctx = Secp256k1::new();
@@ -8818,21 +9005,22 @@ mod tests {
 #[cfg(any(test, ldk_bench))]
 pub(crate) mod bench_utils {
 	use super::*;
-	use std::fs::File;
-	use std::io::Read;
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::SecretKey;
+	use std::fs::File;
+	use std::io::Read;
 
 	use crate::chain::transaction::OutPoint;
-	use crate::routing::scoring::{ProbabilisticScorer, ScoreUpdate};
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelShutdownState};
 	use crate::ln::channelmanager;
 	use crate::ln::types::ChannelId;
+	use crate::routing::scoring::{ProbabilisticScorer, ScoreUpdate};
+	use crate::sync::Arc;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils::TestLogger;
-	use crate::sync::Arc;
 
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
+	#[rustfmt::skip]
 	pub(crate) fn get_graph_scorer_file() -> Result<(std::fs::File, std::fs::File), &'static str> {
 		let load_file = |fname, err_str| {
 			File::open(fname) // By default we're run in RL/lightning
@@ -8876,8 +9064,15 @@ pub(crate) mod bench_utils {
 		return Ok((graph_res?, scorer_res?));
 	}
 
-	pub(crate) fn read_graph_scorer(logger: &TestLogger)
-	-> Result<(Arc<NetworkGraph<&TestLogger>>, ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>), &'static str> {
+	pub(crate) fn read_graph_scorer(
+		logger: &TestLogger,
+	) -> Result<
+		(
+			Arc<NetworkGraph<&TestLogger>>,
+			ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>,
+		),
+		&'static str,
+	> {
 		let (mut graph_file, mut scorer_file) = get_graph_scorer_file()?;
 		let mut graph_buffer = Vec::new();
 		let mut scorer_buffer = Vec::new();
@@ -8895,6 +9090,7 @@ pub(crate) mod bench_utils {
 	}
 
 	#[inline]
+	#[rustfmt::skip]
 	pub(crate) fn first_hop(node_id: PublicKey) -> ChannelDetails {
 		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
 		ChannelDetails {
@@ -8938,6 +9134,7 @@ pub(crate) mod bench_utils {
 		}
 	}
 
+	#[rustfmt::skip]
 	pub(crate) fn generate_test_routes<S: ScoreLookUp + ScoreUpdate>(graph: &NetworkGraph<&TestLogger>, scorer: &mut S,
 		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, mut seed: u64,
 		starting_amount: u64, route_count: usize,
@@ -8982,11 +9179,11 @@ pub(crate) mod bench_utils {
 #[cfg(ldk_bench)]
 pub mod benches {
 	use super::*;
-	use crate::routing::scoring::{ScoreUpdate, ScoreLookUp};
 	use crate::ln::channelmanager;
-	use crate::types::features::Bolt11InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScoringFeeParameters};
+	use crate::routing::scoring::{ScoreLookUp, ScoreUpdate};
+	use crate::types::features::Bolt11InvoiceFeatures;
 	use crate::util::config::UserConfig;
 	use crate::util::logger::{Logger, Record};
 	use crate::util::test_utils::TestLogger;
@@ -8998,6 +9195,7 @@ pub mod benches {
 		fn log(&self, _record: Record) {}
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, _) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9006,6 +9204,7 @@ pub mod benches {
 			Bolt11InvoiceFeatures::empty(), 0, "generate_routes_with_zero_penalty_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, _) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9015,6 +9214,7 @@ pub mod benches {
 			"generate_mpp_routes_with_zero_penalty_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9023,6 +9223,7 @@ pub mod benches {
 			"generate_routes_with_probabilistic_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9032,6 +9233,7 @@ pub mod benches {
 			"generate_mpp_routes_with_probabilistic_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_large_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9041,6 +9243,7 @@ pub mod benches {
 			"generate_large_mpp_routes_with_probabilistic_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9051,6 +9254,7 @@ pub mod benches {
 			"generate_routes_with_nonlinear_probabilistic_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9061,6 +9265,7 @@ pub mod benches {
 			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
 	}
 
+	#[rustfmt::skip]
 	pub fn generate_large_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
 		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
@@ -9071,6 +9276,7 @@ pub mod benches {
 			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
 	}
 
+	#[rustfmt::skip]
 	fn generate_routes<S: ScoreLookUp + ScoreUpdate>(
 		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
 		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
@@ -9084,6 +9290,7 @@ pub mod benches {
 	}
 
 	#[inline(never)]
+	#[rustfmt::skip]
 	fn do_route_bench<S: ScoreLookUp + ScoreUpdate>(
 		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, scorer: S,
 		score_params: &S::ScoreParams, bench_name: &'static str,
