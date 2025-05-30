@@ -65,6 +65,8 @@
 //! # }
 //! ```
 
+use core::str::FromStr;
+
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::io;
@@ -79,7 +81,7 @@ use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
 	OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
-use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
+use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::dns_resolution::HumanReadableName;
@@ -1284,6 +1286,30 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 	}
 }
 
+impl AsRef<[u8]> for InvoiceRequest {
+	fn as_ref(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
+impl Bech32Encode for InvoiceRequest {
+	const BECH32_HRP: &'static str = "lnr";
+}
+
+impl FromStr for InvoiceRequest {
+	type Err = Bolt12ParseError;
+
+	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+		Self::from_bech32_str(s)
+	}
+}
+
+impl core::fmt::Display for InvoiceRequest {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		self.fmt_bech32_str(f)
+	}
+}
+
 impl TryFrom<Vec<u8>> for InvoiceRequest {
 	type Error = Bolt12ParseError;
 
@@ -2216,6 +2242,22 @@ mod tests {
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),
+		}
+	}
+
+	#[test]
+	fn parses_bech32_encoded_invoice_requests() {
+		let invoice_requests = [
+			"lnr1qqsg7jpsyzz4hcsj0hu6rvjevwhmkceurq7sd5ez8ne3js4qt8acvxcgqgp7szsqzsqpvggzhdvttlk22pw8fmwqqrvzst792mj35ypylj886ljkcmug03wg6he9yqs86ptqzqjcyypqk4jf95qryjcsqywr6kktzrf366ex4yp8cr5r8m32cre3kfea7w0sgzegrzqgucwd37cjyvkgg2lfae8j6wyyx7dj3aqe8j2ncrthhszl8r69lecma5cxclmft4kh8x39jaeqtdl2yy5gsfdqcpvxczf5x0sw"
+		];
+		for encoded in invoice_requests {
+			let decoded = match encoded.parse::<InvoiceRequest>() {
+				Ok(decoded) => decoded,
+				Err(e) => panic!("Invalid invoice request ({:?}): {}", e, encoded),
+			};
+
+			let reencoded = decoded.to_string();
+			assert_eq!(reencoded, encoded, "Re-encoded invoice does not match original");
 		}
 	}
 
