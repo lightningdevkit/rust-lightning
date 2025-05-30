@@ -6739,8 +6739,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let can_send_update_fee = core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
-			.map(|funding| self.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger))
-			.all(|can_send_update_fee| can_send_update_fee);
+			.all(|funding| self.can_send_update_fee(funding, feerate_per_kw, fee_estimator, logger));
 		if !can_send_update_fee {
 			return None;
 		}
