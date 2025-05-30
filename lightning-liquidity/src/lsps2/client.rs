@@ -152,7 +152,7 @@ where
 	/// The client agrees to paying an opening fee equal to
 	/// `max(min_fee_msat, proportional * (payment_size_msat / 1_000_000))`.
 	///
-	/// Returns the used [`LSPSRequestId`], which will be returned via [`InvoiceParametersReady`].
+	/// Returns the used [`LSPSRequestId`] that was used for the buy request.
 	///
 	/// [`OpeningParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::OpeningParametersReady
 	/// [`InvoiceParametersReady`]: crate::lsps2::event::LSPS2ClientEvent::InvoiceParametersReady
