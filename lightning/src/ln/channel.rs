@@ -9671,10 +9671,14 @@ impl<SP: Deref> FundedChannel<SP> where
 		self.mark_response_received();
 
 		if self.context.is_waiting_on_peer_pending_channel_update()
-			|| self.context.is_monitor_or_signer_pending_channel_update()
+			|| self.context.signer_pending_revoke_and_ack
+			|| self.context.signer_pending_commitment_update
 		{
 			// Since we've already sent `stfu`, it should not be possible for one of our updates to
-			// be pending, so anything pending currently must be from a counterparty update.
+			// be pending, so anything pending currently must be from a counterparty update. We may
+			// have a monitor update pending if we've processed a message from the counterparty, but
+			// we don't consider this when becoming quiescent since the states are not mutually
+			// exclusive.
 			return Err(ChannelError::WarnAndDisconnect(
 				"Received counterparty stfu while having pending counterparty updates".to_owned()
 			));
