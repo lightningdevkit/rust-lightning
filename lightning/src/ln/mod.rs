@@ -118,5 +118,8 @@ mod offers_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod dual_funding_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod channel_acceptance_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
