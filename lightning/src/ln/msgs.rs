@@ -1066,8 +1066,6 @@ pub enum SocketAddressParseError {
 	InvalidOnionV3,
 }
 
-impl std::error::Error for SocketAddressParseError {}
-
 impl fmt::Display for SocketAddressParseError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
@@ -1079,6 +1077,9 @@ impl fmt::Display for SocketAddressParseError {
 		}
 	}
 }
+
+#[cfg(feature = "std")]
+impl std::error::Error for SocketAddressParseError {}
 
 #[cfg(feature = "std")]
 impl From<std::net::SocketAddrV4> for SocketAddress {
