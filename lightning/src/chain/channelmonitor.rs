@@ -3546,7 +3546,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						package_target_feerate_sat_per_1000_weight,
 						commitment_tx,
 						commitment_tx_fee_satoshis,
-						anchor_descriptor: AnchorDescriptor {
+						anchor_descriptor: Box::new(AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
 								keys_id: self.channel_keys_id,
 								value_satoshis: channel_parameters.channel_value_satoshis,
@@ -3556,7 +3556,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								txid: commitment_txid,
 								vout: anchor_output_idx,
 							},
-						},
+						}),
 						pending_htlcs: pending_nondust_htlcs,
 					}));
 				},
