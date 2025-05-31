@@ -9,6 +9,7 @@
 
 //! Utilities for signing offer messages and verifying metadata.
 
+use crate::blinded_path::message::UnauthenticatedDummyTlv;
 use crate::blinded_path::payment::UnauthenticatedReceiveTlvs;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
@@ -565,6 +566,29 @@ pub(crate) fn verify_held_htlc_available_context(
 	nonce: Nonce, hmac: Hmac<Sha256>, expanded_key: &ExpandedKey,
 ) -> Result<(), ()> {
 	if hmac_for_held_htlc_available_context(nonce, expanded_key) == hmac {
+		Ok(())
+	} else {
+		Err(())
+	}
+}
+
+pub(crate) fn hmac_for_dummy_tlv(
+	tlvs: &UnauthenticatedDummyTlv, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Msgs Dummies";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(PAYMENT_TLVS_HMAC_INPUT);
+	tlvs.write(&mut hmac).unwrap();
+
+	Hmac::from_engine(hmac)
+}
+
+pub(crate) fn verify_dummy_tlv(
+	tlvs: &UnauthenticatedDummyTlv, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_dummy_tlv(tlvs, nonce, expanded_key) == hmac {
 		Ok(())
 	} else {
 		Err(())

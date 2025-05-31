@@ -20,8 +20,8 @@ use super::async_payments::AsyncPaymentsMessage;
 use super::async_payments::AsyncPaymentsMessageHandler;
 use super::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler};
 use super::offers::{OffersMessage, OffersMessageHandler};
-use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
+use super::packet::{DummyControlTlvs, OnionMessageContents};
 use super::packet::{
 	ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, BIG_PACKET_HOP_DATA_LEN,
 	SMALL_PACKET_HOP_DATA_LEN,
@@ -29,16 +29,17 @@ use super::packet::{
 #[cfg(async_payments)]
 use crate::blinded_path::message::AsyncPaymentsContext;
 use crate::blinded_path::message::{
-	BlindedMessagePath, DNSResolverContext, ForwardTlvs, MessageContext, MessageForwardNode,
-	NextMessageHop, OffersContext, ReceiveTlvs,
+	BlindedMessagePath, DNSResolverContext, DummyTlv, ForwardTlvs, MessageContext,
+	MessageForwardNode, NextMessageHop, OffersContext, ReceiveTlvs,
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
+use crate::ln::channelmanager::Verification;
 use crate::ln::msgs::{
 	self, BaseMessageHandler, MessageSendEvent, OnionMessage, OnionMessageHandler, SocketAddress,
 };
-use crate::ln::onion_utils;
+use crate::ln::{inbound_payment, onion_utils};
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
@@ -191,7 +192,7 @@ where
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::EmptyNodeIdLookUp;
 /// # use lightning::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext};
-/// # use lightning::sign::{EntropySource, KeysManager};
+/// # use lightning::sign::{EntropySource, KeysManager, NodeSigner};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions, OnionMessagePath, OnionMessenger};
 /// # use lightning::onion_message::packet::OnionMessageContents;
@@ -272,8 +273,10 @@ where
 /// 	MessageForwardNode { node_id: hop_node_id3, short_channel_id: None },
 /// 	MessageForwardNode { node_id: hop_node_id4, short_channel_id: None },
 /// ];
+///
 /// let context = MessageContext::Custom(Vec::new());
-/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, context, &keys_manager, &secp_ctx).unwrap();
+/// let expanded_key = keys_manager.get_expanded_key();
+/// let blinded_path = BlindedMessagePath::new(&hops, your_node_id, context, &keys_manager, expanded_key, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -539,6 +542,7 @@ where
 {
 	network_graph: G,
 	entropy_source: ES,
+	inbound_payment_key: inbound_payment::ExpandedKey,
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
@@ -547,8 +551,10 @@ where
 	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
-	pub fn new(network_graph: G, entropy_source: ES) -> Self {
-		Self { network_graph, entropy_source }
+	pub fn new(
+		network_graph: G, entropy_source: ES, expanded_key: inbound_payment::ExpandedKey,
+	) -> Self {
+		Self { network_graph, entropy_source, inbound_payment_key: expanded_key }
 	}
 
 	fn create_blinded_paths_from_iter<
@@ -556,7 +562,8 @@ where
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: I,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>, compact_paths: bool,
+		entropy_source: &ES, expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
+		compact_paths: bool,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -564,6 +571,19 @@ where
 		// Ensure peers have at least three channels so that it is more difficult to infer the
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
+
+		// Add a random number (0 to 5) of dummy hops to each non-compact blinded path
+		// to make it harder to infer the recipient's position.
+		//
+		// # Note on compact paths:
+		//
+		// Compact paths are optimized for minimal size. Adding dummy hops to them
+		// would increase their size and negate their primary advantage.
+		// Therefore, we avoid adding dummy hops to compact paths.
+		let dummy_hops_count = compact_paths.then_some(0).unwrap_or_else(|| {
+			let random_byte = entropy_source.get_secure_random_bytes()[0];
+			random_byte % 6
+		});
 
 		let network_graph = network_graph.deref().read_only();
 		let is_recipient_announced =
@@ -595,7 +615,15 @@ where
 		let paths = peer_info
 			.into_iter()
 			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(&[peer], recipient, context.clone(), entropy, secp_ctx)
+				BlindedMessagePath::new_with_dummy_hops(
+					&[peer],
+					dummy_hops_count,
+					recipient,
+					context.clone(),
+					entropy,
+					*expanded_key,
+					secp_ctx,
+				)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -604,8 +632,15 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
-					BlindedMessagePath::new(&[], recipient, context, &**entropy_source, secp_ctx)
-						.map(|path| vec![path])
+					BlindedMessagePath::new(
+						&[],
+						recipient,
+						context,
+						&**entropy_source,
+						*expanded_key,
+						secp_ctx,
+					)
+					.map(|path| vec![path])
 				} else {
 					Err(())
 				}
@@ -664,7 +699,7 @@ where
 
 	pub(crate) fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+		entropy_source: &ES, expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let peers =
 			peers.into_iter().map(|node_id| MessageForwardNode { node_id, short_channel_id: None });
@@ -674,6 +709,7 @@ where
 			context,
 			peers.into_iter(),
 			entropy_source,
+			expanded_key,
 			secp_ctx,
 			false,
 		)
@@ -681,7 +717,8 @@ where
 
 	pub(crate) fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext,
-		peers: Vec<MessageForwardNode>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+		peers: Vec<MessageForwardNode>, entropy_source: &ES,
+		expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		Self::create_blinded_paths_from_iter(
 			network_graph,
@@ -689,6 +726,7 @@ where
 			context,
 			peers.into_iter(),
 			entropy_source,
+			expanded_key,
 			secp_ctx,
 			true,
 		)
@@ -717,6 +755,7 @@ where
 			context,
 			peers,
 			&self.entropy_source,
+			&self.inbound_payment_key,
 			secp_ctx,
 		)
 	}
@@ -731,6 +770,7 @@ where
 			context,
 			peers,
 			&self.entropy_source,
+			&self.inbound_payment_key,
 			secp_ctx,
 		)
 	}
@@ -1074,6 +1114,44 @@ where
 		msg.onion_routing_packet.hmac,
 		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
 	);
+
+	// Constructs the next onion message using packet data and blinding logic.
+	let compute_onion_message = |packet_pubkey: PublicKey,
+	                             next_hop_hmac: [u8; 32],
+	                             new_packet_bytes: Vec<u8>,
+	                             blinding_point_opt: Option<PublicKey>|
+	 -> Result<OnionMessage, ()> {
+		let new_pubkey =
+			match onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss) {
+				Ok(pk) => pk,
+				Err(e) => {
+					log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
+					return Err(());
+				},
+			};
+		let outgoing_packet = Packet {
+			version: 0,
+			public_key: new_pubkey,
+			hop_data: new_packet_bytes,
+			hmac: next_hop_hmac,
+		};
+		let blinding_point = match blinding_point_opt {
+			Some(bp) => bp,
+			None => match onion_utils::next_hop_pubkey(
+				&secp_ctx,
+				msg.blinding_point,
+				control_tlvs_ss.as_ref(),
+			) {
+				Ok(bp) => bp,
+				Err(e) => {
+					log_trace!(logger, "Failed to compute next blinding point: {}", e);
+					return Err(());
+				},
+			},
+		};
+		Ok(OnionMessage { blinding_point, onion_routing_packet: outgoing_packet })
+	};
+
 	match next_hop {
 		Ok((
 			Payload::Receive {
@@ -1116,53 +1194,33 @@ where
 			},
 		},
 		Ok((
+			Payload::Dummy(DummyControlTlvs::Unblinded(DummyTlv { dummy_tlv, authentication })),
+			Some((next_hop_hmac, new_packet_bytes)),
+		)) => {
+			let expanded_key = node_signer.get_expanded_key();
+			dummy_tlv.verify_data(authentication.0, authentication.1, &expanded_key)?;
+
+			let onion_message = compute_onion_message(
+				msg.onion_routing_packet.public_key,
+				next_hop_hmac,
+				new_packet_bytes,
+				None,
+			)?;
+			peel_onion_message(&onion_message, secp_ctx, node_signer, logger, custom_handler)
+		},
+		Ok((
 			Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_hop,
 				next_blinding_override,
 			})),
 			Some((next_hop_hmac, new_packet_bytes)),
 		)) => {
-			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
-			// blinded hop and this onion message is destined for us. In this situation, we should keep
-			// unwrapping the onion layers to get to the final payload. Since we don't have the option
-			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
-			// for now.
-			let packet_pubkey = msg.onion_routing_packet.public_key;
-			let new_pubkey_opt =
-				onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss);
-			let new_pubkey = match new_pubkey_opt {
-				Ok(pk) => pk,
-				Err(e) => {
-					log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
-					return Err(());
-				},
-			};
-			let outgoing_packet = Packet {
-				version: 0,
-				public_key: new_pubkey,
-				hop_data: new_packet_bytes,
-				hmac: next_hop_hmac,
-			};
-			let onion_message = OnionMessage {
-				blinding_point: match next_blinding_override {
-					Some(blinding_point) => blinding_point,
-					None => {
-						match onion_utils::next_hop_pubkey(
-							&secp_ctx,
-							msg.blinding_point,
-							control_tlvs_ss.as_ref(),
-						) {
-							Ok(bp) => bp,
-							Err(e) => {
-								log_trace!(logger, "Failed to compute next blinding point: {}", e);
-								return Err(());
-							},
-						}
-					},
-				},
-				onion_routing_packet: outgoing_packet,
-			};
-
+			let onion_message = compute_onion_message(
+				msg.onion_routing_packet.public_key,
+				next_hop_hmac,
+				new_packet_bytes,
+				next_blinding_override,
+			)?;
 			Ok(PeeledOnion::Forward(next_hop, onion_message))
 		},
 		Err(e) => {
