@@ -704,7 +704,9 @@ where C::Target: chain::Filter,
 
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
-
+		#[cfg(fuzzing)]
+		let random_bytes = [42u8; 32];
+		#[cfg(not(fuzzing))]
 		let random_bytes = self.entropy_source.get_secure_random_bytes();
 		let serialised_channels = Vec::new();
 		let our_peer_storage = DecryptedOurPeerStorage::new(serialised_channels);
