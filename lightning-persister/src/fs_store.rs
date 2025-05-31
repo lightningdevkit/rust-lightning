@@ -1,6 +1,7 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
+use lightning::util::async_poll::{AsyncResult, AsyncResultType};
 use lightning::util::persist::{KVStore, MigratableKVStore};
 use lightning::util::string::PrintableString;
 
@@ -92,35 +93,10 @@ impl FilesystemStore {
 	}
 }
 
-impl KVStore for FilesystemStore {
-	fn read(
-		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> lightning::io::Result<Vec<u8>> {
-		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "read")?;
-
-		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
-		dest_file_path.push(key);
-
-		let mut buf = Vec::new();
-		{
-			let inner_lock_ref = {
-				let mut outer_lock = self.locks.lock().unwrap();
-				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
-			};
-			let _guard = inner_lock_ref.read().unwrap();
-
-			let mut f = fs::File::open(dest_file_path)?;
-			f.read_to_end(&mut buf)?;
-		}
-
-		self.garbage_collect_locks();
-
-		Ok(buf)
-	}
-
+impl FilesystemStore {
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> lightning::io::Result<()> {
+	) -> Result<(), lightning::io::Error> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -203,6 +179,41 @@ impl KVStore for FilesystemStore {
 		self.garbage_collect_locks();
 
 		res
+	}
+}
+
+impl KVStore for FilesystemStore {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> lightning::io::Result<Vec<u8>> {
+		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "read")?;
+
+		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
+		dest_file_path.push(key);
+
+		let mut buf = Vec::new();
+		{
+			let inner_lock_ref = {
+				let mut outer_lock = self.locks.lock().unwrap();
+				Arc::clone(&outer_lock.entry(dest_file_path.clone()).or_default())
+			};
+			let _guard = inner_lock_ref.read().unwrap();
+
+			let mut f = fs::File::open(dest_file_path)?;
+			f.read_to_end(&mut buf)?;
+		}
+
+		self.garbage_collect_locks();
+
+		Ok(buf)
+	}
+
+	fn write_async(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> AsyncResultType<'static, (), lightning::io::Error> {
+		let res = self.write(primary_namespace, secondary_namespace, key, buf);
+
+		Box::pin(async move { res })
 	}
 
 	fn remove(
