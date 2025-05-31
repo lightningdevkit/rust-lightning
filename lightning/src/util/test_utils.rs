@@ -46,7 +46,7 @@ use crate::routing::router::{
 use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::sign;
-use crate::sign::ChannelSigner;
+use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::config::UserConfig;
@@ -409,6 +409,7 @@ pub struct TestChainMonitor<'a> {
 		&'a TestFeeEstimator,
 		&'a TestLogger,
 		&'a dyn SyncPersist,
+		&'a TestKeysInterface,
 	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -437,6 +438,8 @@ impl<'a> TestChainMonitor<'a> {
 				logger,
 				fee_estimator,
 				persister,
+				keys_manager,
+				keys_manager.get_peer_storage_key(),
 			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
@@ -1490,6 +1493,10 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		unreachable!()
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
@@ -1568,6 +1575,10 @@ impl NodeSigner for TestKeysInterface {
 		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(invoice, recipient)
+	}
+
+	fn get_peer_storage_key(&self) -> PeerStorageKey {
+		self.backing.get_peer_storage_key()
 	}
 
 	fn sign_bolt12_invoice(
