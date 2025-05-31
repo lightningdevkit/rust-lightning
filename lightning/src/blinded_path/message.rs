@@ -23,6 +23,8 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::Offer;
+use crate::onion_message::messenger::Responder;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -34,6 +36,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 
 use core::mem;
 use core::ops::Deref;
+use core::time::Duration;
 
 /// A blinded path to be used for sending or receiving a message, hiding the identity of the
 /// recipient.
@@ -238,6 +241,12 @@ pub enum NextMessageHop {
 }
 
 /// An intermediate node, and possibly a short channel id leading to the next node.
+///
+/// Note:
+/// [`MessageForwardNode`] must represent a node that supports [`supports_onion_messages`]
+/// in order to be included in valid blinded paths for BOLT 12 communication.
+///
+/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct MessageForwardNode {
 	/// This node's pubkey.
@@ -335,6 +344,47 @@ pub enum OffersContext {
 		/// [`Offer`]: crate::offers::offer::Offer
 		nonce: Nonce,
 	},
+	/// Context used by a [`BlindedMessagePath`] within the [`Offer`] of an async recipient on behalf
+	/// of whom we are serving [`StaticInvoice`]s.
+	///
+	/// This variant is intended to be received when handling an [`InvoiceRequest`] on behalf of said
+	/// async recipient.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	StaticInvoiceRequested {
+		/// An identifier for the async recipient for whom we are serving [`StaticInvoice`]s. Used to
+		/// look up a corresponding [`StaticInvoice`] to return to the payer if the recipient is offline.
+		///
+		/// Also useful to rate limit the number of [`InvoiceRequest`]s we will respond to on
+		/// recipient's behalf.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		recipient_id_nonce: Nonce,
+
+		/// A nonce used for authenticating that a received [`InvoiceRequest`] is valid for a preceding
+		/// [`OfferPaths`] message that we sent.
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		nonce: Nonce,
+
+		/// Authentication code for the [`InvoiceRequest`].
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to unintentionally
+		/// hit our database looking for a [`StaticInvoice`] to return.
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		hmac: Hmac<Sha256>,
+
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Useful to timeout async recipients that are no longer supported as clients.
+		path_absolute_expiry: Duration,
+	},
 	/// Context used by a [`BlindedMessagePath`] within a [`Refund`] or as a reply path for an
 	/// [`InvoiceRequest`].
 	///
@@ -398,6 +448,149 @@ pub enum OffersContext {
 /// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 #[derive(Clone, Debug)]
 pub enum AsyncPaymentsContext {
+	/// Context used by a [`BlindedMessagePath`] that an async recipient is configured with in
+	/// [`UserConfig::paths_to_static_invoice_server`], provided back to us in corresponding
+	/// [`OfferPathsRequest`]s.
+	///
+	/// [`UserConfig::paths_to_static_invoice_server`]: crate::util::config::UserConfig::paths_to_static_invoice_server
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	OfferPathsRequest {
+		/// An identifier for the async recipient that is requesting blinded paths to include in their
+		/// [`Offer::paths`]. This ID is intended to be included in the reply path to our [`OfferPaths`]
+		/// response, and subsequently rate limit [`ServeStaticInvoice`] messages from recipients.
+		///
+		/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		recipient_id_nonce: Nonce,
+		/// Authentication code for the [`OfferPathsRequest`].
+		///
+		/// Prevents nodes from requesting offer paths from us without having been previously configured
+		/// with a [`BlindedMessagePath`] that we generated.
+		///
+		/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Useful to timeout async recipients that are no longer supported as clients.
+		path_absolute_expiry: core::time::Duration,
+	},
+	/// Context used by a reply path to an [`OfferPathsRequest`], provided back to us in corresponding
+	/// [`OfferPaths`] messages.
+	///
+	/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+	/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+	OfferPaths {
+		/// A nonce used for authenticating that an [`OfferPaths`] message is valid for a preceding
+		/// [`OfferPathsRequest`].
+		///
+		/// [`OfferPathsRequest`]: crate::onion_message::async_payments::OfferPathsRequest
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		nonce: Nonce,
+		/// Authentication code for the [`OfferPaths`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to cache an
+		/// unintended async receive offer.
+		///
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Used to time out a static invoice server from providing offer paths if the async recipient
+		/// is no longer configured to accept paths from them.
+		path_absolute_expiry: core::time::Duration,
+	},
+	/// Context used by a reply path to an [`OfferPaths`] message, provided back to us in
+	/// corresponding [`ServeStaticInvoice`] messages.
+	///
+	/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+	/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+	ServeStaticInvoice {
+		/// An identifier for the async recipient that is requesting that a [`StaticInvoice`] be served
+		/// on their behalf.
+		///
+		/// Useful as a key to retrieve the invoice when payers send an [`InvoiceRequest`] over the
+		/// paths that we previously created for the recipient's [`Offer::paths`]. Also useful to rate
+		/// limit the invoices being persisted on behalf of a particular recipient.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+		recipient_id_nonce: Nonce,
+		/// A nonce used for authenticating that a [`ServeStaticInvoice`] message is valid for a preceding
+		/// [`OfferPaths`] message.
+		///
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		/// [`OfferPaths`]: crate::onion_message::async_payments::OfferPaths
+		nonce: Nonce,
+		/// Authentication code for the [`ServeStaticInvoice`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to persist an
+		/// unintended [`StaticInvoice`].
+		///
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Useful to timeout async recipients that are no longer supported as clients.
+		path_absolute_expiry: core::time::Duration,
+	},
+	/// Context used by a reply path to a [`ServeStaticInvoice`] message, provided back to us in
+	/// corresponding [`StaticInvoicePersisted`] messages.
+	///
+	/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+	StaticInvoicePersisted {
+		/// The offer corresponding to the [`StaticInvoice`] that has been persisted. This invoice is
+		/// now ready to be provided by the static invoice server in response to [`InvoiceRequest`]s.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		offer: Offer,
+		/// A [`Nonce`] useful for updating the [`StaticInvoice`] that corresponds to the
+		/// [`AsyncPaymentsContext::StaticInvoicePersisted::offer`], since the offer may be much longer
+		/// lived than the invoice.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		offer_nonce: Nonce,
+		/// Useful to determine how far an offer is into its lifespan, to decide whether the offer is
+		/// expiring soon and we should start building a new one.
+		offer_created_at: core::time::Duration,
+		/// A [`Responder`] useful for updating the [`StaticInvoice`] that corresponds to the
+		/// [`AsyncPaymentsContext::StaticInvoicePersisted::offer`], since the offer may be much longer
+		/// lived than the invoice.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		update_static_invoice_path: Responder,
+		/// The time as duration since the Unix epoch at which the [`StaticInvoice`] expires, used to track
+		/// when we need to generate and persist a new invoice with the static invoice server.
+		///
+		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		static_invoice_absolute_expiry: core::time::Duration,
+		/// A nonce used for authenticating that a [`StaticInvoicePersisted`] message is valid for a
+		/// preceding [`ServeStaticInvoice`] message.
+		///
+		/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+		/// [`ServeStaticInvoice`]: crate::onion_message::async_payments::ServeStaticInvoice
+		nonce: Nonce,
+		/// Authentication code for the [`StaticInvoicePersisted`] message.
+		///
+		/// Prevents nodes from creating their own blinded path to us and causing us to cache an
+		/// unintended async receive offer.
+		///
+		/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
+		hmac: Hmac<Sha256>,
+		/// The time as duration since the Unix epoch at which this path expires and messages sent over
+		/// it should be ignored.
+		///
+		/// Prevents a static invoice server from causing an async recipient to cache an old offer if
+		/// the recipient is no longer configured to use that server.
+		path_absolute_expiry: core::time::Duration,
+	},
 	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
 	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
 	/// messages.
@@ -467,6 +660,12 @@ impl_writeable_tlv_based_enum!(OffersContext,
 		(1, nonce, required),
 		(2, hmac, required)
 	},
+	(3, StaticInvoiceRequested) => {
+		(0, recipient_id_nonce, required),
+		(2, nonce, required),
+		(4, hmac, required),
+		(6, path_absolute_expiry, required),
+	},
 );
 
 impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
@@ -479,6 +678,32 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(0, nonce, required),
 		(2, hmac, required),
 		(4, path_absolute_expiry, required),
+	},
+	(2, OfferPaths) => {
+		(0, nonce, required),
+		(2, hmac, required),
+		(4, path_absolute_expiry, required),
+	},
+	(3, StaticInvoicePersisted) => {
+		(0, offer, required),
+		(2, offer_nonce, required),
+		(4, offer_created_at, required),
+		(6, update_static_invoice_path, required),
+		(8, static_invoice_absolute_expiry, required),
+		(10, nonce, required),
+		(12, hmac, required),
+		(14, path_absolute_expiry, required),
+	},
+	(4, OfferPathsRequest) => {
+		(0, recipient_id_nonce, required),
+		(2, hmac, required),
+		(4, path_absolute_expiry, required),
+	},
+	(5, ServeStaticInvoice) => {
+		(0, recipient_id_nonce, required),
+		(2, nonce, required),
+		(4, hmac, required),
+		(6, path_absolute_expiry, required),
 	},
 );
 
