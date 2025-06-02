@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -12,14 +10,14 @@
 //! Tests for calculating the maximum length of a path based on the payment metadata, custom TLVs,
 //! and/or blinded paths present.
 
-use bitcoin::secp256k1::{Secp256k1, PublicKey};
+use crate::blinded_path::payment::{
+	BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints, PaymentContext,
+	UnauthenticatedReceiveTlvs,
+};
 use crate::blinded_path::BlindedHop;
-use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::events::Event;
-use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
-use crate::types::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, OnionMessageHandler};
@@ -28,11 +26,16 @@ use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
 use crate::offers::nonce::Nonce;
 use crate::prelude::*;
-use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA};
+use crate::routing::router::{
+	PaymentParameters, RouteParameters, RouteParametersConfig, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+};
 use crate::sign::NodeSigner;
+use crate::types::features::BlindedHopFeatures;
+use crate::types::payment::PaymentSecret;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
 // 3+32 (payload length and HMAC) + 2+8 (amt_to_forward) +
 // 2+4 (outgoing_cltv_value) + 2+8 (short_channel_id)
@@ -42,6 +45,7 @@ const INTERMED_PAYLOAD_LEN_ESTIMATE: usize = 61;
 const PAYLOAD_HMAC_LEN: usize = 32;
 
 #[test]
+#[rustfmt::skip]
 fn large_payment_metadata() {
 	// Test that we'll limit our maximum path length based on the size of the provided
 	// payment_metadata, and refuse to send at all prior to pathfinding if it's too large.
@@ -147,6 +151,7 @@ fn large_payment_metadata() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn one_hop_blinded_path_with_custom_tlv() {
 	// Test that we'll limit our maximum path length when paying to a 1-hop blinded path based on the
 	// size of the provided custom TLV, and refuse to send at all prior to pathfinding if it's too
@@ -257,6 +262,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn blinded_path_with_custom_tlv() {
 	// Test that we'll limit our maximum path length when paying to a blinded path based on the size
 	// of the provided custom TLV, and refuse to send at all prior to pathfinding if it's too large.
@@ -365,6 +371,7 @@ fn blinded_path_with_custom_tlv() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn bolt12_invoice_too_large_blinded_paths() {
 	// Check that we'll fail paying BOLT 12 invoices with too-large blinded paths prior to
 	// pathfinding.

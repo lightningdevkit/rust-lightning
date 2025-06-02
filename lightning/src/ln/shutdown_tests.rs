@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -12,36 +10,37 @@
 //! Tests of our shutdown and closing_signed negotiation logic as well as some assorted force-close
 //! handling tests.
 
-use crate::sign::{EntropySource, SignerProvider};
-use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
-use crate::events::{Event, HTLCHandlingFailureType, ClosureReason};
+use crate::chain::ChannelMonitorUpdateStatus;
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
-use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
-use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, MessageSendEvent};
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::script::ShutdownScript;
+use crate::ln::types::ChannelId;
+use crate::prelude::*;
+use crate::routing::router::{get_route, PaymentParameters, RouteParameters};
+use crate::sign::{EntropySource, SignerProvider};
+use crate::util::config::UserConfig;
+use crate::util::errors::APIError;
+use crate::util::string::UntrustedString;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
-use crate::util::errors::APIError;
-use crate::util::config::UserConfig;
-use crate::util::string::UntrustedString;
-use crate::prelude::*;
 
-use bitcoin::{Transaction, TxOut, WitnessProgram, WitnessVersion};
 use bitcoin::amount::Amount;
 use bitcoin::locktime::absolute::LockTime;
-use bitcoin::script::Builder;
-use bitcoin::opcodes;
 use bitcoin::network::Network;
+use bitcoin::opcodes;
+use bitcoin::script::Builder;
 use bitcoin::transaction::Version;
+use bitcoin::{Transaction, TxOut, WitnessProgram, WitnessVersion};
 
 use crate::ln::functional_test_utils::*;
 
 #[test]
+#[rustfmt::skip]
 fn pre_funding_lock_shutdown_test() {
 	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -74,6 +73,7 @@ fn pre_funding_lock_shutdown_test() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn expect_channel_shutdown_state() {
 	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -119,6 +119,7 @@ fn expect_channel_shutdown_state() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn expect_channel_shutdown_state_with_htlc() {
 	// Test sending a shutdown with outstanding updates pending.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -205,6 +206,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_lnd_bug_6039() {
 	// LND sends a nonsense error message any time it gets a shutdown if there are still HTLCs
 	// pending. We currently swallow that error to work around LND's bug #6039. This test emulates
@@ -260,6 +262,7 @@ fn test_lnd_bug_6039() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn shutdown_on_unfunded_channel() {
 	// Test receiving a shutdown prior to funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -282,6 +285,7 @@ fn shutdown_on_unfunded_channel() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn close_on_unfunded_channel() {
 	// Test the user asking us to close prior to funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -297,6 +301,7 @@ fn close_on_unfunded_channel() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn expect_channel_shutdown_state_with_force_closure() {
 	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -330,6 +335,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn updates_shutdown_wait() {
 	// Test sending a shutdown with outstanding updates pending
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -426,6 +432,7 @@ fn htlc_fail_async_shutdown() {
 	do_htlc_fail_async_shutdown(false);
 }
 
+#[rustfmt::skip]
 fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	// Test HTLCs fail if shutdown starts even if messages are delivered out-of-order
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -540,6 +547,7 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	check_closed_event!(nodes[2], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
+#[rustfmt::skip]
 fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	// Test that shutdown/closing_signed is re-sent on reconnect with a variable number of
 	// messages delivered prior to disconnect
@@ -731,6 +739,7 @@ fn test_shutdown_rebroadcast() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_upfront_shutdown_script() {
 	// BOLT 2 : Option upfront shutdown script, if peer commit its closing_script at channel opening
 	// enforce it at shutdown message
@@ -824,6 +833,7 @@ fn test_upfront_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -887,6 +897,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_invalid_upfront_shutdown_script() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -914,6 +925,7 @@ fn test_invalid_upfront_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_segwit_v0_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.channel_handshake_config.announce_for_forwarding = true;
@@ -949,6 +961,7 @@ fn test_segwit_v0_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_anysegwit_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.channel_handshake_config.announce_for_forwarding = true;
@@ -984,6 +997,7 @@ fn test_anysegwit_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_unsupported_anysegwit_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.channel_handshake_config.announce_for_forwarding = true;
@@ -1029,6 +1043,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_invalid_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.channel_handshake_config.announce_for_forwarding = true;
@@ -1056,6 +1071,7 @@ fn test_invalid_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_user_shutdown_script() {
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.announce_for_forwarding = true;
@@ -1084,6 +1100,7 @@ fn test_user_shutdown_script() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_already_set_user_shutdown_script() {
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.announce_for_forwarding = true;
@@ -1114,6 +1131,7 @@ enum TimeoutStep {
 	NoTimeout,
 }
 
+#[rustfmt::skip]
 fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 	// The range-based closing signed negotiation allows the funder to restart the process with a
 	// new range if the previous range did not overlap. This allows implementations to request user
@@ -1218,6 +1236,7 @@ fn test_closing_signed_reinit_timeout() {
 	do_test_closing_signed_reinit_timeout(TimeoutStep::NoTimeout);
 }
 
+#[rustfmt::skip]
 fn do_simple_legacy_shutdown_test(high_initiator_fee: bool) {
 	// A simpe test of the legacy shutdown fee negotiation logic.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1266,6 +1285,7 @@ fn simple_legacy_shutdown_test() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn simple_target_feerate_shutdown() {
 	// Simple test of target in `close_channel_with_target_feerate`.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1314,6 +1334,7 @@ fn simple_target_feerate_shutdown() {
 	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
+#[rustfmt::skip]
 fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 	// Previously, if we have a pending inbound HTLC (or fee update) on a channel which has
 	// initiated shutdown, we'd send our initial closing_signed immediately after receiving the
@@ -1414,6 +1435,7 @@ fn outbound_update_no_early_closing_signed() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn batch_funding_failure() {
 	// Provides test coverage of batch funding failure, which previously deadlocked
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -1482,6 +1504,7 @@ fn batch_funding_failure() {
 }
 
 #[test]
+#[rustfmt::skip]
 fn test_force_closure_on_low_stale_fee() {
 	// Check that we force-close channels if they have a low fee and that has gotten stale (without
 	// update).
