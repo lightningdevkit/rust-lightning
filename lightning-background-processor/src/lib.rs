@@ -902,18 +902,8 @@ where
 				},
 			}
 		},
-		|t| sleeper(Duration::from_secs(t)),
-		|fut: &mut SleepFuture, _| {
-			let mut waker = dummy_waker();
-			let mut ctx = task::Context::from_waker(&mut waker);
-			match core::pin::Pin::new(fut).poll(&mut ctx) {
-				task::Poll::Ready(exit) => {
-					should_break = exit;
-					true
-				},
-				task::Poll::Pending => false,
-			}
-		},
+		|_| Instant::now(),
+		|time: &Instant, dur| time.elapsed().as_secs() > dur,
 		mobile_interruptable_platform,
 		fetch_time,
 	)
