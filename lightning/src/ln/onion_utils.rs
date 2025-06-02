@@ -979,6 +979,8 @@ mod fuzzy_onion_utils {
 		pub(crate) onion_error_code: Option<LocalHTLCFailureReason>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_data: Option<Vec<u8>>,
+		#[cfg(test)]
+		pub(crate) attribution_failed_channel: Option<u64>,
 	}
 }
 #[cfg(fuzzing)]
@@ -1053,6 +1055,8 @@ where
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
+			#[cfg(test)]
+			attribution_failed_channel: None,
 		};
 	}
 
@@ -1119,6 +1123,9 @@ where
 	// In the best case, paths can be up to 27 hops. But attribution data can only be conveyed back to the sender from
 	// the first 20 hops. Determine the number of hops to be used for attribution data.
 	let attributable_hop_count = usize::min(path.hops.len(), MAX_HOPS);
+
+	// Keep track of the first hop for which the attribution data failed to check out.
+	let mut attribution_failed_channel = None;
 
 	// Handle packed channel/node updates for passing back for the route handler
 	let mut iter = nontrampolines.chain(trampolines.into_iter().flatten()).enumerate().peekable();
@@ -1191,44 +1198,53 @@ where
 
 		let um = gen_um_from_shared_secret(shared_secret.as_ref());
 
-		// Check attr error HMACs if present.
-		if let Some(ref mut attribution_data) = encrypted_packet.attribution_data {
-			// Only consider hops in the regular path for attribution data. Failures in a blinded path are not attributable.
-			if route_hop_idx < attributable_hop_count {
-				// Calculate position relative to the last attributable hop. The last attributable hop is at position 0.
-				// The failure node does not need to come from the last attributable hop, but we need to look at the
-				// chain of HMACs that does include all data up to the last attributable hop. For a more nearby failure,
-				// the verified HMACs will include some zero padding data. Failures beyond the last attributable hop
-				// will not be attributable.
-				let position = attributable_hop_count - route_hop_idx - 1;
-				let hold_time = attribution_data.verify(
-					&encrypted_packet.data,
-					shared_secret.as_ref(),
-					position,
-				);
-				if let Some(hold_time) = hold_time {
-					hop_hold_times.push(hold_time);
-
-					log_debug!(logger, "Htlc hold time at pos {}: {} ms", route_hop_idx, hold_time);
-
-					// Shift attribution data to prepare for processing the next hop.
-					attribution_data.shift_left();
-				} else {
-					res = Some(FailureLearnings {
-						network_update: None,
-						short_channel_id: route_hop.short_channel_id(),
-						payment_failed_permanently: false,
-						failed_within_blinded_path: false,
-					});
-
-					log_debug!(
-						logger,
-						"Invalid HMAC in attribution data for node at pos {}",
-						route_hop_idx
+		// Only check attribution when an attribution data failure has not yet occurred.
+		if attribution_failed_channel.is_none() {
+			// Check attr error HMACs if present.
+			if let Some(ref mut attribution_data) = encrypted_packet.attribution_data {
+				// Only consider hops in the regular path for attribution data. Failures in a blinded path are not
+				// attributable.
+				if route_hop_idx < attributable_hop_count {
+					// Calculate position relative to the last attributable hop. The last attributable hop is at
+					// position 0. The failure node does not need to come from the last attributable hop, but we need to
+					// look at the chain of HMACs that does include all data up to the last attributable hop. For a more
+					// nearby failure, the verified HMACs will include some zero padding data. Failures beyond the last
+					// attributable hop will not be attributable.
+					let position = attributable_hop_count - route_hop_idx - 1;
+					let hold_time = attribution_data.verify(
+						&encrypted_packet.data,
+						shared_secret.as_ref(),
+						position,
 					);
+					if let Some(hold_time) = hold_time {
+						hop_hold_times.push(hold_time);
 
-					break;
+						log_debug!(
+							logger,
+							"Htlc hold time at pos {}: {} ms",
+							route_hop_idx,
+							hold_time
+						);
+
+						// Shift attribution data to prepare for processing the next hop.
+						attribution_data.shift_left();
+					} else {
+						// Store the failing hop, but continue processing the failure for the remaining hops. During the
+						// upgrade period, it may happen that nodes along the way drop attribution data. If the legacy
+						// failure is still valid, it should be processed normally.
+						attribution_failed_channel = route_hop.short_channel_id();
+
+						log_debug!(
+							logger,
+							"Invalid HMAC in attribution data for node at pos {}",
+							route_hop_idx
+						);
+					}
 				}
+			} else {
+				// When no attribution data is provided at all, blame the first hop when the failing node turns out to
+				// be unindentifiable.
+				attribution_failed_channel = route_hop.short_channel_id();
 			}
 		}
 
@@ -1421,14 +1437,17 @@ where
 			onion_error_code: _error_code_ret,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: _error_packet_ret,
+			#[cfg(test)]
+			attribution_failed_channel,
 		}
 	} else {
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
 		log_warn!(
 			logger,
-			"Non-attributable failure encountered on route {}",
-			path.hops.iter().map(|h| h.pubkey.to_string()).collect::<Vec<_>>().join("->")
+			"Non-attributable failure encountered on route {}. Attributation data failed for channel {}",
+			path.hops.iter().map(|h| h.pubkey.to_string()).collect::<Vec<_>>().join("->"),
+			attribution_failed_channel.unwrap_or_default(),
 		);
 
 		DecodedOnionFailure {
@@ -1441,6 +1460,8 @@ where
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
+			#[cfg(test)]
+			attribution_failed_channel,
 		}
 	}
 }
@@ -2046,6 +2067,8 @@ impl HTLCFailReason {
 						onion_error_code: Some(*failure_reason),
 						#[cfg(any(test, feature = "_test_utils"))]
 						onion_error_data: Some(data.clone()),
+						#[cfg(test)]
+						attribution_failed_channel: None,
 					}
 				} else {
 					unreachable!();
@@ -2787,6 +2810,7 @@ fn process_failure_packet(
 
 #[cfg(test)]
 mod tests {
+	use core::iter;
 	use std::sync::Arc;
 
 	use crate::io;
@@ -3130,18 +3154,32 @@ mod tests {
 
 			for mutation_type in failure_mutations
 				.chain(attribution_data_mutations.map(MutationType::AttributionData))
+				.chain(iter::once(MutationType::DropAttributionData))
 			{
+				// If the mutation is in the attribution data and not in the failure message itself, the invalid
+				// attribution data should be ignored and the failure should still surface.
+				let failure_ok = matches!(mutation_type, MutationType::DropAttributionData)
+					|| matches!(mutation_type, MutationType::AttributionData(_));
+
 				let mutation = Mutation { node: mutating_node, mutation_type };
 				let decrypted_failure =
 					test_attributable_failure_packet_onion_with_mutation(Some(mutation));
 
-				if decrypted_failure.onion_error_code
-					== Some(LocalHTLCFailureReason::IncorrectPaymentDetails)
-				{
+				if failure_ok {
+					assert_eq!(
+						decrypted_failure.onion_error_code,
+						Some(LocalHTLCFailureReason::IncorrectPaymentDetails)
+					);
 					continue;
 				}
 
-				assert!(decrypted_failure.short_channel_id == Some(mutating_node as u64));
+				// Currently attribution data isn't used yet to identify the failing node, because this would hinder the
+				// upgrade path.
+				assert!(decrypted_failure.short_channel_id.is_none());
+
+				// Assert that attribution data is interpreted correctly via a test-only field.
+				assert!(decrypted_failure.attribution_failed_channel == Some(mutating_node as u64));
+
 				assert_eq!(decrypted_failure.hold_times, [5, 4, 3, 2, 1][..mutating_node]);
 			}
 		}
@@ -3165,6 +3203,7 @@ mod tests {
 	enum MutationType {
 		FailureMessage(usize),
 		AttributionData(AttributionDataMutationType),
+		DropAttributionData,
 	}
 
 	struct Mutation {
@@ -3251,6 +3290,10 @@ mod tests {
 				MutationType::AttributionData(AttributionDataMutationType::Hmacs(i)) => {
 					// Mutate hold times.
 					packet.attribution_data.as_mut().unwrap().hmacs[*i] ^= 1;
+				},
+				MutationType::DropAttributionData => {
+					// Drop attribution data completely. This simulates a node that does not support the feature.
+					packet.attribution_data = None;
 				},
 			}
 		};
@@ -3560,7 +3603,7 @@ mod tests {
 		// With attributable failures, it should still be possible to identify the failing node.
 		let logger: TestLogger = TestLogger::new();
 		let decrypted_failure = test_failure_attribution(&logger, onion_error_packet);
-		assert_eq!(decrypted_failure.short_channel_id, Some(0));
+		assert_eq!(decrypted_failure.attribution_failed_channel, Some(0));
 	}
 
 	#[test]
@@ -3628,7 +3671,7 @@ mod tests {
 			// Expect attribution up to hop 20.
 			let expected_failed_chan =
 				if failure_pos < MAX_HOPS { Some(failure_pos as u64) } else { None };
-			assert_eq!(decrypted_failure.short_channel_id, expected_failed_chan);
+			assert_eq!(decrypted_failure.attribution_failed_channel, expected_failed_chan);
 		}
 	}
 
