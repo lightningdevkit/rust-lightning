@@ -131,7 +131,7 @@ pub trait KVStore {
 	/// [`ErrorKind::NotFound`]: io::ErrorKind::NotFound
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Result<Vec<u8>, io::Error>;
+	) -> AsyncResultType<'static, Vec<u8>, io::Error>;
 	/// Persists the given data under the given `key`.
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
@@ -194,7 +194,7 @@ pub async fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 	let keys_to_migrate = source_store.list_all_keys()?;
 
 	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
-		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
+		let data = source_store.read(primary_namespace, secondary_namespace, key).await?;
 		target_store.write(primary_namespace, secondary_namespace, key, &data).await.map_err(
 			|_| {
 				io::Error::new(
@@ -327,11 +327,14 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 
 		Box::pin(async move {
 			let monitor_key = monitor_name.to_string();
-			let monitor = match kv_store.read(
-				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-				monitor_key.as_str(),
-			) {
+			let monitor = match kv_store
+				.read(
+					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+					monitor_key.as_str(),
+				)
+				.await
+			{
 				Ok(monitor) => monitor,
 				Err(_) => return,
 			};
@@ -358,7 +361,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 }
 
 /// Read previously persisted [`ChannelMonitor`]s from the store.
-pub fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
+pub async fn read_channel_monitors<K: Deref, ES: Deref, SP: Deref>(
 	kv_store: K, entropy_source: ES, signer_provider: SP,
 ) -> Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, io::Error>
 where
@@ -373,11 +376,15 @@ where
 		CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	)? {
 		match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>::read(
-			&mut io::Cursor::new(kv_store.read(
-				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-				&stored_key,
-			)?),
+			&mut io::Cursor::new(
+				kv_store
+					.read(
+						CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+						CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+						&stored_key,
+					)
+					.await?,
+			),
 			(&*entropy_source, &*signer_provider),
 		) {
 			Ok((block_hash, channel_monitor)) => {
@@ -563,7 +570,7 @@ where
 	/// It is extremely important that your [`KVStore::read`] implementation uses the
 	/// [`io::ErrorKind::NotFound`] variant correctly. For more information, please see the
 	/// documentation for [`MonitorUpdatingPersister`].
-	pub fn read_all_channel_monitors_with_updates(
+	pub async fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
 		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
@@ -575,7 +582,7 @@ where
 		)?;
 		let mut res = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
-			res.push(self.read_channel_monitor_with_updates(monitor_key.as_str())?)
+			res.push(self.read_channel_monitor_with_updates(monitor_key.as_str()).await?)
 		}
 		Ok(res)
 	}
@@ -599,12 +606,12 @@ where
 	///
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
-	pub fn read_channel_monitor_with_updates(
+	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
 		let monitor_name = MonitorName::from_str(monitor_key)?;
-		let (block_hash, monitor) = self.read_monitor(&monitor_name, monitor_key)?;
+		let (block_hash, monitor) = self.read_monitor(&monitor_name, monitor_key).await?;
 		let mut current_update_id = monitor.get_latest_update_id();
 		loop {
 			current_update_id = match current_update_id.checked_add(1) {
@@ -612,7 +619,7 @@ where
 				None => break,
 			};
 			let update_name = UpdateName::from(current_update_id);
-			let update = match self.read_monitor_update(monitor_key, &update_name) {
+			let update = match self.read_monitor_update(monitor_key, &update_name).await {
 				Ok(update) => update,
 				Err(err) if err.kind() == io::ErrorKind::NotFound => {
 					// We can't find any more updates, so we are done.
@@ -638,15 +645,19 @@ where
 	}
 
 	/// Read a channel monitor.
-	fn read_monitor(
+	async fn read_monitor(
 		&self, monitor_name: &MonitorName, monitor_key: &str,
 	) -> Result<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), io::Error>
 	{
-		let mut monitor_cursor = io::Cursor::new(self.kv_store.read(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_key,
-		)?);
+		let mut monitor_cursor = io::Cursor::new(
+			self.kv_store
+				.read(
+					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+					monitor_key,
+				)
+				.await?,
+		);
 		// Discard the sentinel bytes if found.
 		if monitor_cursor.get_ref().starts_with(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL) {
 			monitor_cursor.set_position(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() as u64);
@@ -683,14 +694,17 @@ where
 	}
 
 	/// Read a channel monitor update.
-	fn read_monitor_update(
+	async fn read_monitor_update(
 		&self, monitor_key: &str, update_name: &UpdateName,
 	) -> Result<ChannelMonitorUpdate, io::Error> {
-		let update_bytes = self.kv_store.read(
-			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-			monitor_key,
-			update_name.as_str(),
-		)?;
+		let update_bytes = self
+			.kv_store
+			.read(
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+				monitor_key,
+				update_name.as_str(),
+			)
+			.await?;
 		ChannelMonitorUpdate::read(&mut io::Cursor::new(update_bytes)).map_err(|e| {
 			log_error!(
 				self.logger,
@@ -710,14 +724,14 @@ where
 	/// updates. The updates that have an `update_id` less than or equal to than the stored monitor
 	/// are deleted. The deletion can either be lazy or non-lazy based on the `lazy` flag; this will
 	/// be passed to [`KVStore::remove`].
-	pub fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
+	pub async fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
 		let monitor_keys = self.kv_store.list(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 		)?;
 		for monitor_key in monitor_keys {
 			let monitor_name = MonitorName::from_str(&monitor_key)?;
-			let (_, current_monitor) = self.read_monitor(&monitor_name, &monitor_key)?;
+			let (_, current_monitor) = self.read_monitor(&monitor_name, &monitor_key).await?;
 			let updates = self
 				.kv_store
 				.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key.as_str())?;
@@ -909,7 +923,7 @@ where
 				let maybe_old_monitor = match monitor_latest_update_id {
 					LEGACY_CLOSED_CHANNEL_UPDATE_ID => {
 						let monitor_key = monitor_name.to_string();
-						self.read_monitor(&monitor_name, &monitor_key).ok()
+						self.read_monitor(&monitor_name, &monitor_key).await.ok()
 					},
 					_ => None,
 				};
@@ -953,7 +967,7 @@ where
 
 	async fn archive_persisted_channel(&self, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
-		let monitor = match self.read_channel_monitor_with_updates(&monitor_key) {
+		let monitor = match self.read_channel_monitor_with_updates(&monitor_key).await {
 			Ok((_block_hash, monitor)) => monitor,
 			Err(_) => return,
 		};
