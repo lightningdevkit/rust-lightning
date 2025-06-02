@@ -236,7 +236,7 @@ pub(super) fn create_for_spontaneous_payment(
 	Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
 }
 
-pub(super) fn calculate_absolute_expiry(
+pub(crate) fn calculate_absolute_expiry(
 	highest_seen_timestamp: u64, invoice_expiry_delta_secs: u32,
 ) -> u64 {
 	// We assume that highest_seen_timestamp is pretty close to the current time - it's updated when
