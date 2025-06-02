@@ -136,7 +136,7 @@ pub trait KVStore {
 	///
 	/// Will create the given `primary_namespace` and `secondary_namespace` if not already present
 	/// in the store.
-	fn write_async(
+	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
 	) -> AsyncResultType<'static, (), io::Error>;
 	/// Removes any data that had previously been persisted under the given `key`.
@@ -195,15 +195,14 @@ pub async fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
 
 	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
 		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
-		target_store
-			.write_async(primary_namespace, secondary_namespace, key, &data)
-			.await
-			.map_err(|_| {
+		target_store.write(primary_namespace, secondary_namespace, key, &data).await.map_err(
+			|_| {
 				io::Error::new(
 					io::ErrorKind::Other,
 					"Failed to write data to target store during migration",
 				)
-			})?;
+			},
+		)?;
 	}
 
 	Ok(())
@@ -245,7 +244,7 @@ where
 
 		Box::pin(async move {
 			kv_store
-				.write_async(
+				.write(
 					CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 					CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -258,7 +257,7 @@ where
 	fn persist_graph(
 		&self, network_graph: &NetworkGraph<L>,
 	) -> AsyncResultType<'static, (), io::Error> {
-		self.write_async(
+		self.write(
 			NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
 			NETWORK_GRAPH_PERSISTENCE_KEY,
@@ -267,7 +266,7 @@ where
 	}
 
 	fn persist_scorer(&self, scorer: &S) -> AsyncResultType<'static, (), io::Error> {
-		self.write_async(
+		self.write(
 			SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 			SCORER_PERSISTENCE_KEY,
@@ -292,7 +291,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 
 		Box::pin(async move {
 			kv_store
-				.write_async(
+				.write(
 					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 					&monitor_name.to_string(),
@@ -312,7 +311,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 
 		Box::pin(async move {
 			kv_store
-				.write_async(
+				.write(
 					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 					&monitor_name.to_string(),
@@ -337,7 +336,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized + Sync + Send + 'sta
 				Err(_) => return,
 			};
 			match kv_store
-				.write_async(
+				.write(
 					ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 					ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 					monitor_key.as_str(),
@@ -865,7 +864,7 @@ where
 
 		// Serialize and write the new monitor
 		self.kv_store
-			.write_async(
+			.write(
 				CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 				monitor_key.as_str(),
@@ -896,7 +895,7 @@ where
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update_id);
 				self.kv_store
-					.write_async(
+					.write(
 						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 						monitor_key.as_str(),
 						update_name.as_str(),
@@ -960,7 +959,7 @@ where
 		};
 		match self
 			.kv_store
-			.write_async(
+			.write(
 				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 				monitor_key.as_str(),

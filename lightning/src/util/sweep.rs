@@ -592,7 +592,7 @@ where
 
 	async fn persist_state(&self, sweeper_state: &SweeperState) -> Result<(), io::Error> {
 		self.kv_store
-			.write_async(
+			.write(
 				OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
 				OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 				OUTPUT_SWEEPER_PERSISTENCE_KEY,

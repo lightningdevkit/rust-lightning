@@ -208,7 +208,7 @@ impl KVStore for FilesystemStore {
 		Ok(buf)
 	}
 
-	fn write_async(
+	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
 	) -> AsyncResultType<'static, (), lightning::io::Error> {
 		let res = self.write(primary_namespace, secondary_namespace, key, buf);
