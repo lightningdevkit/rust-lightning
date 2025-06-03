@@ -2440,7 +2440,8 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		change_destination_opt: Option<ScriptBuf>,
+		is_outbound: bool, change_destination_opt: Option<ScriptBuf>,
+		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
 	{
@@ -2450,7 +2451,11 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.funding_negotiation_context.our_funding_inputs, &mut funding_inputs);
 
-		// TODO(splicing): Add prev funding tx as input, must be provided as a parameter
+		if is_outbound {
+			if let Some(prev_funding_input) = prev_funding_input {
+				funding_inputs.push(prev_funding_input);
+			}
+		}
 
 		// Add output for funding tx
 		// Note: For the error case when the inputs are insufficient, it will be handled after
@@ -2463,7 +2468,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			script_pubkey: self.funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		if self.funding.is_outbound() {
+		if is_outbound {
 			funding_outputs.push(
 				OutputOwned::Shared(SharedOwnedOutput::new(
 					shared_funding_output, self.funding_negotiation_context.our_funding_satoshis,
