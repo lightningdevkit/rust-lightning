@@ -8926,6 +8926,12 @@ impl<SP: Deref> FundedChannel<SP> where
 				// Check if we sent splice_locked for the unconfirmed transaction
 				if let Some(pending_splice) = &mut self.pending_splice {
 					if pending_splice.sent_funding_txid == Some(*txid) {
+						log_warn!(
+							logger,
+							"Unconfirming sent splice_locked txid {} for channel {}",
+							txid,
+							&self.context.channel_id,
+						);
 						pending_splice.sent_funding_txid = None;
 					}
 				}
