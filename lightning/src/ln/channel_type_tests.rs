@@ -1,5 +1,5 @@
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::ln::channel::{InboundV1Channel, OutboundV1Channel};
+use crate::ln::channel::{get_initial_channel_type, InboundV1Channel, OutboundV1Channel};
 use crate::ln::channelmanager;
 use crate::prelude::*;
 use crate::util::config::UserConfig;
@@ -8,6 +8,112 @@ use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use lightning_types::features::{ChannelTypeFeatures, InitFeatures};
+
+#[test]
+fn test_option_scid_privacy_initial() {
+	let mut expected_type = ChannelTypeFeatures::only_static_remote_key();
+	expected_type.set_scid_privacy_required();
+
+	do_test_get_initial_channel_type(
+		UserConfig::default(),
+		InitFeatures::empty(),
+		ChannelTypeFeatures::only_static_remote_key(),
+		|cfg: &mut UserConfig| {
+			// announce_for_forwarding = false is required, but set by UserConfig::default().
+			cfg.channel_handshake_config.negotiate_scid_privacy = true;
+		},
+		|their_features: &mut InitFeatures| {
+			their_features.set_scid_privacy_optional();
+		},
+		expected_type,
+	)
+}
+
+#[test]
+fn test_option_anchors_zero_fee_initial() {
+	let mut expected_type = ChannelTypeFeatures::only_static_remote_key();
+	expected_type.set_anchors_zero_fee_htlc_tx_required();
+
+	do_test_get_initial_channel_type(
+		UserConfig::default(),
+		InitFeatures::empty(),
+		ChannelTypeFeatures::only_static_remote_key(),
+		|cfg: &mut UserConfig| {
+			cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		},
+		|their_features: &mut InitFeatures| {
+			their_features.set_anchors_zero_fee_htlc_tx_optional();
+		},
+		expected_type,
+	)
+}
+
+#[test]
+fn test_option_zero_fee_commitments_initial() {
+	let mut expected_type = ChannelTypeFeatures::empty();
+	expected_type.set_anchor_zero_fee_commitments_required();
+
+	do_test_get_initial_channel_type(
+		UserConfig::default(),
+		InitFeatures::empty(),
+		ChannelTypeFeatures::only_static_remote_key(),
+		|cfg: &mut UserConfig| {
+			cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		},
+		|their_features: &mut InitFeatures| {
+			their_features.set_anchor_zero_fee_commitments_optional();
+		},
+		expected_type,
+	)
+}
+
+#[test]
+fn test_option_zero_fee_commitments_from_zero_htlc_anchors_initial() {
+	let mut start_cfg = UserConfig::default();
+	start_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+	let mut start_features = InitFeatures::empty();
+	start_features.set_anchors_zero_fee_htlc_tx_optional();
+
+	let mut start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+
+	let mut expected_type = ChannelTypeFeatures::empty();
+	expected_type.set_anchor_zero_fee_commitments_required();
+
+	do_test_get_initial_channel_type(
+		start_cfg,
+		start_features,
+		start_type,
+		|cfg: &mut UserConfig| {
+			cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		},
+		|their_features: &mut InitFeatures| {
+			their_features.set_anchor_zero_fee_commitments_optional();
+		},
+		expected_type,
+	)
+}
+
+fn do_test_get_initial_channel_type<F1, F2>(
+	start_cfg: UserConfig, start_features: InitFeatures, start_type: ChannelTypeFeatures,
+	mut local_cfg_mod: F1, mut remote_features_mod: F2, channel_type: ChannelTypeFeatures,
+) where
+	F1: FnOnce(&mut UserConfig),
+	F2: FnOnce(&mut InitFeatures),
+{
+	// Local node supports feature, remote does not.
+	let mut config = start_cfg.clone();
+	local_cfg_mod(&mut config);
+	assert_eq!(get_initial_channel_type(&config, &start_features), start_type);
+
+	// Remote node supports feature, local does not.
+	let mut their_features = start_features.clone();
+	remote_features_mod(&mut their_features);
+	assert_eq!(get_initial_channel_type(&start_cfg, &their_features), start_type);
+
+	// Both support feature.
+	assert_eq!(get_initial_channel_type(&config, &their_features), channel_type)
+}
 
 #[test]
 fn test_zero_conf_channel_type_support() {

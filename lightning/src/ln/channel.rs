@@ -10705,7 +10705,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 
 // Unfunded channel utilities
 
-fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
+pub(super) fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
 	// The default channel type (ie the first one we try) depends on whether the channel is
 	// public - if it is, we just go with `only_static_remotekey` as it's the only option
 	// available. If it's private, we first try `scid_privacy` as it provides better privacy
