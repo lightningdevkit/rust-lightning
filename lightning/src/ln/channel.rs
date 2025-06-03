@@ -11853,15 +11853,14 @@ mod tests {
 	use crate::ln::script::ShutdownScript;
 	use crate::ln::chan_utils::{self, htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
-	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
+	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};
 	use crate::chain::transaction::OutPoint;
 	use crate::routing::router::{Path, RouteHop};
 	use crate::util::config::UserConfig;
 	use crate::util::errors::APIError;
 	use crate::util::ser::{ReadableArgs, Writeable};
-	use crate::util::test_utils;
-	use crate::util::test_utils::{OnGetShutdownScriptpubkey, TestKeysInterface};
+	use crate::util::test_utils::{self, OnGetShutdownScriptpubkey, TestKeysInterface, TestFeeEstimator, TestLogger};
 	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
@@ -11883,15 +11882,6 @@ mod tests {
 		assert!(ChannelState::FundingNegotiated(FundingNegotiatedFlags::new()) < ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()));
 		assert!(ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()) < ChannelState::ChannelReady(ChannelReadyFlags::new()));
 		assert!(ChannelState::ChannelReady(ChannelReadyFlags::new()) < ChannelState::ShutdownComplete);
-	}
-
-	struct TestFeeEstimator {
-		fee_est: u32
-	}
-	impl FeeEstimator for TestFeeEstimator {
-		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
-			self.fee_est
-		}
 	}
 
 	#[test]
@@ -11952,16 +11942,16 @@ mod tests {
 
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 		keys_provider.expect(OnGetShutdownScriptpubkey {
 			returns: non_v0_segwit_shutdown_script.clone(),
 		});
-		let logger = test_utils::TestLogger::new();
+		let logger = TestLogger::new();
 
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match OutboundV1Channel::<&TestKeysInterface>::new(&LowerBoundedFeeEstimator::new(&TestFeeEstimator { fee_est: 253 }), &&keys_provider, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42, None, &logger) {
+		match OutboundV1Channel::<&TestKeysInterface>::new(&LowerBoundedFeeEstimator::new(&TestFeeEstimator::new(253)), &&keys_provider, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42, None, &logger) {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
@@ -11975,13 +11965,13 @@ mod tests {
 	#[test]
 	fn test_open_channel_msg_fee() {
 		let original_fee = 253;
-		let mut fee_est = TestFeeEstimator{fee_est: original_fee };
+		let fee_est = TestFeeEstimator::new(original_fee);
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_est);
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&seed, network);
+		let logger = TestLogger::new();
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
@@ -11989,7 +11979,7 @@ mod tests {
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
-		fee_est.fee_est = 500;
+		*fee_est.sat_per_kw.lock().unwrap() = 500;
 		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		assert_eq!(open_channel_msg.common_fields.commitment_feerate_sat_per_1000_weight, original_fee);
 	}
@@ -11998,12 +11988,13 @@ mod tests {
 	fn test_holder_vs_counterparty_dust_limit() {
 		// Test that when calculating the local and remote commitment transaction fees, the correct
 		// dust limits are used.
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&seed, network);
+		let logger = TestLogger::new();
 		let best_block = BestBlock::from_network(network);
 
 		// Go through the flow of opening a channel between two nodes, making sure
@@ -12089,12 +12080,13 @@ mod tests {
 		// calculate the real dust limits for HTLCs (i.e. the dust limit given by the counterparty
 		// *plus* the fees paid for the HTLC) they don't swap `HTLC_SUCCESS_TX_WEIGHT` for
 		// `HTLC_TIMEOUT_TX_WEIGHT`, and vice versa.
-		let fee_est = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 253 });
+		let test_est = TestFeeEstimator::new(253);
+		let fee_est = LowerBoundedFeeEstimator::new(&test_est);
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&seed, network);
+		let logger = TestLogger::new();
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
@@ -12133,14 +12125,15 @@ mod tests {
 
 	#[test]
 	fn channel_reestablish_no_updates() {
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
-		let logger = test_utils::TestLogger::new();
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
 		let chain_hash = ChainHash::using_genesis_block(network);
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 
 		// Go through the flow of opening a channel between two nodes.
 
@@ -12190,12 +12183,13 @@ mod tests {
 
 	#[test]
 	fn test_configured_holder_max_htlc_value_in_flight() {
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
-		let logger = test_utils::TestLogger::new();
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 		let outbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let inbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 
@@ -12284,12 +12278,13 @@ mod tests {
 	}
 
 	fn test_self_and_counterparty_channel_reserve(channel_value_satoshis: u64, outbound_selected_channel_reserve_perc: f64, inbound_selected_channel_reserve_perc: f64) {
-		let fee_est = LowerBoundedFeeEstimator::new(&TestFeeEstimator { fee_est: 15_000 });
-		let logger = test_utils::TestLogger::new();
+		let test_est = TestFeeEstimator::new(15000);
+		let fee_est = LowerBoundedFeeEstimator::new(&test_est);
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 		let outbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let inbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 
@@ -12321,14 +12316,15 @@ mod tests {
 
 	#[test]
 	fn channel_update() {
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
-		let logger = test_utils::TestLogger::new();
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
 		let chain_hash = ChainHash::using_genesis_block(network);
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -12398,13 +12394,14 @@ mod tests {
 	fn blinding_point_skimmed_fee_malformed_ser() {
 		// Ensure that channel blinding points, skimmed fees, and malformed HTLCs are (de)serialized
 		// properly.
-		let logger = test_utils::TestLogger::new();
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let logger = TestLogger::new();
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
@@ -12543,8 +12540,8 @@ mod tests {
 		use core::str::FromStr;
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
-		let feeest = TestFeeEstimator{fee_est: 15000};
-		let logger : Arc<dyn Logger> = Arc::new(test_utils::TestLogger::new());
+		let feeest = TestFeeEstimator::new(15000);
+		let logger : Arc<dyn Logger> = Arc::new(TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
 		let signer = InMemorySigner::new(
@@ -13304,12 +13301,13 @@ mod tests {
 
 	#[test]
 	fn test_zero_conf_channel_type_support() {
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&seed, network);
+		let logger = TestLogger::new();
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
@@ -13372,10 +13370,11 @@ mod tests {
 
 	fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: ChannelTypeFeatures) {
 		let secp_ctx = Secp256k1::new();
-		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let test_est = TestFeeEstimator::new(15000);
+		let fee_estimator = LowerBoundedFeeEstimator::new(&test_est);
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&[42; 32], network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&[42; 32], network);
+		let logger = TestLogger::new();
 
 		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
 		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
@@ -13418,10 +13417,11 @@ mod tests {
 		// Tests that if `option_anchors` is being negotiated implicitly through the intersection of
 		// each side's `InitFeatures`, it is rejected.
 		let secp_ctx = Secp256k1::new();
-		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let test_est = TestFeeEstimator::new(15000);
+		let fee_estimator = LowerBoundedFeeEstimator::new(&test_est);
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&[42; 32], network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&[42; 32], network);
+		let logger = TestLogger::new();
 
 		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
 		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
@@ -13459,10 +13459,11 @@ mod tests {
 		// Tests that if `option_anchors` is being negotiated through the `channel_type` feature,
 		// it is rejected.
 		let secp_ctx = Secp256k1::new();
-		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let test_est = TestFeeEstimator::new(15000);
+		let fee_estimator = LowerBoundedFeeEstimator::new(&test_est);
 		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&[42; 32], network);
-		let logger = test_utils::TestLogger::new();
+		let keys_provider = TestKeysInterface::new(&[42; 32], network);
+		let logger = TestLogger::new();
 
 		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
 		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
@@ -13525,14 +13526,15 @@ mod tests {
 
 	#[test]
 	fn test_waiting_for_batch() {
-		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
-		let logger = test_utils::TestLogger::new();
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let best_block = BestBlock::from_network(network);
 		let chain_hash = ChainHash::using_genesis_block(network);
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let keys_provider = TestKeysInterface::new(&seed, network);
 
 		let mut config = UserConfig::default();
 		// Set trust_own_funding_0conf while ensuring we don't send channel_ready for a
