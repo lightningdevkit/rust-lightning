@@ -2772,7 +2772,7 @@ where
 		debug_assert!(self.interactive_tx_constructor.is_none());
 
 		let mut funding_inputs = Vec::new();
-		mem::swap(&mut self.dual_funding_context.our_funding_inputs, &mut funding_inputs);
+		mem::swap(&mut self.funding_negotiation_context.our_funding_inputs, &mut funding_inputs);
 
 		// TODO(splicing): Add prev funding tx as input, must be provided as a parameter
 
@@ -2794,10 +2794,10 @@ where
 				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
 		};
 		let change_value_opt = calculate_change_output_value(
-			self.funding.is_outbound(), self.dual_funding_context.our_funding_satoshis,
+			self.funding.is_outbound(), self.funding_negotiation_context.our_funding_satoshis,
 			&funding_inputs, None,
 			&shared_funding_output.script_pubkey, &funding_outputs,
-			self.dual_funding_context.funding_feerate_sat_per_1000_weight,
+			self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
 		)?;
 		if let Some(change_value) = change_value_opt {
@@ -2806,7 +2806,7 @@ where
 				script_pubkey: change_script,
 			};
 			let change_output_weight = get_output_weight(&change_output.script_pubkey).to_wu();
-			let change_output_fee = fee_for_weight(self.dual_funding_context.funding_feerate_sat_per_1000_weight, change_output_weight);
+			let change_output_fee = fee_for_weight(self.funding_negotiation_context.funding_feerate_sat_per_1000_weight, change_output_weight);
 			let change_value_decreased_with_fee = change_value.saturating_sub(change_output_fee);
 			// Check dust limit again
 			if change_value_decreased_with_fee > self.context.holder_dust_limit_satoshis {
@@ -2820,12 +2820,12 @@ where
 			holder_node_id,
 			counterparty_node_id: self.context.counterparty_node_id,
 			channel_id: self.context.channel_id(),
-			feerate_sat_per_kw: self.dual_funding_context.funding_feerate_sat_per_1000_weight,
+			feerate_sat_per_kw: self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			is_initiator: self.funding.is_outbound(),
-			funding_tx_locktime: self.dual_funding_context.funding_tx_locktime,
+			funding_tx_locktime: self.funding_negotiation_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			shared_funding_input: None,
-			shared_funding_output: SharedOwnedOutput::new(shared_funding_output, self.dual_funding_context.our_funding_satoshis),
+			shared_funding_output: SharedOwnedOutput::new(shared_funding_output, self.funding_negotiation_context.our_funding_satoshis),
 			outputs_to_contribute: funding_outputs,
 		};
 		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)?;
@@ -2915,7 +2915,7 @@ where
 	where
 		L::Target: Logger
 	{
-		let our_funding_satoshis = self.dual_funding_context.our_funding_satoshis;
+		let our_funding_satoshis = self.funding_negotiation_context.our_funding_satoshis;
 		let transaction_number = self.unfunded_context.transaction_number();
 
 		let mut output_index = None;
@@ -5853,8 +5853,8 @@ fn check_v2_funding_inputs_sufficient(
 	}
 }
 
-/// Context for dual-funded channels.
-pub(super) struct DualFundingChannelContext {
+/// Context for negotiating channels (dual-funded V2 open, splicing)
+pub(super) struct FundingNegotiationContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
 	/// The amount in satoshis our counterparty will be contributing to the channel.
@@ -12021,7 +12021,7 @@ where
 	pub funding: FundingScope,
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	pub dual_funding_context: DualFundingChannelContext,
+	pub funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
 	pub interactive_tx_constructor: Option<InteractiveTxConstructor>,
 	/// The signing session created after `tx_complete` handling
@@ -12084,7 +12084,7 @@ where
 			unfunded_channel_age_ticks: 0,
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
-		let dual_funding_context = DualFundingChannelContext {
+		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis: funding_satoshis,
 			// TODO(dual_funding) TODO(splicing) Include counterparty contribution, once that's enabled
 			their_funding_satoshis: None,
@@ -12096,7 +12096,7 @@ where
 			funding,
 			context,
 			unfunded_context,
-			dual_funding_context,
+			funding_negotiation_context,
 			interactive_tx_constructor: None,
 			interactive_tx_signing_session: None,
 		};
@@ -12172,7 +12172,7 @@ where
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.dual_funding_context.funding_tx_locktime.to_consensus_u32(),
+			locktime: self.funding_negotiation_context.funding_tx_locktime.to_consensus_u32(),
 			require_confirmed_inputs: None,
 		}
 	}
@@ -12238,7 +12238,7 @@ where
 			&funding.get_counterparty_pubkeys().revocation_basepoint);
 		context.channel_id = channel_id;
 
-		let dual_funding_context = DualFundingChannelContext {
+		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis: our_funding_satoshis,
 			their_funding_satoshis: Some(msg.common_fields.funding_satoshis),
 			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
@@ -12256,8 +12256,8 @@ where
 				holder_node_id,
 				counterparty_node_id,
 				channel_id: context.channel_id,
-				feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
-				funding_tx_locktime: dual_funding_context.funding_tx_locktime,
+				feerate_sat_per_kw: funding_negotiation_context.funding_feerate_sat_per_1000_weight,
+				funding_tx_locktime: funding_negotiation_context.funding_tx_locktime,
 				is_initiator: false,
 				inputs_to_contribute: our_funding_inputs,
 				shared_funding_input: None,
@@ -12276,7 +12276,7 @@ where
 		Ok(Self {
 			funding,
 			context,
-			dual_funding_context,
+			funding_negotiation_context,
 			interactive_tx_constructor,
 			interactive_tx_signing_session: None,
 			unfunded_context,
@@ -12342,7 +12342,7 @@ where
 				}),
 				channel_type: Some(self.funding.get_channel_type().clone()),
 			},
-			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
+			funding_satoshis: self.funding_negotiation_context.our_funding_satoshis,
 			second_per_commitment_point,
 			require_confirmed_inputs: None,
 		}
