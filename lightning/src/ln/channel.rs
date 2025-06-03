@@ -8615,9 +8615,12 @@ impl<SP: Deref> FundedChannel<SP> where
 	}
 
 	#[cfg(splicing)]
-	fn maybe_promote_splice_funding(
-		&mut self, splice_txid: Txid, confirmed_funding_index: usize,
-	) -> bool {
+	fn maybe_promote_splice_funding<L: Deref>(
+		&mut self, splice_txid: Txid, confirmed_funding_index: usize, logger: &L,
+	) -> bool
+	where
+		L::Target: Logger,
+	{
 		debug_assert!(self.pending_splice.is_some());
 		debug_assert!(confirmed_funding_index < self.pending_funding.len());
 
@@ -8625,9 +8628,32 @@ impl<SP: Deref> FundedChannel<SP> where
 		pending_splice.sent_funding_txid = Some(splice_txid);
 
 		if pending_splice.sent_funding_txid == pending_splice.received_funding_txid {
+			log_info!(
+				logger,
+				"Promoting splice funding txid {} for channel {}",
+				splice_txid,
+				&self.context.channel_id,
+			);
+
 			let funding = self.pending_funding.get_mut(confirmed_funding_index).unwrap();
 			promote_splice_funding!(self, funding);
+
 			return true;
+		} else if let Some(received_funding_txid) = pending_splice.received_funding_txid {
+			log_warn!(
+				logger,
+				"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
+				&self.context.channel_id,
+				splice_txid,
+				received_funding_txid,
+			);
+		} else {
+			log_info!(
+				logger,
+				"Waiting on splice_locked txid {} for channel {}",
+				splice_txid,
+				&self.context.channel_id,
+			);
 		}
 
 		return false;
@@ -8704,10 +8730,15 @@ impl<SP: Deref> FundedChannel<SP> where
 						}
 					}
 
-					log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+					log_info!(
+						logger,
+						"Sending splice_locked txid {} to our peer for channel {}",
+						splice_locked.splice_txid,
+						&self.context.channel_id,
+					);
 
 					let announcement_sigs = self
-						.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index)
+						.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index, logger)
 						.then(|| self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger))
 						.flatten();
 
@@ -8847,7 +8878,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
 
 				let announcement_sigs = self
-					.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index)
+					.maybe_promote_splice_funding(splice_locked.splice_txid, confirmed_funding_index, logger)
 					.then(|| chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)|
 							self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
