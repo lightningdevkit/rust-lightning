@@ -2167,6 +2167,61 @@ mod tests {
 }
 
 #[cfg(test)]
+mod currency_code_tests {
+	use super::CurrencyCode;
+
+	#[test]
+	fn creates_valid_currency_codes() {
+		let usd = CurrencyCode::new(*b"USD").unwrap();
+		assert_eq!(usd.as_str(), "USD");
+		assert_eq!(usd.as_bytes(), b"USD");
+
+		let eur = CurrencyCode::new(*b"EUR").unwrap();
+		assert_eq!(eur.as_str(), "EUR");
+		assert_eq!(eur.as_bytes(), b"EUR");
+	}
+
+	#[test]
+	fn rejects_invalid_utf8() {
+		let invalid_utf8 = [0xFF, 0xFE, 0xFD];
+		assert!(CurrencyCode::new(invalid_utf8).is_err());
+	}
+
+	#[test]
+	fn rejects_lowercase_letters() {
+		assert!(CurrencyCode::new(*b"usd").is_err());
+		assert!(CurrencyCode::new(*b"Eur").is_err());
+	}
+
+	#[test]
+	fn rejects_non_letters() {
+		assert!(CurrencyCode::new(*b"US1").is_err());
+		assert!(CurrencyCode::new(*b"U$D").is_err());
+	}
+
+	#[test]
+	fn from_str_validates_length() {
+		assert!("US".parse::<CurrencyCode>().is_err());
+		assert!("USDA".parse::<CurrencyCode>().is_err());
+
+		assert!("USD".parse::<CurrencyCode>().is_ok());
+	}
+
+	#[test]
+	fn works_with_real_currency_codes() {
+		let codes = ["USD", "EUR", "GBP", "JPY", "CNY"];
+
+		for code_str in &codes {
+			let code1 = CurrencyCode::new(code_str.as_bytes().try_into().unwrap()).unwrap();
+			let code2 = code_str.parse::<CurrencyCode>().unwrap();
+
+			assert_eq!(code1, code2);
+			assert_eq!(code1.as_str(), *code_str);
+		}
+	}
+}
+
+#[cfg(test)]
 mod bolt12_tests {
 	use super::{Bolt12ParseError, Bolt12SemanticError, Offer};
 	use crate::ln::msgs::DecodeError;
