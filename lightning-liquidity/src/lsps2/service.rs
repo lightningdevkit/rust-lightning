@@ -1348,22 +1348,32 @@ where
 		&self, peer_state_lock: &mut MutexGuard<'a, PeerState>, request_id: LSPSRequestId,
 		counterparty_node_id: PublicKey, request: LSPS2Request,
 	) -> (Result<(), LightningError>, Option<LSPSMessage>) {
-		if self.total_pending_requests.load(Ordering::Relaxed) >= MAX_TOTAL_PENDING_REQUESTS {
-			let response = LSPS2Response::BuyError(LSPSResponseError {
+		let create_pending_request_limit_exceeded_response = |error_message: String| {
+			let error_details = LSPSResponseError {
 				code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
 				message: "Reached maximum number of pending requests. Please try again later."
 					.to_string(),
 				data: None,
-			});
-			let msg = Some(LSPS2Message::Response(request_id, response).into());
+			};
+			let response = match &request {
+				LSPS2Request::GetInfo(_) => LSPS2Response::GetInfoError(error_details),
+				LSPS2Request::Buy(_) => LSPS2Response::BuyError(error_details),
+			};
+			let msg = Some(LSPS2Message::Response(request_id.clone(), response).into());
 
-			let err = format!(
-				"Peer {} reached maximum number of total pending requests: {}",
-				counterparty_node_id, MAX_TOTAL_PENDING_REQUESTS
+			let result = Err(LightningError {
+				err: error_message,
+				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+			(result, msg)
+		};
+
+		if self.total_pending_requests.load(Ordering::Relaxed) >= MAX_TOTAL_PENDING_REQUESTS {
+			let error_message = format!(
+				"Reached maximum number of total pending requests: {}",
+				MAX_TOTAL_PENDING_REQUESTS
 			);
-			let result =
-				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Debug) });
-			return (result, msg);
+			return create_pending_request_limit_exceeded_response(error_message);
 		}
 
 		if peer_state_lock.pending_requests_and_channels() < MAX_PENDING_REQUESTS_PER_PEER {
@@ -1371,22 +1381,11 @@ where
 			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
 			(Ok(()), None)
 		} else {
-			let response = LSPS2Response::BuyError(LSPSResponseError {
-				code: LSPS0_CLIENT_REJECTED_ERROR_CODE,
-				message: "Reached maximum number of pending requests. Please try again later."
-					.to_string(),
-				data: None,
-			});
-			let msg = Some(LSPS2Message::Response(request_id, response).into());
-
-			let err = format!(
+			let error_message = format!(
 				"Peer {} reached maximum number of pending requests: {}",
 				counterparty_node_id, MAX_PENDING_REQUESTS_PER_PEER
 			);
-			let result =
-				Err(LightningError { err, action: ErrorAction::IgnoreAndLog(Level::Debug) });
-
-			(result, msg)
+			create_pending_request_limit_exceeded_response(error_message)
 		}
 	}
 
