@@ -1,16 +1,13 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
-use bitcoin::constants::ChainHash;
-use bitcoin::network::Network;
-use lightning_types::features::{ChannelTypeFeatures, InitFeatures};
-use crate::ln::channel::{OutboundV1Channel, InboundV1Channel};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use bitcoin::secp256k1::{SecretKey, PublicKey};
+use crate::ln::channel::{InboundV1Channel, OutboundV1Channel};
 use crate::ln::channelmanager;
+use crate::prelude::*;
 use crate::util::config::UserConfig;
 use crate::util::test_utils::{TestFeeEstimator, TestKeysInterface, TestLogger};
-use bitcoin::secp256k1::Secp256k1;
-use crate::prelude::*;
+use bitcoin::constants::ChainHash;
+use bitcoin::network::Network;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use lightning_types::features::{ChannelTypeFeatures, InitFeatures};
 
 #[test]
 fn test_zero_conf_channel_type_support() {
@@ -22,20 +19,48 @@ fn test_zero_conf_channel_type_support() {
 	let keys_provider = TestKeysInterface::new(&seed, network);
 	let logger = TestLogger::new();
 
-	let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+	let node_b_node_id =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 	let config = UserConfig::default();
-	let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
-		node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
+	let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(
+		&feeest,
+		&&keys_provider,
+		&&keys_provider,
+		node_b_node_id,
+		&channelmanager::provided_init_features(&config),
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
 
 	let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 	channel_type_features.set_zero_conf_required();
 
-	let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+	let mut open_channel_msg =
+		node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 	open_channel_msg.common_fields.channel_type = Some(channel_type_features);
-	let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-	let res = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
-		node_b_node_id, &channelmanager::provided_channel_type_features(&config),
-		&channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false);
+	let node_b_node_id =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
+	let res = InboundV1Channel::<&TestKeysInterface>::new(
+		&feeest,
+		&&keys_provider,
+		&&keys_provider,
+		node_b_node_id,
+		&channelmanager::provided_channel_type_features(&config),
+		&channelmanager::provided_init_features(&config),
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
+	);
 	assert!(res.is_ok());
 }
 
@@ -89,29 +114,67 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 	let keys_provider = TestKeysInterface::new(&[42; 32], network);
 	let logger = TestLogger::new();
 
-	let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
-	let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+	let node_id_a =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+	let node_id_b =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
 	// Assert that we get `static_remotekey` when no custom config is negotiated.
 	let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
-		&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
-		&config, 0, 42, None, &logger
-	).unwrap();
-	assert_eq!(channel_a.funding.get_channel_type(), &ChannelTypeFeatures::only_static_remote_key());
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_b,
+		&channelmanager::provided_init_features(&UserConfig::default()),
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
+	assert_eq!(
+		channel_a.funding.get_channel_type(),
+		&ChannelTypeFeatures::only_static_remote_key()
+	);
 
 	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
-		&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
-		None, &logger
-	).unwrap();
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_b,
+		&channelmanager::provided_init_features(&config),
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
 
-	let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+	let open_channel_msg =
+		channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 	let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
-		&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
-		&open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false
-	).unwrap();
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_a,
+		&channelmanager::provided_channel_type_features(&config),
+		&channelmanager::provided_init_features(&config),
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
+	)
+	.unwrap();
 
 	assert_eq!(channel_a.funding.get_channel_type(), &expected_channel_type);
 	assert_eq!(channel_b.funding.get_channel_type(), &expected_channel_type);
@@ -136,8 +199,10 @@ fn test_rejects_implicit_simple_anchors() {
 	let keys_provider = TestKeysInterface::new(&[42; 32], network);
 	let logger = TestLogger::new();
 
-	let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
-	let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+	let node_id_a =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+	let node_id_b =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
 	let config = UserConfig::default();
 
@@ -145,24 +210,46 @@ fn test_rejects_implicit_simple_anchors() {
 	let static_remote_key_required: u64 = 1 << 12;
 	let simple_anchors_required: u64 = 1 << 20;
 	let raw_init_features = static_remote_key_required | simple_anchors_required;
-	let init_features_with_simple_anchors = InitFeatures::from_le_bytes(raw_init_features.to_le_bytes().to_vec());
+	let init_features_with_simple_anchors =
+		InitFeatures::from_le_bytes(raw_init_features.to_le_bytes().to_vec());
 
 	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
-		&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
-		None, &logger
-	).unwrap();
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_b,
+		&channelmanager::provided_init_features(&config),
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
 
 	// Set `channel_type` to `None` to force the implicit feature negotiation.
-	let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+	let mut open_channel_msg =
+		channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 	open_channel_msg.common_fields.channel_type = None;
 
 	// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
 	// `static_remote_key`, it will fail the channel.
 	let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
-		&channelmanager::provided_channel_type_features(&config), &init_features_with_simple_anchors,
-		&open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_a,
+		&channelmanager::provided_channel_type_features(&config),
+		&init_features_with_simple_anchors,
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
 	);
 	assert!(channel_b.is_err());
 }
@@ -178,8 +265,10 @@ fn test_rejects_simple_anchors_channel_type() {
 	let keys_provider = TestKeysInterface::new(&[42; 32], network);
 	let logger = TestLogger::new();
 
-	let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
-	let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+	let node_id_a =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+	let node_id_b =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
 	let config = UserConfig::default();
 
@@ -187,8 +276,10 @@ fn test_rejects_simple_anchors_channel_type() {
 	let static_remote_key_required: u64 = 1 << 12;
 	let simple_anchors_required: u64 = 1 << 20;
 	let simple_anchors_raw_features = static_remote_key_required | simple_anchors_required;
-	let simple_anchors_init = InitFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
-	let simple_anchors_channel_type = ChannelTypeFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
+	let simple_anchors_init =
+		InitFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
+	let simple_anchors_channel_type =
+		ChannelTypeFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
 	assert!(!simple_anchors_init.requires_unknown_bits());
 	assert!(!simple_anchors_channel_type.requires_unknown_bits());
 
@@ -196,18 +287,39 @@ fn test_rejects_simple_anchors_channel_type() {
 	// the original `option_anchors` feature (non zero fee htlc tx). This should be rejected by
 	// B as it's not supported by LDK.
 	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
-		&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
-		None, &logger
-	).unwrap();
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_b,
+		&channelmanager::provided_init_features(&config),
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
 
-	let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+	let mut open_channel_msg =
+		channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 	open_channel_msg.common_fields.channel_type = Some(simple_anchors_channel_type.clone());
 
 	let res = InboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
-		&channelmanager::provided_channel_type_features(&config), &simple_anchors_init,
-		&open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_a,
+		&channelmanager::provided_channel_type_features(&config),
+		&simple_anchors_init,
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
 	);
 	assert!(res.is_err());
 
@@ -216,23 +328,48 @@ fn test_rejects_simple_anchors_channel_type() {
 	// original `option_anchors` feature, which should be rejected by A as it's not supported by
 	// LDK.
 	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_b, &simple_anchors_init,
-		10000000, 100000, 42, &config, 0, 42, None, &logger
-	).unwrap();
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_b,
+		&simple_anchors_init,
+		10000000,
+		100000,
+		42,
+		&config,
+		0,
+		42,
+		None,
+		&logger,
+	)
+	.unwrap();
 
-	let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+	let open_channel_msg =
+		channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 
 	let mut channel_b = InboundV1Channel::<&TestKeysInterface>::new(
-		&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
-		&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
-		&open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false
-	).unwrap();
+		&fee_estimator,
+		&&keys_provider,
+		&&keys_provider,
+		node_id_a,
+		&channelmanager::provided_channel_type_features(&config),
+		&channelmanager::provided_init_features(&config),
+		&open_channel_msg,
+		7,
+		&config,
+		0,
+		&&logger,
+		/*is_0conf=*/ false,
+	)
+	.unwrap();
 
 	let mut accept_channel_msg = channel_b.get_accept_channel_message(&&logger).unwrap();
 	accept_channel_msg.common_fields.channel_type = Some(simple_anchors_channel_type.clone());
 
 	let res = channel_a.accept_channel(
-		&accept_channel_msg, &config.channel_handshake_limits, &simple_anchors_init
+		&accept_channel_msg,
+		&config.channel_handshake_limits,
+		&simple_anchors_init,
 	);
 	assert!(res.is_err());
 }
