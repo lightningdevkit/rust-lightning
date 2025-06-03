@@ -3122,10 +3122,16 @@ mod tests {
 		const FAILURE_MESSAGE_LEN: usize = 1060;
 
 		for mutating_node in 0..5 {
-			for mutated_index in
-				0..FAILURE_MESSAGE_LEN + HOLD_TIME_LEN * MAX_HOPS + HMAC_LEN * HMAC_COUNT
+			let attribution_data_mutations = (0..HOLD_TIME_LEN * MAX_HOPS)
+				.map(AttributionDataMutationType::HoldTimes)
+				.chain((0..HMAC_LEN * HMAC_COUNT).map(AttributionDataMutationType::Hmacs));
+
+			let failure_mutations = (0..FAILURE_MESSAGE_LEN).map(MutationType::FailureMessage);
+
+			for mutation_type in failure_mutations
+				.chain(attribution_data_mutations.map(MutationType::AttributionData))
 			{
-				let mutation = Mutation { node: mutating_node, index: mutated_index };
+				let mutation = Mutation { node: mutating_node, mutation_type };
 				let decrypted_failure =
 					test_attributable_failure_packet_onion_with_mutation(Some(mutation));
 
@@ -3151,9 +3157,19 @@ mod tests {
 		assert_eq!(decrypted_failure.hold_times, [5, 4, 3, 2, 1]);
 	}
 
+	enum AttributionDataMutationType {
+		HoldTimes(usize),
+		Hmacs(usize),
+	}
+
+	enum MutationType {
+		FailureMessage(usize),
+		AttributionData(AttributionDataMutationType),
+	}
+
 	struct Mutation {
 		node: usize,
-		index: usize,
+		mutation_type: MutationType,
 	}
 
 	fn test_attributable_failure_packet_onion_with_mutation(
@@ -3222,24 +3238,26 @@ mod tests {
 		EXPECTED_MESSAGES[0].assert_eq(&onion_error);
 
 		let mut mutated = false;
-		let mutate_packet = |packet: &mut OnionErrorPacket, mutated_index| {
-			let data_len = packet.data.len();
-			if mutated_index < data_len {
-				// Mutate legacy failure message.
-				packet.data[mutated_index] ^= 1;
-			} else if mutated_index < data_len + HOLD_TIME_LEN * MAX_HOPS {
-				// Mutate hold times.
-				packet.attribution_data.as_mut().unwrap().hold_times[mutated_index - data_len] ^= 1;
-			} else {
-				// Mutate HMACs.
-				packet.attribution_data.as_mut().unwrap().hmacs
-					[mutated_index - data_len - HOLD_TIME_LEN * MAX_HOPS] ^= 1;
+		let mutate_packet = |packet: &mut OnionErrorPacket, mutation_type: &MutationType| {
+			match mutation_type {
+				MutationType::FailureMessage(i) => {
+					// Mutate legacy failure message.
+					packet.data[*i] ^= 1;
+				},
+				MutationType::AttributionData(AttributionDataMutationType::HoldTimes(i)) => {
+					// Mutate hold times.
+					packet.attribution_data.as_mut().unwrap().hold_times[*i] ^= 1;
+				},
+				MutationType::AttributionData(AttributionDataMutationType::Hmacs(i)) => {
+					// Mutate hold times.
+					packet.attribution_data.as_mut().unwrap().hmacs[*i] ^= 1;
+				},
 			}
 		};
 
-		if let Some(Mutation { node, index }) = mutation {
+		if let Some(Mutation { node, ref mutation_type }) = mutation {
 			if node == 4 {
-				mutate_packet(&mut onion_error, index);
+				mutate_packet(&mut onion_error, mutation_type);
 				mutated = true;
 			}
 		}
@@ -3250,9 +3268,9 @@ mod tests {
 			process_failure_packet(&mut onion_error, shared_secret, hold_time);
 			super::crypt_failure_packet(shared_secret, &mut onion_error);
 
-			if let Some(Mutation { node, index }) = mutation {
+			if let Some(Mutation { node, ref mutation_type }) = mutation {
 				if node == idx {
-					mutate_packet(&mut onion_error, index);
+					mutate_packet(&mut onion_error, mutation_type);
 					mutated = true;
 				}
 			}
