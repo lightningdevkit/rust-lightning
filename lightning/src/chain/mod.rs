@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -13,16 +11,16 @@
 
 use bitcoin::block::{Block, Header};
 use bitcoin::constants::genesis_block;
-use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::Network;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
-use crate::ln::types::ChannelId;
-use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::impl_writeable_tlv_based;
+use crate::ln::types::ChannelId;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -30,9 +28,9 @@ use crate::prelude::*;
 pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;
-pub mod transaction;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
+pub mod transaction;
 
 /// The best known block as identified by its hash and height.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -47,10 +45,7 @@ impl BestBlock {
 	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
 	/// network.
 	pub fn from_network(network: Network) -> Self {
-		BestBlock {
-			block_hash: genesis_block(network).header.block_hash(),
-			height: 0,
-		}
+		BestBlock { block_hash: genesis_block(network).header.block_hash(), height: 0 }
 	}
 
 	/// Returns a `BestBlock` as identified by the given block hash and height.
@@ -66,7 +61,6 @@ impl_writeable_tlv_based!(BestBlock, {
 	(0, block_hash, required),
 	(2, height, required),
 });
-
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
 /// chain.
@@ -289,7 +283,9 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
+	fn watch_channel(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()>;
 
 	/// Updates a channel identified by `channel_id` by applying `update` to its monitor.
 	///
@@ -306,7 +302,9 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
+	fn update_channel(
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
@@ -317,7 +315,9 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
+	fn release_pending_monitor_events(
+		&self,
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to
