@@ -4454,7 +4454,7 @@ where
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let result = self.internal_splice_channel(
-				channel_id, counterparty_node_id, our_funding_contribution_satoshis, &our_funding_inputs, funding_feerate_per_kw, locktime
+				channel_id, counterparty_node_id, our_funding_contribution_satoshis, our_funding_inputs.clone(), funding_feerate_per_kw, locktime
 			);
 			res = result;
 			match res {
@@ -4470,7 +4470,7 @@ where
 	#[rustfmt::skip]
 	fn internal_splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
-		our_funding_inputs: &Vec<(TxIn, Transaction, Weight)>,
+		our_funding_inputs: Vec<(TxIn, Transaction, Weight)>,
 		funding_feerate_per_kw: u32, locktime: Option<u32>,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9766,6 +9766,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
+		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
+		let our_funding_contribution = 0i64;
+
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
@@ -9773,22 +9776,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id, msg.channel_id,
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					let splice_ack_msg = try_channel_entry!(self, peer_state, chan.splice_init(msg), chan_entry);
-					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
-						node_id: *counterparty_node_id,
-						msg: splice_ack_msg,
-					});
-				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot be spliced".to_owned(), msg.channel_id));
-				}
+				// Handle inside channel (checks, phase change, state change)
+				let splice_ack_msg = try_channel_entry!(self, peer_state,
+					chan_entry.get_mut().splice_init(
+						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
+						&self.get_our_node_id(), &self.logger
+					), chan_entry);
+				peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
+					node_id: *counterparty_node_id,
+					msg: splice_ack_msg,
+				});
 			},
 		};
-
-		// TODO(splicing):
-		//  Change channel, change phase (remove and add)
-		//  Create new post-splice channel
-		//  etc.
 
 		Ok(())
 	}
@@ -9808,26 +9807,23 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		// Look for the channel
 		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
 					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
 					counterparty_node_id
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.splice_ack(msg), chan_entry);
-				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
+				// Handle inside channel
+				let tx_msg_opt = try_channel_entry!(self, peer_state,
+					chan_entry.get_mut().splice_ack(
+						msg, &self.signer_provider, &self.entropy_source,
+						&self.get_our_node_id(), &self.logger
+					), chan_entry);
+				if let Some(tx_msg) = tx_msg_opt {
+					peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
 				}
+				Ok(())
 			},
-		};
-
-		// TODO(splicing):
-		//  Change channel, change phase (remove and add)
-		//  Create new post-splice channel
-		//  Start splice funding transaction negotiation
-		//  etc.
-
-		Err(MsgHandleErrInternal::send_err_msg_no_close("TODO(splicing): Splicing is not implemented (splice_ack)".to_owned(), msg.channel_id))
+		}
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
