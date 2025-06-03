@@ -9394,6 +9394,13 @@ impl<SP: Deref> FundedChannel<SP> where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
+		log_info!(
+			logger,
+			"Received splice_locked txid {} from our peer for channel {}",
+			msg.splice_txid,
+			&self.context.channel_id,
+		);
+
 		let pending_splice = match self.pending_splice.as_mut() {
 			Some(pending_splice) => pending_splice,
 			None => {
@@ -9407,13 +9414,34 @@ impl<SP: Deref> FundedChannel<SP> where
 					.iter_mut()
 					.find(|funding| funding.get_funding_txid() == Some(sent_funding_txid))
 				{
+					log_info!(
+						logger,
+						"Promoting splice funding txid {} for channel {}",
+						msg.splice_txid,
+						&self.context.channel_id,
+					);
 					promote_splice_funding!(self, funding);
 					return Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger));
 				}
 
 				let err = "unknown splice funding txid";
 				return Err(ChannelError::close(err.to_string()));
+			} else {
+				log_warn!(
+					logger,
+					"Mismatched splice_locked txid for channel {}; sent txid {}; received txid {}",
+					&self.context.channel_id,
+					sent_funding_txid,
+					msg.splice_txid,
+				);
 			}
+		} else {
+			log_info!(
+				logger,
+				"Waiting for enough confirmations to send splice_locked txid {} for channel {}",
+				msg.splice_txid,
+				&self.context.channel_id,
+			);
 		}
 
 		pending_splice.received_funding_txid = Some(msg.splice_txid);
