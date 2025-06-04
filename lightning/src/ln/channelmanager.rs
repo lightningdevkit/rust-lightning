@@ -15210,13 +15210,16 @@ mod tests {
 	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
 	use crate::sign::EntropySource;
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
+	use crate::util::config::{
+		ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate, UserConfig,
+	};
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+	use lightning_types::features::ChannelTypeFeatures;
 
 	#[test]
 	#[rustfmt::skip]
@@ -16349,42 +16352,56 @@ mod tests {
 	}
 
 	#[test]
-	#[rustfmt::skip]
-	fn test_anchors_zero_fee_htlc_tx_fallback() {
+	fn test_anchors_zero_fee_htlc_tx_downgrade() {
 		// Tests that if both nodes support anchors, but the remote node does not want to accept
 		// anchor channels at the moment, an error it sent to the local node such that it can retry
 		// the channel without the anchors feature.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		let end_type = ChannelTypeFeatures::only_static_remote_key();
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
+	}
+
+	#[rustfmt::skip]
+	fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
+		start_type: ChannelTypeFeatures, downgrade_types: Vec<ChannelTypeFeatures>) {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let mut anchors_config = test_default_channel_config();
-		anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		anchors_config.manually_accept_inbound_channels = true;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(acceptor_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let error_message = "Channel force-closed";
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(open_channel_msg.common_fields.channel_type.as_ref().unwrap().supports_anchors_zero_fee_htlc_tx());
+		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		assert_eq!(open_channel_msg.common_fields.channel_type.as_ref().unwrap(), &start_type);
 
-		nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
-		let events = nodes[1].node.get_and_clear_pending_events();
-		match events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
+		for downgrade_type in downgrade_types {
+			nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				Event::OpenChannelRequest { temporary_channel_id, .. } => {
+					nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
+				}
+				_ => panic!("Unexpected event"),
 			}
-			_ => panic!("Unexpected event"),
+
+			let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
+
+			open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+			let channel_type = open_channel_msg.common_fields.channel_type.as_ref().unwrap();
+			assert_eq!(channel_type, &downgrade_type);
+
+			// Since nodes[1] should not have accepted the channel, it should
+			// not have generated any events.
+			assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		}
-
-		let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
-
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(!open_channel_msg.common_fields.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
-
-		// Since nodes[1] should not have accepted the channel, it should
-		// not have generated any events.
-		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
 
 	#[test]
