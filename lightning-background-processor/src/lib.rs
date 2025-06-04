@@ -1182,8 +1182,7 @@ impl BackgroundProcessor {
 /// event processing.
 ///
 /// This configuration holds all components needed for background processing,
-/// including required components (like the channel manager and peer manager) and optional
-/// components (like the liquidity_manager, sweeper, onion messenger and scorer).
+/// including required and optional components.
 ///
 /// The configuration can be constructed using [`BackgroundProcessorConfigBuilder`], which provides
 /// a convenient builder pattern for setting up both required and optional components.
@@ -1248,7 +1247,7 @@ pub struct BackgroundProcessorConfig<
 /// A builder for constructing a [`BackgroundProcessorConfig`] with optional components.
 ///
 /// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessorConfig`]
-/// with optional components like `onion_messenger` and `scorer`. It helps avoid specifying
+/// with optional and required components. It helps avoid specifying
 /// concrete types for components that aren't being used.
 #[cfg(feature = "std")]
 pub struct BackgroundProcessorConfigBuilder<
