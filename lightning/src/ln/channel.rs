@@ -5361,13 +5361,15 @@ impl<SP: Deref> FundedChannel<SP> where
 						is_splice: true,
 					})
 				} else {
-					Err("Channel is not actively refunding")
+					Err("Received unexpected interactive transaction negotiation message: \
+						the channel is splicing, but splice_init/splice_ack has not been exchanged yet")
 				}
 			} else {
-				Err("Channel is not refunding")
+				Err("Received unexpected interactive transaction negotiation message: \
+					the channel is splicing, but splice_init/splice_ack has not been exchanged yet")
 			}
 		} else {
-			Err("Channel is not splice pending")
+			Err("Received unexpected interactive transaction negotiation message: the channel is funded and not splicing")
 		}
 	}
 
