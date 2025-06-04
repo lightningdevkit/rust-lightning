@@ -88,6 +88,9 @@ impl AsyncReceiveOfferCache {
 #[cfg(async_payments)]
 const NUM_CACHED_OFFERS_TARGET: usize = 3;
 
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_NUM_CACHED_OFFERS_TARGET: usize = NUM_CACHED_OFFERS_TARGET;
+
 // Refuse to store offers if they will exceed the maximum cache size or the maximum number of
 // offers.
 #[cfg(async_payments)]
@@ -95,16 +98,28 @@ const MAX_CACHE_SIZE: usize = (1 << 10) * 70; // 70KiB
 #[cfg(async_payments)]
 const MAX_OFFERS: usize = 100;
 
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_OFFERS: usize = MAX_OFFERS;
+
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_CACHE_SIZE: usize = MAX_CACHE_SIZE;
+
 // The max number of times we'll attempt to request offer paths or attempt to refresh a static
 // invoice before giving up.
 #[cfg(async_payments)]
 const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_UPDATE_ATTEMPTS: u8 = MAX_UPDATE_ATTEMPTS;
 
 // If we run out of attempts to request offer paths from the static invoice server, we'll stop
 // sending requests for some time. After this amount of time has passed, more requests are allowed
 // to be sent out.
 #[cfg(async_payments)]
 const PATHS_REQUESTS_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
+
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_PATHS_REQUESTS_BUFFER: Duration = PATHS_REQUESTS_BUFFER;
 
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
@@ -222,6 +237,11 @@ impl AsyncReceiveOfferCache {
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_reset_offer_paths_request_attempts(&mut self) {
+		self.reset_offer_paths_request_attempts()
 	}
 
 	/// Returns an iterator over the list of cached offers where the invoice is expiring soon and we
