@@ -50,10 +50,9 @@ use lightning_rapid_gossip_sync::RapidGossipSync;
 
 use lightning_liquidity::ALiquidityManager;
 
+use core::marker::PhantomData;
 use core::ops::Deref;
 use core::time::Duration;
-#[cfg(feature = "std")]
-use std::marker::PhantomData;
 
 #[cfg(feature = "std")]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -649,7 +648,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # use std::sync::{Arc, RwLock};
 /// # use std::sync::atomic::{AtomicBool, Ordering};
 /// # use std::time::SystemTime;
-/// # use lightning_background_processor::{process_events_async, GossipSync};
+/// # use lightning_background_processor::{process_events_async, BackgroundProcessorConfigAsyncBuilder, GossipSync};
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
 /// #     fn log(&self, _record: lightning::util::logger::Record) {}
@@ -746,24 +745,32 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 	doc = "	let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();"
 )]
 #[cfg_attr(not(feature = "std"), doc = "	rt.block_on(async move {")]
-///		process_events_async(
+///		// Create a configuration builder with required components
+///		let mut builder = BackgroundProcessorConfigAsyncBuilder::new(
 ///			background_persister,
 ///			|e| background_event_handler.handle_event(e),
 ///			background_chain_mon,
 ///			background_chan_man,
-///			Some(background_onion_messenger),
 ///			background_gossip_sync,
 ///			background_peer_man,
-///			Some(background_liquidity_manager),
-///			Some(background_sweeper),
 ///			background_logger,
-///			Some(background_scorer),
 ///			sleeper,
 ///			mobile_interruptable_platform,
 ///			|| Some(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap())
-///		)
-///		.await
-///		.expect("Failed to process events");
+///		);
+///
+///		// Add optional components
+///		builder
+///			.with_onion_messenger(background_onion_messenger)
+///			.with_liquidity_manager(background_liquidity_manager)
+///			.with_sweeper(background_sweeper)
+///			.with_scorer(background_scorer);
+///
+///		// Build the config and start processing events
+///		let config = builder.build();
+///		process_events_async(config)
+///			.await
+///			.expect("Failed to process events");
 ///	});
 ///
 ///	// Stop the background processing.
@@ -804,10 +811,36 @@ pub async fn process_events_async<
 	Sleeper: Fn(Duration) -> SleepFuture,
 	FetchTime: Fn() -> Option<Duration>,
 >(
-	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
-	onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-	liquidity_manager: Option<LM>, sweeper: Option<OS>, logger: L, scorer: Option<S>,
-	sleeper: Sleeper, mobile_interruptable_platform: bool, fetch_time: FetchTime,
+	config: BackgroundProcessorConfigAsync<
+		'a,
+		UL,
+		CF,
+		T,
+		F,
+		G,
+		L,
+		P,
+		EventHandlerFuture,
+		EventHandler,
+		PS,
+		ES,
+		M,
+		CM,
+		OM,
+		PGS,
+		RGS,
+		PM,
+		LM,
+		D,
+		O,
+		K,
+		OS,
+		S,
+		SC,
+		SleepFuture,
+		Sleeper,
+		FetchTime,
+	>,
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
@@ -826,6 +859,21 @@ where
 	D::Target: 'static + ChangeDestinationSource,
 	K::Target: 'static + KVStore,
 {
+	let persister = config.persister;
+	let event_handler = config.event_handler;
+	let chain_monitor = config.chain_monitor;
+	let channel_manager = config.channel_manager;
+	let onion_messenger = config.onion_messenger;
+	let gossip_sync = config.gossip_sync;
+	let peer_manager = config.peer_manager;
+	let liquidity_manager = config.liquidity_manager;
+	let sweeper = config.sweeper;
+	let logger = config.logger;
+	let scorer = config.scorer;
+	let sleeper = config.sleeper;
+	let mobile_interruptable_platform = config.mobile_interruptable_platform;
+	let fetch_time = config.fetch_time;
+
 	let mut should_break = false;
 	let async_event_handler = |event| {
 		let network_graph = gossip_sync.network_graph();
@@ -922,6 +970,330 @@ where
 		mobile_interruptable_platform,
 		fetch_time,
 	)
+}
+
+/// Configuration for asynchronous event processing.
+///
+/// This configuration holds all components needed for asynchronous background processing,
+/// including required components and optional components.
+pub struct BackgroundProcessorConfigAsync<
+	'a,
+	UL: 'static + Deref,
+	CF: 'static + Deref,
+	T: 'static + Deref,
+	F: 'static + Deref,
+	G: 'static + Deref<Target = NetworkGraph<L>>,
+	L: 'static + Deref,
+	P: 'static + Deref,
+	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
+	EventHandler: Fn(Event) -> EventHandlerFuture,
+	PS: 'static + Deref + Send,
+	ES: 'static + Deref + Send,
+	M: 'static
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
+		+ Send
+		+ Sync,
+	CM: 'static + Deref,
+	OM: 'static + Deref,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
+	PM: 'static + Deref,
+	LM: 'static + Deref,
+	D: 'static + Deref,
+	O: 'static + Deref,
+	K: 'static + Deref,
+	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
+	S: 'static + Deref<Target = SC> + Send + Sync,
+	SC: for<'b> WriteableScore<'b>,
+	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
+	Sleeper: Fn(Duration) -> SleepFuture,
+	FetchTime: Fn() -> Option<Duration>,
+> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	ES::Target: 'static + EntropySource,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
+	LM::Target: ALiquidityManager,
+	O::Target: 'static + OutputSpender,
+	D::Target: 'static + ChangeDestinationSource,
+	K::Target: 'static + KVStore,
+{
+	persister: PS,
+	event_handler: EventHandler,
+	chain_monitor: M,
+	channel_manager: CM,
+	onion_messenger: Option<OM>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>,
+	peer_manager: PM,
+	liquidity_manager: Option<LM>,
+	sweeper: Option<OS>,
+	logger: L,
+	scorer: Option<S>,
+	sleeper: Sleeper,
+	mobile_interruptable_platform: bool,
+	fetch_time: FetchTime,
+	_phantom: PhantomData<&'a ()>,
+}
+
+/// Builder for creating asynchronous background processor configurations.
+///
+/// This builder provides a flexible and type-safe way to construct a [`BackgroundProcessorConfigAsync`]
+/// object with both required and optional components. It follows the builder
+/// pattern and helps avoid specifying concrete types for each component.
+pub struct BackgroundProcessorConfigAsyncBuilder<
+	'a,
+	UL: 'static + Deref,
+	CF: 'static + Deref,
+	T: 'static + Deref,
+	F: 'static + Deref,
+	G: 'static + Deref<Target = NetworkGraph<L>>,
+	L: 'static + Deref,
+	P: 'static + Deref,
+	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
+	EventHandler: Fn(Event) -> EventHandlerFuture,
+	PS: 'static + Deref + Send,
+	ES: 'static + Deref + Send,
+	M: 'static
+		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
+		+ Send
+		+ Sync,
+	CM: 'static + Deref,
+	OM: 'static + Deref,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
+	RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
+	PM: 'static + Deref,
+	LM: 'static + Deref,
+	D: 'static + Deref,
+	O: 'static + Deref,
+	K: 'static + Deref,
+	OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
+	S: 'static + Deref<Target = SC> + Send + Sync,
+	SC: for<'b> WriteableScore<'b>,
+	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
+	Sleeper: Fn(Duration) -> SleepFuture,
+	FetchTime: Fn() -> Option<Duration>,
+> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	ES::Target: 'static + EntropySource,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
+	LM::Target: ALiquidityManager,
+	O::Target: 'static + OutputSpender,
+	D::Target: 'static + ChangeDestinationSource,
+	K::Target: 'static + KVStore,
+{
+	persister: PS,
+	event_handler: EventHandler,
+	chain_monitor: M,
+	channel_manager: CM,
+	onion_messenger: Option<OM>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>,
+	peer_manager: PM,
+	liquidity_manager: Option<LM>,
+	sweeper: Option<OS>,
+	logger: L,
+	scorer: Option<S>,
+	sleeper: Sleeper,
+	mobile_interruptable_platform: bool,
+	fetch_time: FetchTime,
+	_phantom: PhantomData<&'a ()>,
+}
+
+impl<
+		'a,
+		UL: 'static + Deref,
+		CF: 'static + Deref,
+		T: 'static + Deref,
+		F: 'static + Deref,
+		G: 'static + Deref<Target = NetworkGraph<L>>,
+		L: 'static + Deref,
+		P: 'static + Deref,
+		EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
+		EventHandler: Fn(Event) -> EventHandlerFuture,
+		PS: 'static + Deref + Send,
+		ES: 'static + Deref + Send,
+		M: 'static
+			+ Deref<
+				Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>,
+			>
+			+ Send
+			+ Sync,
+		CM: 'static + Deref,
+		OM: 'static + Deref,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>>,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>>,
+		PM: 'static + Deref,
+		LM: 'static + Deref,
+		D: 'static + Deref,
+		O: 'static + Deref,
+		K: 'static + Deref,
+		OS: 'static + Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
+		S: 'static + Deref<Target = SC> + Send + Sync,
+		SC: for<'b> WriteableScore<'b>,
+		SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
+		Sleeper: Fn(Duration) -> SleepFuture,
+		FetchTime: Fn() -> Option<Duration>,
+	>
+	BackgroundProcessorConfigAsyncBuilder<
+		'a,
+		UL,
+		CF,
+		T,
+		F,
+		G,
+		L,
+		P,
+		EventHandlerFuture,
+		EventHandler,
+		PS,
+		ES,
+		M,
+		CM,
+		OM,
+		PGS,
+		RGS,
+		PM,
+		LM,
+		D,
+		O,
+		K,
+		OS,
+		S,
+		SC,
+		SleepFuture,
+		Sleeper,
+		FetchTime,
+	> where
+	UL::Target: 'static + UtxoLookup,
+	CF::Target: 'static + chain::Filter,
+	T::Target: 'static + BroadcasterInterface,
+	F::Target: 'static + FeeEstimator,
+	L::Target: 'static + Logger,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
+	ES::Target: 'static + EntropySource,
+	CM::Target: AChannelManager,
+	OM::Target: AOnionMessenger,
+	PM::Target: APeerManager,
+	LM::Target: ALiquidityManager,
+	O::Target: 'static + OutputSpender,
+	D::Target: 'static + ChangeDestinationSource,
+	K::Target: 'static + KVStore,
+{
+	/// Creates a new [`BackgroundProcessorConfigAsyncBuilder`] with the given components.
+	pub fn new(
+		persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
+		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L, sleeper: Sleeper,
+		mobile_interruptable_platform: bool, fetch_time: FetchTime,
+	) -> Self {
+		Self {
+			persister,
+			event_handler,
+			chain_monitor,
+			channel_manager,
+			onion_messenger: None,
+			gossip_sync,
+			peer_manager,
+			liquidity_manager: None,
+			sweeper: None,
+			logger,
+			scorer: None,
+			sleeper,
+			mobile_interruptable_platform,
+			fetch_time,
+			_phantom: PhantomData,
+		}
+	}
+
+	/// Sets the optional onion messenger component.
+	pub fn with_onion_messenger(&mut self, onion_messenger: OM) -> &mut Self {
+		self.onion_messenger = Some(onion_messenger);
+		self
+	}
+
+	/// Sets the optional liquidity manager component
+	pub fn with_liquidity_manager(&mut self, liquidity_manager: LM) -> &mut Self {
+		self.liquidity_manager = Some(liquidity_manager);
+		self
+	}
+
+	/// Sets the optional sweeper component
+	pub fn with_sweeper(&mut self, sweeper: OS) -> &mut Self {
+		self.sweeper = Some(sweeper);
+		self
+	}
+
+	/// Sets the optional scorer component,
+	pub fn with_scorer(&mut self, scorer: S) -> &mut Self {
+		self.scorer = Some(scorer);
+		self
+	}
+
+	/// Builds and returns a [`BackgroundProcessorConfigAsync`] object.
+	pub fn build(
+		self,
+	) -> BackgroundProcessorConfigAsync<
+		'a,
+		UL,
+		CF,
+		T,
+		F,
+		G,
+		L,
+		P,
+		EventHandlerFuture,
+		EventHandler,
+		PS,
+		ES,
+		M,
+		CM,
+		OM,
+		PGS,
+		RGS,
+		PM,
+		LM,
+		D,
+		O,
+		K,
+		OS,
+		S,
+		SC,
+		SleepFuture,
+		Sleeper,
+		FetchTime,
+	> {
+		BackgroundProcessorConfigAsync {
+			persister: self.persister,
+			event_handler: self.event_handler,
+			chain_monitor: self.chain_monitor,
+			channel_manager: self.channel_manager,
+			onion_messenger: self.onion_messenger,
+			gossip_sync: self.gossip_sync,
+			peer_manager: self.peer_manager,
+			liquidity_manager: self.liquidity_manager,
+			sweeper: self.sweeper,
+			logger: self.logger,
+			scorer: self.scorer,
+			sleeper: self.sleeper,
+			mobile_interruptable_platform: self.mobile_interruptable_platform,
+			fetch_time: self.fetch_time,
+			_phantom: PhantomData,
+		}
+	}
 }
 
 #[cfg(feature = "std")]
@@ -1494,7 +1866,8 @@ impl Drop for BackgroundProcessor {
 #[cfg(all(feature = "std", test))]
 mod tests {
 	use super::{
-		BackgroundProcessor, BackgroundProcessorConfigBuilder, GossipSync, FRESHNESS_TIMER,
+		BackgroundProcessor, BackgroundProcessorConfigAsyncBuilder,
+		BackgroundProcessorConfigBuilder, GossipSync, FRESHNESS_TIMER,
 	};
 	use bitcoin::constants::{genesis_block, ChainHash};
 	use bitcoin::hashes::Hash;
@@ -2474,18 +2847,14 @@ mod tests {
 			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 
-		let bp_future = super::process_events_async(
+		let mut builder = BackgroundProcessorConfigAsyncBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
-			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
 				Box::pin(async move {
 					tokio::time::sleep(dur).await;
@@ -2495,6 +2864,15 @@ mod tests {
 			false,
 			|| Some(Duration::ZERO),
 		);
+		builder
+			.with_onion_messenger(Arc::clone(&nodes[0].messenger))
+			.with_scorer(Arc::clone(&nodes[0].scorer))
+			.with_sweeper(nodes[0].sweeper.sweeper_async())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager));
+
+		let config = builder.build();
+
+		let bp_future = super::process_events_async(config);
 		match bp_future.await {
 			Ok(_) => panic!("Expected error persisting manager"),
 			Err(e) => {
@@ -3019,18 +3397,15 @@ mod tests {
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
-		let bp_future = super::process_events_async(
+
+		let mut builder = BackgroundProcessorConfigAsyncBuilder::new(
 			persister,
 			|_: _| async { Ok(()) },
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
-			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
 				Box::pin(async move {
@@ -3043,6 +3418,15 @@ mod tests {
 			false,
 			|| Some(Duration::from_secs(1696300000)),
 		);
+		builder
+			.with_onion_messenger(Arc::clone(&nodes[0].messenger))
+			.with_scorer(Arc::clone(&nodes[0].scorer))
+			.with_sweeper(nodes[0].sweeper.sweeper_async())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager));
+
+		let config = builder.build();
+
+		let bp_future = super::process_events_async(config);
 
 		let t1 = tokio::spawn(bp_future);
 		let t2 = tokio::spawn(async move {
@@ -3239,18 +3623,14 @@ mod tests {
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 
-		let bp_future = super::process_events_async(
+		let mut builder = BackgroundProcessorConfigAsyncBuilder::new(
 			persister,
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.sweeper_async()),
 			Arc::clone(&nodes[0].logger),
-			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
 				Box::pin(async move {
@@ -3263,6 +3643,15 @@ mod tests {
 			false,
 			|| Some(Duration::ZERO),
 		);
+		builder
+			.with_onion_messenger(Arc::clone(&nodes[0].messenger))
+			.with_scorer(Arc::clone(&nodes[0].scorer))
+			.with_sweeper(nodes[0].sweeper.sweeper_async())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager));
+
+		let config = builder.build();
+
+		let bp_future = super::process_events_async(config);
 		let t1 = tokio::spawn(bp_future);
 		let t2 = tokio::spawn(async move {
 			do_test_payment_path_scoring!(nodes, receiver.recv().await);
