@@ -8928,6 +8928,7 @@ impl<SP: Deref> FundedChannel<SP> where
 				funding.funding_tx_confirmation_height = 0;
 
 				// Check if we sent splice_locked for the unconfirmed transaction
+				#[cfg(splicing)]
 				if let Some(pending_splice) = &mut self.pending_splice {
 					if pending_splice.sent_funding_txid == Some(*txid) {
 						pending_splice.sent_funding_txid = None;
