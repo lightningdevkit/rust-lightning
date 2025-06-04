@@ -9219,27 +9219,31 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Helper to build the FundingScope for the splicing channel
 	#[cfg(splicing)]
-	fn funding_scope_for_splice(&self, our_funding_satoshis: u64, post_channel_value: u64, is_outbound: bool, counterparty_funding_pubkey: PublicKey) -> FundingScope {
+	fn funding_scope_for_splice(&self, our_funding_satoshis: u64, post_channel_value: u64, is_initiator: bool, counterparty_funding_pubkey: PublicKey) -> FundingScope {
 		let post_value_to_self_msat = self.funding.value_to_self_msat.saturating_add(our_funding_satoshis);
 
-		let mut post_channel_transaction_parameters = self.funding.channel_transaction_parameters.clone();
-		// Updated fields:
-		post_channel_transaction_parameters.channel_value_satoshis = post_channel_value;
-		post_channel_transaction_parameters.is_outbound_from_holder = is_outbound;
-		// Update the splicing 'tweak', this will rotate the keys in the signer
 		let prev_funding_txid = self.funding.channel_transaction_parameters.funding_outpoint
 			.map(|outpoint| outpoint.txid);
-		post_channel_transaction_parameters.splice_parent_funding_txid = prev_funding_txid;
-		match &self.context.holder_signer {
+		let holder_pubkeys = match &self.context.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				post_channel_transaction_parameters.holder_pubkeys =
-					ecdsa.pubkeys(prev_funding_txid, &self.context.secp_ctx);
+				ecdsa.pubkeys(prev_funding_txid, &self.context.secp_ctx)
 			}
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
 			_ => todo!()
-		}
-		post_channel_transaction_parameters.funding_outpoint = None; // filled later
+		};
+		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
+			holder_pubkeys,
+			holder_selected_contest_delay: self.funding.channel_transaction_parameters.holder_selected_contest_delay,
+			// The 'outbound' attribute may change, if the the splice is being initiated by the previous acceptor
+			is_outbound_from_holder: is_initiator,
+			counterparty_parameters: self.funding.channel_transaction_parameters.counterparty_parameters.clone(),
+			funding_outpoint: None, // filled later
+			splice_parent_funding_txid: prev_funding_txid,
+			channel_type_features: self.funding.channel_transaction_parameters.channel_type_features.clone(),
+			channel_value_satoshis: post_channel_value,
+		};
+		// Update the splicing 'tweak', this will rotate the keys in the signer
 		if let Some(ref mut counterparty_parameters) = post_channel_transaction_parameters.counterparty_parameters {
 			counterparty_parameters.pubkeys.funding_pubkey = counterparty_funding_pubkey;
 		}
@@ -9375,18 +9379,15 @@ impl<SP: Deref> FundedChannel<SP> where
 		let pre_funding_txo = &self.funding.get_funding_txo();
 		// We need the current funding tx as an extra input
 		let prev_funding_input = Self::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
-		if let Some(ref mut pending_splice) = &mut self.pending_splice {
-			pending_splice.funding_scope = Some(funding_scope);
-			// update funding values
-			pending_splice.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
-			pending_splice.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
-			pending_splice.interactive_tx_constructor = None;
-			pending_splice.interactive_tx_signing_session = None;
-			debug_assert!(pending_splice.awaiting_splice_ack);
-			pending_splice.awaiting_splice_ack = false;
-		} else {
-			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
-		};
+		let pending_splice_mut = self.pending_splice.as_mut().unwrap(); // existence checked above
+		pending_splice_mut.funding_scope = Some(funding_scope);
+		// update funding values
+		pending_splice_mut.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
+		pending_splice_mut.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
+		pending_splice_mut.interactive_tx_constructor = None;
+		pending_splice_mut.interactive_tx_signing_session = None;
+		debug_assert!(pending_splice_mut.awaiting_splice_ack);
+		pending_splice_mut.awaiting_splice_ack = false;
 
 		// TODO(splicing): Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
