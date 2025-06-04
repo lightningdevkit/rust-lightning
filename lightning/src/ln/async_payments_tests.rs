@@ -11,7 +11,9 @@ use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::payment::PaymentContext;
 use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentTlvs};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::events::{Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason};
+use crate::events::{
+	Event, HTLCHandlingFailureType, PaidBolt12Invoice, PaymentFailureReason, PaymentPurpose,
+};
 use crate::ln::blinded_payment_tests::{fail_blinded_htlc_backwards, get_blinded_route_parameters};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 use crate::ln::functional_test_utils::*;
@@ -128,6 +130,25 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 	(offer, static_invoice)
 }
 
+fn extract_payment_hash(event: &MessageSendEvent) -> PaymentHash {
+	match event {
+		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+			updates.update_add_htlcs[0].payment_hash
+		},
+		_ => panic!(),
+	}
+}
+
+fn extract_payment_preimage(event: &Event) -> PaymentPreimage {
+	match event {
+		Event::PaymentClaimable {
+			purpose: PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. },
+			..
+		} => payment_preimage.unwrap(),
+		_ => panic!(),
+	}
+}
+
 #[test]
 fn invalid_keysend_payment_secret() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -215,6 +236,7 @@ fn static_invoice_unknown_required_features() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
+	// Manually construct a static invoice so we can set unknown required features.
 	let blinded_paths_to_always_online_node = nodes[1]
 		.message_router
 		.create_blinded_paths(
@@ -237,6 +259,8 @@ fn static_invoice_unknown_required_features() {
 		.build_and_sign(&secp_ctx)
 		.unwrap();
 
+	// Initiate payment to the offer corresponding to the manually-constructed invoice that has
+	// unknown required features.
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	let params = RouteParametersConfig::default();
@@ -264,6 +288,8 @@ fn static_invoice_unknown_required_features() {
 		)
 		.unwrap();
 
+	// Check that paying the static invoice fails as expected with
+	// `PaymentFailureReason::UnknownRequiredFeatures`.
 	let static_invoice_om = nodes[1]
 		.onion_messenger
 		.next_onion_message_for_peer(nodes[0].node.get_our_node_id())
@@ -404,12 +430,6 @@ fn async_receive_flow_success() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
 
-	// Set the random bytes so we can predict the payment preimage and hash.
-	let hardcoded_random_bytes = [42; 32];
-	let keysend_preimage = PaymentPreimage(hardcoded_random_bytes);
-	let payment_hash: PaymentHash = keysend_preimage.into();
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
-
 	let relative_expiry = Duration::from_secs(1000);
 	let (offer, static_invoice) =
 		create_static_invoice(&nodes[1], &nodes[2], Some(relative_expiry), &secp_ctx);
@@ -433,6 +453,7 @@ fn async_receive_flow_success() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = extract_payment_hash(&ev);
 	check_added_monitors!(nodes[0], 1);
 
 	// Receiving a duplicate release_htlc message doesn't result in duplicate payment.
@@ -442,9 +463,9 @@ fn async_receive_flow_success() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
-	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage);
-	do_pass_along_path(args);
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
 	let res =
 		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
 	assert!(res.is_some());
@@ -556,9 +577,6 @@ fn async_receive_mpp() {
 
 	let (offer, static_invoice) = create_static_invoice(&nodes[1], &nodes[3], None, &secp_ctx);
 
-	// In other tests we hardcode the sender's random bytes so we can predict the keysend preimage to
-	// check later in the test, but that doesn't work for MPP because it causes the session_privs for
-	// the different MPP parts to not be unique.
 	let amt_msat = 15_000_000;
 	let payment_id = PaymentId([1; 32]);
 	let params = RouteParametersConfig::default();
@@ -593,8 +611,8 @@ fn async_receive_mpp() {
 	let args = PassAlongPathArgs::new(&nodes[0], expected_route[1], amt_msat, payment_hash, ev);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = match claimable_ev {
-		crate::events::Event::PaymentClaimable {
-			purpose: crate::events::PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. },
+		Event::PaymentClaimable {
+			purpose: PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. },
 			..
 		} => payment_preimage.unwrap(),
 		_ => panic!(),
@@ -643,13 +661,6 @@ fn amount_doesnt_match_invreq() {
 	connect_blocks(&nodes[3], 4 * CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
 
 	let (offer, static_invoice) = create_static_invoice(&nodes[1], &nodes[3], None, &secp_ctx);
-
-	// Set the random bytes so we can predict the payment preimage and hash.
-	let hardcoded_random_bytes = [42; 32];
-	let keysend_preimage = PaymentPreimage(hardcoded_random_bytes);
-	let payment_hash: PaymentHash = keysend_preimage.into();
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
-
 	let amt_msat = 5000;
 	let payment_id = PaymentId([1; 32]);
 	let params = RouteParametersConfig::default();
@@ -696,10 +707,10 @@ fn amount_doesnt_match_invreq() {
 	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 			ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
+	let payment_hash = extract_payment_hash(&ev);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage)
 		.without_claimable_event()
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
@@ -725,9 +736,9 @@ fn amount_doesnt_match_invreq() {
 				ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
 	check_added_monitors!(nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[2], &nodes[3]]];
-	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage);
-	do_pass_along_path(args);
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
 }
 
@@ -882,12 +893,6 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.build_and_sign(&secp_ctx)
 		.unwrap();
 
-	// Set the random bytes so we can predict the payment preimage and hash.
-	let hardcoded_random_bytes = [42; 32];
-	let keysend_preimage = PaymentPreimage(hardcoded_random_bytes);
-	let payment_hash: PaymentHash = keysend_preimage.into();
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
-
 	let params = RouteParametersConfig::default();
 	nodes[0]
 		.node
@@ -906,10 +911,10 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	assert!(matches!(
 					ev, MessageSendEvent::UpdateHTLCs { ref updates, .. } if updates.update_add_htlcs.len() == 1));
+	let payment_hash = extract_payment_hash(&ev);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
-	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage);
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
 	do_pass_along_path(args);
 
 	// Fail the HTLC backwards to enable us to more easily modify the now-Retryable outbound to test
@@ -935,7 +940,6 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	check_added_monitors!(nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage)
 		.without_claimable_event()
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
@@ -949,9 +953,9 @@ fn invalid_async_receive_with_retry<F1, F2>(
 	let mut ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	check_added_monitors!(nodes[0], 1);
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
-	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage);
-	do_pass_along_path(args);
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
 }
 
@@ -1031,12 +1035,6 @@ fn expired_static_invoice_payment_path() {
 	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
 
-	// Set the random bytes so we can predict the payment preimage and hash.
-	let hardcoded_random_bytes = [42; 32];
-	let keysend_preimage = PaymentPreimage(hardcoded_random_bytes);
-	let payment_hash: PaymentHash = keysend_preimage.into();
-	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(hardcoded_random_bytes);
-
 	// Hardcode the blinded payment path returned by the router so we can expire it via mining blocks.
 	let (_, static_invoice_expired_paths) =
 		create_static_invoice(&nodes[1], &nodes[2], None, &secp_ctx);
@@ -1097,11 +1095,11 @@ fn expired_static_invoice_payment_path() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = extract_payment_hash(&ev);
 	check_added_monitors!(nodes[0], 1);
 
 	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
-		.with_payment_preimage(keysend_preimage)
 		.without_claimable_event()
 		.expect_failure(HTLCHandlingFailureType::Receive { payment_hash });
 	do_pass_along_path(args);
