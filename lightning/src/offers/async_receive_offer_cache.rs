@@ -118,6 +118,23 @@ const OFFER_EXPIRES_SOON_THRESHOLD_PERCENT: u64 = 90;
 #[cfg(async_payments)]
 const MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 = 3 * 60 * 60;
 
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_NUM_CACHED_OFFERS_TARGET: usize = NUM_CACHED_OFFERS_TARGET;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_OFFERS: usize = MAX_OFFERS;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_CACHE_SIZE: usize = MAX_CACHE_SIZE;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MAX_UPDATE_ATTEMPTS: u8 = MAX_UPDATE_ATTEMPTS;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_PATHS_REQUESTS_RESET_INTERVAL: Duration = PATHS_REQUESTS_RESET_INTERVAL;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_OFFER_EXPIRES_SOON_THRESHOLD_PERCENT: u64 =
+	OFFER_EXPIRES_SOON_THRESHOLD_PERCENT;
+#[cfg(all(test, async_payments))]
+pub(crate) const TEST_MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS: u64 =
+	MIN_OFFER_PATHS_RELATIVE_EXPIRY_SECS;
+
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
 	/// Retrieve our cached [`Offer`]s for receiving async payments as an often-offline recipient.
@@ -232,6 +249,11 @@ impl AsyncReceiveOfferCache {
 	fn reset_offer_paths_request_attempts(&mut self) {
 		self.offer_paths_request_attempts = 0;
 		self.last_offer_paths_request_timestamp = Duration::from_secs(0);
+	}
+
+	#[cfg(test)]
+	pub(super) fn test_reset_offer_paths_request_attempts(&mut self) {
+		self.reset_offer_paths_request_attempts()
 	}
 
 	/// Returns an iterator over the list of cached offers where the invoice is expiring soon and we
