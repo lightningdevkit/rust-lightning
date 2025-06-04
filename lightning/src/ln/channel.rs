@@ -4903,15 +4903,27 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		// it in our order of preference, allowing us to negotiate the "next best" based on the
 		// counterparty's remaining features per our ranking in `get_initial_channel_type`.
 		let mut eligible_features = their_features.clone();
-		if channel_type.supports_anchors_zero_fee_htlc_tx() {
+		if channel_type.supports_anchor_zero_fee_commitments() {
+			eligible_features.clear_anchor_zero_fee_commitments();
+		} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			eligible_features.clear_anchor_zero_fee_commitments();
 			eligible_features.clear_anchors_zero_fee_htlc_tx();
 		} else if channel_type.supports_scid_privacy() {
 			eligible_features.clear_scid_privacy();
 			eligible_features.clear_anchors_zero_fee_htlc_tx();
+			eligible_features.clear_anchor_zero_fee_commitments();
 		}
 
 		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
 
+		// Note that we can't get `anchor_zero_fee_commitments` type here, which requires zero
+		// fees, because we downgrade from this channel type first. If there were a superior
+		// channel type that downgrades to `anchor_zero_fee_commitments`, we'd need to handle
+		// fee setting differently here. If we proceeded to open a `anchor_zero_fee_commitments`
+		// channel with non-zero fees, we could produce a non-standard commitment transaction that
+		// puts us at risk of losing funds. We would expect our peer to reject such a channel
+		// open, but we don't want to rely on their validation.
+		assert!(!next_channel_type.supports_anchor_zero_fee_commitments());
 		let conf_target = if next_channel_type.supports_anchors_zero_fee_htlc_tx() {
 			ConfirmationTarget::AnchorChannelFee
 		} else {
@@ -10097,8 +10109,9 @@ pub(super) fn channel_type_from_open_channel(
 
 		// We only support the channel types defined by the `ChannelManager` in
 		// `provided_channel_type_features`. The channel type must always support
-		// `static_remote_key`.
-		if !channel_type.requires_static_remote_key() {
+		// `static_remote_key`, either implicitly with `option_zero_fee_commitments`
+		// or explicitly.
+		if !channel_type.requires_static_remote_key() && !channel_type.requires_anchor_zero_fee_commitments() {
 			return Err(ChannelError::close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 		// Make sure we support all of the features behind the channel type.
@@ -10685,10 +10698,21 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 		ret.set_scid_privacy_required();
 	}
 
-	// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
-	// set it now. If they don't understand it, we'll fall back to our default of
-	// `only_static_remotekey`.
-	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+	// Optionally, if the user would like to negotiate `option_zero_fee_commitments` we set it now.
+	// If they don't understand it (or we don't want it), we check the same conditions for
+	// `option_anchors_zero_fee_htlc_tx`. The counterparty can still refuse the channel and we'll
+	// try to fall back (all the way to `only_static_remotekey`).
+	#[cfg(not(test))]
+	let negotiate_zero_fee_commitments = false;
+
+	#[cfg(test)]
+	let negotiate_zero_fee_commitments = config.channel_handshake_config.negotiate_anchor_zero_fee_commitments;
+
+	if negotiate_zero_fee_commitments && their_features.supports_anchor_zero_fee_commitments() {
+		ret.set_anchor_zero_fee_commitments_required();
+		// `option_static_remote_key` is assumed by `option_zero_fee_commitments`.
+		ret.clear_static_remote_key();
+	} else if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
 		their_features.supports_anchors_zero_fee_htlc_tx() {
 		ret.set_anchors_zero_fee_htlc_tx_required();
 	}
