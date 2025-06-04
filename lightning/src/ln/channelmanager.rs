@@ -8372,7 +8372,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if channel_type.requires_zero_conf() {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), common_fields.temporary_channel_id));
 		}
-		if channel_type.requires_anchors_zero_fee_htlc_tx() {
+		if channel_type.requires_anchors_zero_fee_htlc_tx() || channel_type.requires_anchor_zero_fee_commitments() {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), common_fields.temporary_channel_id));
 		}
 
@@ -16318,6 +16318,13 @@ mod tests {
 		assert_eq!(accept_message.common_fields.to_self_delay, 200);
 		assert_eq!(accept_message.common_fields.max_accepted_htlcs, 5);
 		assert_eq!(accept_message.channel_reserve_satoshis, 2_000);
+	}
+
+	#[test]
+	fn test_inbound_zero_fee_commitments_manual_acceptance() {
+		let mut zero_fee_cfg = test_default_channel_config();
+		zero_fee_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		do_test_manual_inbound_accept_with_override(zero_fee_cfg, None);
 	}
 
 	#[rustfmt::skip]
