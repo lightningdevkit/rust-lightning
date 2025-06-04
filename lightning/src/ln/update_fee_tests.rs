@@ -1009,3 +1009,187 @@ pub fn accept_busted_but_better_fee() {
 		_ => panic!("Unexpected event"),
 	};
 }
+
+#[xtest(feature = "_externalize_tests")]
+pub fn cannot_afford_on_holding_cell_release() {
+	do_cannot_afford_on_holding_cell_release(ChannelTypeFeatures::only_static_remote_key(), true);
+	do_cannot_afford_on_holding_cell_release(ChannelTypeFeatures::only_static_remote_key(), false);
+	do_cannot_afford_on_holding_cell_release(
+		ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+		true,
+	);
+	do_cannot_afford_on_holding_cell_release(
+		ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+		false,
+	);
+}
+
+pub fn do_cannot_afford_on_holding_cell_release(
+	channel_type_features: ChannelTypeFeatures, can_afford: bool,
+) {
+	// Test that if we can't afford a feerate update when releasing an
+	// update_fee from its holding cell, we do not generate any msg events
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+
+	let mut default_config = test_default_channel_config();
+	default_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
+		100;
+	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		default_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		default_config.manually_accept_inbound_channels = true;
+	}
+
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(default_config.clone()), Some(default_config)]);
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let target_feerate = 1000;
+	let expected_tx_fee_sat =
+		chan_utils::commit_tx_fee_sat(target_feerate, 1, &channel_type_features);
+	// This is the number of htlcs that `send_update_fee` will account for when checking whether
+	// it can afford the new feerate upon releasing an update_fee from its holding cell,
+	// ie the buffer + the inbound HTLC we will add while the update_fee is in the holding cell
+	let buffer_htlcs = crate::ln::channel::CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize + 1;
+	let buffer_tx_fee_sat =
+		chan_utils::commit_tx_fee_sat(target_feerate, buffer_htlcs, &channel_type_features);
+	let anchor_value_satoshis = if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+		2 * crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI
+	} else {
+		0
+	};
+	let channel_reserve_satoshis = 1000;
+
+	let channel_value_sat = 100_000;
+	let node_0_balance_sat = buffer_tx_fee_sat + anchor_value_satoshis + channel_reserve_satoshis
+		- if can_afford { 0 } else { 1 };
+	let node_1_balance_sat = channel_value_sat - node_0_balance_sat;
+
+	let chan_id =
+		create_chan_between_nodes_with_value(&nodes[0], &nodes[1], channel_value_sat, 0).3;
+
+	// Set node 0's balance to the can/can't afford threshold
+	send_payment(&nodes[0], &[&nodes[1]], node_1_balance_sat * 1000);
+
+	{
+		// Sanity check the reserve
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, chan_id);
+		assert_eq!(
+			chan.funding().holder_selected_channel_reserve_satoshis,
+			channel_reserve_satoshis
+		);
+	}
+
+	{
+		// Bump the feerate
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = target_feerate;
+	}
+
+	// Put the update fee into the holding cell of node 0
+
+	nodes[0].node.maybe_update_chan_fees();
+
+	// While the update_fee is in the holding cell, add an inbound HTLC
+
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[1], nodes[0], 5000 * 1000);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[1].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
+	check_added_monitors(&nodes[1], 1);
+
+	let payment_event = {
+		let mut events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events_1.len(), 1);
+		SendEvent::from_event(events_1.pop().unwrap())
+	};
+	assert_eq!(payment_event.node_id, node_a_id);
+	assert_eq!(payment_event.msgs.len(), 1);
+
+	nodes[0].node.handle_update_add_htlc(node_b_id, &payment_event.msgs[0]);
+	nodes[0].node.handle_commitment_signed(node_b_id, &payment_event.commitment_msg[0]);
+	check_added_monitors(&nodes[0], 1);
+
+	let (revoke_ack, commitment_signed) = get_revoke_commit_msgs!(nodes[0], node_b_id);
+
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke_ack);
+	check_added_monitors(&nodes[1], 1);
+	nodes[1].node.handle_commitment_signed(node_a_id, &commitment_signed[0]);
+	check_added_monitors(&nodes[1], 1);
+
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	if let MessageSendEvent::SendRevokeAndACK { node_id, msg } = events.pop().unwrap() {
+		assert_eq!(node_id, node_a_id);
+		nodes[0].node.handle_revoke_and_ack(node_b_id, &msg);
+		check_added_monitors!(nodes[0], 1);
+	} else {
+		panic!();
+	}
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	assert!(matches!(events[0], Event::PendingHTLCsForwardable { .. }));
+
+	// Release the update_fee from its holding cell
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	if can_afford {
+		// We could afford the update_fee, sanity check everything
+		assert_eq!(events.len(), 1);
+		if let MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } =
+			events.pop().unwrap()
+		{
+			assert_eq!(node_id, node_b_id);
+			assert_eq!(channel_id, chan_id);
+			assert_eq!(updates.commitment_signed.len(), 1);
+			assert_eq!(updates.commitment_signed[0].htlc_signatures.len(), 1);
+			assert_eq!(updates.update_add_htlcs.len(), 0);
+			assert_eq!(updates.update_fulfill_htlcs.len(), 0);
+			assert_eq!(updates.update_fail_htlcs.len(), 0);
+			assert_eq!(updates.update_fail_malformed_htlcs.len(), 0);
+			let update_fee = updates.update_fee.unwrap();
+			assert_eq!(update_fee.channel_id, chan_id);
+			assert_eq!(update_fee.feerate_per_kw, target_feerate);
+
+			nodes[1].node.handle_update_fee(node_a_id, &update_fee);
+			commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
+
+			// Confirm the feerate on node 0's commitment transaction
+			{
+				let commitment_tx = get_local_commitment_txn!(nodes[0], channel_id)[0].clone();
+
+				let mut actual_fee =
+					commitment_tx.output.iter().fold(0, |acc, output| acc + output.value.to_sat());
+				actual_fee = channel_value_sat - actual_fee;
+				assert_eq!(expected_tx_fee_sat, actual_fee);
+			}
+
+			// Confirm the feerate on node 1's commitment transaction
+			{
+				let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
+
+				let mut actual_fee =
+					commitment_tx.output.iter().fold(0, |acc, output| acc + output.value.to_sat());
+				actual_fee = channel_value_sat - actual_fee;
+				assert_eq!(expected_tx_fee_sat, actual_fee);
+			}
+		} else {
+			panic!();
+		}
+	} else {
+		// We could not afford the update_fee, no events should be generated
+		assert_eq!(events.len(), 0);
+		let err = format!("Cannot afford to send new feerate at {}", target_feerate);
+		nodes[0].logger.assert_log("lightning::ln::channel", err, 1);
+	}
+}
