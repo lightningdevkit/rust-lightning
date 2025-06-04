@@ -67,6 +67,7 @@ pub(crate) enum PendingOutboundPayment {
 		/// Human Readable Names-originated payments should always specify an explicit amount to
 		/// send up-front, which we track here and enforce once we receive the offer.
 		amount_msats: u64,
+		payer_note: Option<String>
 	},
 	AwaitingInvoice {
 		expiration: StaleExpiration,
@@ -1775,7 +1776,7 @@ impl OutboundPayments {
 	#[cfg(feature = "dnssec")]
 	pub(super) fn add_new_awaiting_offer(
 		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
-		route_params_config: RouteParametersConfig, amount_msats: u64,
+		route_params_config: RouteParametersConfig, amount_msats: u64, payer_note: Option<String>
 	) -> Result<(), ()> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
@@ -1786,6 +1787,7 @@ impl OutboundPayments {
 					retry_strategy,
 					route_params_config,
 					amount_msats,
+					payer_note,
 				});
 
 				Ok(())
@@ -1794,10 +1796,10 @@ impl OutboundPayments {
 	}
 
 	#[cfg(feature = "dnssec")]
-	pub(super) fn amt_msats_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<u64, ()> {
+	pub(super) fn params_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<(u64, Option<String>), ()> {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::AwaitingOffer { amount_msats, .. } => Ok(*amount_msats),
+				PendingOutboundPayment::AwaitingOffer { amount_msats, payer_note, .. } => Ok((*amount_msats, payer_note.clone())),
 				_ => Err(()),
 			},
 			_ => Err(()),
@@ -2583,6 +2585,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 			)
 		))),
 		(6, amount_msats, required),
+		(7, payer_note, option),
 	},
 );
 

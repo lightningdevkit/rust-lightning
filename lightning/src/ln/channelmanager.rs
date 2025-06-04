@@ -4876,7 +4876,7 @@ where
 	///
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
-	/// To use default settings, call the function with `RouteParametersConfig::default()`.
+	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		route_params_config: RouteParametersConfig, retry_strategy: Retry
@@ -10390,8 +10390,10 @@ where
 	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
 	/// - `payer_note` for [`InvoiceRequest::payer_note`].
 	///
-	/// If `max_total_routing_fee_msat` is not specified, The default from
-	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	/// # Custom Routing Parameters
+	///
+	/// Users can customize routing parameters via [`RouteParametersConfig`].
+	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	///
 	/// # Payment
 	///
@@ -10545,15 +10547,17 @@ where
 	}
 
 	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
-	/// resolver(s) at `dns_resolvers` which resolve names according to bLIP 32.
+	/// resolver(s) at `dns_resolvers` which resolve names according to [bLIP 32].
 	///
 	/// If the wallet supports paying on-chain schemes, you should instead use
 	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
 	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
 	/// your normal URI handling.
 	///
-	/// If `max_total_routing_fee_msat` is not specified, the default from
-	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	/// # Custom Routing Parameters
+	///
+	/// Users can customize routing parameters via [`RouteParametersConfig`].
+	/// To use default settings, call the function with [`RouteParametersConfig::default`].
 	///
 	/// # Payment
 	///
@@ -10563,18 +10567,19 @@ where
 	///
 	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
-	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	/// payment will fail with an [`PaymentFailureReason::UserAbandoned`] or
+	/// [`PaymentFailureReason::InvoiceRequestExpired`], respectively.
 	///
 	/// # Privacy
 	///
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
+	/// to construct a [`BlindedMessagePath`] for the reply path. For further privacy implications, see the
 	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
 	///
 	/// # Limitations
 	///
 	/// Requires a direct connection to the given [`Destination`] as well as an introduction node in
-	/// [`Offer::paths`] or to [`Offer::signing_pubkey`], if empty. A similar restriction applies to
+	/// [`Offer::paths`] or to [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to
 	/// the responding [`Bolt12Invoice::payment_paths`].
 	///
 	/// # Errors
@@ -10582,13 +10587,18 @@ where
 	/// Errors if:
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	///
+	/// [BIP 353]: https://github.com/bitcoin/bips/blob/master/bip-0353.mediawiki
+	/// [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [`OMNameResolver::resolve_name`]: crate::onion_message::dns_resolution::OMNameResolver::resolve_name
 	/// [`OMNameResolver::handle_dnssec_proof_for_uri`]: crate::onion_message::dns_resolution::OMNameResolver::handle_dnssec_proof_for_uri
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`PaymentFailureReason::UserAbandoned`]: crate::events::PaymentFailureReason::UserAbandoned
+	/// [`PaymentFailureReason::InvoiceRequestRejected`]: crate::events::PaymentFailureReason::InvoiceRequestRejected
 	#[cfg(feature = "dnssec")]
 	pub fn pay_for_offer_from_human_readable_name(
-		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
+		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId, payer_note: Option<String>,
 		retry_strategy: Retry, route_params_config: RouteParametersConfig,
 		dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
@@ -10596,7 +10606,7 @@ where
 			self.flow.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 
 		let expiration = StaleExpiration::TimerTicks(1);
-		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats)?;
+		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats, payer_note)?;
 
 		self.flow.enqueue_dns_onion_message(
 			onion_message, context, dns_resolvers,
@@ -12463,9 +12473,9 @@ where
 					// offer, but tests can deal with that.
 					offer = replacement_offer;
 				}
-				if let Ok(amt_msats) = self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id) {
+				if let Ok((amt_msats, payer_note)) = self.pending_outbound_payments.params_for_payment_awaiting_offer(payment_id) {
 					let offer_pay_res =
-						self.pay_for_offer_intern(&offer, None, Some(amt_msats), None, payment_id, Some(name),
+						self.pay_for_offer_intern(&offer, None, Some(amt_msats), payer_note, payment_id, Some(name),
 							|invoice_request, nonce| {
 								let retryable_invoice_request = RetryableInvoiceRequest {
 									invoice_request: invoice_request.clone(),

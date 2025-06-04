@@ -182,6 +182,7 @@ mod test {
 		commitment_signed_dance, expect_payment_claimed, expect_pending_htlcs_forwardable,
 		get_htlc_update_msgs,
 	};
+	use lightning_types::string::UntrustedString;
 
 	use std::ops::Deref;
 	use std::sync::Mutex;
@@ -396,7 +397,7 @@ mod test {
 		// When we get the proof back, override its contents to an offer from nodes[1]
 		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
 		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
-		proof_override.lock().unwrap().insert(name.clone(), bs_offer);
+		proof_override.lock().unwrap().insert(name.clone(), bs_offer.clone());
 
 		let payment_id = PaymentId([42; 32]);
 		let resolvers = vec![Destination::Node(resolver_id)];
@@ -405,7 +406,15 @@ mod test {
 		let params = RouteParametersConfig::default();
 		nodes[0]
 			.node
-			.pay_for_offer_from_human_readable_name(name, amt, payment_id, retry, params, resolvers)
+			.pay_for_offer_from_human_readable_name(
+				name.clone(),
+				amt,
+				payment_id,
+				None,
+				retry,
+				params,
+				resolvers.clone(),
+			)
 			.unwrap();
 
 		let query = nodes[0].onion_messenger.next_onion_message_for_peer(resolver_id).unwrap();
@@ -440,11 +449,89 @@ mod test {
 		let our_payment_preimage;
 		if let Event::PaymentClaimable { purpose, amount_msat, .. } = &claimable_events[0] {
 			assert_eq!(*amount_msat, amt);
-			if let PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. } = purpose {
+			if let PaymentPurpose::Bolt12OfferPayment {
+				payment_preimage, payment_context, ..
+			} = purpose
+			{
 				our_payment_preimage = payment_preimage.unwrap();
 				nodes[1].node.claim_funds(our_payment_preimage);
 				let payment_hash: PaymentHash = our_payment_preimage.into();
 				expect_payment_claimed!(nodes[1], payment_hash, amt);
+				assert_eq!(payment_context.invoice_request.payer_note_truncated, None);
+			} else {
+				panic!();
+			}
+		} else {
+			panic!();
+		}
+
+		check_added_monitors(&nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], payer_id);
+		nodes[0].node.handle_update_fulfill_htlc(payee_id, &updates.update_fulfill_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+
+		expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);
+
+		// Pay offer with payer_note
+		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
+		proof_override.lock().unwrap().insert(name.clone(), bs_offer);
+		nodes[0]
+			.node
+			.pay_for_offer_from_human_readable_name(
+				name,
+				amt,
+				PaymentId([21; 32]),
+				Some("foo".into()),
+				retry,
+				params,
+				resolvers,
+			)
+			.unwrap();
+
+		let query = nodes[0].onion_messenger.next_onion_message_for_peer(resolver_id).unwrap();
+		resolver_messenger.get_om().handle_onion_message(payer_id, &query);
+
+		assert!(resolver_messenger.get_om().next_onion_message_for_peer(payer_id).is_none());
+		let start = Instant::now();
+		let response = loop {
+			tokio::time::sleep(Duration::from_millis(10)).await;
+			if let Some(msg) = resolver_messenger.get_om().next_onion_message_for_peer(payer_id) {
+				break msg;
+			}
+			assert!(start.elapsed() < Duration::from_secs(10), "Resolution took too long");
+		};
+
+		nodes[0].onion_messenger.handle_onion_message(resolver_id, &response);
+
+		let invreq = nodes[0].onion_messenger.next_onion_message_for_peer(payee_id).unwrap();
+		nodes[1].onion_messenger.handle_onion_message(payer_id, &invreq);
+
+		let inv = nodes[1].onion_messenger.next_onion_message_for_peer(payer_id).unwrap();
+		nodes[0].onion_messenger.handle_onion_message(payee_id, &inv);
+
+		check_added_monitors(&nodes[0], 1);
+		let updates = get_htlc_update_msgs!(nodes[0], payee_id);
+		nodes[1].node.handle_update_add_htlc(payer_id, &updates.update_add_htlcs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let claimable_events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(claimable_events.len(), 1);
+		let our_payment_preimage;
+		if let Event::PaymentClaimable { purpose, amount_msat, .. } = &claimable_events[0] {
+			assert_eq!(*amount_msat, amt);
+			if let PaymentPurpose::Bolt12OfferPayment {
+				payment_preimage, payment_context, ..
+			} = purpose
+			{
+				our_payment_preimage = payment_preimage.unwrap();
+				nodes[1].node.claim_funds(our_payment_preimage);
+				let payment_hash: PaymentHash = our_payment_preimage.into();
+				expect_payment_claimed!(nodes[1], payment_hash, amt);
+				assert_eq!(
+					payment_context.invoice_request.payer_note_truncated,
+					Some(UntrustedString("foo".into()))
+				);
 			} else {
 				panic!();
 			}
