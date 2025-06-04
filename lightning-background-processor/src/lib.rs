@@ -930,6 +930,10 @@ impl BackgroundProcessor {
 	/// [`Persister::persist_manager`] returns an error. In case of an error, the error is retrieved by calling
 	/// either [`join`] or [`stop`].
 	///
+	/// This method takes a [`BackgroundProcessorConfig`] object that contains all necessary components for
+	/// background processing. To build this configuration, you can use the [`BackgroundProcessorConfigBuilder`]
+	/// which provides a convenient builder pattern for setting up both required and optional components.
+	///
 	/// # Data Persistence
 	///
 	/// [`Persister::persist_manager`] is responsible for writing out the [`ChannelManager`] to disk, and/or
@@ -947,7 +951,7 @@ impl BackgroundProcessor {
 	///
 	/// # Event Handling
 	///
-	/// `event_handler` is responsible for handling events that users should be notified of (e.g.,
+	/// The `event_handler` in the configuration is responsible for handling events that users should be notified of (e.g.,
 	/// payment failed). [`BackgroundProcessor`] may decorate the given [`EventHandler`] with common
 	/// functionality implemented by other handlers.
 	/// * [`P2PGossipSync`] if given will update the [`NetworkGraph`] based on payment failures.
@@ -995,9 +999,31 @@ impl BackgroundProcessor {
 		K: 'static + Deref,
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
 	>(
-		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
-		liquidity_manager: Option<LM>, sweeper: Option<OS>, logger: L, scorer: Option<S>,
+		#[rustfmt::skip] config: BackgroundProcessorConfig<
+			'a,
+			UL,
+			CF,
+			T,
+			F,
+			G,
+			L,
+			P,
+			EH,
+			PS,
+			M,
+			CM,
+			OM,
+			PGS,
+			RGS,
+			PM,
+			LM,
+			S,
+			SC,
+			D,
+			O,
+			K,
+			OS,
+		>,
 	) -> Self
 	where
 		UL::Target: 'static + UtxoLookup,
@@ -1017,6 +1043,19 @@ impl BackgroundProcessor {
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
+
+		let persister = config.persister;
+		let event_handler = config.event_handler;
+		let chain_monitor = config.chain_monitor;
+		let channel_manager = config.channel_manager;
+		let onion_messenger = config.onion_messenger;
+		let gossip_sync = config.gossip_sync;
+		let peer_manager = config.peer_manager;
+		let liquidity_manager = config.liquidity_manager;
+		let sweeper = config.sweeper;
+		let logger = config.logger;
+		let scorer = config.scorer;
+
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
 			let event_handler = |event| {
 				let network_graph = gossip_sync.network_graph();
@@ -1098,97 +1137,6 @@ impl BackgroundProcessor {
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
 
-	/// Creates a new [`BackgroundProcessor`] from a [`BackgroundProcessorConfig`].
-	/// This provides a more structured approach to configuration. The processor will start processing events immediately upon creation.
-	///
-	/// This method is functionally equivalent to [`BackgroundProcessor::start`], but takes a configuration
-	/// object instead of individual parameters.
-	///
-	pub fn from_config<
-		'a,
-		UL: 'static + Deref,
-		CF: 'static + Deref,
-		T: 'static + Deref,
-		F: 'static + Deref + Send,
-		G: 'static + Deref<Target = NetworkGraph<L>>,
-		L: 'static + Deref + Send,
-		P: 'static + Deref,
-		EH: 'static + EventHandler + Send,
-		PS: 'static + Deref + Send,
-		M: 'static
-			+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>>
-			+ Send
-			+ Sync,
-		CM: 'static + Deref + Send,
-		OM: 'static + Deref + Send,
-		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send,
-		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
-		PM: 'static + Deref + Send,
-		LM: 'static + Deref + Send,
-		S: 'static + Deref<Target = SC> + Send + Sync,
-		SC: for<'b> WriteableScore<'b>,
-		D: 'static + Deref,
-		O: 'static + Deref,
-		K: 'static + Deref,
-		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
-	>(
-		#[rustfmt::skip] config: BackgroundProcessorConfig<
-			'a,
-			UL,
-			CF,
-			T,
-			F,
-			G,
-			L,
-			P,
-			EH,
-			PS,
-			M,
-			CM,
-			OM,
-			PGS,
-			RGS,
-			PM,
-			LM,
-			S,
-			SC,
-			D,
-			O,
-			K,
-			OS,
-		>,
-	) -> Self
-	where
-		UL::Target: 'static + UtxoLookup,
-		CF::Target: 'static + chain::Filter,
-		T::Target: 'static + BroadcasterInterface,
-		F::Target: 'static + FeeEstimator,
-		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, S>,
-		CM::Target: AChannelManager,
-		OM::Target: AOnionMessenger,
-		PM::Target: APeerManager,
-		LM::Target: ALiquidityManager,
-		D::Target: ChangeDestinationSourceSync,
-		O::Target: 'static + OutputSpender,
-		K::Target: 'static + KVStore,
-	{
-		Self::start(
-			config.persister,
-			config.event_handler,
-			config.chain_monitor,
-			config.channel_manager,
-			config.onion_messenger,
-			config.gossip_sync,
-			config.peer_manager,
-			config.liquidity_manager,
-			config.sweeper,
-			config.logger,
-			config.scorer,
-		)
-	}
-
 	/// Join `BackgroundProcessor`'s thread, returning any error that occurred while persisting
 	/// [`ChannelManager`].
 	///
@@ -1239,8 +1187,6 @@ impl BackgroundProcessor {
 ///
 /// The configuration can be constructed using [`BackgroundProcessorConfigBuilder`], which provides
 /// a convenient builder pattern for setting up both required and optional components.
-///
-/// This same configuration can be used for Creating a [`BackgroundProcessor`] via [`BackgroundProcessor::from_config`]
 #[cfg(feature = "std")]
 pub struct BackgroundProcessorConfig<
 	'a,
@@ -2312,19 +2258,24 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+		let bg_processor = BackgroundProcessor::start(config);
 
 		macro_rules! check_persisted_data {
 			($node: expr, $filepath: expr) => {
@@ -2407,19 +2358,25 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
 			let desired_log_1 = "Calling ChannelManager's timer_tick_occurred".to_string();
@@ -2451,19 +2408,24 @@ mod tests {
 			Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"),
 		);
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+		let bg_processor = BackgroundProcessor::start(config);
 		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
 			Err(e) => {
@@ -2522,19 +2484,25 @@ mod tests {
 		let persister =
 			Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].p2p_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		match bg_processor.stop() {
 			Ok(_) => panic!("Expected error persisting network graph"),
@@ -2553,19 +2521,25 @@ mod tests {
 		let persister =
 			Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		match bg_processor.stop() {
 			Ok(_) => panic!("Expected error persisting scorer"),
@@ -2601,19 +2575,24 @@ mod tests {
 			Ok(())
 		};
 
-		let bg_processor = BackgroundProcessor::start(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		// Open a channel and check that the FundingGenerationReady event was handled.
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
@@ -2665,19 +2644,25 @@ mod tests {
 			Ok(())
 		};
 		let persister = Arc::new(Persister::new(data_dir));
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		// Force close the channel and check that the SpendableOutputs event was handled.
 		let error_message = "Channel force-closed";
@@ -2830,19 +2815,24 @@ mod tests {
 			Ok(())
 		};
 
-		let bg_processor = BackgroundProcessor::start(
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		assert_eq!(
@@ -2861,19 +2851,25 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: _| Ok(());
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -2958,19 +2954,25 @@ mod tests {
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
 		let event_handler = |_: _| Ok(());
-		let background_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let background_processor = BackgroundProcessor::start(config);
 
 		do_test_not_pruning_network_graph_until_graph_sync_completion!(
 			nodes,
@@ -3155,19 +3157,25 @@ mod tests {
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let bg_processor = BackgroundProcessor::start(
+
+		let mut builder = BackgroundProcessorConfigBuilder::new(
 			persister,
 			event_handler,
 			nodes[0].chain_monitor.clone(),
 			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
 			nodes[0].no_gossip_sync(),
 			nodes[0].peer_manager.clone(),
-			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
 			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
 		);
+		builder
+			.with_onion_messenger(nodes[0].messenger.clone())
+			.with_scorer(nodes[0].scorer.clone())
+			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
+			.with_sweeper(nodes[0].sweeper.clone());
+
+		let config = builder.build();
+
+		let bg_processor = BackgroundProcessor::start(config);
 
 		do_test_payment_path_scoring!(
 			nodes,
@@ -3246,110 +3254,5 @@ mod tests {
 		let (r1, r2) = tokio::join!(t1, t2);
 		r1.unwrap().unwrap();
 		r2.unwrap()
-	}
-
-	#[test]
-	fn test_background_processor_config_builder() {
-		// Test that when a new channel is created, the ChannelManager needs to be re-persisted with
-		// updates. Also test that when new updates are available, the manager signals that it needs
-		// re-persistence and is successfully re-persisted.
-		let (persist_dir, nodes) = create_nodes(2, "test_background_processor_config_builder");
-
-		// Go through the channel creation process so that each node has something to persist. Since
-		// open_channel consumes events, it must complete before starting BackgroundProcessor to
-		// avoid a race with processing events.
-		let tx = open_channel!(nodes[0], nodes[1], 100000);
-
-		// Initiate the background processors to watch each node.
-		let data_dir = nodes[0].kv_store.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: _| Ok(());
-		let mut builder = BackgroundProcessorConfigBuilder::new(
-			persister,
-			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			nodes[0].p2p_gossip_sync(),
-			nodes[0].peer_manager.clone(),
-			nodes[0].logger.clone(),
-		);
-		builder
-			.with_onion_messenger(nodes[0].messenger.clone())
-			.with_scorer(nodes[0].scorer.clone())
-			.with_liquidity_manager(Arc::clone(&nodes[0].liquidity_manager))
-			.with_sweeper(nodes[0].sweeper.clone());
-
-		let config = builder.build();
-
-		let bg_processor = BackgroundProcessor::from_config(config);
-
-		macro_rules! check_persisted_data {
-			($node: expr, $filepath: expr) => {
-				let mut expected_bytes = Vec::new();
-				loop {
-					expected_bytes.clear();
-					match $node.write(&mut expected_bytes) {
-						Ok(()) => match std::fs::read($filepath) {
-							Ok(bytes) => {
-								if bytes == expected_bytes {
-									break;
-								} else {
-									continue;
-								}
-							},
-							Err(_) => continue,
-						},
-						Err(e) => panic!("Unexpected error: {}", e),
-					}
-				}
-			};
-		}
-
-		// Check that the initial data is persisted as expected
-		let filepath =
-			get_full_filepath(format!("{}_persister_0", &persist_dir), "manager".to_string());
-		check_persisted_data!(nodes[0].node, filepath.clone());
-
-		loop {
-			if !nodes[0].node.get_event_or_persist_condvar_value() {
-				break;
-			}
-		}
-
-		// Force-close the channel.
-		let error_message = "Channel force-closed";
-		nodes[0]
-			.node
-			.force_close_broadcasting_latest_txn(
-				&ChannelId::v1_from_funding_outpoint(OutPoint {
-					txid: tx.compute_txid(),
-					index: 0,
-				}),
-				&nodes[1].node.get_our_node_id(),
-				error_message.to_string(),
-			)
-			.unwrap();
-
-		// Check that the force-close updates are persisted
-		check_persisted_data!(nodes[0].node, filepath.clone());
-		loop {
-			if !nodes[0].node.get_event_or_persist_condvar_value() {
-				break;
-			}
-		}
-
-		// Check network graph is persisted
-		let filepath =
-			get_full_filepath(format!("{}_persister_0", &persist_dir), "network_graph".to_string());
-		check_persisted_data!(nodes[0].network_graph, filepath.clone());
-
-		// Check scorer is persisted
-		let filepath =
-			get_full_filepath(format!("{}_persister_0", &persist_dir), "scorer".to_string());
-		check_persisted_data!(nodes[0].scorer, filepath.clone());
-
-		if !std::thread::panicking() {
-			bg_processor.stop().unwrap();
-		}
 	}
 }
