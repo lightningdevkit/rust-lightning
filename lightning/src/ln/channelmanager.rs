@@ -16288,7 +16288,9 @@ mod tests {
 
 	#[test]
 	fn test_inbound_anchors_manual_acceptance() {
-		test_inbound_anchors_manual_acceptance_with_override(None);
+		let mut anchors_cfg = test_default_channel_config();
+		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		do_test_manual_inbound_accept_with_override(anchors_cfg, None);
 	}
 
 	#[test]
@@ -16305,7 +16307,11 @@ mod tests {
 			update_overrides: None,
 		};
 
-		let accept_message = test_inbound_anchors_manual_acceptance_with_override(Some(overrides));
+		let mut anchors_cfg = test_default_channel_config();
+		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let accept_message =
+			do_test_manual_inbound_accept_with_override(anchors_cfg, Some(overrides));
 		assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
 		assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
 		assert_eq!(accept_message.common_fields.minimum_depth, 2);
@@ -16315,19 +16321,16 @@ mod tests {
 	}
 
 	#[rustfmt::skip]
-	fn test_inbound_anchors_manual_acceptance_with_override(config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
-		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
-		// flag set and (sometimes) accept channels as 0conf.
-		let mut anchors_cfg = test_default_channel_config();
-		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	fn do_test_manual_inbound_accept_with_override(start_cfg: UserConfig,
+		config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
 
-		let mut anchors_manual_accept_cfg = anchors_cfg.clone();
-		anchors_manual_accept_cfg.manually_accept_inbound_channels = true;
+		let mut mannual_accept_cfg = start_cfg.clone();
+		mannual_accept_cfg.manually_accept_inbound_channels = true;
 
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs,
-			&[Some(anchors_cfg.clone()), Some(anchors_cfg.clone()), Some(anchors_manual_accept_cfg.clone())]);
+			&[Some(start_cfg.clone()), Some(start_cfg.clone()), Some(mannual_accept_cfg.clone())]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
