@@ -183,6 +183,41 @@ pub struct ChannelHandshakeConfig {
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
 	pub negotiate_anchors_zero_fee_htlc_tx: bool,
 
+	/// If set, we attempt to negotiate the `zero_fee_commitments` option for all future channels.
+	///
+	/// These channels operate very similarly to the `anchors_zero_fee_htlc` channels but rely on
+	/// [TRUC] to assign zero fee to the commitment transactions themselves, avoiding many protocol
+	/// edge-cases involving fee updates and greatly simplifying the concept of your "balance" in
+	/// lightning.
+	///
+	/// Like `anchors_zero_fee_htlc` channels, this feature requires having a reserve of onchain
+	/// funds readily available to bump transactions in the event of a channel force close to avoid
+	/// the possibility of losing funds.
+	///
+	/// Note that if you wish accept inbound channels with anchor outputs, you must enable
+	/// [`UserConfig::manually_accept_inbound_channels`] and manually accept them with
+	/// [`ChannelManager::accept_inbound_channel`]. This is done to give you the chance to check
+	/// whether your reserve of onchain funds is enough to cover the fees for all existing and new
+	/// channels featuring anchor outputs in the event of a force close.
+	///
+	/// If this option is set, channels may be created that will not be readable by LDK versions
+	/// prior to 0.2, causing [`ChannelManager`]'s read method to return a
+	/// [`DecodeError::InvalidValue`].
+	///
+	/// Note that setting this to true does *not* prevent us from opening channels with
+	/// counterparties that do not support the `zero_fee_commitments` option; we will simply fall
+	/// back to a `anchors_zero_fee_htlc` (if [`Self::negotiate_anchors_zero_fee_htlc_tx`]
+	/// is set) or `static_remote_key` channel.
+	///
+	/// Default value: `false` (This value is likely to change to `true` in the future.)
+	///
+	/// [TRUC]: (https://bitcoinops.org/en/topics/version-3-transaction-relay/)
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
+	#[cfg(test)]
+	pub negotiate_anchor_zero_fee_commitments: bool,
+
 	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time.
 	///
 	/// Increasing the value can help improve liquidity and stability in
@@ -212,6 +247,8 @@ impl Default for ChannelHandshakeConfig {
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
 			negotiate_anchors_zero_fee_htlc_tx: false,
+			#[cfg(test)]
+			negotiate_anchor_zero_fee_commitments: false,
 			our_max_accepted_htlcs: 50,
 		}
 	}
@@ -233,6 +270,8 @@ impl Readable for ChannelHandshakeConfig {
 			commit_upfront_shutdown_pubkey: Readable::read(reader)?,
 			their_channel_reserve_proportional_millionths: Readable::read(reader)?,
 			negotiate_anchors_zero_fee_htlc_tx: Readable::read(reader)?,
+			#[cfg(test)]
+			negotiate_anchor_zero_fee_commitments: Readable::read(reader)?,
 			our_max_accepted_htlcs: Readable::read(reader)?,
 		})
 	}
