@@ -2440,7 +2440,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
-		is_outbound: bool, change_destination_opt: Option<ScriptBuf>,
+		is_initiator: bool, change_destination_opt: Option<ScriptBuf>,
 		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
 	) -> Result<Option<InteractiveTxMessageSend>, AbortReason>
 	where ES::Target: EntropySource
@@ -2451,7 +2451,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 		let mut funding_inputs = Vec::new();
 		mem::swap(&mut self.funding_negotiation_context.our_funding_inputs, &mut funding_inputs);
 
-		if is_outbound {
+		if is_initiator {
 			if let Some(prev_funding_input) = prev_funding_input {
 				funding_inputs.push(prev_funding_input);
 			}
@@ -2468,7 +2468,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			script_pubkey: self.funding.get_funding_redeemscript().to_p2wsh(),
 		};
 
-		if is_outbound {
+		if is_initiator {
 			funding_outputs.push(
 				OutputOwned::Shared(SharedOwnedOutput::new(
 					shared_funding_output, self.funding_negotiation_context.our_funding_satoshis,
@@ -2487,7 +2487,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				.map_err(|_err| AbortReason::InternalError("Error getting destination script"))?
 		};
 		let change_value_opt = calculate_change_output_value(
-			self.funding.is_outbound(), self.funding_negotiation_context.our_funding_satoshis,
+			is_initiator, self.funding_negotiation_context.our_funding_satoshis,
 			&funding_inputs, &funding_outputs,
 			self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
 			change_script.minimal_non_dust().to_sat(),
@@ -2513,7 +2513,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			counterparty_node_id: self.context.counterparty_node_id,
 			channel_id: self.context.channel_id(),
 			feerate_sat_per_kw: self.funding_negotiation_context.funding_feerate_sat_per_1000_weight,
-			is_initiator: self.funding.is_outbound(),
+			is_initiator,
 			funding_tx_locktime: self.funding_negotiation_context.funding_tx_locktime,
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
