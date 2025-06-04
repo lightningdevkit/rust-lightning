@@ -1557,6 +1557,7 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn maybe_handle_error_without_close<F: Deref, L: Deref>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<Option<OpenChannelMessage>, ()>
 	where
 		F::Target: FeeEstimator,
@@ -1567,13 +1568,17 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::Funded(_) => Ok(None),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
-				chan.maybe_handle_error_without_close(chain_hash, fee_estimator, &&logger)
+				chan.maybe_handle_error_without_close(
+					chain_hash, fee_estimator, &&logger, user_config, their_features,
+				)
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
 			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.funding.is_outbound() {
-					chan.maybe_handle_error_without_close(chain_hash, fee_estimator)
+					chan.maybe_handle_error_without_close(
+						chain_hash, fee_estimator, user_config, their_features,
+					)
 						.map(|msg| Some(OpenChannelMessage::V2(msg)))
 				} else {
 					Ok(None)
@@ -4868,7 +4873,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// of the channel type we tried, not of our ability to open any channel at all. We can see if a
 	/// downgrade of channel features would be possible so that we can still open the channel.
 	pub(crate) fn maybe_downgrade_channel_features<F: Deref>(
-		&mut self, funding: &mut FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>
+		&mut self, funding: &mut FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<(), ()>
 	where
 		F::Target: FeeEstimator
@@ -4885,25 +4891,35 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			// We've exhausted our options
 			return Err(());
 		}
+
+		// We should never have negotiated `anchors_nonzero_fee_htlc_tx` because it can result in a
+		// loss of funds.
+		let channel_type = &funding.channel_transaction_parameters.channel_type_features;
+		assert!(!channel_type.supports_anchors_nonzero_fee_htlc_tx());
+
 		// We support opening a few different types of channels. Try removing our additional
 		// features one by one until we've either arrived at our default or the counterparty has
-		// accepted one.
-		//
-		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
-		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
-		// checks whether the counterparty supports every feature, this would only happen if the
-		// counterparty is advertising the feature, but rejecting channels proposing the feature for
-		// whatever reason.
-		let channel_type = &mut funding.channel_transaction_parameters.channel_type_features;
+		// accepted one. Features are un-set for the current channel type or any that come before
+		// it in our order of preference, allowing us to negotiate the "next best" based on the
+		// counterparty's remaining features per our ranking in `get_initial_channel_type`.
+		let mut eligible_features = their_features.clone();
 		if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			channel_type.clear_anchors_zero_fee_htlc_tx();
-			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			assert!(!channel_type.supports_anchors_nonzero_fee_htlc_tx());
+			eligible_features.clear_anchors_zero_fee_htlc_tx();
 		} else if channel_type.supports_scid_privacy() {
-			channel_type.clear_scid_privacy();
-		} else {
-			*channel_type = ChannelTypeFeatures::only_static_remote_key();
+			eligible_features.clear_scid_privacy();
+			eligible_features.clear_anchors_zero_fee_htlc_tx();
 		}
+
+		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
+
+		let conf_target = if next_channel_type.supports_anchors_zero_fee_htlc_tx() {
+			ConfirmationTarget::AnchorChannelFee
+		} else {
+			ConfirmationTarget::NonAnchorChannelFee
+		};
+		self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(conf_target);
+	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
+
 		Ok(())
 	}
 
@@ -9893,13 +9909,16 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
 	pub(crate) fn maybe_handle_error_without_close<F: Deref, L: Deref>(
-		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<msgs::OpenChannel, ()>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		self.context.maybe_downgrade_channel_features(&mut self.funding, fee_estimator)?;
+		self.context.maybe_downgrade_channel_features(
+			&mut self.funding, fee_estimator, user_config, their_features,
+		)?;
 		self.get_open_channel(chain_hash, logger).ok_or(())
 	}
 
@@ -10405,12 +10424,15 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
 	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
-		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<msgs::OpenChannelV2, ()>
 	where
 		F::Target: FeeEstimator
 	{
-		self.context.maybe_downgrade_channel_features(&mut self.funding, fee_estimator)?;
+		self.context.maybe_downgrade_channel_features(
+			&mut self.funding, fee_estimator, user_config, their_features,
+		)?;
 		Ok(self.get_open_channel_v2(chain_hash))
 	}
 
