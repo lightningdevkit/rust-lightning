@@ -71,6 +71,9 @@ mod blinded_payment_tests;
 pub mod bolt11_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
+mod channel_acceptance_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod chanmon_update_fail_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
