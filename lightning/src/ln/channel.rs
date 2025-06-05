@@ -9090,7 +9090,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Checks during handling splice_init
 	#[cfg(splicing)]
-	pub fn validate_splice_init(&mut self, msg: &msgs::SpliceInit) -> Result<(), ChannelError> {
+	pub fn validate_splice_init(&self, msg: &msgs::SpliceInit) -> Result<(), ChannelError> {
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
 		let our_funding_contribution_satoshis = 0i64;
