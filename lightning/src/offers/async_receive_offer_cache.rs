@@ -78,16 +78,21 @@ impl AsyncReceiveOfferCache {
 	}
 }
 
+// The target number of offers we want to have cached at any given time, to mitigate too much
+// reuse of the same offer.
+const NUM_CACHED_OFFERS_TARGET: usize = 3;
+
+// The max number of times we'll attempt to request offer paths or attempt to refresh a static
+// invoice before giving up.
+const MAX_UPDATE_ATTEMPTS: u8 = 3;
+
+// If we run out of attempts to request offer paths from the static invoice server, we'll stop
+// sending requests for some time. After this amount of time has passed, more requests are allowed
+// to be sent out.
+const PATHS_REQUESTS_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
+
 #[cfg(async_payments)]
 impl AsyncReceiveOfferCache {
-	// The target number of offers we want to have cached at any given time, to mitigate too much
-	// reuse of the same offer.
-	const NUM_CACHED_OFFERS_TARGET: usize = 3;
-
-	// The max number of times we'll attempt to request offer paths or attempt to refresh a static
-	// invoice before giving up.
-	const MAX_UPDATE_ATTEMPTS: u8 = 3;
-
 	/// Remove expired offers from the cache.
 	pub(super) fn prune_expired_offers(&mut self, duration_since_epoch: Duration) {
 		// Remove expired offers from the cache.
@@ -113,7 +118,7 @@ impl AsyncReceiveOfferCache {
 	/// Checks whether we should request new offer paths from the always-online static invoice server.
 	pub(super) fn should_request_offer_paths(&self, duration_since_epoch: Duration) -> bool {
 		self.needs_new_offers(duration_since_epoch)
-			&& self.offer_paths_request_attempts < Self::MAX_UPDATE_ATTEMPTS
+			&& self.offer_paths_request_attempts < MAX_UPDATE_ATTEMPTS
 	}
 
 	/// Returns a bool indicating whether new offers are needed in the cache.
@@ -135,7 +140,7 @@ impl AsyncReceiveOfferCache {
 			})
 			.count();
 
-		num_unexpiring_offers < Self::NUM_CACHED_OFFERS_TARGET
+		num_unexpiring_offers < NUM_CACHED_OFFERS_TARGET
 	}
 
 	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
@@ -149,9 +154,8 @@ impl AsyncReceiveOfferCache {
 	/// If we haven't sent an offer paths request in a long time, reset the limit to allow more
 	/// requests to be sent out if/when needed.
 	fn check_reset_offer_paths_request_attempts(&mut self, duration_since_epoch: Duration) {
-		const REQUESTS_TIME_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
 		let should_reset =
-			self.last_offer_paths_request_timestamp.saturating_add(REQUESTS_TIME_BUFFER)
+			self.last_offer_paths_request_timestamp.saturating_add(PATHS_REQUESTS_BUFFER)
 				< duration_since_epoch;
 		if should_reset {
 			self.reset_offer_paths_request_attempts();
