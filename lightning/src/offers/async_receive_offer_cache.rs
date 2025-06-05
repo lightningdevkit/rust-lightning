@@ -136,7 +136,7 @@ impl AsyncReceiveOfferCache {
 				let elapsed = duration_since_epoch.saturating_sub(offer_created_at).as_secs();
 
 				// If an offer is in the last 10% of its lifespan, it's expiring soon.
-				elapsed.saturating_mul(10) >= offer_lifespan.saturating_mul(9)
+				elapsed.saturating_mul(10) < offer_lifespan.saturating_mul(9)
 			})
 			.count();
 
