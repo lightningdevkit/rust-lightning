@@ -1964,9 +1964,6 @@ impl FundingScope {
 struct PendingSplice {
 	/// Intended contributions to the splice from our end
 	pub our_funding_contribution: i64,
-	/// Set when splice_ack has been processed (on the initiator side),
-	/// used to prevent processing of multiple splice_ack's.
-	awaiting_splice_ack: bool,
 	funding_scope: Option<FundingScope>,
 	funding_negotiation_context: FundingNegotiationContext,
 	/// The current interactive transaction construction session under negotiation.
@@ -9066,7 +9063,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		};
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution: our_funding_contribution_satoshis,
-			awaiting_splice_ack: true, // we await splice_ack
 			funding_scope: None,
 			funding_negotiation_context,
 			interactive_tx_constructor: None,
@@ -9101,6 +9097,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
 		let our_funding_contribution_satoshis = 0i64;
+
+		// TODO(splicing): Add check that we are the quiescence acceptor
 
 		// Check if a splice has been initiated already.
 		if let Some(pending_splice) = &self.pending_splice {
@@ -9227,7 +9225,6 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		self.pending_splice = Some(PendingSplice {
 			our_funding_contribution,
-			awaiting_splice_ack: false, // we don't need any additional message for the handshake
 			funding_scope: Some(funding_scope),
 			funding_negotiation_context,
 			interactive_tx_constructor: None,
@@ -9286,8 +9283,10 @@ impl<SP: Deref> FundedChannel<SP> where
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
 		};
 
-		if !pending_splice.awaiting_splice_ack {
-			return Err(ChannelError::Warn(format!("Received unexpected splice_ack")));
+		// TODO(splicing): Add check that we are the splice (quiescence) initiator
+
+		if pending_splice.funding_scope.is_some() || pending_splice.interactive_tx_constructor.is_some() {
+			return Err(ChannelError::Warn(format!("Got unexpected splice_ack, splice already negotiating")));
 		}
 
 		let our_funding_contribution = pending_splice.our_funding_contribution;
@@ -9316,14 +9315,13 @@ impl<SP: Deref> FundedChannel<SP> where
 		// We need the current funding tx as an extra input
 		let prev_funding_input = Self::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
 		let pending_splice_mut = self.pending_splice.as_mut().unwrap(); // existence checked above
+		debug_assert!(pending_splice_mut.funding_scope.is_none());
 		pending_splice_mut.funding_scope = Some(funding_scope);
 		// update funding values
 		pending_splice_mut.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
 		pending_splice_mut.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
 		pending_splice_mut.interactive_tx_constructor = None;
 		pending_splice_mut.interactive_tx_signing_session = None;
-		debug_assert!(pending_splice_mut.awaiting_splice_ack);
-		pending_splice_mut.awaiting_splice_ack = false;
 
 		log_info!(logger, "Splicing process started after splice_ack, new channel value {}, old {}, outgoing {}, channel_id {}",
 			post_channel_value, pre_channel_value, true, self.context.channel_id);

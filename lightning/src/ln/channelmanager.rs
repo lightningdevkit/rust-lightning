@@ -8672,10 +8672,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Ok(channel.as_negotiating_channel()?
+			Ok(channel
+				.as_negotiating_channel()?
 				.tx_add_input(msg)
-				.into_msg_send_event(counterparty_node_id)
-			)
+				.into_msg_send_event(counterparty_node_id))
 		})
 	}
 
