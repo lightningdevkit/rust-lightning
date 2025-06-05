@@ -9236,10 +9236,20 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let splice_ack_msg = self.get_splice_ack(our_funding_contribution);
 
+		// Build NegotiatingChannelView locally, simmilar to Channel::as_renegotiating_channel()
+		let pending_splice_mut = &mut self.pending_splice.as_mut().unwrap(); // set above
+		let mut negotiating_view = NegotiatingChannelView {
+			context: &mut self.context,
+			funding: &mut pending_splice_mut.funding_scope.as_mut().unwrap(), // set above
+			funding_negotiation_context: &mut pending_splice_mut.funding_negotiation_context,
+			interactive_tx_constructor: &mut pending_splice_mut.interactive_tx_constructor,
+			interactive_tx_signing_session: &mut pending_splice_mut.interactive_tx_signing_session,
+			holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
+			is_splice: true,
+		};
+
 		// Start interactive funding negotiation. No extra input, as we are not the splice initiator
-		let mut refunding = self.as_renegotiating_channel()
-			.map_err(|err| ChannelError::Warn(err.into()))?;
-		let _msg = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), false, None, None)
+		let _msg = negotiating_view.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), false, None, None)
 			.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
 
 		Ok(splice_ack_msg)
@@ -9315,10 +9325,19 @@ impl<SP: Deref> FundedChannel<SP> where
 		log_info!(logger, "Splicing process started after splice_ack, new channel value {}, old {}, outgoing {}, channel_id {}",
 			post_channel_value, pre_channel_value, true, self.context.channel_id);
 
+		// Build NegotiatingChannelView locally, simmilar to Channel::as_renegotiating_channel()
+		let mut negotiating_view = NegotiatingChannelView {
+			context: &mut self.context,
+			funding: &mut pending_splice_mut.funding_scope.as_mut().unwrap(), // set above
+			funding_negotiation_context: &mut pending_splice_mut.funding_negotiation_context,
+			interactive_tx_constructor: &mut pending_splice_mut.interactive_tx_constructor,
+			interactive_tx_signing_session: &mut pending_splice_mut.interactive_tx_signing_session,
+			holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
+			is_splice: true,
+		};
+
 		// Start interactive funding negotiation, with the previous funding transaction as an extra shared input
-		let mut refunding = self.as_renegotiating_channel()
-			.map_err(|err| ChannelError::Warn(err.into()))?;
-		let tx_msg_opt = refunding.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), true, None, Some(prev_funding_input))
+		let tx_msg_opt = negotiating_view.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), true, None, Some(prev_funding_input))
 			.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
 		Ok(tx_msg_opt)
 	}
