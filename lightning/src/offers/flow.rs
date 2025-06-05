@@ -57,6 +57,7 @@ use crate::routing::router::Router;
 use crate::sign::{EntropySource, NodeSigner};
 use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::util::ser::Writeable;
 
 #[cfg(async_payments)]
 use {
@@ -1102,5 +1103,10 @@ where
 		&self,
 	) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
+	}
+
+	/// Get the `AsyncReceiveOfferCache` for persistence.
+	pub(crate) fn writeable_async_receive_offer_cache(&self) -> impl Writeable + '_ {
+		&self.async_receive_offer_cache
 	}
 }
