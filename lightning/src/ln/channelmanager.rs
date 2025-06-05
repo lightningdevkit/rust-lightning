@@ -8672,28 +8672,40 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddInput,
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Ok(channel.tx_add_input(msg)?.into_msg_send_event(counterparty_node_id))
+			Ok(channel.as_negotiating_channel()?
+				.tx_add_input(msg)
+				.into_msg_send_event(counterparty_node_id)
+			)
 		})
 	}
 
 	#[rustfmt::skip]
 	fn internal_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Ok(channel.tx_add_output(msg)?.into_msg_send_event(counterparty_node_id))
+			Ok(channel.as_negotiating_channel()?
+				.tx_add_output(msg)
+				.into_msg_send_event(counterparty_node_id)
+			)
 		})
 	}
 
 	#[rustfmt::skip]
 	fn internal_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Ok(channel.tx_remove_input(msg)?.into_msg_send_event(counterparty_node_id))
+			Ok(channel.as_negotiating_channel()?
+				.tx_remove_input(msg)
+				.into_msg_send_event(counterparty_node_id)
+			)
 		})
 	}
 
 	#[rustfmt::skip]
 	fn internal_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
-			Ok(channel.tx_remove_output(msg)?.into_msg_send_event(counterparty_node_id))
+			Ok(channel.as_negotiating_channel()?
+				.tx_remove_output(msg)
+				.into_msg_send_event(counterparty_node_id)
+			)
 		})
 	}
 
@@ -8711,8 +8723,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().tx_complete(msg) {
-					Ok(res) => res.into_msg_send_event_or_signing_session(counterparty_node_id),
+				let (msg_send_event_opt, signing_session_opt) = match chan_entry.get_mut().as_negotiating_channel() {
+					Ok(mut negotiating_channel) => negotiating_channel
+						.tx_complete(msg)
+						.into_msg_send_event_or_signing_session(counterparty_node_id),
 					Err(err) => {
 						try_channel_entry!(self, peer_state, Err(err), chan_entry)
 					}
