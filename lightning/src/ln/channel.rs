@@ -1699,38 +1699,6 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	#[cfg(splicing)]
-	pub fn splice_init<ES: Deref, L: Deref>(
-		&mut self, msg: &msgs::SpliceInit, our_funding_contribution: i64,
-		signer_provider: &SP, entropy_source: &ES, our_node_id: &PublicKey, logger: &L
-	) -> Result<msgs::SpliceAck, ChannelError>
-	where
-		ES::Target: EntropySource,
-		L::Target: Logger
-	{
-		if let Some(funded_channel) = self.as_funded_mut() {
-			funded_channel.splice_init(msg, our_funding_contribution, signer_provider, entropy_source, our_node_id, logger)
-		} else {
-			Err(ChannelError::Warn("Channel is not funded, cannot be spliced".to_owned()))
-		}
-	}
-
-	#[cfg(splicing)]
-	pub fn splice_ack<ES: Deref, L: Deref>(
-		&mut self, msg: &msgs::SpliceAck,
-		signer_provider: &SP, entropy_source: &ES, our_node_id: &PublicKey, logger: &L
-	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
-	where
-		ES::Target: EntropySource,
-		L::Target: Logger
-	{
-		if let Some(funded_channel) = self.as_funded_mut() {
-			funded_channel.splice_ack(msg, signer_provider, entropy_source, our_node_id, logger)
-		} else {
-			Err(ChannelError::Warn("Channel is not funded, cannot be spliced".to_owned()))
-		}
-	}
-
 	pub fn force_shutdown(&mut self, should_broadcast: bool, closure_reason: ClosureReason) -> ShutdownResult {
 		let (funding, context) = self.funding_and_context_mut();
 		context.force_shutdown(funding, should_broadcast, closure_reason)
@@ -9272,7 +9240,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// See also [`splice_init_checks`]
 	#[cfg(splicing)]
-	fn splice_init<ES: Deref, L: Deref>(
+	pub(crate) fn splice_init<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution: i64,
 		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
 	) -> Result<msgs::SpliceAck, ChannelError>
@@ -9342,7 +9310,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Handle splice_ack
 	#[cfg(splicing)]
-	pub fn splice_ack<ES: Deref, L: Deref>(
+	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck,
 		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> where ES::Target: EntropySource, L::Target: Logger {

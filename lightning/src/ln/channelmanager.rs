@@ -9776,16 +9776,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id, msg.channel_id,
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				// Handle inside channel (checks, phase change, state change)
-				let splice_ack_msg = try_channel_entry!(self, peer_state,
-					chan_entry.get_mut().splice_init(
-						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
-					), chan_entry);
-				peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
-					node_id: *counterparty_node_id,
-					msg: splice_ack_msg,
-				});
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let splice_ack_msg = try_channel_entry!(self, peer_state,
+						funded_channel.splice_init(
+							msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
+							&self.get_our_node_id(), &self.logger
+						), chan_entry);
+					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
+						node_id: *counterparty_node_id,
+						msg: splice_ack_msg,
+					});
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel is not funded, cannot be spliced"), msg.channel_id));
+				}
 			},
 		};
 
@@ -9812,16 +9815,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				// Handle inside channel
-				let tx_msg_opt = try_channel_entry!(self, peer_state,
-					chan_entry.get_mut().splice_ack(
-						msg, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
-					), chan_entry);
-				if let Some(tx_msg) = tx_msg_opt {
-					peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
+				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let tx_msg_opt = try_channel_entry!(self, peer_state,
+						funded_channel.splice_ack(
+							msg, &self.signer_provider, &self.entropy_source,
+							&self.get_our_node_id(), &self.logger
+						), chan_entry);
+					if let Some(tx_msg) = tx_msg_opt {
+						peer_state.pending_msg_events.push(tx_msg.into_msg_send_event(counterparty_node_id.clone()));
+					}
+					Ok(())
+				} else {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel is not funded, cannot be spliced"), msg.channel_id));
 				}
-				Ok(())
 			},
 		}
 	}
