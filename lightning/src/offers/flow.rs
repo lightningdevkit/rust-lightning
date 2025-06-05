@@ -1136,10 +1136,11 @@ where
 
 		// Check with the cache to see whether we need new offers to be interactively built with the
 		// static invoice server.
-		let mut async_receive_offer_cache = self.async_receive_offer_cache.lock().unwrap();
-		async_receive_offer_cache.prune_expired_offers(duration_since_epoch);
-		let needs_new_offers =
-			async_receive_offer_cache.should_request_offer_paths(duration_since_epoch);
+		let needs_new_offers = {
+			let mut async_receive_offer_cache = self.async_receive_offer_cache.lock().unwrap();
+			async_receive_offer_cache.prune_expired_offers(duration_since_epoch);
+			async_receive_offer_cache.should_request_offer_paths(duration_since_epoch)
+		};
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		if needs_new_offers {
@@ -1158,8 +1159,10 @@ where
 			};
 
 			// We can't fail past this point, so indicate to the cache that we've requested new offers.
-			async_receive_offer_cache.new_offers_requested(duration_since_epoch);
-			core::mem::drop(async_receive_offer_cache);
+			self.async_receive_offer_cache
+				.lock()
+				.unwrap()
+				.new_offers_requested(duration_since_epoch);
 
 			let message = AsyncPaymentsMessage::OfferPathsRequest(OfferPathsRequest {});
 			enqueue_onion_message_with_reply_paths(
