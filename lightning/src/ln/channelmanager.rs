@@ -11088,6 +11088,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							your_last_per_commitment_secret: [1u8; 32],
 							my_current_per_commitment_point: PublicKey::from_slice(&[2u8; 33]).unwrap(),
 							next_funding_txid: None,
+							my_current_funding_locked: None,
 						},
 					});
 					return Err(MsgHandleErrInternal::send_err_msg_no_close(
