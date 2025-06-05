@@ -80,15 +80,18 @@ impl AsyncReceiveOfferCache {
 
 // The target number of offers we want to have cached at any given time, to mitigate too much
 // reuse of the same offer.
+#[cfg(async_payments)]
 const NUM_CACHED_OFFERS_TARGET: usize = 3;
 
 // The max number of times we'll attempt to request offer paths or attempt to refresh a static
 // invoice before giving up.
+#[cfg(async_payments)]
 const MAX_UPDATE_ATTEMPTS: u8 = 3;
 
 // If we run out of attempts to request offer paths from the static invoice server, we'll stop
 // sending requests for some time. After this amount of time has passed, more requests are allowed
 // to be sent out.
+#[cfg(async_payments)]
 const PATHS_REQUESTS_BUFFER: Duration = Duration::from_secs(3 * 60 * 60);
 
 #[cfg(async_payments)]
