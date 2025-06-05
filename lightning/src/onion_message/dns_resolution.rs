@@ -36,6 +36,8 @@ use dnssec_prover::rr::Name;
 
 use lightning_types::features::NodeFeatures;
 
+use core::fmt;
+
 use crate::blinded_path::message::DNSResolverContext;
 use crate::io;
 #[cfg(feature = "dnssec")]
@@ -287,6 +289,12 @@ impl Readable for HumanReadableName {
 	}
 }
 
+impl fmt::Display for HumanReadableName {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "₿{}@{}", self.user(), self.domain())
+	}
+}
+
 #[cfg(feature = "dnssec")]
 struct PendingResolution {
 	start_height: u32,
@@ -471,5 +479,26 @@ impl OMNameResolver {
 			}
 		}
 		None
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::HumanReadableName;
+
+	#[test]
+	fn test_hrn_display_format() {
+		let user = "user";
+		let domain = "example.com";
+		let hrn = HumanReadableName::new(user, domain)
+			.expect("Failed to create HumanReadableName for user");
+
+		// Assert that the formatted string matches the expected output
+		let expected_display = format!("₿{}@{}", user, domain);
+		assert_eq!(
+			format!("{}", hrn),
+			expected_display,
+			"HumanReadableName display format mismatch"
+		);
 	}
 }
