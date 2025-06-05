@@ -10604,6 +10604,8 @@ where
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
 			next_funding_txid: self.maybe_get_next_funding_txid(),
+			your_last_funding_locked_txid: None,
+			my_current_funding_locked_txid: None,
 		}
 	}
 
