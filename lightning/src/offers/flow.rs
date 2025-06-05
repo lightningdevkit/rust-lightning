@@ -1222,13 +1222,20 @@ where
 					Ok((msg, ctx)) => (msg, ctx),
 					Err(()) => continue,
 				};
-				serve_static_invoice_messages.push((serve_invoice_msg, reply_path_ctx, offer_id));
+				serve_static_invoice_messages.push((
+					serve_invoice_msg,
+					update_static_invoice_path.clone(),
+					reply_path_ctx,
+					offer_id,
+				));
 			}
 		}
 
 		// Enqueue the new serve_static_invoice messages in a separate loop to avoid holding the offer
 		// cache lock and the pending_async_payments_messages lock at the same time.
-		for (serve_invoice_msg, reply_path_ctx, offer_id) in serve_static_invoice_messages {
+		for (serve_invoice_msg, serve_invoice_path, reply_path_ctx, offer_id) in
+			serve_static_invoice_messages
+		{
 			let context = MessageContext::AsyncPayments(reply_path_ctx);
 			let reply_paths = match self.create_blinded_paths(peers.clone(), context) {
 				Ok(paths) => paths,
@@ -1247,7 +1254,7 @@ where
 			let message = AsyncPaymentsMessage::ServeStaticInvoice(serve_invoice_msg);
 			enqueue_onion_message_with_reply_paths(
 				message,
-				&self.paths_to_static_invoice_server,
+				&[serve_invoice_path.into_reply_path()],
 				reply_paths,
 				&mut self.pending_async_payments_messages.lock().unwrap(),
 			);
