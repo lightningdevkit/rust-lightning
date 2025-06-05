@@ -9234,8 +9234,8 @@ impl<SP: Deref> FundedChannel<SP> where
 			interactive_tx_signing_session: None,
 		});
 
-		// Apply start of splice change in the state
-		self.splice_start(false, logger);
+		log_info!(logger, "Splicing process started after splice_init, new channel value {}, old {}, outgoing {}, channel_id {}",
+			post_channel_value, pre_channel_value, false, self.context.channel_id);
 
 		let splice_ack_msg = self.get_splice_ack(our_funding_contribution);
 
@@ -9289,6 +9289,9 @@ impl<SP: Deref> FundedChannel<SP> where
 		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
 		let _post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution);
 
+		// TODO(splicing): Pre-check for reserve requirement
+		// (Note: It should also be checked later at tx_complete)
+
 		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
 			pre_channel_value,
 			our_funding_contribution,
@@ -9312,16 +9315,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		debug_assert!(pending_splice_mut.awaiting_splice_ack);
 		pending_splice_mut.awaiting_splice_ack = false;
 
-		// TODO(splicing): Pre-check for reserve requirement
-		// (Note: It should also be checked later at tx_complete)
-
-		let _post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution_satoshis);
-		let _post_balance = PendingSplice::add_checked(self.funding.value_to_self_msat, our_funding_contribution);
-		// TODO: Early check for reserve requirement, assuming maximum balance of full channel value
-		// This will also be checked later at tx_complete
-
-		// Apply start of splice change in the state
-		self.splice_start(true, logger);
+		log_info!(logger, "Splicing process started after splice_ack, new channel value {}, old {}, outgoing {}, channel_id {}",
+			post_channel_value, pre_channel_value, true, self.context.channel_id);
 
 		// Start interactive funding negotiation, with the previous funding transaction as an extra shared input
 		let mut refunding = self.as_renegotiating_channel()
@@ -9351,23 +9346,6 @@ impl<SP: Deref> FundedChannel<SP> where
 			}
 		} else {
 			Err(ChannelError::Warn("Internal error: Missing previous funding transaction".to_string()))
-		}
-	}
-
-	/// Splice process starting; update state, log, etc.
-	#[cfg(splicing)]
-	pub(crate) fn splice_start<L: Deref>(&mut self, is_outgoing: bool, logger: &L) where L::Target: Logger {
-		// Set state, by this point splice_init/splice_ack handshake is complete
-		// TODO(splicing)
-		// self.channel_state = ChannelState::NegotiatingFunding(
-		// 	NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
-		// );
-		if let Some(pending_splice) = &self.pending_splice {
-			if let Some(funding_scope) = &pending_splice.funding_scope {
-				let old_value = self.funding.get_value_satoshis();
-				log_info!(logger, "Splicing process started, new channel value {}, old {}, outgoing {}, channel_id {}",
-					funding_scope.get_value_satoshis(), old_value, is_outgoing, self.context().channel_id);
-			}
 		}
 	}
 
