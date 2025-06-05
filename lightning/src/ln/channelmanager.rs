@@ -9181,32 +9181,45 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
+	fn internal_shutdown(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown,
+	) -> Result<(), MsgHandleErrInternal> {
 		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
 		let mut finish_shutdown = None;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| {
-					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-				})?;
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!(
+						"Can't find a peer matching the passed counterparty node_id {}",
+						counterparty_node_id
+					),
+					msg.channel_id,
+				)
+			})?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
-			if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(msg.channel_id.clone()) {
+			if let hash_map::Entry::Occupied(mut chan_entry) =
+				peer_state.channel_by_id.entry(msg.channel_id.clone())
+			{
 				match chan_entry.get_mut().as_funded_mut() {
 					Some(chan) => {
 						if !chan.received_shutdown() {
-							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+							let logger =
+								WithChannelContext::from(&self.logger, &chan.context, None);
 							log_info!(logger, "Received a shutdown message from our counterparty for channel {}{}.",
 								msg.channel_id,
 								if chan.sent_shutdown() { " after we initiated shutdown" } else { "" });
 						}
 
 						let funding_txo_opt = chan.funding.get_funding_txo();
-						let (shutdown, monitor_update_opt, htlcs) = try_channel_entry!(self, peer_state,
-							chan.shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
+						let (shutdown, monitor_update_opt, htlcs) = try_channel_entry!(
+							self,
+							peer_state,
+							chan.shutdown(&self.signer_provider, &peer_state.latest_features, &msg),
+							chan_entry
+						);
 						dropped_htlcs = htlcs;
 
 						if let Some(msg) = shutdown {
@@ -9220,24 +9233,41 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 						// Update the monitor with the shutdown script if necessary.
 						if let Some(monitor_update) = monitor_update_opt {
-							handle_new_monitor_update!(self, funding_txo_opt.unwrap(), monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan);
+							handle_new_monitor_update!(
+								self,
+								funding_txo_opt.unwrap(),
+								monitor_update,
+								peer_state_lock,
+								peer_state,
+								per_peer_state,
+								chan
+							);
 						}
 					},
 					None => {
-						let logger = WithChannelContext::from(&self.logger, chan_entry.get().context(), None);
+						let logger = WithChannelContext::from(
+							&self.logger,
+							chan_entry.get().context(),
+							None,
+						);
 						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
-						let mut close_res = chan_entry.get_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel);
+						let mut close_res = chan_entry.get_mut().force_shutdown(
+							false,
+							ClosureReason::CounterpartyCoopClosedUnfundedChannel,
+						);
 						remove_channel_entry!(self, peer_state, chan_entry, close_res);
 						finish_shutdown = Some(close_res);
 					},
 				}
 			} else {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id));
 			}
 		}
 		for htlc_source in dropped_htlcs.drain(..) {
-			let receiver = HTLCHandlingFailureType::Forward { node_id: Some(counterparty_node_id.clone()), channel_id: msg.channel_id };
+			let receiver = HTLCHandlingFailureType::Forward {
+				node_id: Some(counterparty_node_id.clone()),
+				channel_id: msg.channel_id,
+			};
 			let reason = HTLCFailReason::from_failure_code(LocalHTLCFailureReason::ChannelClosed);
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
@@ -9248,14 +9278,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		Ok(())
 	}
 
-	#[rustfmt::skip]
-	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
+	fn internal_closing_signed(
+		&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned,
+	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-			})?;
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).ok_or_else(|| {
+			debug_assert!(false);
+			MsgHandleErrInternal::send_err_msg_no_close(
+				format!(
+					"Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id
+				),
+				msg.channel_id,
+			)
+		})?;
 		let (tx, chan_option, shutdown_result) = {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -9294,15 +9330,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		};
 		if let Some(broadcast_tx) = tx {
 			let channel_id = chan_option.as_ref().map(|channel| channel.context().channel_id());
-			log_info!(WithContext::from(&self.logger, Some(*counterparty_node_id), channel_id, None), "Broadcasting {}", log_tx!(broadcast_tx));
+			log_info!(
+				WithContext::from(&self.logger, Some(*counterparty_node_id), channel_id, None),
+				"Broadcasting {}",
+				log_tx!(broadcast_tx)
+			);
 			self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
 		}
 		if let Some(chan) = chan_option.as_ref().and_then(Channel::as_funded) {
 			if let Ok(update) = self.get_channel_update_for_broadcast(chan) {
-				let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-				pending_broadcast_messages.push(MessageSendEvent::BroadcastChannelUpdate {
-					msg: update
-				});
+				let mut pending_broadcast_messages =
+					self.pending_broadcast_messages.lock().unwrap();
+				pending_broadcast_messages
+					.push(MessageSendEvent::BroadcastChannelUpdate { msg: update });
 			}
 		}
 		mem::drop(per_peer_state);
