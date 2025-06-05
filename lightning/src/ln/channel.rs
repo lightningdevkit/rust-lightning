@@ -1587,58 +1587,13 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
+	pub fn as_negotiating_channel(&mut self) -> Result<NegotiatingChannelView<SP>, ChannelError> {
 		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_add_input(msg)),
+			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel()),
 			#[cfg(splicing)]
 			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
-				.map_err(|err| ChannelError::Warn(err.into()))?
-				.tx_add_input(msg)),
-			_ => Err(ChannelError::Warn("Got tx_add_input in an invalid phase".to_owned())),
-		}
-	}
-
-	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
-		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_add_output(msg)),
-			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
-				.map_err(|err| ChannelError::Warn(err.into()))?
-				.tx_add_output(msg)),
-			_ => Err(ChannelError::Warn("Got tx_add_output in an invalid phase".to_owned())),
-		}
-	}
-
-	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
-		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_remove_input(msg)),
-			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
-				.map_err(|err| ChannelError::Warn(err.into()))?
-				.tx_remove_input(msg)),
-			_ => Err(ChannelError::Warn("Got tx_remove_input in an invalid phase".to_owned())),
-		}
-	}
-
-	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
-		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_remove_output(msg)),
-			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
-				.map_err(|err| ChannelError::Warn(err.into()))?
-				.tx_remove_output(msg)),
-			_ => Err(ChannelError::Warn("Got tx_remove_output in an invalid phase".to_owned())),
-		}
-	}
-
-	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<HandleTxCompleteResult, ChannelError> {
-		match &mut self.phase {
-			ChannelPhase::UnfundedV2(chan) => Ok(chan.as_negotiating_channel().tx_complete(msg)),
-			#[cfg(splicing)]
-			ChannelPhase::Funded(chan) => Ok(chan.as_renegotiating_channel()
-				.map_err(|err| ChannelError::Warn(err.into()))?
-				.tx_complete(msg)),
-			_ => Err(ChannelError::Warn("Got tx_complete in an invalid phase".to_owned())),
+				.map_err(|err| ChannelError::Warn(err.into()))?),
+			_ => Err(ChannelError::Warn("Got a transaction negotiation message in an invalid phase".to_owned())),
 		}
 	}
 
@@ -2536,7 +2491,7 @@ impl<SP: Deref> InitialRemoteCommitmentReceiver<SP> for FundedChannel<SP> where 
 /// Can be produced by:
 /// - [`PendingV2Channel`], at V2 channel open, and
 /// - [`FundedChannel`], when splicing.
-struct NegotiatingChannelView<'a, SP: Deref> where SP::Target: SignerProvider {
+pub struct NegotiatingChannelView<'a, SP: Deref> where SP::Target: SignerProvider {
 	context: &'a mut ChannelContext<SP>,
 	funding: &'a mut FundingScope,
 	funding_negotiation_context: &'a mut FundingNegotiationContext,
@@ -2646,7 +2601,7 @@ impl<'a, SP: Deref> NegotiatingChannelView<'a, SP> where SP::Target: SignerProvi
 		Ok(msg)
 	}
 
-	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
+	pub(super) fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
 				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
@@ -2657,7 +2612,7 @@ impl<'a, SP: Deref> NegotiatingChannelView<'a, SP> where SP::Target: SignerProvi
 		})
 	}
 
-	fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> InteractiveTxMessageSendResult {
+	pub(super) fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
 				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
@@ -2668,7 +2623,7 @@ impl<'a, SP: Deref> NegotiatingChannelView<'a, SP> where SP::Target: SignerProvi
 		})
 	}
 
-	fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> InteractiveTxMessageSendResult {
+	pub(super) fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
 				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
@@ -2679,7 +2634,7 @@ impl<'a, SP: Deref> NegotiatingChannelView<'a, SP> where SP::Target: SignerProvi
 		})
 	}
 
-	fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> InteractiveTxMessageSendResult {
+	pub(super) fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
 				|reason| reason.into_tx_abort_msg(self.context.channel_id())),
@@ -2690,7 +2645,7 @@ impl<'a, SP: Deref> NegotiatingChannelView<'a, SP> where SP::Target: SignerProvi
 		})
 	}
 
-	fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
+	pub(super) fn tx_complete(&mut self, msg: &msgs::TxComplete) -> HandleTxCompleteResult {
 		let tx_constructor = match self.interactive_tx_constructor {
 			Some(tx_constructor) => tx_constructor,
 			None => {
