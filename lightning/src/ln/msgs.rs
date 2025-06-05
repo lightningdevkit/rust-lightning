@@ -1079,6 +1079,9 @@ impl fmt::Display for SocketAddressParseError {
 }
 
 #[cfg(feature = "std")]
+impl std::error::Error for SocketAddressParseError {}
+
+#[cfg(feature = "std")]
 impl From<std::net::SocketAddrV4> for SocketAddress {
 	fn from(addr: std::net::SocketAddrV4) -> Self {
 		SocketAddress::TcpIpV4 { addr: addr.ip().octets(), port: addr.port() }
