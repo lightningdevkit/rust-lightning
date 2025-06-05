@@ -1957,6 +1957,59 @@ impl FundingScope {
 	pub fn get_channel_type(&self) -> &ChannelTypeFeatures {
 		&self.channel_transaction_parameters.channel_type_features
 	}
+
+	/// Construct FundingScope for a splicing channel
+	#[cfg(splicing)]
+	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_satoshis: u64, post_channel_value: u64, is_initiator: bool, counterparty_funding_pubkey: PublicKey) -> Self where SP::Target: SignerProvider {
+		let post_value_to_self_msat = prev_funding.value_to_self_msat.saturating_add(our_funding_satoshis);
+
+		let prev_funding_txid = prev_funding.channel_transaction_parameters.funding_outpoint
+			.map(|outpoint| outpoint.txid);
+		let holder_pubkeys = match &context.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				ecdsa.pubkeys(prev_funding_txid, &context.secp_ctx)
+			}
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!()
+		};
+		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
+			holder_pubkeys,
+			holder_selected_contest_delay: prev_funding.channel_transaction_parameters.holder_selected_contest_delay,
+			// The 'outbound' attribute may change, if the the splice is being initiated by the previous acceptor
+			is_outbound_from_holder: is_initiator,
+			counterparty_parameters: prev_funding.channel_transaction_parameters.counterparty_parameters.clone(),
+			funding_outpoint: None, // filled later
+			splice_parent_funding_txid: prev_funding_txid,
+			channel_type_features: prev_funding.channel_transaction_parameters.channel_type_features.clone(),
+			channel_value_satoshis: post_channel_value,
+		};
+		// Update the splicing 'tweak', this will rotate the keys in the signer
+		if let Some(ref mut counterparty_parameters) = post_channel_transaction_parameters.counterparty_parameters {
+			counterparty_parameters.pubkeys.funding_pubkey = counterparty_funding_pubkey;
+		}
+
+		// New reserve values are based on the new channel value, and v2-specific
+		let counterparty_selected_channel_reserve_satoshis = Some(get_v2_channel_reserve_satoshis(
+			post_channel_value, context.counterparty_dust_limit_satoshis));
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+		Self {
+			channel_transaction_parameters: post_channel_transaction_parameters,
+			value_to_self_msat: post_value_to_self_msat,
+			funding_transaction: None,
+			counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis,
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((post_value_to_self_msat, (post_channel_value * 1000).saturating_sub(post_value_to_self_msat))),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((post_value_to_self_msat, (post_channel_value * 1000).saturating_sub(post_value_to_self_msat))),
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+		}
+	}
 }
 
 /// Info about a pending splice
@@ -9138,59 +9191,6 @@ impl<SP: Deref> FundedChannel<SP> where
 		Ok(())
 	}
 
-	/// Helper to build the FundingScope for the splicing channel
-	#[cfg(splicing)]
-	fn funding_scope_for_splice(&self, our_funding_satoshis: u64, post_channel_value: u64, is_initiator: bool, counterparty_funding_pubkey: PublicKey) -> FundingScope {
-		let post_value_to_self_msat = self.funding.value_to_self_msat.saturating_add(our_funding_satoshis);
-
-		let prev_funding_txid = self.funding.channel_transaction_parameters.funding_outpoint
-			.map(|outpoint| outpoint.txid);
-		let holder_pubkeys = match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.pubkeys(prev_funding_txid, &self.context.secp_ctx)
-			}
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
-		};
-		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
-			holder_pubkeys,
-			holder_selected_contest_delay: self.funding.channel_transaction_parameters.holder_selected_contest_delay,
-			// The 'outbound' attribute may change, if the the splice is being initiated by the previous acceptor
-			is_outbound_from_holder: is_initiator,
-			counterparty_parameters: self.funding.channel_transaction_parameters.counterparty_parameters.clone(),
-			funding_outpoint: None, // filled later
-			splice_parent_funding_txid: prev_funding_txid,
-			channel_type_features: self.funding.channel_transaction_parameters.channel_type_features.clone(),
-			channel_value_satoshis: post_channel_value,
-		};
-		// Update the splicing 'tweak', this will rotate the keys in the signer
-		if let Some(ref mut counterparty_parameters) = post_channel_transaction_parameters.counterparty_parameters {
-			counterparty_parameters.pubkeys.funding_pubkey = counterparty_funding_pubkey;
-		}
-
-		// New reserve values are based on the new channel value, and v2-specific
-		let counterparty_selected_channel_reserve_satoshis = Some(get_v2_channel_reserve_satoshis(
-			post_channel_value, self.context.counterparty_dust_limit_satoshis));
-		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
-		FundingScope {
-			channel_transaction_parameters: post_channel_transaction_parameters,
-			value_to_self_msat: post_value_to_self_msat,
-			funding_transaction: None,
-			counterparty_selected_channel_reserve_satoshis,
-			holder_selected_channel_reserve_satoshis,
-			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: Mutex::new((post_value_to_self_msat, (post_channel_value * 1000).saturating_sub(post_value_to_self_msat))),
-			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: Mutex::new((post_value_to_self_msat, (post_channel_value * 1000).saturating_sub(post_value_to_self_msat))),
-			#[cfg(any(test, fuzzing))]
-			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
-			#[cfg(any(test, fuzzing))]
-			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
-		}
-	}
-
 	/// See also [`splice_init_checks`]
 	#[cfg(splicing)]
 	pub(crate) fn splice_init<ES: Deref, L: Deref>(
@@ -9213,7 +9213,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			false, // is_outbound
 		)?;
 
-		let funding_scope = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value, false, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, false, msg.funding_pubkey);
 
 		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
@@ -9277,7 +9277,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> where ES::Target: EntropySource, L::Target: Logger {
 		// check if splice is pending
-		let pending_splice = if let Some(pending_splice) = &self.pending_splice {
+		let pending_splice = if let Some(ref mut pending_splice) = &mut self.pending_splice {
 			pending_splice
 		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
@@ -9308,20 +9308,19 @@ impl<SP: Deref> FundedChannel<SP> where
 			true, // is_outbound
 		)?;
 
-		let funding_scope = self.funding_scope_for_splice(our_funding_satoshis, post_channel_value, true, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, true, msg.funding_pubkey);
 
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
 		// We need the current funding tx as an extra input
 		let prev_funding_input = Self::get_input_of_previous_funding(pre_funding_transaction, pre_funding_txo)?;
-		let pending_splice_mut = self.pending_splice.as_mut().unwrap(); // existence checked above
-		debug_assert!(pending_splice_mut.funding_scope.is_none());
-		pending_splice_mut.funding_scope = Some(funding_scope);
+		debug_assert!(pending_splice.funding_scope.is_none());
+		pending_splice.funding_scope = Some(funding_scope);
 		// update funding values
-		pending_splice_mut.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
-		pending_splice_mut.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
-		pending_splice_mut.interactive_tx_constructor = None;
-		pending_splice_mut.interactive_tx_signing_session = None;
+		pending_splice.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
+		pending_splice.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
+		pending_splice.interactive_tx_constructor = None;
+		pending_splice.interactive_tx_signing_session = None;
 
 		log_info!(logger, "Splicing process started after splice_ack, new channel value {}, old {}, outgoing {}, channel_id {}",
 			post_channel_value, pre_channel_value, true, self.context.channel_id);
@@ -9329,10 +9328,10 @@ impl<SP: Deref> FundedChannel<SP> where
 		// Build NegotiatingChannelView lcoally, simmilar to Channel::as_renegotiating_channel()
 		let mut negotiating_view = NegotiatingChannelView {
 			context: &mut self.context,
-			funding: &mut pending_splice_mut.funding_scope.as_mut().unwrap(), // set above
-			funding_negotiation_context: &mut pending_splice_mut.funding_negotiation_context,
-			interactive_tx_constructor: &mut pending_splice_mut.interactive_tx_constructor,
-			interactive_tx_signing_session: &mut pending_splice_mut.interactive_tx_signing_session,
+			funding: &mut pending_splice.funding_scope.as_mut().unwrap(), // set above
+			funding_negotiation_context: &mut pending_splice.funding_negotiation_context,
+			interactive_tx_constructor: &mut pending_splice.interactive_tx_constructor,
+			interactive_tx_signing_session: &mut pending_splice.interactive_tx_signing_session,
 			holder_commitment_transaction_number: self.holder_commitment_point.transaction_number(),
 			is_splice: true,
 		};
