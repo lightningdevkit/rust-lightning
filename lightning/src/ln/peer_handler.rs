@@ -17,7 +17,6 @@
 //! call into the provided message handlers (probably a ChannelManager and P2PGossipSync) with
 //! messages they should handle, and encoding/sending response messages.
 
-use bitcoin::Txid;
 use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
@@ -43,8 +42,6 @@ use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
-
-use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
 use crate::sync::{Mutex, MutexGuard, FairRwLock};
@@ -337,8 +334,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_commitment_signed_batch(
-		&self, their_node_id: PublicKey, channel_id: ChannelId,
-		_batch: BTreeMap<Txid, msgs::CommitmentSigned>,
+		&self, their_node_id: PublicKey, channel_id: ChannelId, _batch: Vec<msgs::CommitmentSigned>,
 	) {
 		ErroringMessageHandler::push_error(self, their_node_id, channel_id);
 	}
@@ -539,6 +535,24 @@ enum InitSyncTracker{
 	NodesSyncing(NodeId),
 }
 
+/// A batch of messages initiated when receiving a `start_batch` message.
+struct MessageBatch {
+	/// The channel associated with all the messages in the batch.
+	channel_id: ChannelId,
+
+	/// The number of messages expected to be in the batch.
+	batch_size: usize,
+
+	/// The batch of messages, which should all be of the same type.
+	messages: MessageBatchImpl,
+}
+
+/// The representation of the message batch, which may different for each message type.
+enum MessageBatchImpl {
+	/// A batch of `commitment_signed` messages used when there are pending splices.
+	CommitmentSigned(Vec<msgs::CommitmentSigned>),
+}
+
 /// The ratio between buffer sizes at which we stop sending initial sync messages vs when we stop
 /// forwarding gossip messages to peers altogether.
 const FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO: usize = 2;
@@ -620,7 +634,7 @@ struct Peer {
 
 	inbound_connection: bool,
 
-	commitment_signed_batch: Option<(ChannelId, BTreeMap<Txid, msgs::CommitmentSigned>)>,
+	message_batch: Option<MessageBatch>,
 }
 
 impl Peer {
@@ -873,7 +887,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 
 enum LogicalMessage<T: core::fmt::Debug + wire::Type + wire::TestEq> {
 	FromWire(wire::Message<T>),
-	CommitmentSignedBatch(ChannelId, BTreeMap<Txid, msgs::CommitmentSigned>),
+	CommitmentSignedBatch(ChannelId, Vec<msgs::CommitmentSigned>),
 }
 
 enum MessageHandlingError {
@@ -1159,7 +1173,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: false,
 
-					commitment_signed_batch: None,
+					message_batch: None,
 				}));
 				Ok(res)
 			}
@@ -1217,7 +1231,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: true,
 
-					commitment_signed_batch: None,
+					message_batch: None,
 				}));
 				Ok(())
 			}
@@ -1772,46 +1786,120 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		// During splicing, commitment_signed messages need to be collected into a single batch
 		// before they are handled.
+		if let wire::Message::StartBatch(msg) = message {
+			if peer_lock.message_batch.is_some() {
+				let error = format!("Peer {} sent start_batch for channel {} before previous batch completed", log_pubkey!(their_node_id), &msg.channel_id);
+				log_debug!(logger, "{}", error);
+				return Err(LightningError {
+					err: error.clone(),
+					action: msgs::ErrorAction::DisconnectPeerWithWarning {
+						msg: msgs::WarningMessage {
+							channel_id: msg.channel_id,
+							data: error,
+						},
+					},
+				}.into());
+			}
+
+			let batch_size = msg.batch_size as usize;
+			if batch_size <= 1 {
+				let error = format!("Peer {} sent start_batch for channel {} not strictly greater than 1", log_pubkey!(their_node_id), &msg.channel_id);
+				log_debug!(logger, "{}", error);
+				return Err(LightningError {
+					err: error.clone(),
+					action: msgs::ErrorAction::SendWarningMessage {
+						msg: msgs::WarningMessage {
+							channel_id: msg.channel_id,
+							data: error,
+						},
+						log_level: Level::Debug,
+					},
+				}.into());
+			}
+
+			const COMMITMENT_SIGNED_BATCH_LIMIT: usize = 20;
+			if batch_size > COMMITMENT_SIGNED_BATCH_LIMIT {
+				let error = format!("Peer {} sent start_batch for channel {} exceeding the limit", log_pubkey!(their_node_id), &msg.channel_id);
+				log_debug!(logger, "{}", error);
+				return Err(LightningError {
+					err: error.clone(),
+					action: msgs::ErrorAction::DisconnectPeerWithWarning {
+						msg: msgs::WarningMessage {
+							channel_id: msg.channel_id,
+							data: error,
+						},
+					},
+				}.into());
+			}
+
+			let messages = match msg.message_type {
+				Some(message_type) if message_type == msgs::CommitmentSigned::TYPE => {
+					let messages = Vec::with_capacity(batch_size);
+					MessageBatchImpl::CommitmentSigned(messages)
+				},
+				_ => {
+					let error = format!("Peer {} sent start_batch for channel {} without a known message type", log_pubkey!(their_node_id), &msg.channel_id);
+					log_debug!(logger, "{}", error);
+					return Err(LightningError {
+						err: error.clone(),
+						action: msgs::ErrorAction::DisconnectPeerWithWarning {
+							msg: msgs::WarningMessage {
+								channel_id: msg.channel_id,
+								data: error,
+							},
+						},
+					}.into());
+				},
+			};
+
+			let message_batch = MessageBatch {
+				channel_id: msg.channel_id,
+				batch_size,
+				messages,
+			};
+			peer_lock.message_batch = Some(message_batch);
+
+			return Ok(None);
+		}
+
 		if let wire::Message::CommitmentSigned(msg) = message {
-			if let Some(ref batch) = msg.batch {
-				let (channel_id, buffer) = peer_lock
-					.commitment_signed_batch
-					.get_or_insert_with(|| (msg.channel_id, BTreeMap::new()));
+			if let Some(message_batch) = &mut peer_lock.message_batch {
+				let MessageBatchImpl::CommitmentSigned(ref mut messages) = &mut message_batch.messages;
 
-				if msg.channel_id != *channel_id {
-					log_debug!(logger, "Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), channel_id, &msg.channel_id);
-					return Err(PeerHandleError { }.into());
+				if msg.channel_id != message_batch.channel_id {
+					let error = format!("Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", log_pubkey!(their_node_id), message_batch.channel_id, &msg.channel_id);
+					log_debug!(logger, "{}", error);
+					return Err(LightningError {
+						err: error.clone(),
+						action: msgs::ErrorAction::DisconnectPeerWithWarning {
+							msg: msgs::WarningMessage {
+								channel_id: msg.channel_id,
+								data: error,
+							},
+						},
+					}.into());
 				}
 
-				const COMMITMENT_SIGNED_BATCH_LIMIT: usize = 100;
-				if buffer.len() == COMMITMENT_SIGNED_BATCH_LIMIT {
-					log_debug!(logger, "Peer {} sent batched commitment_signed for channel {} exceeding the limit", log_pubkey!(their_node_id), channel_id);
-					return Err(PeerHandleError { }.into());
-				}
+				messages.push(msg);
 
-				let batch_size = batch.batch_size as usize;
-				match buffer.entry(batch.funding_txid) {
-					btree_map::Entry::Vacant(entry) => { entry.insert(msg); },
-					btree_map::Entry::Occupied(_) => {
-						log_debug!(logger, "Peer {} sent batched commitment_signed with duplicate funding_txid {} for channel {}", log_pubkey!(their_node_id), channel_id, &batch.funding_txid);
-						return Err(PeerHandleError { }.into());
-					}
-				}
+				if messages.len() == message_batch.batch_size {
+					let MessageBatch { channel_id, batch_size: _, messages } = peer_lock.message_batch.take().expect("batch should have been inserted");
+					let MessageBatchImpl::CommitmentSigned(batch) = messages;
 
-				if buffer.len() >= batch_size {
-					let (channel_id, batch) = peer_lock.commitment_signed_batch.take().expect("batch should have been inserted");
 					return Ok(Some(LogicalMessage::CommitmentSignedBatch(channel_id, batch)));
 				} else {
 					return Ok(None);
 				}
-			} else if peer_lock.commitment_signed_batch.is_some() {
-				log_debug!(logger, "Peer {} sent non-batched commitment_signed for channel {} when expecting batched commitment_signed", log_pubkey!(their_node_id), &msg.channel_id);
-				return Err(PeerHandleError { }.into());
 			} else {
 				return Ok(Some(LogicalMessage::FromWire(wire::Message::CommitmentSigned(msg))));
 			}
-		} else if peer_lock.commitment_signed_batch.is_some() {
-			log_debug!(logger, "Peer {} sent non-commitment_signed message when expecting batched commitment_signed", log_pubkey!(their_node_id));
+		} else if let Some(message_batch) = &peer_lock.message_batch {
+			match message_batch.messages {
+				MessageBatchImpl::CommitmentSigned(_) => {
+					log_debug!(logger, "Peer {} sent an unexpected message for a commitment_signed batch", log_pubkey!(their_node_id));
+				},
+			}
+
 			return Err(PeerHandleError { }.into());
 		}
 
@@ -1901,6 +1989,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 
 			// Channel messages:
+			wire::Message::StartBatch(_msg) => {
+				debug_assert!(false);
+			},
 			wire::Message::OpenChannel(msg) => {
 				self.message_handler.chan_handler.handle_open_channel(their_node_id, &msg);
 			},
@@ -2403,6 +2494,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							}
 							if let &Some(ref msg) = update_fee {
 								self.enqueue_message(&mut *peer, msg);
+							}
+							if commitment_signed.len() > 1 {
+								let msg = msgs::StartBatch {
+									channel_id: *channel_id,
+									batch_size: commitment_signed.len() as u16,
+									message_type: Some(msgs::CommitmentSigned::TYPE),
+								};
+								self.enqueue_message(&mut *peer, &msg);
 							}
 							for msg in commitment_signed {
 								self.enqueue_message(&mut *peer, msg);
