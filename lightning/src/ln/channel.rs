@@ -5143,7 +5143,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		&mut self, funding: &FundingScope, tx: &Transaction, logger: &L,
 	) -> Result<(), ClosureReason>
 	where
-		L::Target: Logger
+		L::Target: Logger,
 	{
 		let funding_txo = match funding.get_funding_txo() {
 			Some(funding_txo) => funding_txo,
