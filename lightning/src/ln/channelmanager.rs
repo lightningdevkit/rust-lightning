@@ -8372,7 +8372,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if channel_type.requires_zero_conf() {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), common_fields.temporary_channel_id));
 		}
-		if channel_type.requires_anchors_zero_fee_htlc_tx() {
+		if channel_type.requires_anchors_zero_fee_htlc_tx() || channel_type.requires_anchor_zero_fee_commitments() {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), common_fields.temporary_channel_id));
 		}
 
@@ -12472,6 +12472,7 @@ where
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					Some(chan) => match chan.maybe_handle_error_without_close(
 						self.chain_hash, &self.fee_estimator, &self.logger,
+						&self.default_configuration, &peer_state.latest_features,
 					) {
 						Ok(Some(OpenChannelMessage::V1(msg))) => {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
@@ -13004,6 +13005,12 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// quiescent-dependent protocols (e.g., splicing).
 	#[cfg(any(test, fuzzing))]
 	features.set_quiescence_optional();
+
+	#[cfg(test)]
+	if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
+		features.set_anchor_zero_fee_commitments_optional();
+	}
+
 	features
 }
 
@@ -15210,13 +15217,16 @@ mod tests {
 	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
 	use crate::sign::EntropySource;
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
+	use crate::util::config::{
+		ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate, UserConfig,
+	};
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+	use lightning_types::features::ChannelTypeFeatures;
 
 	#[test]
 	#[rustfmt::skip]
@@ -16274,117 +16284,6 @@ mod tests {
 		// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334
 		// is not satisfied.
 		assert!(result.is_ok());
-	}
-
-	#[test]
-	fn test_inbound_anchors_manual_acceptance() {
-		test_inbound_anchors_manual_acceptance_with_override(None);
-	}
-
-	#[test]
-	fn test_inbound_anchors_manual_acceptance_overridden() {
-		let overrides = ChannelConfigOverrides {
-			handshake_overrides: Some(ChannelHandshakeConfigUpdate {
-				max_inbound_htlc_value_in_flight_percent_of_channel: Some(5),
-				htlc_minimum_msat: Some(1000),
-				minimum_depth: Some(2),
-				to_self_delay: Some(200),
-				max_accepted_htlcs: Some(5),
-				channel_reserve_proportional_millionths: Some(20000),
-			}),
-			update_overrides: None,
-		};
-
-		let accept_message = test_inbound_anchors_manual_acceptance_with_override(Some(overrides));
-		assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
-		assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
-		assert_eq!(accept_message.common_fields.minimum_depth, 2);
-		assert_eq!(accept_message.common_fields.to_self_delay, 200);
-		assert_eq!(accept_message.common_fields.max_accepted_htlcs, 5);
-		assert_eq!(accept_message.channel_reserve_satoshis, 2_000);
-	}
-
-	#[rustfmt::skip]
-	fn test_inbound_anchors_manual_acceptance_with_override(config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
-		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
-		// flag set and (sometimes) accept channels as 0conf.
-		let mut anchors_cfg = test_default_channel_config();
-		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-
-		let mut anchors_manual_accept_cfg = anchors_cfg.clone();
-		anchors_manual_accept_cfg.manually_accept_inbound_channels = true;
-
-		let chanmon_cfgs = create_chanmon_cfgs(3);
-		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs,
-			&[Some(anchors_cfg.clone()), Some(anchors_cfg.clone()), Some(anchors_manual_accept_cfg.clone())]);
-		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-
-		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-
-		nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
-		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-		match &msg_events[0] {
-			MessageSendEvent::HandleError { node_id, action } => {
-				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				match action {
-					ErrorAction::SendErrorMessage { msg } =>
-						assert_eq!(msg.data, "No channels with anchor outputs accepted".to_owned()),
-					_ => panic!("Unexpected error action"),
-				}
-			}
-			_ => panic!("Unexpected event"),
-		}
-
-		nodes[2].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
-		let events = nodes[2].node.get_and_clear_pending_events();
-		match events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, .. } =>
-				nodes[2].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23, config_overrides).unwrap(),
-			_ => panic!("Unexpected event"),
-		}
-		get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id())
-	}
-
-	#[test]
-	#[rustfmt::skip]
-	fn test_anchors_zero_fee_htlc_tx_fallback() {
-		// Tests that if both nodes support anchors, but the remote node does not want to accept
-		// anchor channels at the moment, an error it sent to the local node such that it can retry
-		// the channel without the anchors feature.
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let mut anchors_config = test_default_channel_config();
-		anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		anchors_config.manually_accept_inbound_channels = true;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let error_message = "Channel force-closed";
-
-		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(open_channel_msg.common_fields.channel_type.as_ref().unwrap().supports_anchors_zero_fee_htlc_tx());
-
-		nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
-		let events = nodes[1].node.get_and_clear_pending_events();
-		match events[0] {
-			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
-			}
-			_ => panic!("Unexpected event"),
-		}
-
-		let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
-
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(!open_channel_msg.common_fields.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
-
-		// Since nodes[1] should not have accepted the channel, it should
-		// not have generated any events.
-		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
 
 	#[test]
