@@ -1677,7 +1677,29 @@ impl<SP: Deref> Channel<SP> where
 				res
 			},
 			ChannelPhase::Funded(mut funded_channel) => {
-				let res = funded_channel.commitment_signed(msg, logger).map(|monitor_update_opt| (None, monitor_update_opt));
+				#[cfg(splicing)]
+				let session_received_commitment_signed = funded_channel
+					.interactive_tx_signing_session
+					.as_ref()
+					.map(|session| session.has_received_commitment_signed())
+					.unwrap_or(false);
+				#[cfg(splicing)]
+				let res = if funded_channel.pending_splice.is_some() && !session_received_commitment_signed {
+					// TODO(splicing): Currently doesn't build until we have the negotiated
+					// `FundingScope` constructed and available for use (#3736).
+					let pending_splice = funded_channel.pending_splice.as_ref().unwrap();
+					funded_channel
+						.splice_initial_commitment_signed(&pending_splice.funding, msg, logger)
+						.map(|monitor_update_opt| (None, monitor_update_opt))
+				} else {
+					funded_channel.commitment_signed(msg, logger)
+						.map(|monitor_update_opt| (None, monitor_update_opt))
+				};
+
+				#[cfg(not(splicing))]
+				let res = funded_channel.commitment_signed(msg, logger)
+					.map(|monitor_update_opt| (None, monitor_update_opt));
+
 				self.phase = ChannelPhase::Funded(funded_channel);
 				res
 			},
@@ -6015,6 +6037,69 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 
 		Ok(channel_monitor)
+	}
+
+	#[cfg(splicing)]
+	pub fn splice_initial_commitment_signed<L: Deref>(
+		&mut self, funding: &FundingScope, msg: &msgs::CommitmentSigned, logger: &L,
+	) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
+	where
+		L::Target: Logger
+	{
+		if !self.context.channel_state.is_interactive_signing()
+			|| self.context.channel_state.is_their_tx_signatures_sent()
+		{
+			return Err(ChannelError::close(
+				"Received splice initial commitment_signed during invalid state".to_owned(),
+			));
+		}
+		if msg.batch.is_some() {
+			return Err(ChannelError::close("Peer sent splice initial commitment_signed with a batch".to_owned()));
+		}
+
+		let holder_commitment_data = self.context.validate_commitment_signed(
+			funding, &self.holder_commitment_point, msg, logger,
+		)?;
+
+		let counterparty_commitment_tx = self.context.build_commitment_transaction(
+			funding, self.context.cur_counterparty_commitment_transaction_number,
+			&self.context.counterparty_cur_commitment_point.unwrap(), false, false, logger,
+		).tx;
+
+		{
+			let counterparty_trusted_tx = counterparty_commitment_tx.trust();
+			let counterparty_bitcoin_tx = counterparty_trusted_tx.built_transaction();
+			log_trace!(logger, "Splice initial counterparty tx for channel {} is: txid {} tx {}",
+				&self.context.channel_id(), counterparty_bitcoin_tx.txid,
+				encode::serialize_hex(&counterparty_bitcoin_tx.transaction));
+		}
+
+		log_info!(logger, "Received splice initial commitment_signed from peer for channel {} with funding txid {}",
+			&self.context.channel_id(), funding.get_funding_txo().unwrap().txid);
+
+		self.context.latest_monitor_update_id += 1;
+		let monitor_update = ChannelMonitorUpdate {
+			update_id: self.context.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::RenegotiatedFunding {
+				channel_parameters: funding.channel_transaction_parameters.clone(),
+				holder_commitment_tx: holder_commitment_data.commitment_tx,
+				counterparty_commitment_tx,
+			}],
+			channel_id: Some(self.context.channel_id()),
+		};
+
+		let tx_signatures = self.interactive_tx_signing_session.as_mut()
+			.and_then(|session| session.received_commitment_signed());
+		self.context.monitor_pending_tx_signatures = tx_signatures;
+
+		if self.context.channel_state.is_monitor_update_in_progress() {
+			// There may be a pending monitor update for a `revoke_and_ack` or preimage we have to
+			// handle first.
+		} else {
+			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+		}
+
+		Ok(self.push_ret_blockable_mon_update(monitor_update))
 	}
 
 	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<Option<ChannelMonitorUpdate>, ChannelError>
