@@ -1820,6 +1820,10 @@ pub(super) struct FundingScope {
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
 	short_channel_id: Option<u64>,
+
+	/// The minimum number of confirmations before the funding is locked. If set, this will override
+	/// [`ChannelContext::minimum_depth`].
+	minimum_depth_override: Option<u32>,
 }
 
 impl Writeable for FundingScope {
@@ -1833,6 +1837,7 @@ impl Writeable for FundingScope {
 			(11, self.funding_tx_confirmed_in, option),
 			(13, self.funding_tx_confirmation_height, required),
 			(15, self.short_channel_id, option),
+			(17, self.minimum_depth_override, option),
 		});
 		Ok(())
 	}
@@ -1848,6 +1853,7 @@ impl Readable for FundingScope {
 		let mut funding_tx_confirmed_in = None;
 		let mut funding_tx_confirmation_height = RequiredWrapper(None);
 		let mut short_channel_id = None;
+		let mut minimum_depth_override = None;
 
 		read_tlv_fields!(reader, {
 			(1, value_to_self_msat, required),
@@ -1858,6 +1864,7 @@ impl Readable for FundingScope {
 			(11, funding_tx_confirmed_in, option),
 			(13, funding_tx_confirmation_height, required),
 			(15, short_channel_id, option),
+			(17, minimum_depth_override, option),
 		});
 
 		Ok(Self {
@@ -1873,6 +1880,7 @@ impl Readable for FundingScope {
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height: funding_tx_confirmation_height.0.unwrap(),
 			short_channel_id,
+			minimum_depth_override,
 			#[cfg(any(test, fuzzing))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
@@ -2947,6 +2955,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
+			minimum_depth_override: None,
 		};
 		let channel_context = ChannelContext {
 			user_id,
@@ -3181,6 +3190,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
+			minimum_depth_override: None,
 		};
 		let channel_context = Self {
 			user_id,
@@ -5005,22 +5015,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	}
 
 	fn check_funding_meets_minimum_depth(&self, funding: &mut FundingScope, height: u32) -> bool {
-		let is_coinbase = funding
-			.funding_transaction
-			.as_ref()
-			.map(|tx| tx.is_coinbase())
-			.unwrap_or(false);
-
-		let minimum_depth = {
-			// If the funding transaction is a coinbase transaction, we need to set the minimum
-			// depth to 100. We can skip this if it is a zero-conf channel.
-			let minimum_depth = self.minimum_depth.unwrap_or(0);
-			if is_coinbase && minimum_depth > 0 && minimum_depth < COINBASE_MATURITY {
-				Some(COINBASE_MATURITY)
-			} else {
-				self.minimum_depth
-			}
-		};
+		let minimum_depth = funding.minimum_depth_override.or(self.minimum_depth);
 
 		if funding.funding_tx_confirmation_height == 0 && minimum_depth != Some(0) {
 			return false;
@@ -8490,19 +8485,19 @@ impl<SP: Deref> FundedChannel<SP> where
 								}
 							}
 
-							// The acceptor of v1-established channels doesn't have the funding
-							// transaction until it is seen on chain. Set it so that minimum_depth
-							// checks can tell if the coinbase transaction was used.
-							if self.funding.funding_transaction.is_none() {
-								self.funding.funding_transaction = Some(tx.clone());
-							}
-
 							self.funding.funding_tx_confirmation_height = height;
 							self.funding.funding_tx_confirmed_in = Some(*block_hash);
 							self.funding.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 							}
+						}
+						// If this is a coinbase transaction and not a 0-conf channel
+						// we should update our min_depth to 100 to handle coinbase maturity
+						if tx.is_coinbase() &&
+							self.context.minimum_depth.unwrap_or(0) > 0 &&
+							self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
+							self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 						}
 					}
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
@@ -9911,6 +9906,14 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_state = ChannelState::FundingNegotiated(FundingNegotiatedFlags::new());
 		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 
+		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
+		// We can skip this if it is a zero-conf channel.
+		if funding_transaction.is_coinbase() &&
+			self.context.minimum_depth.unwrap_or(0) > 0 &&
+			self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
+			self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
+		}
+
 		debug_assert!(self.funding.funding_transaction.is_none());
 		self.funding.funding_transaction = Some(funding_transaction);
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
@@ -11128,7 +11131,8 @@ impl<SP: Deref> Writeable for FundedChannel<SP> where SP::Target: SignerProvider
 			(54, self.pending_funding, optional_vec), // Added in 0.2
 			(55, removed_htlc_failure_attribution_data, optional_vec), // Added in 0.2
 			(57, holding_cell_failure_attribution_data, optional_vec), // Added in 0.2
-			(58, self.interactive_tx_signing_session, option) // Added in 0.2
+			(58, self.interactive_tx_signing_session, option), // Added in 0.2
+			(59, self.funding.minimum_depth_override, option), // Added in 0.2
 		});
 
 		Ok(())
@@ -11447,6 +11451,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 
 		let mut interactive_tx_signing_session: Option<InteractiveTxSigningSession> = None;
 
+		let mut minimum_depth_override: Option<u32> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -11486,6 +11492,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 			(55, removed_htlc_failure_attribution_data, optional_vec),
 			(57, holding_cell_failure_attribution_data, optional_vec),
 			(58, interactive_tx_signing_session, option), // Added in 0.2
+			(59, minimum_depth_override, option), // Added in 0.2
 		});
 
 		let holder_signer = signer_provider.derive_channel_signer(channel_keys_id);
@@ -11661,6 +11668,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, &'c Channel
 				funding_tx_confirmed_in,
 				funding_tx_confirmation_height,
 				short_channel_id,
+				minimum_depth_override,
 			},
 			pending_funding: pending_funding.unwrap(),
 			context: ChannelContext {
