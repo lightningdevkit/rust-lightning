@@ -168,6 +168,7 @@ mod test {
 		BaseMessageHandler, ChannelMessageHandler, Init, OnionMessageHandler,
 	};
 	use lightning::ln::peer_handler::IgnoringMessageHandler;
+	use lightning::offers::offer::Offer;
 	use lightning::onion_message::dns_resolution::{HumanReadableName, OMNameResolver};
 	use lightning::onion_message::messenger::{
 		AOnionMessenger, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
@@ -365,123 +366,22 @@ mod test {
 		assert!(resolution.2[.."bitcoin:".len()].eq_ignore_ascii_case("bitcoin:"));
 	}
 
-	#[tokio::test]
-	async fn end_to_end_test() {
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-		create_announced_chan_between_nodes(&nodes, 0, 1);
-
-		// The DNSSEC validation will only work with the current time, so set the time on the
-		// resolver.
-		let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-		let block = Block {
-			header: create_dummy_header(nodes[0].best_block_hash(), now as u32),
-			txdata: Vec::new(),
-		};
-		connect_block(&nodes[0], &block);
-		connect_block(&nodes[1], &block);
-
-		let payer_id = nodes[0].node.get_our_node_id();
-		let payee_id = nodes[1].node.get_our_node_id();
-
-		let (resolver_messenger, resolver_id) = create_resolver();
-		let init_msg = get_om_init();
-		nodes[0].onion_messenger.peer_connected(resolver_id, &init_msg, true).unwrap();
-		resolver_messenger.get_om().peer_connected(payer_id, &init_msg, false).unwrap();
-
-		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
-
-		// When we get the proof back, override its contents to an offer from nodes[1]
-		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+	async fn pay_offer_flow<'a, 'b, 'c>(
+		nodes: &[Node<'a, 'b, 'c>], resolver_messenger: &impl AOnionMessenger,
+		resolver_id: PublicKey, payer_id: PublicKey, payee_id: PublicKey, offer: Offer,
+		name: HumanReadableName, amt: u64, payment_id: PaymentId, payer_note: Option<String>,
+		retry: Retry, params: RouteParametersConfig, resolvers: Vec<Destination>,
+	) {
+		// Override contents to offer provided
 		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
-		proof_override.lock().unwrap().insert(name.clone(), bs_offer.clone());
-
-		let payment_id = PaymentId([42; 32]);
-		let resolvers = vec![Destination::Node(resolver_id)];
-		let retry = Retry::Attempts(0);
-		let amt = 42_000;
-		let params = RouteParametersConfig::default();
-		nodes[0]
-			.node
-			.pay_for_offer_from_human_readable_name(
-				name.clone(),
-				amt,
-				payment_id,
-				None,
-				retry,
-				params,
-				resolvers.clone(),
-			)
-			.unwrap();
-
-		let query = nodes[0].onion_messenger.next_onion_message_for_peer(resolver_id).unwrap();
-		resolver_messenger.get_om().handle_onion_message(payer_id, &query);
-
-		assert!(resolver_messenger.get_om().next_onion_message_for_peer(payer_id).is_none());
-		let start = Instant::now();
-		let response = loop {
-			tokio::time::sleep(Duration::from_millis(10)).await;
-			if let Some(msg) = resolver_messenger.get_om().next_onion_message_for_peer(payer_id) {
-				break msg;
-			}
-			assert!(start.elapsed() < Duration::from_secs(10), "Resolution took too long");
-		};
-
-		nodes[0].onion_messenger.handle_onion_message(resolver_id, &response);
-
-		let invreq = nodes[0].onion_messenger.next_onion_message_for_peer(payee_id).unwrap();
-		nodes[1].onion_messenger.handle_onion_message(payer_id, &invreq);
-
-		let inv = nodes[1].onion_messenger.next_onion_message_for_peer(payer_id).unwrap();
-		nodes[0].onion_messenger.handle_onion_message(payee_id, &inv);
-
-		check_added_monitors(&nodes[0], 1);
-		let updates = get_htlc_update_msgs!(nodes[0], payee_id);
-		nodes[1].node.handle_update_add_htlc(payer_id, &updates.update_add_htlcs[0]);
-		commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
-		expect_pending_htlcs_forwardable!(nodes[1]);
-
-		let claimable_events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(claimable_events.len(), 1);
-		let our_payment_preimage;
-		if let Event::PaymentClaimable { purpose, amount_msat, .. } = &claimable_events[0] {
-			assert_eq!(*amount_msat, amt);
-			if let PaymentPurpose::Bolt12OfferPayment {
-				payment_preimage, payment_context, ..
-			} = purpose
-			{
-				our_payment_preimage = payment_preimage.unwrap();
-				nodes[1].node.claim_funds(our_payment_preimage);
-				let payment_hash: PaymentHash = our_payment_preimage.into();
-				expect_payment_claimed!(nodes[1], payment_hash, amt);
-				assert_eq!(payment_context.invoice_request.payer_note_truncated, None);
-			} else {
-				panic!();
-			}
-		} else {
-			panic!();
-		}
-
-		check_added_monitors(&nodes[1], 1);
-		let updates = get_htlc_update_msgs!(nodes[1], payer_id);
-		nodes[0].node.handle_update_fulfill_htlc(payee_id, &updates.update_fulfill_htlcs[0]);
-		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
-
-		expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);
-
-		// Pay offer with payer_note
-		let proof_override = &nodes[0].node.testing_dnssec_proof_offer_resolution_override;
-		proof_override.lock().unwrap().insert(name.clone(), bs_offer);
+		proof_override.lock().unwrap().insert(name.clone(), offer);
 		nodes[0]
 			.node
 			.pay_for_offer_from_human_readable_name(
 				name,
 				amt,
-				PaymentId([21; 32]),
-				Some("foo".into()),
+				payment_id,
+				payer_note.clone(),
 				retry,
 				params,
 				resolvers,
@@ -528,10 +428,14 @@ mod test {
 				nodes[1].node.claim_funds(our_payment_preimage);
 				let payment_hash: PaymentHash = our_payment_preimage.into();
 				expect_payment_claimed!(nodes[1], payment_hash, amt);
-				assert_eq!(
-					payment_context.invoice_request.payer_note_truncated,
-					Some(UntrustedString("foo".into()))
-				);
+				if let Some(note) = payer_note {
+					assert_eq!(
+						payment_context.invoice_request.payer_note_truncated,
+						Some(UntrustedString(note.into()))
+					);
+				} else {
+					assert_eq!(payment_context.invoice_request.payer_note_truncated, None);
+				}
 			} else {
 				panic!();
 			}
@@ -545,5 +449,76 @@ mod test {
 		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
 
 		expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);
+	}
+
+	#[tokio::test]
+	async fn end_to_end_test() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		// The DNSSEC validation will only work with the current time, so set the time on the
+		// resolver.
+		let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+		let block = Block {
+			header: create_dummy_header(nodes[0].best_block_hash(), now as u32),
+			txdata: Vec::new(),
+		};
+		connect_block(&nodes[0], &block);
+		connect_block(&nodes[1], &block);
+
+		let payer_id = nodes[0].node.get_our_node_id();
+		let payee_id = nodes[1].node.get_our_node_id();
+
+		let (resolver_messenger, resolver_id) = create_resolver();
+		let init_msg = get_om_init();
+		nodes[0].onion_messenger.peer_connected(resolver_id, &init_msg, true).unwrap();
+		resolver_messenger.get_om().peer_connected(payer_id, &init_msg, false).unwrap();
+
+		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
+
+		let bs_offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+		let resolvers = vec![Destination::Node(resolver_id)];
+		let retry = Retry::Attempts(0);
+		let amt = 42_000;
+		let params = RouteParametersConfig::default();
+
+		pay_offer_flow(
+			&nodes,
+			&resolver_messenger,
+			resolver_id,
+			payer_id,
+			payee_id,
+			bs_offer.clone(),
+			name.clone(),
+			amt,
+			PaymentId([42; 32]),
+			None,
+			retry,
+			params,
+			resolvers.clone(),
+		)
+		.await;
+
+		// Pay offer with payer_note
+		pay_offer_flow(
+			&nodes,
+			&resolver_messenger,
+			resolver_id,
+			payer_id,
+			payee_id,
+			bs_offer,
+			name,
+			amt,
+			PaymentId([21; 32]),
+			Some("foo".into()),
+			retry,
+			params,
+			resolvers,
+		)
+		.await;
 	}
 }
