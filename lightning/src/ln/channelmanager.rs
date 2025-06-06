@@ -8372,7 +8372,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if channel_type.requires_zero_conf() {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), common_fields.temporary_channel_id));
 		}
-		if channel_type.requires_anchors_zero_fee_htlc_tx() {
+		if channel_type.requires_anchors_zero_fee_htlc_tx() || channel_type.requires_anchor_zero_fee_commitments() {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), common_fields.temporary_channel_id));
 		}
 
@@ -12472,6 +12472,7 @@ where
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					Some(chan) => match chan.maybe_handle_error_without_close(
 						self.chain_hash, &self.fee_estimator, &self.logger,
+						&self.default_configuration, &peer_state.latest_features,
 					) {
 						Ok(Some(OpenChannelMessage::V1(msg))) => {
 							peer_state.pending_msg_events.push(MessageSendEvent::SendOpenChannel {
@@ -13004,6 +13005,12 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	// quiescent-dependent protocols (e.g., splicing).
 	#[cfg(any(test, fuzzing))]
 	features.set_quiescence_optional();
+
+	#[cfg(test)]
+	if config.channel_handshake_config.negotiate_anchor_zero_fee_commitments {
+		features.set_anchor_zero_fee_commitments_optional();
+	}
+
 	features
 }
 
@@ -15210,13 +15217,16 @@ mod tests {
 	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
 	use crate::sign::EntropySource;
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-	use crate::util::config::{ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate};
+	use crate::util::config::{
+		ChannelConfig, ChannelConfigUpdate, ChannelHandshakeConfigUpdate, UserConfig,
+	};
 	use crate::util::errors::APIError;
 	use crate::util::ser::Writeable;
 	use crate::util::test_utils;
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+	use lightning_types::features::ChannelTypeFeatures;
 
 	#[test]
 	#[rustfmt::skip]
@@ -16278,7 +16288,9 @@ mod tests {
 
 	#[test]
 	fn test_inbound_anchors_manual_acceptance() {
-		test_inbound_anchors_manual_acceptance_with_override(None);
+		let mut anchors_cfg = test_default_channel_config();
+		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		do_test_manual_inbound_accept_with_override(anchors_cfg, None);
 	}
 
 	#[test]
@@ -16295,7 +16307,11 @@ mod tests {
 			update_overrides: None,
 		};
 
-		let accept_message = test_inbound_anchors_manual_acceptance_with_override(Some(overrides));
+		let mut anchors_cfg = test_default_channel_config();
+		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let accept_message =
+			do_test_manual_inbound_accept_with_override(anchors_cfg, Some(overrides));
 		assert_eq!(accept_message.common_fields.max_htlc_value_in_flight_msat, 5_000_000);
 		assert_eq!(accept_message.common_fields.htlc_minimum_msat, 1_000);
 		assert_eq!(accept_message.common_fields.minimum_depth, 2);
@@ -16304,20 +16320,24 @@ mod tests {
 		assert_eq!(accept_message.channel_reserve_satoshis, 2_000);
 	}
 
-	#[rustfmt::skip]
-	fn test_inbound_anchors_manual_acceptance_with_override(config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
-		// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
-		// flag set and (sometimes) accept channels as 0conf.
-		let mut anchors_cfg = test_default_channel_config();
-		anchors_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	#[test]
+	fn test_inbound_zero_fee_commitments_manual_acceptance() {
+		let mut zero_fee_cfg = test_default_channel_config();
+		zero_fee_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		do_test_manual_inbound_accept_with_override(zero_fee_cfg, None);
+	}
 
-		let mut anchors_manual_accept_cfg = anchors_cfg.clone();
-		anchors_manual_accept_cfg.manually_accept_inbound_channels = true;
+	#[rustfmt::skip]
+	fn do_test_manual_inbound_accept_with_override(start_cfg: UserConfig,
+		config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
+
+		let mut mannual_accept_cfg = start_cfg.clone();
+		mannual_accept_cfg.manually_accept_inbound_channels = true;
 
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs,
-			&[Some(anchors_cfg.clone()), Some(anchors_cfg.clone()), Some(anchors_manual_accept_cfg.clone())]);
+			&[Some(start_cfg.clone()), Some(start_cfg.clone()), Some(mannual_accept_cfg.clone())]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
@@ -16349,23 +16369,145 @@ mod tests {
 	}
 
 	#[test]
-	#[rustfmt::skip]
-	fn test_anchors_zero_fee_htlc_tx_fallback() {
+	fn test_anchors_zero_fee_htlc_tx_downgrade() {
 		// Tests that if both nodes support anchors, but the remote node does not want to accept
 		// anchor channels at the moment, an error it sent to the local node such that it can retry
 		// the channel without the anchors feature.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let start_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		let end_type = ChannelTypeFeatures::only_static_remote_key();
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
+	}
+
+	#[test]
+	fn test_scid_privacy_downgrade() {
+		// Tests downgrade from `anchors_zero_fee_commitments` with `option_scid_alias` when the
+		// remote node advertises the features but does not accept the channel, asserting that
+		// `option_scid_alias` is the last feature to be downgraded.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		initiator_cfg.channel_handshake_config.negotiate_scid_privacy = true;
+		initiator_cfg.channel_handshake_config.announce_for_forwarding = false;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.channel_handshake_config.negotiate_scid_privacy = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let mut start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
+		start_type.set_scid_privacy_required();
+		let mut with_anchors = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		with_anchors.set_scid_privacy_required();
+		let mut with_scid_privacy = ChannelTypeFeatures::only_static_remote_key();
+		with_scid_privacy.set_scid_privacy_required();
+		let static_remote = ChannelTypeFeatures::only_static_remote_key();
+		let downgrade_types = vec![with_anchors, with_scid_privacy, static_remote];
+
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, downgrade_types);
+	}
+
+	#[test]
+	fn test_zero_fee_commitments_downgrade() {
+		// Tests that the local node will retry without zero fee commitments in the case where the
+		// remote node supports the feature but does not accept it.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
+		let downgrade_types = vec![
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+			ChannelTypeFeatures::only_static_remote_key(),
+		];
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, downgrade_types);
+	}
+
+	#[test]
+	fn test_zero_fee_commitments_downgrade_to_static_remote() {
+		// Tests that the local node will retry with static remote key when zero fee commitments
+		// are supported (but not accepted), but not legacy anchors.
+		let mut initiator_cfg = test_default_channel_config();
+		initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
+		let end_type = ChannelTypeFeatures::only_static_remote_key();
+		do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
+	}
+
+	#[rustfmt::skip]
+	fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
+		start_type: ChannelTypeFeatures, downgrade_types: Vec<ChannelTypeFeatures>) {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let mut anchors_config = test_default_channel_config();
-		anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-		anchors_config.manually_accept_inbound_channels = true;
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(acceptor_cfg)]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let error_message = "Channel force-closed";
+
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
+		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		assert_eq!(open_channel_msg.common_fields.channel_type.as_ref().unwrap(), &start_type);
+
+		for downgrade_type in downgrade_types {
+			nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				Event::OpenChannelRequest { temporary_channel_id, .. } => {
+					nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
+				}
+				_ => panic!("Unexpected event"),
+			}
+
+			let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
+
+			open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+			let channel_type = open_channel_msg.common_fields.channel_type.as_ref().unwrap();
+			assert_eq!(channel_type, &downgrade_type);
+
+			// Since nodes[1] should not have accepted the channel, it should
+			// not have generated any events.
+			assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		}
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_no_channel_downgrade() {
+		// Tests that the local node will not retry when a `option_static_remote` channel is
+		// rejected by a peer that advertises support for the feature.
+		let initiator_cfg = test_default_channel_config();
+		let mut receiver_cfg = test_default_channel_config();
+		receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		receiver_cfg.manually_accept_inbound_channels = true;
+
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(receiver_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let error_message = "Channel force-closed";
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(open_channel_msg.common_fields.channel_type.as_ref().unwrap().supports_anchors_zero_fee_htlc_tx());
+		let start_type = ChannelTypeFeatures::only_static_remote_key();
+		assert_eq!(open_channel_msg.common_fields.channel_type.as_ref().unwrap(), &start_type);
 
 		nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel_msg);
 		let events = nodes[1].node.get_and_clear_pending_events();
@@ -16379,12 +16521,10 @@ mod tests {
 		let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_error(nodes[1].node.get_our_node_id(), &error_msg);
 
-		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		assert!(!open_channel_msg.common_fields.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
-
-		// Since nodes[1] should not have accepted the channel, it should
-		// not have generated any events.
-		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		// Since nodes[0] could not retry the channel with a different type, it should close it.
+		let chan_closed_events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(chan_closed_events.len(), 1);
+		if let Event::ChannelClosed { .. } = chan_closed_events[0] { } else { panic!(); }
 	}
 
 	#[test]

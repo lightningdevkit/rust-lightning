@@ -1557,6 +1557,7 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn maybe_handle_error_without_close<F: Deref, L: Deref>(
 		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<Option<OpenChannelMessage>, ()>
 	where
 		F::Target: FeeEstimator,
@@ -1567,13 +1568,17 @@ impl<SP: Deref> Channel<SP> where
 			ChannelPhase::Funded(_) => Ok(None),
 			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = WithChannelContext::from(logger, &chan.context, None);
-				chan.maybe_handle_error_without_close(chain_hash, fee_estimator, &&logger)
+				chan.maybe_handle_error_without_close(
+					chain_hash, fee_estimator, &&logger, user_config, their_features,
+				)
 					.map(|msg| Some(OpenChannelMessage::V1(msg)))
 			},
 			ChannelPhase::UnfundedInboundV1(_) => Ok(None),
 			ChannelPhase::UnfundedV2(chan) => {
 				if chan.funding.is_outbound() {
-					chan.maybe_handle_error_without_close(chain_hash, fee_estimator)
+					chan.maybe_handle_error_without_close(
+						chain_hash, fee_estimator, user_config, their_features,
+					)
 						.map(|msg| Some(OpenChannelMessage::V2(msg)))
 				} else {
 					Ok(None)
@@ -3072,12 +3077,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		debug_assert!(!channel_type.supports_any_optional_bits());
 		debug_assert!(!channel_type.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
 
-		let (commitment_conf_target, anchor_outputs_value_msat)  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			(ConfirmationTarget::AnchorChannelFee, ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000)
-		} else {
-			(ConfirmationTarget::NonAnchorChannelFee, 0)
-		};
-		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
+		let (commitment_feerate, anchor_outputs_value_msat) =
+			if channel_type.supports_anchor_zero_fee_commitments() {
+				(0, 0)
+			} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
+				let feerate = fee_estimator
+					.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee);
+				(feerate, ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000)
+			} else {
+				let feerate = fee_estimator
+					.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+				(feerate, 0)
+			};
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
 		let commitment_tx_fee = commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) * 1000;
@@ -4868,7 +4879,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// of the channel type we tried, not of our ability to open any channel at all. We can see if a
 	/// downgrade of channel features would be possible so that we can still open the channel.
 	pub(crate) fn maybe_downgrade_channel_features<F: Deref>(
-		&mut self, funding: &mut FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>
+		&mut self, funding: &mut FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<(), ()>
 	where
 		F::Target: FeeEstimator
@@ -4885,25 +4897,47 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			// We've exhausted our options
 			return Err(());
 		}
+
+		// We should never have negotiated `anchors_nonzero_fee_htlc_tx` because it can result in a
+		// loss of funds.
+		let channel_type = &funding.channel_transaction_parameters.channel_type_features;
+		assert!(!channel_type.supports_anchors_nonzero_fee_htlc_tx());
+
 		// We support opening a few different types of channels. Try removing our additional
 		// features one by one until we've either arrived at our default or the counterparty has
-		// accepted one.
-		//
-		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
-		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
-		// checks whether the counterparty supports every feature, this would only happen if the
-		// counterparty is advertising the feature, but rejecting channels proposing the feature for
-		// whatever reason.
-		let channel_type = &mut funding.channel_transaction_parameters.channel_type_features;
-		if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			channel_type.clear_anchors_zero_fee_htlc_tx();
-			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			assert!(!channel_type.supports_anchors_nonzero_fee_htlc_tx());
+		// accepted one. Features are un-set for the current channel type or any that come before
+		// it in our order of preference, allowing us to negotiate the "next best" based on the
+		// counterparty's remaining features per our ranking in `get_initial_channel_type`.
+		let mut eligible_features = their_features.clone();
+		if channel_type.supports_anchor_zero_fee_commitments() {
+			eligible_features.clear_anchor_zero_fee_commitments();
+		} else if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			eligible_features.clear_anchor_zero_fee_commitments();
+			eligible_features.clear_anchors_zero_fee_htlc_tx();
 		} else if channel_type.supports_scid_privacy() {
-			channel_type.clear_scid_privacy();
-		} else {
-			*channel_type = ChannelTypeFeatures::only_static_remote_key();
+			eligible_features.clear_scid_privacy();
+			eligible_features.clear_anchors_zero_fee_htlc_tx();
+			eligible_features.clear_anchor_zero_fee_commitments();
 		}
+
+		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
+
+		// Note that we can't get `anchor_zero_fee_commitments` type here, which requires zero
+		// fees, because we downgrade from this channel type first. If there were a superior
+		// channel type that downgrades to `anchor_zero_fee_commitments`, we'd need to handle
+		// fee setting differently here. If we proceeded to open a `anchor_zero_fee_commitments`
+		// channel with non-zero fees, we could produce a non-standard commitment transaction that
+		// puts us at risk of losing funds. We would expect our peer to reject such a channel
+		// open, but we don't want to rely on their validation.
+		assert!(!next_channel_type.supports_anchor_zero_fee_commitments());
+		let conf_target = if next_channel_type.supports_anchors_zero_fee_htlc_tx() {
+			ConfirmationTarget::AnchorChannelFee
+		} else {
+			ConfirmationTarget::NonAnchorChannelFee
+		};
+		self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(conf_target);
+	 	funding.channel_transaction_parameters.channel_type_features = next_channel_type;
+
 		Ok(())
 	}
 
@@ -5262,6 +5296,15 @@ impl<SP: Deref> FundedChannel<SP> where
 		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L
 	) -> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
 	{
+		if channel_type.supports_anchor_zero_fee_commitments() {
+			if feerate_per_kw != 0 {
+				let err = "Zero Fee Channels must never attempt to use a fee".to_owned();
+				return Err(ChannelError::close(err));
+			} else {
+				return Ok(());
+			}
+		}
+
 		let lower_limit_conf_target = if channel_type.supports_anchors_zero_fee_htlc_tx() {
 			ConfirmationTarget::MinAllowedAnchorChannelRemoteFee
 		} else {
@@ -9893,13 +9936,16 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
 	pub(crate) fn maybe_handle_error_without_close<F: Deref, L: Deref>(
-		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<msgs::OpenChannel, ()>
 	where
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		self.context.maybe_downgrade_channel_features(&mut self.funding, fee_estimator)?;
+		self.context.maybe_downgrade_channel_features(
+			&mut self.funding, fee_estimator, user_config, their_features,
+		)?;
 		self.get_open_channel(chain_hash, logger).ok_or(())
 	}
 
@@ -10078,8 +10124,9 @@ pub(super) fn channel_type_from_open_channel(
 
 		// We only support the channel types defined by the `ChannelManager` in
 		// `provided_channel_type_features`. The channel type must always support
-		// `static_remote_key`.
-		if !channel_type.requires_static_remote_key() {
+		// `static_remote_key`, either implicitly with `option_zero_fee_commitments`
+		// or explicitly.
+		if !channel_type.requires_static_remote_key() && !channel_type.requires_anchor_zero_fee_commitments() {
 			return Err(ChannelError::close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 		// Make sure we support all of the features behind the channel type.
@@ -10405,12 +10452,15 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
 	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
-		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		user_config: &UserConfig, their_features: &InitFeatures,
 	) -> Result<msgs::OpenChannelV2, ()>
 	where
 		F::Target: FeeEstimator
 	{
-		self.context.maybe_downgrade_channel_features(&mut self.funding, fee_estimator)?;
+		self.context.maybe_downgrade_channel_features(
+			&mut self.funding, fee_estimator, user_config, their_features,
+		)?;
 		Ok(self.get_open_channel_v2(chain_hash))
 	}
 
@@ -10663,10 +10713,21 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 		ret.set_scid_privacy_required();
 	}
 
-	// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
-	// set it now. If they don't understand it, we'll fall back to our default of
-	// `only_static_remotekey`.
-	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+	// Optionally, if the user would like to negotiate `option_zero_fee_commitments` we set it now.
+	// If they don't understand it (or we don't want it), we check the same conditions for
+	// `option_anchors_zero_fee_htlc_tx`. The counterparty can still refuse the channel and we'll
+	// try to fall back (all the way to `only_static_remotekey`).
+	#[cfg(not(test))]
+	let negotiate_zero_fee_commitments = false;
+
+	#[cfg(test)]
+	let negotiate_zero_fee_commitments = config.channel_handshake_config.negotiate_anchor_zero_fee_commitments;
+
+	if negotiate_zero_fee_commitments && their_features.supports_anchor_zero_fee_commitments() {
+		ret.set_anchor_zero_fee_commitments_required();
+		// `option_static_remote_key` is assumed by `option_zero_fee_commitments`.
+		ret.clear_static_remote_key();
+	} else if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
 		their_features.supports_anchors_zero_fee_htlc_tx() {
 		ret.set_anchors_zero_fee_htlc_tx_required();
 	}
@@ -13267,6 +13328,45 @@ mod tests {
 	fn test_supports_anchors_zero_htlc_tx_fee() {
 		// Tests that if both sides support and negotiate `anchors_zero_fee_htlc_tx`, it is the
 		// resulting `channel_type`.
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		let mut expected_channel_type = ChannelTypeFeatures::empty();
+		expected_channel_type.set_static_remote_key_required();
+		expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
+
+		do_test_supports_channel_type(config, expected_channel_type)
+	}
+
+	#[test]
+	fn test_supports_zero_fee_commitments() {
+		// Tests that if both sides support and negotiate `anchors_zero_fee_commitments`, it is
+		// the resulting `channel_type`.
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+		let mut expected_channel_type = ChannelTypeFeatures::empty();
+		expected_channel_type.set_anchor_zero_fee_commitments_required();
+
+		do_test_supports_channel_type(config, expected_channel_type)
+	}
+
+	#[test]
+	fn test_supports_zero_fee_commitments_and_htlc_tx_fee() {
+		// Tests that if both sides support and negotiate `anchors_zero_fee_commitments` and
+		// `anchors_zero_fee_htlc_tx`, the resulting `channel_type` is
+		// `anchors_zero_fee_commitments`.
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+		let mut expected_channel_type = ChannelTypeFeatures::empty();
+		expected_channel_type.set_anchor_zero_fee_commitments_required();
+
+		do_test_supports_channel_type(config, expected_channel_type)
+	}
+
+	fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: ChannelTypeFeatures) {
 		let secp_ctx = Secp256k1::new();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
 		let network = Network::Testnet;
@@ -13276,21 +13376,13 @@ mod tests {
 		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
 		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
 
-		let mut config = UserConfig::default();
-		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-
-		// It is not enough for just the initiator to signal `option_anchors_zero_fee_htlc_tx`, both
-		// need to signal it.
+		// Assert that we get `static_remotekey` when no custom config is negotiated.
 		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
 			&config, 0, 42, None, &logger
 		).unwrap();
-		assert!(!channel_a.funding.get_channel_type().supports_anchors_zero_fee_htlc_tx());
-
-		let mut expected_channel_type = ChannelTypeFeatures::empty();
-		expected_channel_type.set_static_remote_key_required();
-		expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
+		assert_eq!(channel_a.funding.get_channel_type(), &ChannelTypeFeatures::only_static_remote_key());
 
 		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
@@ -13307,6 +13399,14 @@ mod tests {
 
 		assert_eq!(channel_a.funding.get_channel_type(), &expected_channel_type);
 		assert_eq!(channel_b.funding.get_channel_type(), &expected_channel_type);
+
+		if expected_channel_type.supports_anchor_zero_fee_commitments() {
+			assert_eq!(channel_a.context.feerate_per_kw, 0);
+			assert_eq!(channel_b.context.feerate_per_kw, 0);
+		} else {
+			assert_ne!(channel_a.context.feerate_per_kw, 0);
+			assert_ne!(channel_b.context.feerate_per_kw, 0);
+		}
 	}
 
 	#[test]
