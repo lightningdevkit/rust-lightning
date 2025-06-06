@@ -5526,10 +5526,13 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn check_for_funding_tx_confirmed(
+	fn check_for_funding_tx_confirmed<L: Deref>(
 		&mut self, funding: &mut FundingScope, block_hash: &BlockHash, height: u32,
-		index_in_block: usize, tx: &mut ConfirmedTransaction,
-	) -> Result<bool, ClosureReason> {
+		index_in_block: usize, tx: &mut ConfirmedTransaction, logger: &L,
+	) -> Result<bool, ClosureReason>
+	where
+		L::Target: Logger,
+	{
 		let funding_txo = match funding.get_funding_txo() {
 			Some(funding_txo) => funding_txo,
 			None => {
@@ -5578,6 +5581,14 @@ where
 						Ok(scid) => Some(scid),
 						Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 					};
+
+					log_info!(
+						logger,
+						"Funding txid {} for channel {} confirmed in block {}",
+						funding_txo.txid,
+						&self.channel_id(),
+						block_hash,
+					);
 
 					return Ok(true);
 				}
@@ -9130,7 +9141,7 @@ where
 			// and send it immediately instead of waiting for a best_block_updated call (which may have
 			// already happened for this block).
 			let is_funding_tx_confirmed = self.context.check_for_funding_tx_confirmed(
-				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx,
+				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
 			)?;
 
 			if is_funding_tx_confirmed {
@@ -9162,7 +9173,7 @@ where
 			#[cfg(splicing)]
 			for (index, funding) in self.pending_funding.iter_mut().enumerate() {
 				if self.context.check_for_funding_tx_confirmed(
-					funding, block_hash, height, index_in_block, &mut confirmed_tx,
+					funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
 				)? {
 					if funding_already_confirmed || confirmed_funding_index.is_some() {
 						let err_reason = "splice tx of another pending funding already confirmed";
