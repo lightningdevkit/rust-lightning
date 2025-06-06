@@ -1740,7 +1740,6 @@ impl InteractiveTxConstructor {
 ///   `Ok(None)`
 /// - Inputs are not sufficent to cover contribution and fees:
 ///   `Err(AbortReason::InsufficientFees)`
-#[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 pub(super) fn calculate_change_output_value(
 	is_initiator: bool, our_contribution: u64,
 	funding_inputs: &Vec<(TxIn, TransactionU16LenLimited)>, funding_outputs: &Vec<OutputOwned>,
