@@ -1223,6 +1223,10 @@ impl InvoiceContents {
 		is_expired(self.created_at(), self.relative_expiry())
 	}
 
+	fn is_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.created_at().saturating_add(self.relative_expiry()) < duration_since_epoch
+	}
+
 	fn payment_hash(&self) -> PaymentHash {
 		self.fields().payment_hash
 	}

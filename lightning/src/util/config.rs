@@ -10,8 +10,10 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::prelude::*;
 
 #[cfg(fuzzing)]
 use crate::util::ser::Readable;
@@ -923,6 +925,14 @@ pub struct UserConfig {
 	///
 	/// Default value: `false`
 	pub enable_dual_funded_channels: bool,
+	/// [`BlindedMessagePath`]s to reach an always-online node that will serve [`StaticInvoice`]s on
+	/// our behalf. Useful if we are an often-offline recipient that wants to receive async payments.
+	/// Payers will send [`InvoiceRequest`]s over these paths, and receive a [`StaticInvoice`] in
+	/// response from the always-online node.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub paths_to_static_invoice_server: Vec<BlindedMessagePath>,
 }
 
 impl Default for UserConfig {
@@ -937,6 +947,7 @@ impl Default for UserConfig {
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
 			enable_dual_funded_channels: false,
+			paths_to_static_invoice_server: Vec::new(),
 		}
 	}
 }
@@ -957,6 +968,7 @@ impl Readable for UserConfig {
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
+			paths_to_static_invoice_server: Vec::new(),
 		})
 	}
 }
