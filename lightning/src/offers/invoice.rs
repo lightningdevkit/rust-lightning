@@ -184,7 +184,7 @@ pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signatu
 /// [module-level documentation]: self
 pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 	invreq_bytes: &'a Vec<u8>,
-	invoice: InvoiceContents,
+	invoice: Box<InvoiceContents>,
 	signing_pubkey_strategy: S,
 }
 
@@ -200,7 +200,7 @@ pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 #[cfg(c_bindings)]
 pub struct InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invreq_bytes: &'a Vec<u8>,
-	invoice: InvoiceContents,
+	invoice: Box<InvoiceContents>,
 	signing_pubkey_strategy: ExplicitSigningPubkey,
 }
 
@@ -216,7 +216,7 @@ pub struct InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 #[cfg(c_bindings)]
 pub struct InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invreq_bytes: &'a Vec<u8>,
-	invoice: InvoiceContents,
+	invoice: Box<InvoiceContents>,
 	signing_pubkey_strategy: DerivedSigningPubkey,
 }
 
@@ -246,8 +246,8 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods {
 			created_at: Duration, payment_hash: PaymentHash, signing_pubkey: PublicKey,
 		) -> Result<Self, Bolt12SemanticError> {
 			let amount_msats = Self::amount_msats(invoice_request)?;
-			let contents = InvoiceContents::ForOffer {
-				invoice_request: invoice_request.contents.clone(),
+			let contents = Box::new(InvoiceContents::ForOffer {
+				invoice_request: *invoice_request.contents.clone(),
 				fields: Self::fields(
 					payment_paths,
 					created_at,
@@ -255,7 +255,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods {
 					amount_msats,
 					signing_pubkey,
 				),
-			};
+			});
 
 			Self::new(&invoice_request.bytes, contents, ExplicitSigningPubkey {})
 		}
@@ -266,8 +266,8 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods {
 			payment_hash: PaymentHash, signing_pubkey: PublicKey,
 		) -> Result<Self, Bolt12SemanticError> {
 			let amount_msats = refund.amount_msats();
-			let contents = InvoiceContents::ForRefund {
-				refund: refund.contents.clone(),
+			let contents = Box::new(InvoiceContents::ForRefund {
+				refund: *refund.contents.clone(),
 				fields: Self::fields(
 					payment_paths,
 					created_at,
@@ -275,7 +275,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods {
 					amount_msats,
 					signing_pubkey,
 				),
-			};
+			});
 
 			Self::new(&refund.bytes, contents, ExplicitSigningPubkey {})
 		}
@@ -319,8 +319,8 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods {
 		) -> Result<Self, Bolt12SemanticError> {
 			let amount_msats = Self::amount_msats(invoice_request)?;
 			let signing_pubkey = keys.public_key();
-			let contents = InvoiceContents::ForOffer {
-				invoice_request: invoice_request.contents.clone(),
+			let contents = Box::new(InvoiceContents::ForOffer {
+				invoice_request: *invoice_request.contents.clone(),
 				fields: Self::fields(
 					payment_paths,
 					created_at,
@@ -328,7 +328,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods {
 					amount_msats,
 					signing_pubkey,
 				),
-			};
+			});
 
 			Self::new(&invoice_request.bytes, contents, DerivedSigningPubkey(keys))
 		}
@@ -340,8 +340,8 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods {
 		) -> Result<Self, Bolt12SemanticError> {
 			let amount_msats = refund.amount_msats();
 			let signing_pubkey = keys.public_key();
-			let contents = InvoiceContents::ForRefund {
-				refund: refund.contents.clone(),
+			let contents = Box::new(InvoiceContents::ForRefund {
+				refund: *refund.contents.clone(),
 				fields: Self::fields(
 					payment_paths,
 					created_at,
@@ -349,7 +349,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods {
 					amount_msats,
 					signing_pubkey,
 				),
-			};
+			});
 
 			Self::new(&refund.bytes, contents, DerivedSigningPubkey(keys))
 		}
@@ -429,7 +429,7 @@ macro_rules! invoice_builder_methods {
 
 		#[cfg_attr(c_bindings, allow(dead_code))]
 		fn new(
-			invreq_bytes: &'a Vec<u8>, contents: InvoiceContents,
+			invreq_bytes: &'a Vec<u8>, contents: Box<InvoiceContents>,
 			signing_pubkey_strategy: $type_param,
 		) -> Result<Self, Bolt12SemanticError> {
 			if contents.fields().payment_paths.is_empty() {
@@ -593,7 +593,7 @@ impl<'a> From<InvoiceWithDerivedSigningPubkeyBuilder<'a>>
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
 	experimental_bytes: Vec<u8>,
-	contents: InvoiceContents,
+	contents: Box<InvoiceContents>,
 	tagged_hash: TaggedHash,
 }
 
@@ -622,7 +622,7 @@ where
 }
 
 impl UnsignedBolt12Invoice {
-	fn new(invreq_bytes: &[u8], contents: InvoiceContents) -> Self {
+	fn new(invreq_bytes: &[u8], contents: Box<InvoiceContents>) -> Self {
 		// TLV record ranges applicable to invreq_bytes.
 		const NON_EXPERIMENTAL_TYPES: core::ops::Range<u64> = 0..INVOICE_REQUEST_TYPES.end;
 		const EXPERIMENTAL_TYPES: core::ops::Range<u64> =
@@ -731,7 +731,7 @@ impl AsRef<TaggedHash> for UnsignedBolt12Invoice {
 #[derive(Clone, Debug)]
 pub struct Bolt12Invoice {
 	bytes: Vec<u8>,
-	contents: InvoiceContents,
+	contents: Box<InvoiceContents>,
 	signature: Signature,
 	tagged_hash: TaggedHash,
 }
@@ -974,7 +974,7 @@ impl Bolt12Invoice {
 	pub fn verify_using_metadata<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<PaymentId, ()> {
-		let (metadata, iv_bytes) = match &self.contents {
+		let (metadata, iv_bytes) = match &*self.contents {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				(&invoice_request.inner.payer.0, INVOICE_REQUEST_IV_BYTES)
 			},
@@ -992,7 +992,7 @@ impl Bolt12Invoice {
 		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<PaymentId, ()> {
 		let metadata = Metadata::payer_data(payment_id, nonce, key);
-		let iv_bytes = match &self.contents {
+		let iv_bytes = match &*self.contents {
 			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
 			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES_WITHOUT_METADATA,
 		};
@@ -1027,7 +1027,7 @@ impl Bolt12Invoice {
 	}
 
 	pub(crate) fn is_for_refund_without_paths(&self) -> bool {
-		match self.contents {
+		match &*self.contents {
 			InvoiceContents::ForOffer { .. } => false,
 			InvoiceContents::ForRefund { .. } => self.message_paths().is_empty(),
 		}
@@ -1422,7 +1422,7 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice = ParsedMessage::<PartialInvoiceTlvStream>::try_from(bytes)?;
 		let ParsedMessage { mut bytes, tlv_stream } = invoice;
-		let contents = InvoiceContents::try_from(tlv_stream)?;
+		let contents = Box::new(InvoiceContents::try_from(tlv_stream)?);
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
@@ -1606,7 +1606,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			experimental_invoice_request_tlv_stream,
 			experimental_invoice_tlv_stream,
 		) = tlv_stream;
-		let contents = InvoiceContents::try_from((
+		let contents = Box::new(InvoiceContents::try_from((
 			payer_tlv_stream,
 			offer_tlv_stream,
 			invoice_request_tlv_stream,
@@ -1614,7 +1614,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
 			experimental_invoice_tlv_stream,
-		))?;
+		))?);
 
 		let signature = signature
 			.ok_or(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature))?;
