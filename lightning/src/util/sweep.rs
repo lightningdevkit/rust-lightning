@@ -382,7 +382,7 @@ where
 		output_spender: O, change_destination_source: D, kv_store: K, logger: L,
 	) -> Self {
 		let outputs = Vec::new();
-		let sweeper_state = Mutex::new(SweeperState { outputs, best_block });
+		let sweeper_state = Mutex::new(SweeperState { outputs, best_block, dirty: false });
 		Self {
 			sweeper_state,
 			pending_sweep: AtomicBool::new(false),
@@ -444,7 +444,7 @@ where
 
 			state_lock.outputs.push(output_info);
 		}
-		self.persist_state(&*state_lock).map_err(|e| {
+		self.persist_state(&mut *state_lock).map_err(|e| {
 			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
 		})
 	}
@@ -472,7 +472,19 @@ where
 			return Ok(());
 		}
 
-		let result = self.regenerate_and_broadcast_spend_if_necessary_internal().await;
+		let result = {
+			self.regenerate_and_broadcast_spend_if_necessary_internal().await?;
+
+			// If there is still dirty state, we need to persist it.
+			let mut sweeper_state = self.sweeper_state.lock().unwrap();
+			if sweeper_state.dirty {
+				self.persist_state(&mut *sweeper_state).map_err(|e| {
+					log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+				})
+			} else {
+				Ok(())
+			}
+		};
 
 		// Release the pending sweep flag again, regardless of result.
 		self.pending_sweep.store(false, Ordering::Release);
@@ -560,7 +572,7 @@ where
 				output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
 			}
 
-			self.persist_state(&sweeper_state).map_err(|e| {
+			self.persist_state(&mut sweeper_state).map_err(|e| {
 				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
 			})?;
 
@@ -590,7 +602,7 @@ where
 		});
 	}
 
-	fn persist_state(&self, sweeper_state: &SweeperState) -> Result<(), io::Error> {
+	fn persist_state(&self, sweeper_state: &mut SweeperState) -> Result<(), io::Error> {
 		self.kv_store
 			.write(
 				OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -608,6 +620,9 @@ where
 					e
 				);
 				e
+			})
+			.map(|_| {
+				sweeper_state.dirty = false;
 			})
 	}
 
@@ -674,9 +689,7 @@ where
 		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
 		self.best_block_updated_internal(&mut *state_lock, header, height);
 
-		let _ = self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		state_lock.dirty = true;
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
@@ -698,9 +711,7 @@ where
 			}
 		}
 
-		self.persist_state(&*state_lock).unwrap_or_else(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		state_lock.dirty = true;
 	}
 }
 
@@ -720,9 +731,7 @@ where
 	) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
-		self.persist_state(&*state_lock).unwrap_or_else(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		state_lock.dirty = true;
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
@@ -743,18 +752,14 @@ where
 				.filter(|o| o.status.confirmation_height() >= Some(unconf_height))
 				.for_each(|o| o.status.unconfirmed());
 
-			self.persist_state(&*state_lock).unwrap_or_else(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-			});
+			state_lock.dirty = true;
 		}
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 		self.best_block_updated_internal(&mut *state_lock, header, height);
-		let _ = self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		state_lock.dirty = true;
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -783,11 +788,13 @@ where
 struct SweeperState {
 	outputs: Vec<TrackedSpendableOutput>,
 	best_block: BestBlock,
+	dirty: bool,
 }
 
 impl_writeable_tlv_based!(SweeperState, {
 	(0, outputs, required_vec),
 	(2, best_block, required),
+	(_unused, dirty, (static_value, false)),
 });
 
 /// A `enum` signalling to the [`OutputSweeper`] that it should delay spending an output until a
