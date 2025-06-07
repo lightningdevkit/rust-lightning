@@ -1114,7 +1114,7 @@ impl OutboundPayments {
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired))
 					}
 
-					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
+					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq, None) {
 						Ok(amt) => amt,
 						Err(_) => {
 							// We check this during invoice request parsing, when constructing the invreq's
@@ -2975,7 +2975,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), created_at).unwrap()
+			.respond_with_no_std(None, payment_paths(), payment_hash(), created_at).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3021,7 +3021,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(None, payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
@@ -3083,7 +3083,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.build_and_sign().unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(None, payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
