@@ -1365,11 +1365,11 @@ impl PackageTemplate {
 				predicted_weight, input_amounts, dust_limit_sats, self.feerate_previous,
 				feerate_strategy, conf_target, fee_estimator, logger,
 			) {
-				return Some((input_amounts.saturating_sub(new_fee), feerate));
+				return Some((cmp::max(input_amounts.saturating_sub(new_fee), dust_limit_sats), feerate));
 			}
 		} else {
 			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger) {
-				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
+				return Some((cmp::max(input_amounts.saturating_sub(new_fee), dust_limit_sats), feerate));
 			}
 		}
 		None
