@@ -411,7 +411,7 @@ where
 	/// Returns `Err` on persistence failure, in which case the call may be safely retried.
 	///
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
-	pub fn track_spendable_outputs(
+	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
@@ -444,7 +444,7 @@ where
 
 			state_lock.outputs.push(output_info);
 		}
-		self.persist_state(&*state_lock).map_err(|e| {
+		self.persist_state(&*state_lock).await.map_err(|e| {
 			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
 		})
 	}
@@ -560,7 +560,7 @@ where
 				output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
 			}
 
-			self.persist_state(&sweeper_state).map_err(|e| {
+			self.persist_state(&sweeper_state).await.map_err(|e| {
 				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
 			})?;
 
@@ -590,7 +590,7 @@ where
 		});
 	}
 
-	fn persist_state(&self, sweeper_state: &SweeperState) -> Result<(), io::Error> {
+	async fn persist_state(&self, sweeper_state: &SweeperState) -> Result<(), io::Error> {
 		self.kv_store
 			.write(
 				OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -598,6 +598,7 @@ where
 				OUTPUT_SWEEPER_PERSISTENCE_KEY,
 				&sweeper_state.encode(),
 			)
+			.await
 			.map_err(|e| {
 				log_error!(
 					self.logger,
@@ -674,9 +675,9 @@ where
 		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
 		self.best_block_updated_internal(&mut *state_lock, header, height);
 
-		let _ = self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// let _ = self.persist_state(&*state_lock).map_err(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
@@ -698,9 +699,9 @@ where
 			}
 		}
 
-		self.persist_state(&*state_lock).unwrap_or_else(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// self.persist_state(&*state_lock).unwrap_or_else(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 }
 
@@ -720,9 +721,9 @@ where
 	) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 		self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
-		self.persist_state(&*state_lock).unwrap_or_else(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// self.persist_state(&*state_lock).unwrap_or_else(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
@@ -743,18 +744,18 @@ where
 				.filter(|o| o.status.confirmation_height() >= Some(unconf_height))
 				.for_each(|o| o.status.unconfirmed());
 
-			self.persist_state(&*state_lock).unwrap_or_else(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-			});
+			// self.persist_state(&*state_lock).unwrap_or_else(|e| {
+			// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+			// });
 		}
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 		self.best_block_updated_internal(&mut *state_lock, header, height);
-		let _ = self.persist_state(&*state_lock).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		});
+		// let _ = self.persist_state(&*state_lock).map_err(|e| {
+		// 	log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		// });
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -970,16 +971,18 @@ where
 	}
 
 	/// Tells the sweeper to track the given outputs descriptors. Wraps [`OutputSweeper::track_spendable_outputs`].
-	pub fn track_spendable_outputs(
+	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
-		self.sweeper.track_spendable_outputs(
-			output_descriptors,
-			channel_id,
-			exclude_static_outputs,
-			delay_until_height,
-		)
+		self.sweeper
+			.track_spendable_outputs(
+				output_descriptors,
+				channel_id,
+				exclude_static_outputs,
+				delay_until_height,
+			)
+			.await
 	}
 
 	/// Returns a list of the currently tracked spendable outputs. Wraps [`OutputSweeper::tracked_spendable_outputs`].
