@@ -12007,8 +12007,9 @@ where
 				}
 
 				for (_, chan) in peer_state.channel_by_id.iter_mut() {
+					let features = &peer_state.latest_features;
 					let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
-					match chan.peer_connected_get_handshake(self.chain_hash, &&logger) {
+					match chan.peer_connected_get_handshake(self.chain_hash, features, &&logger) {
 						ReconnectionMsg::Reestablish(msg) =>
 							pending_msg_events.push(MessageSendEvent::SendChannelReestablish {
 								node_id: chan.context().get_counterparty_node_id(),
