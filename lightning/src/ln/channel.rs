@@ -10962,6 +10962,22 @@ where
 		}
 	}
 
+	#[cfg(splicing)]
+	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
+		self.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.sent_funding_txid)
+			.or_else(|| {
+				self.is_our_channel_ready().then(|| self.funding.get_funding_txid()).flatten()
+			})
+			.map(|txid| msgs::FundingLocked { txid, retransmit_flags: 0 })
+	}
+
+	#[cfg(not(splicing))]
+	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
+		None
+	}
+
 	/// May panic if called on a channel that wasn't immediately-previously
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
 	#[rustfmt::skip]
@@ -11013,7 +11029,7 @@ where
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
 			next_funding_txid: self.maybe_get_next_funding_txid(),
-			my_current_funding_locked: None,
+			my_current_funding_locked: self.maybe_get_my_current_funding_locked(),
 		}
 	}
 
