@@ -82,6 +82,7 @@ pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
 	OnionMessage(msgs::OnionMessage),
+	StartBatch(msgs::StartBatch),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
 	UpdateFulfillHTLC(msgs::UpdateFulfillHTLC),
 	UpdateFailHTLC(msgs::UpdateFailHTLC),
@@ -142,6 +143,7 @@ impl<T: core::fmt::Debug + Type + TestEq> Writeable for Message<T> {
 			&Message::Shutdown(ref msg) => msg.write(writer),
 			&Message::ClosingSigned(ref msg) => msg.write(writer),
 			&Message::OnionMessage(ref msg) => msg.write(writer),
+			&Message::StartBatch(ref msg) => msg.write(writer),
 			&Message::UpdateAddHTLC(ref msg) => msg.write(writer),
 			&Message::UpdateFulfillHTLC(ref msg) => msg.write(writer),
 			&Message::UpdateFailHTLC(ref msg) => msg.write(writer),
@@ -202,6 +204,7 @@ impl<T: core::fmt::Debug + Type + TestEq> Type for Message<T> {
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
 			&Message::OnionMessage(ref msg) => msg.type_id(),
+			&Message::StartBatch(ref msg) => msg.type_id(),
 			&Message::UpdateAddHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFulfillHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailHTLC(ref msg) => msg.type_id(),
@@ -349,6 +352,9 @@ where
 		},
 		msgs::OnionMessage::TYPE => {
 			Ok(Message::OnionMessage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::StartBatch::TYPE => {
+			Ok(Message::StartBatch(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::UpdateAddHTLC::TYPE => {
 			Ok(Message::UpdateAddHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
@@ -588,6 +594,10 @@ impl Encode for msgs::TxAbort {
 
 impl Encode for msgs::OnionMessage {
 	const TYPE: u16 = 513;
+}
+
+impl Encode for msgs::StartBatch {
+	const TYPE: u16 = 127;
 }
 
 impl Encode for msgs::UpdateAddHTLC {
