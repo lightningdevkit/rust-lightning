@@ -171,7 +171,14 @@ pub struct LSPS2BuyResponse {
 	pub jit_channel_scid: LSPS2InterceptScid,
 	/// The locktime expiry delta the lsp requires.
 	pub lsp_cltv_expiry_delta: u32,
-	/// A flag that indicates who is trusting who.
+	/// Trust model flag (default: false).
+	///
+	/// false => "LSP trusts client": LSP immediately (or as soon as safe) broadcasts the
+	///          funding transaction; client may wait for broadcast / confirmations
+	///          before revealing the preimage.
+	/// true  => "Client trusts LSP": LSP may defer broadcasting until after the client
+	///          reveals the preimage; client MUST send the preimage once HTLC(s) are
+	///          irrevocably committed.
 	#[serde(default)]
 	pub client_trusts_lsp: bool,
 }
