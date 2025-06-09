@@ -3771,11 +3771,13 @@ where
 
 	#[cfg(test)]
 	pub fn create_and_insert_outbound_scid_alias_for_test(&self) -> u64 {
-		self.create_and_insert_outbound_scid_alias()
+		self.create_and_insert_outbound_scid_alias_with_namespace(
+		  	fake_scid::Namespace::OutboundAlias
+		)
 	}
 
 	#[rustfmt::skip]
-	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
+	fn create_and_insert_outbound_scid_alias_with_namespace(&self, namespace: fake_scid::Namespace) -> u64 {
 		let height = self.best_block.read().unwrap().height;
 		let mut outbound_scid_alias = 0;
 		let mut i = 0;
@@ -3783,7 +3785,7 @@ where
 			if cfg!(fuzzing) { // fuzzing chacha20 doesn't use the key at all so we always get the same alias
 				outbound_scid_alias += 1;
 			} else {
-				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(height, &self.chain_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
+				outbound_scid_alias = namespace.get_fake_scid(height, &self.chain_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
 			}
 			if outbound_scid_alias != 0 && self.outbound_scid_aliases.lock().unwrap().insert(outbound_scid_alias) {
 				break;
@@ -3792,6 +3794,15 @@ where
 			if i > 1_000_000 { panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels"); }
 		}
 		outbound_scid_alias
+	}
+
+	/// Determines the appropriate outbound SCID namespace based on the intercept_htlcs_on_channel configuration.
+	fn get_outbound_scid_namespace(intercept_htlcs_on_channel: bool) -> fake_scid::Namespace {
+		if intercept_htlcs_on_channel {
+			fake_scid::Namespace::Intercept
+		} else {
+			fake_scid::Namespace::OutboundAlias
+		}
 	}
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
@@ -3850,9 +3861,10 @@ where
 		}
 
 		let mut channel = {
-			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-			let their_features = &peer_state.latest_features;
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
+			let outbound_scid_namespace = Self::get_outbound_scid_namespace(config.channel_handshake_config.intercept_htlcs_on_channel);
+			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias_with_namespace(outbound_scid_namespace);
+			let their_features = &peer_state.latest_features;
 			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
 				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
 				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &*self.logger)
@@ -8191,7 +8203,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		// Now that we know we have a channel, assign an outbound SCID alias.
-		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+		let outbound_scid_namespace = Self::get_outbound_scid_namespace(config.channel_handshake_config.intercept_htlcs_on_channel);
+		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias_with_namespace(outbound_scid_namespace);
 		channel.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
 		if let Some(message_send_event) = message_send_event {
@@ -8407,7 +8420,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 		};
 
-		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+		let outbound_scid_namespace = Self::get_outbound_scid_namespace(self.default_configuration.channel_handshake_config.intercept_htlcs_on_channel);
+		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias_with_namespace(outbound_scid_namespace);
 		channel.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
 		if let Some(message_send_event) = message_send_event {
@@ -16303,6 +16317,7 @@ mod tests {
 				to_self_delay: Some(200),
 				max_accepted_htlcs: Some(5),
 				channel_reserve_proportional_millionths: Some(20000),
+				intercept_htlcs_on_channel: None,
 			}),
 			update_overrides: None,
 		};

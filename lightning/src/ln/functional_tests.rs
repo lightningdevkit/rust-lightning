@@ -7474,6 +7474,7 @@ pub fn test_manually_accept_inbound_channel_request() {
 			to_self_delay: None,
 			max_accepted_htlcs: Some(3),
 			channel_reserve_proportional_millionths: None,
+			intercept_htlcs_on_channel: None,
 		}),
 		update_overrides: Some(ChannelConfigUpdate {
 			forwarding_fee_proportional_millionths: None,

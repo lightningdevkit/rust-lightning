@@ -233,6 +233,18 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// [`max_htlcs`]: crate::ln::chan_utils::max_htlcs
 	pub our_max_accepted_htlcs: u16,
+	/// If set, this channel's SCID alias will be generated in the intercept namespace, causing
+	/// all HTLCs sent to this channel to trigger [`Event::HTLCIntercepted`] events instead of
+	/// being automatically forwarded. This enables manual control over all payments to the channel.
+	///
+	/// Requires [`UserConfig::accept_intercept_htlcs`] to be `true`. Useful for scenarios like
+	/// fee-taking or conditional forwarding.
+	///
+	/// Default value: `false`
+	///
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
+	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
+	pub intercept_htlcs_on_channel: bool,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -250,6 +262,7 @@ impl Default for ChannelHandshakeConfig {
 			#[cfg(test)]
 			negotiate_anchor_zero_fee_commitments: false,
 			our_max_accepted_htlcs: 50,
+			intercept_htlcs_on_channel: false,
 		}
 	}
 }
@@ -273,6 +286,7 @@ impl Readable for ChannelHandshakeConfig {
 			#[cfg(test)]
 			negotiate_anchor_zero_fee_commitments: Readable::read(reader)?,
 			our_max_accepted_htlcs: Readable::read(reader)?,
+			intercept_htlcs_on_channel: Readable::read(reader)?,
 		})
 	}
 }
@@ -1009,6 +1023,9 @@ pub struct ChannelHandshakeConfigUpdate {
 	/// The Proportion of the channel value to configure as counterparty's channel reserve. See
 	/// [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`].
 	pub channel_reserve_proportional_millionths: Option<u32>,
+	/// If set, allows this channel's SCID alias to be generated in the intercept namespace. See
+	/// [`ChannelHandshakeConfig::intercept_htlcs_on_channel`].
+	pub intercept_htlcs_on_channel: Option<bool>,
 }
 
 impl ChannelHandshakeConfig {
@@ -1038,6 +1055,10 @@ impl ChannelHandshakeConfig {
 
 		if let Some(channel_reserve) = config.channel_reserve_proportional_millionths {
 			self.their_channel_reserve_proportional_millionths = channel_reserve;
+		}
+
+		if let Some(intercept_htlcs) = config.intercept_htlcs_on_channel {
+			self.intercept_htlcs_on_channel = intercept_htlcs;
 		}
 	}
 }
