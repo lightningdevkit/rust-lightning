@@ -980,6 +980,11 @@ enum FundingType {
 	///
 	/// This is the normal flow.
 	Checked(Transaction),
+	/// This variant is useful when we want LDK to validate the funding transaction and
+	/// broadcast it manually.
+	///
+	/// Used in LSPS2 on a client_trusts_lsp model
+	CheckedManualBroadcast(Transaction),
 	/// This variant is useful when we want to loosen the validation checks and allow to
 	/// manually broadcast the funding transaction, leaving the responsibility to the caller.
 	///
@@ -994,6 +999,7 @@ impl FundingType {
 	fn txid(&self) -> Txid {
 		match self {
 			FundingType::Checked(tx) => tx.compute_txid(),
+			FundingType::CheckedManualBroadcast(tx) => tx.compute_txid(),
 			FundingType::Unchecked(outp) => outp.txid,
 		}
 	}
@@ -1001,6 +1007,7 @@ impl FundingType {
 	fn transaction_or_dummy(&self) -> Transaction {
 		match self {
 			FundingType::Checked(tx) => tx.clone(),
+			FundingType::CheckedManualBroadcast(tx) => tx.clone(),
 			FundingType::Unchecked(_) => Transaction {
 				version: bitcoin::transaction::Version::TWO,
 				lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -1013,6 +1020,7 @@ impl FundingType {
 	fn is_manual_broadcast(&self) -> bool {
 		match self {
 			FundingType::Checked(_) => false,
+			FundingType::CheckedManualBroadcast(_) => true,
 			FundingType::Unchecked(_) => true,
 		}
 	}
@@ -5787,6 +5795,27 @@ where
 		self.batch_funding_transaction_generated_intern(temporary_chans, funding_type)
 	}
 
+	/// Call this upon creation of a funding transaction for the given channel.
+	///
+	/// This method executes the same checks as [`ChannelManager::funding_transaction_generated`],
+	/// but it does not automatically broadcast the funding transaction.
+	///
+	/// Call this in response to a [`Event::FundingGenerationReady`] event, only in a context where you want to manually
+	/// control the broadcast of the funding transaction.
+	///
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
+	pub fn funding_transaction_generated_manual_broadcast(
+		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey,
+		funding_transaction: Transaction,
+	) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.batch_funding_transaction_generated_intern(
+			&[(&temporary_channel_id, &counterparty_node_id)],
+			FundingType::CheckedManualBroadcast(funding_transaction),
+		)
+	}
+
 	/// Call this upon creation of a batch funding transaction for the given channels.
 	///
 	/// Return values are identical to [`Self::funding_transaction_generated`], respective to
@@ -5808,7 +5837,9 @@ where
 	#[rustfmt::skip]
 	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding: FundingType) -> Result<(), APIError> {
 		let mut result = Ok(());
-		if let FundingType::Checked(funding_transaction) = &funding {
+		if let FundingType::Checked(funding_transaction) |
+			FundingType::CheckedManualBroadcast(funding_transaction) = &funding
+		{
 			if !funding_transaction.is_coinbase() {
 				for inp in funding_transaction.input.iter() {
 					if inp.witness.is_empty() {
@@ -5868,7 +5899,7 @@ where
 					let mut output_index = None;
 					let expected_spk = chan.funding.get_funding_redeemscript().to_p2wsh();
 					let outpoint = match &funding {
-						FundingType::Checked(tx) => {
+						FundingType::Checked(tx) | FundingType::CheckedManualBroadcast(tx) => {
 							for (idx, outp) in tx.output.iter().enumerate() {
 								if outp.script_pubkey == expected_spk && outp.value.to_sat() == chan.funding.get_value_satoshis() {
 									if output_index.is_some() {
