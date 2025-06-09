@@ -1610,6 +1610,7 @@ fn lsps5_service_handler_persistence_across_restarts() {
 			None::<Arc<dyn Filter + Send + Sync>>,
 			Some(chain_params),
 			service_kv_store,
+			nodes_restart[0].tx_broadcaster,
 			Some(service_config),
 			None,
 			Arc::clone(&time_provider),
