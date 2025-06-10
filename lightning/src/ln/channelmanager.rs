@@ -713,6 +713,10 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	},
 );
 
+// (src_channel_id, src_counterparty_node_id, src_funding_outpoint, src_chan_id, src_user_chan_id)
+type PerSourcePendingForward =
+	(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>);
+
 mod fuzzy_channelmanager {
 	use super::*;
 
@@ -5556,10 +5560,8 @@ where
 		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey,
 		funding_transaction: Transaction,
 	) -> Result<(), APIError> {
-		self.batch_funding_transaction_generated(
-			&[(&temporary_channel_id, &counterparty_node_id)],
-			funding_transaction,
-		)
+		let temporary_chan = &[(&temporary_channel_id, &counterparty_node_id)];
+		self.batch_funding_transaction_generated(temporary_chan, funding_transaction)
 	}
 
 	/// **Unsafe**: This method does not validate the spent output. It is the caller's
@@ -5594,11 +5596,9 @@ where
 	) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let temporary_channels = &[(&temporary_channel_id, &counterparty_node_id)];
-		return self.batch_funding_transaction_generated_intern(
-			temporary_channels,
-			FundingType::Unchecked(funding),
-		);
+		let temporary_chans = &[(&temporary_channel_id, &counterparty_node_id)];
+		let funding_type = FundingType::Unchecked(funding);
+		self.batch_funding_transaction_generated_intern(temporary_chans, funding_type)
 	}
 
 	/// Call this upon creation of a batch funding transaction for the given channels.
@@ -5615,10 +5615,8 @@ where
 		&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding_transaction: Transaction,
 	) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.batch_funding_transaction_generated_intern(
-			temporary_channels,
-			FundingType::Checked(funding_transaction),
-		)
+		let funding_type = FundingType::Checked(funding_transaction);
+		self.batch_funding_transaction_generated_intern(temporary_channels, funding_type)
 	}
 
 	#[rustfmt::skip]
@@ -5858,11 +5856,7 @@ where
 	pub fn update_channel_config(
 		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
 	) -> Result<(), APIError> {
-		return self.update_partial_channel_config(
-			counterparty_node_id,
-			channel_ids,
-			&(*config).into(),
-		);
+		self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into())
 	}
 
 	/// Attempts to forward an intercepted HTLC over the provided channel id and with the provided
@@ -7139,10 +7133,8 @@ where
 	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
 	/// startup during which time claims that were in-progress at shutdown may be replayed.
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
-		self.fail_htlc_backwards_with_reason(
-			payment_hash,
-			FailureCode::IncorrectOrUnknownPaymentDetails,
-		);
+		let failure_code = FailureCode::IncorrectOrUnknownPaymentDetails;
+		self.fail_htlc_backwards_with_reason(payment_hash, failure_code);
 	}
 
 	/// This is a variant of [`ChannelManager::fail_htlc_backwards`] that allows you to specify the
@@ -9426,17 +9418,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[inline]
-	fn forward_htlcs(
-		&self,
-		per_source_pending_forwards: &mut [(
-			u64,
-			Option<PublicKey>,
-			OutPoint,
-			ChannelId,
-			u128,
-			Vec<(PendingHTLCInfo, u64)>,
-		)],
-	) {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [PerSourcePendingForward]) {
 		let push_forward_event =
 			self.forward_htlcs_without_forward_event(per_source_pending_forwards);
 		if push_forward_event {
@@ -10727,10 +10709,8 @@ where
 	pub fn create_async_receive_offer_builder(
 		&self, message_paths_to_always_online_node: Vec<BlindedMessagePath>,
 	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError> {
-		self.flow.create_async_receive_offer_builder(
-			&*self.entropy_source,
-			message_paths_to_always_online_node,
-		)
+		let entropy = &*self.entropy_source;
+		self.flow.create_async_receive_offer_builder(entropy, message_paths_to_always_online_node)
 	}
 
 	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
@@ -11114,11 +11094,8 @@ where
 	pub fn get_payment_preimage(
 		&self, payment_hash: PaymentHash, payment_secret: PaymentSecret,
 	) -> Result<PaymentPreimage, APIError> {
-		inbound_payment::get_payment_preimage(
-			payment_hash,
-			payment_secret,
-			&self.inbound_payment_key,
-		)
+		let expanded_key = &self.inbound_payment_key;
+		inbound_payment::get_payment_preimage(payment_hash, payment_secret, expanded_key)
 	}
 
 	#[cfg(any(test, async_payments))]
@@ -12309,11 +12286,8 @@ where
 		// accept_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_accept_channel(&counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_accept_channel(&counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
@@ -12321,42 +12295,30 @@ where
 	fn handle_accept_channel_v2(
 		&self, counterparty_node_id: PublicKey, msg: &msgs::AcceptChannelV2,
 	) {
-		let _: Result<(), _> = handle_error!(
-			self,
-			Err(MsgHandleErrInternal::send_err_msg_no_close(
-				"Dual-funded channels not supported".to_owned(),
-				msg.common_fields.temporary_channel_id.clone()
-			)),
-			counterparty_node_id
-		);
+		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Dual-funded channels not supported".to_owned(),
+			msg.common_fields.temporary_channel_id.clone(),
+		));
+		let _: Result<(), _> = handle_error!(self, err, counterparty_node_id);
 	}
 
 	fn handle_funding_created(&self, counterparty_node_id: PublicKey, msg: &msgs::FundingCreated) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_funding_created(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_funding_created(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_funding_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::FundingSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_funding_signed(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_funding_signed(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_peer_storage(&self, counterparty_node_id: PublicKey, msg: msgs::PeerStorage) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
-		let _ = handle_error!(
-			self,
-			self.internal_peer_storage(counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_peer_storage(counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_peer_storage_retrieval(
@@ -12364,11 +12326,8 @@ where
 	) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
-		let _ = handle_error!(
-			self,
-			self.internal_peer_storage_retrieval(counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_peer_storage_retrieval(counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_channel_ready(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReady) {
@@ -12443,20 +12402,14 @@ where
 
 	fn handle_shutdown(&self, counterparty_node_id: PublicKey, msg: &msgs::Shutdown) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_shutdown(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_shutdown(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_closing_signed(&self, counterparty_node_id: PublicKey, msg: &msgs::ClosingSigned) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_closing_signed(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_closing_signed(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_update_add_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateAddHTLC) {
@@ -12479,11 +12432,8 @@ where
 		&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFulfillHTLC,
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_update_fulfill_htlc(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_update_fulfill_htlc(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_update_fail_htlc(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFailHTLC) {
@@ -12524,11 +12474,8 @@ where
 		&self, counterparty_node_id: PublicKey, msg: &msgs::CommitmentSigned,
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_commitment_signed(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_commitment_signed(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_commitment_signed_batch(
@@ -12536,20 +12483,14 @@ where
 		batch: Vec<msgs::CommitmentSigned>,
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, batch),
-			counterparty_node_id
-		);
+		let res = self.internal_commitment_signed_batch(&counterparty_node_id, channel_id, batch);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_revoke_and_ack(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_revoke_and_ack(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_update_fee(&self, counterparty_node_id: PublicKey, msg: &msgs::UpdateFee) {
@@ -12572,20 +12513,14 @@ where
 		&self, counterparty_node_id: PublicKey, msg: &msgs::AnnouncementSignatures,
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_announcement_signatures(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_announcement_signatures(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelUpdate) {
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			if let Ok(persist) = handle_error!(
-				self,
-				self.internal_channel_update(&counterparty_node_id, msg),
-				counterparty_node_id
-			) {
+			let res = self.internal_channel_update(&counterparty_node_id, msg);
+			if let Ok(persist) = handle_error!(self, res, counterparty_node_id) {
 				persist
 			} else {
 				NotifyOption::DoPersist
@@ -12727,11 +12662,8 @@ where
 		// tx_add_input message - interactive transaction construction does not need to
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_tx_add_input(counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_tx_add_input(counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
@@ -12741,11 +12673,8 @@ where
 		// tx_add_output message - interactive transaction construction does not need to
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_tx_add_output(counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_tx_add_output(counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
@@ -12755,11 +12684,8 @@ where
 		// tx_remove_input message - interactive transaction construction does not need to
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_tx_remove_input(counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_tx_remove_input(counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
@@ -12769,11 +12695,8 @@ where
 		// tx_remove_output message - interactive transaction construction does not need to
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_tx_remove_output(counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_tx_remove_output(counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
@@ -12783,44 +12706,32 @@ where
 		// tx_complete message - interactive transaction construction does not need to
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_tx_complete(counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_tx_complete(counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
 
 	fn handle_tx_signatures(&self, counterparty_node_id: PublicKey, msg: &msgs::TxSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(
-			self,
-			self.internal_tx_signatures(&counterparty_node_id, msg),
-			counterparty_node_id
-		);
+		let res = self.internal_tx_signatures(&counterparty_node_id, msg);
+		let _ = handle_error!(self, res, counterparty_node_id);
 	}
 
 	fn handle_tx_init_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxInitRbf) {
-		let _: Result<(), _> = handle_error!(
-			self,
-			Err(MsgHandleErrInternal::send_err_msg_no_close(
-				"Dual-funded channels not supported".to_owned(),
-				msg.channel_id.clone()
-			)),
-			counterparty_node_id
-		);
+		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Dual-funded channels not supported".to_owned(),
+			msg.channel_id.clone(),
+		));
+		let _: Result<(), _> = handle_error!(self, err, counterparty_node_id);
 	}
 
 	fn handle_tx_ack_rbf(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAckRbf) {
-		let _: Result<(), _> = handle_error!(
-			self,
-			Err(MsgHandleErrInternal::send_err_msg_no_close(
-				"Dual-funded channels not supported".to_owned(),
-				msg.channel_id.clone()
-			)),
-			counterparty_node_id
-		);
+		let err = Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Dual-funded channels not supported".to_owned(),
+			msg.channel_id.clone(),
+		));
+		let _: Result<(), _> = handle_error!(self, err, counterparty_node_id);
 	}
 
 	fn handle_tx_abort(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAbort) {
@@ -12828,11 +12739,8 @@ where
 		// tx_abort message - interactive transaction construction does not need to
 		// be persisted before any signatures are exchanged.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let _ = handle_error!(
-				self,
-				self.internal_tx_abort(&counterparty_node_id, msg),
-				counterparty_node_id
-			);
+			let res = self.internal_tx_abort(&counterparty_node_id, msg);
+			let _ = handle_error!(self, res, counterparty_node_id);
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
