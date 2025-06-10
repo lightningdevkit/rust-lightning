@@ -5138,36 +5138,50 @@ where
 	}
 
 	#[cfg(async_payments)]
-	#[rustfmt::skip]
 	fn initiate_async_payment(
-		&self, invoice: &StaticInvoice, payment_id: PaymentId
+		&self, invoice: &StaticInvoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let best_block_height = self.best_block.read().unwrap().height;
 			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
-				invoice, payment_id, features, best_block_height, self.duration_since_epoch(),
-				&*self.entropy_source, &self.pending_events
+				invoice,
+				payment_id,
+				features,
+				best_block_height,
+				self.duration_since_epoch(),
+				&*self.entropy_source,
+				&self.pending_events,
 			);
 			match outbound_pmts_res {
 				Ok(()) => {},
-				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
+				Err(Bolt12PaymentError::UnexpectedInvoice)
+				| Err(Bolt12PaymentError::DuplicateInvoice) => {
 					res = outbound_pmts_res.map(|_| ());
-					return NotifyOption::SkipPersistNoEvents
+					return NotifyOption::SkipPersistNoEvents;
 				},
 				Err(e) => {
 					res = Err(e);
-					return NotifyOption::DoPersist
-				}
+					return NotifyOption::DoPersist;
+				},
 			};
 
 			let entropy = &*self.entropy_source;
 
-			if self.flow.enqueue_held_htlc_available(entropy, invoice, payment_id, self.get_peers_for_blinded_path()).is_err() {
-				self.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
-					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
-					return NotifyOption::DoPersist
+			let enqueue_held_htlc_available_res = self.flow.enqueue_held_htlc_available(
+				entropy,
+				invoice,
+				payment_id,
+				self.get_peers_for_blinded_path(),
+			);
+			if enqueue_held_htlc_available_res.is_err() {
+				self.abandon_payment_with_reason(
+					payment_id,
+					PaymentFailureReason::BlindedPathCreationFailed,
+				);
+				res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
+				return NotifyOption::DoPersist;
 			};
 
 			NotifyOption::DoPersist
@@ -5177,27 +5191,36 @@ where
 	}
 
 	#[cfg(async_payments)]
-	#[rustfmt::skip]
 	fn send_payment_for_static_invoice(
-		&self, payment_id: PaymentId
+		&self, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
-				payment_id, &self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, &self, &self.secp_ctx, best_block_height,
-				&self.logger, &self.pending_events, |args| self.send_payment_along_path(args)
+				payment_id,
+				&self.router,
+				self.list_usable_channels(),
+				|| self.compute_inflight_htlcs(),
+				&self.entropy_source,
+				&self.node_signer,
+				&self,
+				&self.secp_ctx,
+				best_block_height,
+				&self.logger,
+				&self.pending_events,
+				|args| self.send_payment_along_path(args),
 			);
 			match outbound_pmts_res {
-				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
+				Err(Bolt12PaymentError::UnexpectedInvoice)
+				| Err(Bolt12PaymentError::DuplicateInvoice) => {
 					res = outbound_pmts_res.map(|_| ());
 					NotifyOption::SkipPersistNoEvents
 				},
 				other_res => {
 					res = other_res;
 					NotifyOption::DoPersist
-				}
+				},
 			}
 		});
 		res
@@ -10717,9 +10740,8 @@ where
 	/// created via [`Self::create_async_receive_offer_builder`]. If `relative_expiry` is unset, the
 	/// invoice's expiry will default to [`STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY`].
 	#[cfg(async_payments)]
-	#[rustfmt::skip]
 	pub fn create_static_invoice_builder<'a>(
-		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>
+		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>,
 	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
 		let entropy = &*self.entropy_source;
 		let amount_msat = offer.amount().and_then(|amount| match amount {
@@ -10732,13 +10754,23 @@ where
 
 		let created_at = self.duration_since_epoch();
 		let payment_secret = inbound_payment::create_for_spontaneous_payment(
-			&self.inbound_payment_key, amount_msat, relative_expiry_secs, created_at.as_secs(), None
-		).map_err(|()| Bolt12SemanticError::InvalidAmount)?;
+			&self.inbound_payment_key,
+			amount_msat,
+			relative_expiry_secs,
+			created_at.as_secs(),
+			None,
+		)
+		.map_err(|()| Bolt12SemanticError::InvalidAmount)?;
 
 		self.flow.create_static_invoice_builder(
-			&self.router, entropy, offer, offer_nonce, payment_secret,
-			relative_expiry_secs, self.list_usable_channels(),
-			self.get_peers_for_blinded_path()
+			&self.router,
+			entropy,
+			offer,
+			offer_nonce,
+			payment_secret,
+			relative_expiry_secs,
+			self.list_usable_channels(),
+			self.get_peers_for_blinded_path(),
 		)
 	}
 
