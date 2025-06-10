@@ -92,6 +92,7 @@ type ChannelManager = channelmanager::ChannelManager<
 		>,
 	>,
 	Arc<test_utils::TestLogger>,
+	Arc<channelmanager::DefaultHTLCInterceptHandler>,
 >;
 
 type ChainMonitor = chainmonitor::ChainMonitor<
@@ -445,6 +446,7 @@ pub(crate) fn create_liquidity_node(
 		UserConfig::default(),
 		chain_params,
 		genesis_block.header.time,
+		Arc::new(channelmanager::DefaultHTLCInterceptHandler),
 	));
 	let p2p_gossip_sync = Arc::new(P2PGossipSync::new(
 		network_graph.clone(),

@@ -21,7 +21,7 @@ use crate::ln::types::ChannelId;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC};
-use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA, DefaultHTLCInterceptHandler};
 use crate::types::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler};
@@ -413,6 +413,7 @@ pub(crate) type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
 	&'chan_mon_cfg test_utils::TestLogger,
+	Arc<DefaultHTLCInterceptHandler>,
 >;
 
 #[cfg(not(feature = "dnssec"))]
@@ -612,7 +613,8 @@ pub trait NodeHolder {
 		<Self::CM as AChannelManager>::F,
 		<Self::CM as AChannelManager>::R,
 		<Self::CM as AChannelManager>::MR,
-		<Self::CM as AChannelManager>::L>;
+		<Self::CM as AChannelManager>::L,
+		<Self::CM as AChannelManager>::HIH>;
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor>;
 }
 impl<H: NodeHolder> NodeHolder for &H {
@@ -626,7 +628,8 @@ impl<H: NodeHolder> NodeHolder for &H {
 		<Self::CM as AChannelManager>::F,
 		<Self::CM as AChannelManager>::R,
 		<Self::CM as AChannelManager>::MR,
-		<Self::CM as AChannelManager>::L> { (*self).node() }
+		<Self::CM as AChannelManager>::L,
+		<Self::CM as AChannelManager>::HIH> { (*self).node() }
 	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { (*self).chain_monitor() }
 }
 impl<'a, 'b: 'a, 'c: 'b> NodeHolder for Node<'a, 'b, 'c> {
@@ -720,7 +723,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let scorer = RwLock::new(test_utils::TestScorer::new());
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger, Arc<DefaultHTLCInterceptHandler>>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: self.node.get_current_default_configuration().clone(),
 					entropy_source: self.keys_manager,
 					node_signer: self.keys_manager,
@@ -731,6 +734,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
+					htlc_intercept_handler: Arc::new(DefaultHTLCInterceptHandler),
 					channel_monitors,
 				}).unwrap();
 			}
@@ -1184,6 +1188,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 			chain_monitor: node.chain_monitor,
 			tx_broadcaster: node.tx_broadcaster,
 			logger: node.logger,
+			htlc_intercept_handler: Arc::new(DefaultHTLCInterceptHandler),
 			channel_monitors,
 		}).unwrap()
 	};
@@ -3385,7 +3390,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config
 }
 
-pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<&'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'b>, &'a test_utils::TestMessageRouter<'b>, &'b test_utils::TestLogger>> {
+pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<&'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'b>, &'a test_utils::TestMessageRouter<'b>, &'b test_utils::TestLogger, Arc<DefaultHTLCInterceptHandler>>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let network = Network::Testnet;
@@ -3395,14 +3400,14 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 			best_block: BestBlock::from_network(network),
 		};
 		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, &cfgs[i].router, &cfgs[i].message_router, cfgs[i].logger, cfgs[i].keys_manager,
-			cfgs[i].keys_manager, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { test_default_channel_config() }, params, genesis_block.header.time);
+			cfgs[i].keys_manager, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { test_default_channel_config() }, params, genesis_block.header.time, Arc::new(DefaultHTLCInterceptHandler));
 		chanmgrs.push(node);
 	}
 
 	chanmgrs
 }
 
-pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestRouter, &'c test_utils::TestMessageRouter, &'c test_utils::TestLogger>>) -> Vec<Node<'a, 'b, 'c>> {
+pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestRouter, &'c test_utils::TestMessageRouter, &'c test_utils::TestLogger, Arc<DefaultHTLCInterceptHandler>>>) -> Vec<Node<'a, 'b, 'c>> {
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));

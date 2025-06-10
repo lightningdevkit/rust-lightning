@@ -18,7 +18,7 @@ use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
-use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, RAACommitmentOrder};
+use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, RAACommitmentOrder, DefaultHTLCInterceptHandler};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, RoutingMessageHandler, ErrorAction, MessageSendEvent};
@@ -33,6 +33,7 @@ use bitcoin::hash_types::BlockHash;
 use types::payment::{PaymentHash, PaymentPreimage};
 
 use crate::prelude::*;
+use crate::sync::Arc;
 
 use crate::ln::functional_test_utils::*;
 
@@ -425,7 +426,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	if let Err(msgs::DecodeError::DangerousValue) =
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger, Arc<DefaultHTLCInterceptHandler>>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		entropy_source: keys_manager,
 		node_signer: keys_manager,
@@ -436,6 +437,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
+		htlc_intercept_handler: Arc::new(DefaultHTLCInterceptHandler),
 		channel_monitors: node_0_stale_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
 	}) { } else {
 		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
@@ -443,7 +445,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let (_, nodes_0_deserialized_tmp) =
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestMessageRouter, &test_utils::TestLogger, Arc<DefaultHTLCInterceptHandler>>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		entropy_source: keys_manager,
 		node_signer: keys_manager,
@@ -454,6 +456,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster,
 		logger: &logger,
+		htlc_intercept_handler: Arc::new(DefaultHTLCInterceptHandler),
 		channel_monitors: node_0_monitors.iter().map(|monitor| { (monitor.channel_id(), monitor) }).collect(),
 	}).unwrap();
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
