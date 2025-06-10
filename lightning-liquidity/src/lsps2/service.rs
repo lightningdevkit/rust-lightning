@@ -12,6 +12,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use core::cmp::Ordering as CmpOrdering;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -645,13 +646,21 @@ where
 
 					match self.remove_pending_request(&mut peer_state_lock, &request_id) {
 						Some(LSPS2Request::GetInfo(_)) => {
-							let response = LSPS2Response::GetInfo(LSPS2GetInfoResponse {
-								opening_fee_params_menu: opening_fee_params_menu
+							let mut opening_fee_params_menu: Vec<LSPS2OpeningFeeParams> =
+								opening_fee_params_menu
 									.into_iter()
 									.map(|param| {
 										param.into_opening_fee_params(&self.config.promise_secret)
 									})
-									.collect(),
+									.collect();
+							opening_fee_params_menu.sort_by(|a, b| {
+								match a.min_fee_msat.cmp(&b.min_fee_msat) {
+									CmpOrdering::Equal => a.proportional.cmp(&b.proportional),
+									other => other,
+								}
+							});
+							let response = LSPS2Response::GetInfo(LSPS2GetInfoResponse {
+								opening_fee_params_menu,
 							});
 							(Ok(()), Some(response))
 						},

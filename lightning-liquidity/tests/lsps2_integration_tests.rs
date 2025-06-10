@@ -746,3 +746,75 @@ fn invalid_token_flow() {
 		panic!("Expected LSPS2ClientEvent::GetInfoFailed event");
 	}
 }
+
+#[test]
+fn opening_fee_params_menu_is_sorted_by_spec() {
+	let (service_node_id, client_node_id, service_node, client_node, _secret) =
+		setup_test_lsps2("opening_fee_params_menu_is_sorted_by_spec");
+
+	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	let _ = client_handler.request_opening_params(service_node_id, None);
+	let get_info_request = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(get_info_request, client_node_id).unwrap();
+
+	let get_info_event = service_node.liquidity_manager.next_event().unwrap();
+	let request_id = match get_info_event {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::GetInfo { request_id, .. }) => request_id,
+		_ => panic!("Unexpected event"),
+	};
+
+	let raw_params_generator = |min_fee_msat: u64, proportional: u32| LSPS2RawOpeningFeeParams {
+		min_fee_msat,
+		proportional,
+		valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+		min_lifetime: 144,
+		max_client_to_self_delay: 128,
+		min_payment_size_msat: 1,
+		max_payment_size_msat: 100_000_000,
+	};
+
+	let raw_params = vec![
+		raw_params_generator(200, 20), // Will be sorted to position 2
+		raw_params_generator(100, 10), // Will be sorted to position 0 (lowest min_fee, lowest proportional)
+		raw_params_generator(300, 30), // Will be sorted to position 4 (highest min_fee, highest proportional)
+		raw_params_generator(100, 20), // Will be sorted to position 1 (same min_fee as 0, higher proportional)
+		raw_params_generator(200, 30), // Will be sorted to position 3 (higher min_fee than 2, higher proportional)
+	];
+
+	service_handler
+		.opening_fee_params_generated(&client_node_id, request_id.clone(), raw_params)
+		.unwrap();
+
+	let get_info_response = get_lsps_message!(service_node, client_node_id);
+	client_node
+		.liquidity_manager
+		.handle_custom_message(get_info_response, service_node_id)
+		.unwrap();
+
+	let event = client_node.liquidity_manager.next_event().unwrap();
+	if let LiquidityEvent::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
+		opening_fee_params_menu,
+		..
+	}) = event
+	{
+		// The LSP, when ordering the opening_fee_params_menu array, MUST order by the following rules:
+		// The 0th item MAY have any parameters.
+		// Each succeeding item MUST, compared to the previous item, obey any one of the following:
+		// Have a larger min_fee_msat, and equal proportional.
+		// Have a larger proportional, and equal min_fee_msat.
+		// Have a larger min_fee_msat, AND larger proportional.
+		for (cur, next) in
+			opening_fee_params_menu.iter().zip(opening_fee_params_menu.iter().skip(1))
+		{
+			let valid = (next.min_fee_msat > cur.min_fee_msat
+				&& next.proportional == cur.proportional)
+				|| (next.proportional > cur.proportional && next.min_fee_msat == cur.min_fee_msat)
+				|| (next.min_fee_msat > cur.min_fee_msat && next.proportional > cur.proportional);
+			assert!(valid, "Params not sorted as per spec");
+		}
+	} else {
+		panic!("Unexpected event");
+	}
+}
