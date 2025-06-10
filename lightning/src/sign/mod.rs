@@ -1858,11 +1858,11 @@ impl KeysManager {
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
 		// Constants for key derivation path indices used in this function.
 		const NODE_SECRET_INDEX: ChildNumber = ChildNumber::Hardened { index: 0 };
-		const DESTINATION_SCRIPT_INDEX: ChildNumber = ChildNumber::Hardened { index: (1) };
-		const SHUTDOWN_PUBKEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (2) };
-		const CHANNEL_MASTER_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (3) };
-		const INBOUND_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (5) };
-		const PEER_STORAGE_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: (6) };
+		const DESTINATION_SCRIPT_INDEX: ChildNumber = ChildNumber::Hardened { index: 1 };
+		const SHUTDOWN_PUBKEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 2 };
+		const CHANNEL_MASTER_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 3 };
+		const INBOUND_PAYMENT_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 5 };
+		const PEER_STORAGE_KEY_INDEX: ChildNumber = ChildNumber::Hardened { index: 6 };
 
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
