@@ -67,7 +67,7 @@ mod real_chachapoly {
 			self.finished = true;
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
-			self.mac.raw_result(out_tag);
+			out_tag.copy_from_slice(&self.mac.result());
 		}
 
 		pub fn encrypt_full_message_in_place(
@@ -94,7 +94,7 @@ mod real_chachapoly {
 			self.finished = true;
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
-			self.mac.raw_result(out_tag);
+			out_tag.copy_from_slice(&self.mac.result());
 		}
 
 		/// Decrypt the `input`, checking the given `tag` prior to writing the decrypted contents
@@ -115,8 +115,7 @@ mod real_chachapoly {
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 
-			let mut calc_tag = [0u8; 16];
-			self.mac.raw_result(&mut calc_tag);
+			let calc_tag = self.mac.result();
 			if fixed_time_eq(&calc_tag, tag) {
 				self.cipher.process(input, output);
 				Ok(())
@@ -156,8 +155,7 @@ mod real_chachapoly {
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 
-			let mut calc_tag = [0u8; 16];
-			self.mac.raw_result(&mut calc_tag);
+			let calc_tag = self.mac.result();
 			if fixed_time_eq(&calc_tag, tag) {
 				true
 			} else {
