@@ -8546,21 +8546,24 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
-	fn internal_peer_storage_retrieval(&self, peer_node_id: PublicKey, msg: msgs::PeerStorageRetrieval) -> Result<(), MsgHandleErrInternal> {
+	fn internal_peer_storage_retrieval(
+		&self, peer_node_id: PublicKey, msg: msgs::PeerStorageRetrieval,
+	) -> Result<(), MsgHandleErrInternal> {
 		// TODO: Check if have any stale or missing ChannelMonitor.
 		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
-		let err = || MsgHandleErrInternal::from_chan_no_close(
-			ChannelError::Ignore("Invalid PeerStorageRetrieval message received.".into()),
-			ChannelId([0; 32]),
-		);
+		let err = || {
+			MsgHandleErrInternal::from_chan_no_close(
+				ChannelError::Ignore("Invalid PeerStorageRetrieval message received.".into()),
+				ChannelId([0; 32]),
+			)
+		};
 
 		let encrypted_ops = match EncryptedOurPeerStorage::new(msg.data) {
 			Ok(encrypted_ops) => encrypted_ops,
 			Err(()) => {
 				log_debug!(logger, "Received a peer backup which wasn't long enough to be valid");
 				return Err(err());
-			}
+			},
 		};
 
 		let decrypted = match encrypted_ops.decrypt(&self.node_signer.get_peer_storage_key()) {
@@ -8568,7 +8571,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Err(()) => {
 				log_debug!(logger, "Received a peer backup which was corrupted");
 				return Err(err());
-			}
+			},
 		};
 
 		log_trace!(logger, "Got valid {}-byte peer backup from {}", decrypted.len(), peer_node_id);
