@@ -432,6 +432,12 @@ impl Responder {
 			context: Some(context),
 		}
 	}
+
+	/// Converts a [`Responder`] into its inner [`BlindedMessagePath`].
+	#[cfg(async_payments)]
+	pub(crate) fn into_reply_path(self) -> BlindedMessagePath {
+		self.reply_path
+	}
 }
 
 /// Instructions for how and where to send the response to an onion message.
@@ -1318,6 +1324,11 @@ where
 		self.offers_handler = offers_handler;
 	}
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn set_async_payments_handler(&mut self, async_payments_handler: APH) {
+		self.async_payments_handler = async_payments_handler;
+	}
+
 	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
 	pub fn send_onion_message<T: OnionMessageContents>(
 		&self, contents: T, instructions: MessageSendInstructions,
@@ -1532,7 +1543,7 @@ where
 	}
 
 	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
+	pub(crate) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
 		let mut msgs = new_hash_map();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
@@ -1938,6 +1949,28 @@ where
 				log_receive!(message, reply_path.is_some());
 				let responder = reply_path.map(Responder::new);
 				match message {
+					AsyncPaymentsMessage::OfferPathsRequest(msg) => {
+						let response_instructions = self
+							.async_payments_handler
+							.handle_offer_paths_request(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					AsyncPaymentsMessage::OfferPaths(msg) => {
+						let response_instructions =
+							self.async_payments_handler.handle_offer_paths(msg, context, responder);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
+					},
+					AsyncPaymentsMessage::ServeStaticInvoice(msg) => {
+						self.async_payments_handler
+							.handle_serve_static_invoice(msg, context, responder);
+					},
+					AsyncPaymentsMessage::StaticInvoicePersisted(msg) => {
+						self.async_payments_handler.handle_static_invoice_persisted(msg, context);
+					},
 					AsyncPaymentsMessage::HeldHtlcAvailable(msg) => {
 						let response_instructions = self
 							.async_payments_handler

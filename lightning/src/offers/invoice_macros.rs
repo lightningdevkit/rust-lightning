@@ -131,6 +131,11 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 		$contents.is_expired()
 	}
 
+	/// Whether the invoice has expired given the current time as duration since the Unix epoch.
+	pub fn is_expired_no_std(&$self, duration_since_epoch: Duration) -> bool {
+		$contents.is_expired_no_std(duration_since_epoch)
+	}
+
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
 	pub fn fallbacks(&$self) -> Vec<Address> {

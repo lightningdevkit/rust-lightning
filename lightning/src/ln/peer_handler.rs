@@ -30,7 +30,7 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
-use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
+use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, OfferPaths, OfferPathsRequest, ServeStaticInvoice, ReleaseHeldHtlc, StaticInvoicePersisted};
 use crate::onion_message::dns_resolution::{DNSResolverMessageHandler, DNSResolverMessage, DNSSECProof, DNSSECQuery};
 use crate::onion_message::messenger::{CustomOnionMessageHandler, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
@@ -148,6 +148,23 @@ impl OffersMessageHandler for IgnoringMessageHandler {
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
+	fn handle_offer_paths_request(
+		&self, _message: OfferPathsRequest, _context: AsyncPaymentsContext, _responder: Option<Responder>,
+	) -> Option<(OfferPaths, ResponseInstruction)> {
+		None
+	}
+	fn handle_offer_paths(
+		&self, _message: OfferPaths, _context: AsyncPaymentsContext, _responder: Option<Responder>,
+	) -> Option<(ServeStaticInvoice, ResponseInstruction)> {
+		None
+	}
+	fn handle_serve_static_invoice(
+		&self, _message: ServeStaticInvoice, _context: AsyncPaymentsContext,
+		_responder: Option<Responder>,
+	) {}
+	fn handle_static_invoice_persisted(
+		&self, _message: StaticInvoicePersisted, _context: AsyncPaymentsContext,
+	) {}
 	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _context: AsyncPaymentsContext,
 		_responder: Option<Responder>,
