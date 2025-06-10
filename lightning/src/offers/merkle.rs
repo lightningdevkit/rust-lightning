@@ -287,7 +287,7 @@ mod tests {
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 	use crate::offers::nonce::Nonce;
-	use crate::offers::offer::{Amount, OfferBuilder};
+	use crate::offers::offer::{Amount, CurrencyCode, OfferBuilder};
 	use crate::offers::parse::Bech32Encode;
 	use crate::offers::signer::Metadata;
 	use crate::offers::test_utils::recipient_pubkey;
@@ -355,7 +355,10 @@ mod tests {
 		// BOLT 12 test vectors
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.description("A Mathematical Treatise".into())
-			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
+			.amount(Amount::Currency {
+				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+				amount: 100,
+			})
 			.build_unchecked()
 			// Override the payer metadata and signing pubkey to match the test vectors
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
