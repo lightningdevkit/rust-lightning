@@ -528,8 +528,8 @@ pub struct TxAddInput {
 	/// non-initiators.
 	pub serial_id: SerialId,
 	/// Serialized transaction that contains the output this input spends to verify that it is non
-	/// malleable.
-	pub prevtx: TransactionU16LenLimited,
+	/// malleable. Omitted for shared input.
+	pub prevtx: Option<TransactionU16LenLimited>,
 	/// The index of the output being spent
 	pub prevtx_out: u32,
 	/// The sequence number of this input
@@ -2671,11 +2671,11 @@ impl_writeable_msg!(SpliceLocked, {
 impl_writeable_msg!(TxAddInput, {
 	channel_id,
 	serial_id,
-	prevtx,
 	prevtx_out,
 	sequence,
 }, {
-	(0, shared_input_txid, option), // `funding_txid`
+	(0, prevtx, option),
+	(1, shared_input_txid, option), // `funding_txid`
 });
 
 impl_writeable_msg!(TxAddOutput, {
@@ -5206,7 +5206,7 @@ mod tests {
 		let tx_add_input = msgs::TxAddInput {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
-			prevtx: TransactionU16LenLimited::new(Transaction {
+			prevtx: Some(TransactionU16LenLimited::new(Transaction {
 				version: Version::TWO,
 				lock_time: LockTime::ZERO,
 				input: vec![TxIn {
@@ -5227,13 +5227,13 @@ mod tests {
 						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().assume_checked().script_pubkey(),
 					},
 				],
-			}).unwrap(),
+			}).unwrap()),
 			prevtx_out: 305419896,
 			sequence: 305419896,
 			shared_input_txid: Some(Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap()),
 		};
 		let encoded_value = tx_add_input.encode();
-		let target_value = "0202020202020202020202020202020202020202020202020202020202020202000000012345678900de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd694400000000123456781234567800206e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2";
+		let target_value = "02020202020202020202020202020202020202020202020202020202020202020000000123456789123456781234567800e000de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd69440000000001206e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2";
 		assert_eq!(encoded_value.as_hex().to_string(), target_value);
 	}
 

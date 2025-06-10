@@ -34,7 +34,7 @@ use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::interactivetxs::{
 	calculate_change_output_value, get_output_weight, AbortReason, HandleTxCompleteResult, InteractiveTxConstructor,
 	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
-	OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
+	NegotiationInput, OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError, OnionErrorPacket};
@@ -2513,6 +2513,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			inputs_to_contribute: funding_inputs,
 			outputs_to_contribute: funding_outputs,
 			expected_remote_shared_funding_output,
+			expected_remote_shared_funding_input: None,
 		};
 		let mut tx_constructor = InteractiveTxConstructor::new(constructor_args)?;
 		let msg = tx_constructor.take_initiator_first_message();
@@ -5157,7 +5158,7 @@ pub(super) struct DualFundingChannelContext {
 	///
 	/// Note that this field may be emptied once the interactive negotiation has been started.
 	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+	pub our_funding_inputs: Vec<NegotiationInput>,
 }
 
 // Holder designates channel data owned for the benefit of the user client.
@@ -10388,7 +10389,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			their_funding_satoshis: None,
 			funding_tx_locktime,
 			funding_feerate_sat_per_1000_weight,
-			our_funding_inputs: funding_inputs,
+			our_funding_inputs: funding_inputs.into_iter().map(|(txin, tx)| NegotiationInput::Nonshared(txin, tx)).collect(),
 		};
 		let chan = Self {
 			funding,
@@ -10554,6 +10555,7 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 				inputs_to_contribute: our_funding_inputs,
 				outputs_to_contribute: Vec::new(),
 				expected_remote_shared_funding_output: Some((funding.get_funding_redeemscript().to_p2wsh(), funding.get_value_satoshis())),
+				expected_remote_shared_funding_input: None,
 			}
 		).map_err(|_| ChannelError::Close((
 			"V2 channel rejected due to sender error".into(),
