@@ -680,6 +680,109 @@ impl Readable for InterceptId {
 	}
 }
 
+/// Represents the action to take for an intercepted HTLC.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HTLCInterceptAction {
+	/// Forward the HTLC to the specified channel.
+	Forward {
+		/// The channel ID to forward the HTLC to.
+		next_hop_channel_id: ChannelId,
+		/// The node ID of the next hop.
+		next_node_id: PublicKey,
+		/// The amount to forward in millisatoshis. This may be less than the inbound amount to collect a fee.
+		amount_to_forward_msat: u64,
+	},
+	/// Fail the HTLC back to the sender.
+	Fail,
+}
+
+/// Information about an HTLC that is being intercepted.
+#[derive(Clone, Debug)]
+pub struct InterceptedHTLCInfo {
+	/// An id to help LDK identify which HTLC is being handled.
+	pub intercept_id: InterceptId,
+	/// The payment hash for this HTLC.
+	pub payment_hash: PaymentHash,
+	/// The amount received on the inbound edge of this HTLC in millisatoshis.
+	pub inbound_amount_msat: u64,
+	/// The amount the sender intended to route to the next node in millisatoshis.
+	pub expected_outbound_amount_msat: u64,
+	/// The short channel ID the HTLC was intended to be forwarded to.
+	/// This may be a real SCID, an SCID alias, or an intercept SCID.
+	pub requested_next_hop_scid: u64,
+	/// The node ID that the HTLC was originally intended to be forwarded to.
+	pub next_node_id: PublicKey,
+	/// The channel ID that the HTLC was originally intended to be forwarded to.
+	pub next_channel_id: ChannelId,
+	/// Information about the channel the HTLC was received from.
+	pub prev_channel_id: ChannelId,
+	/// The user-defined channel ID for the channel the HTLC was received from.
+	pub prev_user_channel_id: u128,
+	/// The node ID of the previous hop.
+	pub prev_counterparty_node_id: Option<PublicKey>,
+	/// The CLTV expiry of the HTLC.
+	pub cltv_expiry: u32,
+}
+
+/// A trait for handling intercepted HTLCs.
+///
+/// Allows intercepting ALL HTLCs that are being forwarded through this node,
+/// regardless of the destination SCID.
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyHTLCInterceptor;
+///
+/// impl HTLCInterceptHandler for MyHTLCInterceptor {
+///     fn handle_htlc_intercept(&self, htlc_info: InterceptedHTLCInfo) -> HTLCInterceptAction {
+///         // Log all forwarded payments
+///         println!("Intercepted HTLC for {} msat", htlc_info.inbound_amount_msat);
+///
+///         // Take 1% fee on larger payments
+///         if htlc_info.inbound_amount_msat >= 1000 {
+///             let fee = htlc_info.inbound_amount_msat / 100;
+///             HTLCInterceptAction::Forward {
+///                 next_hop_channel_id: htlc_info.next_channel_id,
+///                 next_node_id: htlc_info.next_node_id,
+///                 amount_to_forward_msat: htlc_info.expected_outbound_amount_msat - fee,
+///             }
+///         } else {
+///             // Forward normally
+///             HTLCInterceptAction::Forward {
+///                 next_hop_channel_id: htlc_info.next_channel_id,
+///                 next_node_id: htlc_info.next_node_id,
+///                 amount_to_forward_msat: htlc_info.expected_outbound_amount_msat,
+///             }
+///         }
+///     }
+/// }
+/// ```
+pub trait HTLCInterceptHandler {
+	/// Called when an HTLC is being forwarded through this node.
+	///
+	/// Returns an [`HTLCInterceptAction`] indicating how to handle the HTLC.
+	fn handle_htlc_intercept(&self, htlc_info: InterceptedHTLCInfo) -> HTLCInterceptAction;
+}
+
+/// Default implementation that forwards HTLCs unchanged.
+#[derive(Clone, Debug)]
+pub struct DefaultHTLCInterceptHandler;
+
+impl HTLCInterceptHandler for DefaultHTLCInterceptHandler {
+	fn handle_htlc_intercept(&self, htlc_info: InterceptedHTLCInfo) -> HTLCInterceptAction {
+		HTLCInterceptAction::Forward {
+			next_hop_channel_id: htlc_info.next_channel_id,
+			next_node_id: htlc_info.next_node_id,
+			amount_to_forward_msat: htlc_info.expected_outbound_amount_msat,
+		}
+	}
+}
+
+/// Type alias for ChannelManager with the default HTLC intercept handler.
+pub type SimpleChannelManager<M, T, ES, NS, SP, F, R, MR, L> =
+	ChannelManager<M, T, ES, NS, SP, F, R, MR, L, Arc<DefaultHTLCInterceptHandler>>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Uniquely describes an HTLC by its source. Just the guaranteed-unique subset of [`HTLCSource`].
 pub(crate) enum SentHTLCId {
@@ -1607,6 +1710,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
 	Arc<L>,
+	Arc<DefaultHTLCInterceptHandler>,
 >;
 
 /// [`SimpleRefChannelManager`] is a type alias for a ChannelManager reference, and is the reference
@@ -1638,6 +1742,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 	>,
 	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
 	&'g L,
+	&'c DefaultHTLCInterceptHandler,
 >;
 
 /// A trivial trait which describes any [`ChannelManager`].
@@ -1683,6 +1788,10 @@ pub trait AChannelManager {
 	type Logger: Logger + ?Sized;
 	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
+	/// A type implementing [`HTLCInterceptHandler`].
+	type HTLCInterceptHandler: HTLCInterceptHandler + ?Sized;
+	/// A type that may be dereferenced to [`Self::HTLCInterceptHandler`].
+	type HIH: Deref<Target = Self::HTLCInterceptHandler>;
 	/// Returns a reference to the actual [`ChannelManager`] object.
 	fn get_cm(
 		&self,
@@ -1696,6 +1805,7 @@ pub trait AChannelManager {
 		Self::R,
 		Self::MR,
 		Self::L,
+		Self::HIH,
 	>;
 }
 
@@ -1709,7 +1819,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -1720,6 +1831,8 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
+	HIH::Target: HTLCInterceptHandler,
 {
 	type Watch = M::Target;
 	type M = M;
@@ -1740,8 +1853,10 @@ where
 	type MR = MR;
 	type Logger = L::Target;
 	type L = L;
+	type HTLCInterceptHandler = HIH::Target;
+	type HIH = HIH;
 	#[rustfmt::skip]
-	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> { self }
+	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH> { self }
 }
 
 /// A lightning node's channel state machine and payment management logic, which facilitates
@@ -2537,6 +2652,7 @@ pub struct ChannelManager<
 	R: Deref,
 	MR: Deref,
 	L: Deref,
+	HIH: Deref,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -2547,6 +2663,8 @@ pub struct ChannelManager<
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
+	HIH::Target: HTLCInterceptHandler,
 {
 	default_configuration: UserConfig,
 	chain_hash: ChainHash,
@@ -2767,6 +2885,13 @@ pub struct ChannelManager<
 	/// This allows for doing so, validating proofs as normal, but, if they pass, replacing the
 	/// offer they resolve to to the given one.
 	pub testing_dnssec_proof_offer_resolution_override: Mutex<HashMap<HumanReadableName, Offer>>,
+
+	/// Generic HTLC intercept handler. When `accept_generic_htlc_intercept` is enabled in the config,
+	/// this handler will be called for ALL HTLCs being forwarded through the node, not just those
+	/// using intercept SCIDs.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	htlc_intercept_handler: HIH,
 
 	#[cfg(test)]
 	pub(super) entropy_source: ES,
@@ -3658,7 +3783,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -3669,6 +3795,8 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
+	HIH::Target: HTLCInterceptHandler,
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
@@ -3691,7 +3819,7 @@ where
 	pub fn new(
 		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
-		params: ChainParameters, current_timestamp: u32,
+		params: ChainParameters, current_timestamp: u32, htlc_intercept_handler: HIH,
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -3757,11 +3885,13 @@ where
 			node_signer,
 			signer_provider,
 
-			logger,
+					logger,
 
-			#[cfg(feature = "_test_utils")]
-			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
-		}
+		#[cfg(feature = "_test_utils")]
+		testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+
+		htlc_intercept_handler,
+	}
 	}
 
 	/// Gets the current configuration applied to all new channels.
@@ -9386,13 +9516,173 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									}
 								}
 							} else {
-								// We don't want to generate a PendingHTLCsForwardable event if only intercepted
-								// payments are being processed.
-								push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
-								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-									prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
-									prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
-								})));
+								// Check if generic HTLC interception is enabled and we have a handler
+								let should_intercept_generic = self.default_configuration.accept_generic_htlc_intercept
+									&& forward_info.incoming_amt_msat.is_some()
+									&& matches!(forward_info.routing, PendingHTLCRouting::Forward { .. });
+
+								if should_intercept_generic {
+									if self.default_configuration.accept_generic_htlc_intercept {
+										// Extract next hop information from routing
+										let (next_hop_scid, next_node_id, next_channel_id) = if let PendingHTLCRouting::Forward { short_channel_id, .. } = &forward_info.routing {
+											// Look up the next hop node ID and channel ID from the SCID
+											let channel_info = self.short_to_chan_info.read().unwrap()
+												.get(short_channel_id)
+												.map(|(node_id, channel_id)| (*node_id, *channel_id));
+
+											if let Some((node_id, channel_id)) = channel_info {
+												(*short_channel_id, node_id, channel_id)
+											} else {
+												// If we can't find the channel info, this shouldn't happen in normal operation
+												// We'll need to fail this HTLC as we can't route it properly
+												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+													short_channel_id: prev_short_channel_id,
+													user_channel_id: Some(prev_user_channel_id),
+													counterparty_node_id: prev_counterparty_node_id,
+													outpoint: prev_funding_outpoint,
+													channel_id: prev_channel_id,
+													htlc_id: prev_htlc_id,
+													incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+													phantom_shared_secret: None,
+													blinded_failure: forward_info.routing.blinded_failure(),
+													cltv_expiry: forward_info.routing.incoming_cltv_expiry(),
+												});
+												failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
+													HTLCFailReason::from_failure_code(LocalHTLCFailureReason::UnknownNextPeer),
+													HTLCHandlingFailureType::InvalidForward { requested_forward_scid: scid },
+												));
+												continue;
+											}
+										} else {
+											// This shouldn't happen as we already checked for Forward routing
+											(0, PublicKey::from_slice(&[2; 33]).unwrap(), ChannelId([0; 32]))
+										};
+
+										// Create the intercept info
+										let intercept_info = InterceptedHTLCInfo {
+											intercept_id: InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).to_byte_array()),
+											payment_hash: forward_info.payment_hash,
+											inbound_amount_msat: forward_info.incoming_amt_msat.unwrap(),
+											expected_outbound_amount_msat: forward_info.outgoing_amt_msat,
+											requested_next_hop_scid: next_hop_scid,
+											next_node_id: next_node_id,
+											next_channel_id: next_channel_id,
+											prev_channel_id: prev_channel_id,
+											prev_user_channel_id: prev_user_channel_id,
+											prev_counterparty_node_id: prev_counterparty_node_id,
+											cltv_expiry: forward_info.outgoing_cltv_value,
+										};
+
+									match self.htlc_intercept_handler.handle_htlc_intercept(intercept_info) {
+										HTLCInterceptAction::Forward { next_hop_channel_id, next_node_id: handler_next_node_id, amount_to_forward_msat } => {
+												// Validate the handler's response
+												if amount_to_forward_msat == 0 {
+													log_warn!(self.logger, "Generic HTLC interceptor returned zero forward amount, failing HTLC");
+													// Fail the HTLC instead of forwarding invalid amount
+													let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+														short_channel_id: prev_short_channel_id,
+														user_channel_id: Some(prev_user_channel_id),
+														counterparty_node_id: prev_counterparty_node_id,
+														outpoint: prev_funding_outpoint,
+														channel_id: prev_channel_id,
+														htlc_id: prev_htlc_id,
+														incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+														phantom_shared_secret: None,
+														blinded_failure: forward_info.routing.blinded_failure(),
+														cltv_expiry: forward_info.routing.incoming_cltv_expiry(),
+													});
+													failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
+														HTLCFailReason::from_failure_code(LocalHTLCFailureReason::UnknownNextPeer),
+														HTLCHandlingFailureType::InvalidForward { requested_forward_scid: scid },
+													));
+												} else {
+													// Update the forward info with handler's decision
+													let mut updated_forward_info = forward_info.clone();
+													updated_forward_info.outgoing_amt_msat = amount_to_forward_msat;
+
+													// Look up the SCID for the specified channel with better error handling
+													let handler_scid_result = self.short_to_chan_info.read().unwrap()
+														.iter()
+														.find(|(_, (node_id, channel_id))| *node_id == handler_next_node_id && *channel_id == next_hop_channel_id)
+														.map(|(scid, _)| *scid);
+
+													let handler_scid = match handler_scid_result {
+														Some(scid) => scid,
+														None => {
+															log_warn!(self.logger, "Generic HTLC interceptor provided invalid channel {:?} for node {:?}, failing HTLC",
+																next_hop_channel_id, handler_next_node_id);
+															// Fail the HTLC instead of using incorrect routing
+															let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+																short_channel_id: prev_short_channel_id,
+																user_channel_id: Some(prev_user_channel_id),
+																counterparty_node_id: prev_counterparty_node_id,
+																outpoint: prev_funding_outpoint,
+																channel_id: prev_channel_id,
+																htlc_id: prev_htlc_id,
+																incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+																phantom_shared_secret: None,
+																blinded_failure: forward_info.routing.blinded_failure(),
+																cltv_expiry: forward_info.routing.incoming_cltv_expiry(),
+															});
+															failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
+																HTLCFailReason::from_failure_code(LocalHTLCFailureReason::UnknownNextPeer),
+																HTLCHandlingFailureType::InvalidForward { requested_forward_scid: scid },
+															));
+															continue;
+														}
+													};
+
+													// Update the routing information
+													if let PendingHTLCRouting::Forward { ref mut short_channel_id, .. } = updated_forward_info.routing {
+														*short_channel_id = handler_scid;
+													}
+
+													// We don't want to generate a PendingHTLCsForwardable event if only intercepted
+													// payments are being processed.
+													push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
+													entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+														prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+														prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info: updated_forward_info
+													})));
+												}
+																					},
+										HTLCInterceptAction::Fail => {
+												// Handler wants to fail this HTLC
+												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+													short_channel_id: prev_short_channel_id,
+													user_channel_id: Some(prev_user_channel_id),
+													counterparty_node_id: prev_counterparty_node_id,
+													outpoint: prev_funding_outpoint,
+													channel_id: prev_channel_id,
+													htlc_id: prev_htlc_id,
+													incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+													phantom_shared_secret: None,
+													blinded_failure: forward_info.routing.blinded_failure(),
+													cltv_expiry: forward_info.routing.incoming_cltv_expiry(),
+												});
+
+												failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
+													HTLCFailReason::from_failure_code(LocalHTLCFailureReason::UnknownNextPeer),
+													HTLCHandlingFailureType::InvalidForward { requested_forward_scid: scid },
+												));
+																					}
+										}
+									} else {
+										// No handler set, proceed with normal forwarding
+										push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
+										entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+											prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+											prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+										})));
+									}
+								} else {
+									// Generic interception not enabled or not applicable, proceed with normal forwarding
+									push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
+									entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+										prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+										prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+									})));
+								}
 							}
 						}
 					}
@@ -10564,7 +10854,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -10575,6 +10866,8 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[cfg(not(c_bindings))]
 	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
@@ -11258,7 +11551,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11269,6 +11563,8 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
+	HIH::Target: HTLCInterceptHandler,
 {
 	fn provided_node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.default_configuration)
@@ -11559,7 +11855,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11570,6 +11867,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	/// Processes events that must be periodically handled.
 	///
@@ -11594,7 +11892,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11605,6 +11904,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		{
@@ -11648,7 +11948,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11659,6 +11960,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -11793,7 +12095,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -11804,6 +12107,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
@@ -12087,7 +12391,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12098,6 +12403,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannel) {
@@ -12616,7 +12922,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12627,6 +12934,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
 	fn handle_message(
@@ -12795,7 +13103,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12806,6 +13115,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
 	fn handle_held_htlc_available(
@@ -12849,7 +13159,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12860,6 +13171,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	fn handle_dnssec_query(
 		&self, _message: DNSSECQuery, _responder: Option<Responder>,
@@ -12922,7 +13234,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -12933,6 +13246,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
 		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
@@ -13428,7 +13742,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13439,6 +13754,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -13760,6 +14076,7 @@ pub struct ChannelManagerReadArgs<
 	R: Deref,
 	MR: Deref,
 	L: Deref,
+	HIH: Deref,
 > where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13770,6 +14087,7 @@ pub struct ChannelManagerReadArgs<
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	/// A cryptographically secure source of entropy.
 	pub entropy_source: ES,
@@ -13810,6 +14128,8 @@ pub struct ChannelManagerReadArgs<
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: L,
+	/// The HTLC intercept handler for use in the ChannelManager.
+	pub htlc_intercept_handler: HIH,
 	/// Default settings used for new channels. Any existing channels will continue to use the
 	/// runtime settings which were stored when the ChannelManager was serialized.
 	pub default_config: UserConfig,
@@ -13840,7 +14160,8 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+		HIH: Deref,
+	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L, HIH>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13851,6 +14172,7 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
@@ -13859,12 +14181,12 @@ where
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		default_config: UserConfig,
+		htlc_intercept_handler: HIH, default_config: UserConfig,
 		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor,
-			tx_broadcaster, router, message_router, logger, default_config,
+			tx_broadcaster, router, message_router, logger, htlc_intercept_handler, default_config,
 			channel_monitors: hash_map_from_iter(
 				channel_monitors.drain(..).map(|monitor| { (monitor.channel_id(), monitor) })
 			),
@@ -13885,8 +14207,9 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+		HIH: Deref,
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L, HIH>>
+	for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13897,10 +14220,11 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
-	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L, HIH>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
@@ -13916,8 +14240,9 @@ impl<
 		R: Deref,
 		MR: Deref,
 		L: Deref,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+		HIH: Deref,
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L, HIH>>
+	for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, MR, L, HIH>)
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: BroadcasterInterface,
@@ -13928,9 +14253,10 @@ where
 	R::Target: Router,
 	MR::Target: MessageRouter,
 	L::Target: Logger,
+	HIH::Target: HTLCInterceptHandler,
 {
 	#[rustfmt::skip]
-	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>) -> Result<Self, DecodeError> {
+	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L, HIH>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let chain_hash: ChainHash = Readable::read(reader)?;
@@ -14993,6 +15319,8 @@ where
 
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
+
+			htlc_intercept_handler: args.htlc_intercept_handler,
 		};
 
 		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();
@@ -16802,6 +17130,137 @@ pub mod bench {
 		#[inline]
 		#[rustfmt::skip]
 		fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { None }
+	}
+
+	#[test]
+	fn test_generic_htlc_intercept_handler_setting() {
+		// Test that we can set and remove the generic HTLC intercept handler
+		use std::sync::atomic::{AtomicBool, Ordering};
+
+		struct TestHTLCInterceptor {
+			intercept_called: AtomicBool,
+		}
+
+		impl TestHTLCInterceptor {
+			fn new() -> Self {
+				Self { intercept_called: AtomicBool::new(false) }
+			}
+		}
+
+		impl HTLCInterceptHandler for TestHTLCInterceptor {
+			fn handle_htlc_intercept(&self, htlc_info: InterceptedHTLCInfo) -> HTLCInterceptAction {
+				self.intercept_called.store(true, Ordering::SeqCst);
+
+				// For testing, we'll just forward with the original parameters (like the default handler)
+				HTLCInterceptAction::Forward {
+					next_hop_channel_id: htlc_info.next_channel_id,
+					next_node_id: htlc_info.next_node_id,
+					amount_to_forward_msat: htlc_info.expected_outbound_amount_msat,
+				}
+			}
+		}
+
+		let fee_estimator = test_utils::TestFeeEstimator::new(253);
+		let chain_monitor = test_utils::TestChainMonitor::new(
+			None,
+			&test_utils::TestBroadcaster::new(bitcoin::Network::Testnet),
+			&test_utils::TestLogger::new(),
+			&fee_estimator,
+			&test_utils::TestPersister::new(),
+			&test_utils::TestKeysInterface::new(&[42u8; 32], bitcoin::Network::Testnet),
+		);
+		let node_signer =
+			test_utils::TestKeysInterface::new(&[42u8; 32], bitcoin::Network::Testnet);
+		let keys_manager =
+			test_utils::TestKeysInterface::new(&[42u8; 32], bitcoin::Network::Testnet);
+		let logger = test_utils::TestLogger::new();
+		let network_graph =
+			Arc::new(crate::routing::gossip::NetworkGraph::new(bitcoin::Network::Testnet, &logger));
+		let scorer = RwLock::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph.clone(), &logger, &scorer);
+		let message_router = test_utils::TestMessageRouter::new(network_graph, &keys_manager);
+		let mut config = UserConfig::default();
+		config.accept_generic_htlc_intercept = true;
+
+		let cm = ChannelManager::new(
+			&fee_estimator,
+			&chain_monitor,
+			&test_utils::TestBroadcaster::new(bitcoin::Network::Testnet),
+			&router,
+			&message_router,
+			&logger,
+			&keys_manager,
+			&node_signer,
+			&keys_manager,
+			config,
+			ChainParameters {
+				network: bitcoin::Network::Testnet,
+				best_block: BestBlock::from_network(bitcoin::Network::Testnet),
+			},
+			42,
+		);
+
+		// Initially no handler should be set
+		assert!(cm.generic_htlc_intercept_handler.lock().unwrap().is_none());
+
+		// Set a handler
+		let handler = Box::new(TestHTLCInterceptor::new());
+		cm.set_generic_htlc_intercept_handler(handler);
+		assert!(cm.generic_htlc_intercept_handler.lock().unwrap().is_some());
+
+		// Remove the handler
+		cm.remove_generic_htlc_intercept_handler();
+		assert!(cm.generic_htlc_intercept_handler.lock().unwrap().is_none());
+	}
+
+	#[test]
+	fn test_default_htlc_intercept_handler() {
+		// Test that the default handler behaves correctly
+		use bitcoin::secp256k1::PublicKey;
+
+		let default_handler = DefaultHTLCInterceptHandler;
+
+		// Create a dummy InterceptedHTLCInfo
+		let intercept_info = InterceptedHTLCInfo {
+			intercept_id: InterceptId([0; 32]),
+			payment_hash: PaymentHash([1; 32]),
+			inbound_amount_msat: 100_000,
+			expected_outbound_amount_msat: 99_000,
+			requested_next_hop_scid: 12345,
+			next_node_id: PublicKey::from_slice(&[
+				2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2,
+				155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+			])
+			.unwrap(),
+			next_channel_id: ChannelId([42; 32]),
+			prev_channel_id: ChannelId([3; 32]),
+			prev_user_channel_id: 567,
+			prev_counterparty_node_id: Some(
+				PublicKey::from_slice(&[
+					3, 23, 183, 225, 206, 31, 159, 132, 211, 9, 19, 200, 182, 31, 227, 185, 103,
+					111, 115, 188, 21, 186, 16, 155, 5, 150, 11, 17, 32, 104, 178, 85, 209,
+				])
+				.unwrap(),
+			),
+			cltv_expiry: 500000,
+		};
+
+		// Call the default handler
+		let action = default_handler.handle_htlc_intercept(intercept_info.clone());
+
+		// Verify it forwards with the original parameters
+		match action {
+			HTLCInterceptAction::Forward {
+				next_hop_channel_id,
+				next_node_id,
+				amount_to_forward_msat,
+			} => {
+				assert_eq!(next_hop_channel_id, intercept_info.next_channel_id);
+				assert_eq!(next_node_id, intercept_info.next_node_id);
+				assert_eq!(amount_to_forward_msat, intercept_info.expected_outbound_amount_msat);
+			},
+			HTLCInterceptAction::Fail => panic!("Default handler should not fail HTLCs"),
+		}
 	}
 
 	#[rustfmt::skip]

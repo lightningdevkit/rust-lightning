@@ -1241,6 +1241,7 @@ mod tests {
 			>,
 		>,
 		Arc<test_utils::TestLogger>,
+		Arc<channelmanager::DefaultHTLCInterceptHandler>,
 	>;
 
 	type ChainMonitor = chainmonitor::ChainMonitor<
@@ -1678,6 +1679,7 @@ mod tests {
 				UserConfig::default(),
 				params,
 				genesis_block.header.time,
+				Arc::new(channelmanager::DefaultHTLCInterceptHandler),
 			));
 			let messenger = Arc::new(OnionMessenger::new(
 				keys_manager.clone(),

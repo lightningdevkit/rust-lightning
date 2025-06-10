@@ -923,6 +923,13 @@ pub struct UserConfig {
 	///
 	/// Default value: `false`
 	pub enable_dual_funded_channels: bool,
+	/// If this is set to `true`, LDK will intercept ALL HTLCs that are being forwarded through
+	/// this node and call the provided [`HTLCInterceptHandler`] for each one.
+	///
+	/// Default value: `false`
+	///
+	/// [`HTLCInterceptHandler`]: crate::ln::channelmanager::HTLCInterceptHandler
+	pub accept_generic_htlc_intercept: bool,
 }
 
 impl Default for UserConfig {
@@ -937,6 +944,7 @@ impl Default for UserConfig {
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
 			enable_dual_funded_channels: false,
+			accept_generic_htlc_intercept: false,
 		}
 	}
 }
@@ -957,6 +965,7 @@ impl Readable for UserConfig {
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
+			accept_generic_htlc_intercept: Readable::read(reader)?,
 		})
 	}
 }
