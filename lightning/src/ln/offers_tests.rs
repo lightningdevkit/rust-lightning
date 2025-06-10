@@ -1186,7 +1186,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 
-	// Re-process the same onion message to ensure idempotency — 
+	// Re-process the same onion message to ensure idempotency —
 	// we should not generate a duplicate `InvoiceReceived` event.
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
 

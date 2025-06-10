@@ -12864,7 +12864,7 @@ where
 					None => return None,
 				};
 
-				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context) {
+				let invoice_request = match self.flow.verify_invoice_request(invoice_request, context.clone()) {
 					Ok(invoice_request) => invoice_request,
 					Err(_) => return None,
 				};
@@ -12888,13 +12888,26 @@ where
 				};
 
 				let entropy = &*self.entropy_source;
-				let (response, context) = self.flow.create_response_for_invoice_request(
+				let (response, response_context) = self.flow.create_response_for_invoice_request(
 					&self.node_signer, &self.router, entropy, invoice_request, amount_msats,
 					payment_hash, payment_secret, self.list_usable_channels()
 				);
 
-				match context {
-					Some(context) => Some((response, responder.respond_with_reply_path(context))),
+				// Generate InvoiceSent event if configured to do so
+				if self.default_configuration.notify_bolt12_invoice_sent {
+					if let OffersMessage::Invoice(ref invoice) = response {
+						let event = Event::InvoiceSent {
+							invoice: invoice.clone(),
+							context: context.clone(),
+							payment_hash,
+							payment_secret,
+						};
+						self.pending_events.lock().unwrap().push_back((event, None));
+					}
+				}
+
+				match response_context {
+					Some(resp_context) => Some((response, responder.respond_with_reply_path(resp_context))),
 					None => Some((response, responder.respond()))
 				}
 			},

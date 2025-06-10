@@ -919,6 +919,21 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	pub manually_handle_bolt12_invoices: bool,
+	/// If this is set to `true`, the user will receive [`Event::InvoiceSent`] events when a
+	/// BOLT12 invoice is created and sent to a payer.
+	///
+	/// This provides symmetrical functionality to [`Event::InvoiceReceived`] but for the payee side,
+	/// allowing nodes to track and access invoices they have created. This can be useful for
+	/// accounting, proof of invoice creation, or debugging purposes.
+	///
+	/// When set to `true`, [`Event::InvoiceSent`] will be generated whenever a BOLT12 invoice
+	/// is successfully created and sent in response to an invoice request.
+	///
+	/// Default value: `false`
+	///
+	/// [`Event::InvoiceSent`]: crate::events::Event::InvoiceSent
+	/// [`Event::InvoiceReceived`]: crate::events::Event::InvoiceReceived
+	pub notify_bolt12_invoice_sent: bool,
 	/// If this is set to `true`, dual-funded channels will be enabled.
 	///
 	/// Default value: `false`
@@ -936,6 +951,7 @@ impl Default for UserConfig {
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
 			manually_handle_bolt12_invoices: false,
+			notify_bolt12_invoice_sent: false,
 			enable_dual_funded_channels: false,
 		}
 	}
@@ -956,6 +972,7 @@ impl Readable for UserConfig {
 			manually_accept_inbound_channels: Readable::read(reader)?,
 			accept_intercept_htlcs: Readable::read(reader)?,
 			manually_handle_bolt12_invoices: Readable::read(reader)?,
+			notify_bolt12_invoice_sent: Readable::read(reader)?,
 			enable_dual_funded_channels: Readable::read(reader)?,
 		})
 	}

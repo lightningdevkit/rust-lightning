@@ -968,6 +968,32 @@ pub enum Event {
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 		responder: Option<Responder>,
 	},
+	/// Indicates a [`Bolt12Invoice`] was created and sent in response to an [`InvoiceRequest`] or
+	/// a [`Refund`].
+	///
+	/// This event will only be generated if [`UserConfig::notify_bolt12_invoice_sent`] is set.
+	/// This provides symmetrical functionality to [`Event::InvoiceReceived`] but for the payee side,
+	/// allowing nodes to track and access invoices they have created.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`UserConfig::notify_bolt12_invoice_sent`]: crate::util::config::UserConfig::notify_bolt12_invoice_sent
+	InvoiceSent {
+		/// The invoice that was created and sent.
+		invoice: Bolt12Invoice,
+		/// The context of the [`BlindedMessagePath`] used to receive the original request.
+		///
+		/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+		context: Option<OffersContext>,
+		/// The payment hash for the invoice.
+		payment_hash: PaymentHash,
+		/// The payment secret for the invoice.
+		payment_secret: PaymentSecret,
+	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
 	///
@@ -1980,6 +2006,15 @@ impl Writeable for Event {
 					(6, responder, option),
 				});
 			},
+			&Event::InvoiceSent { ref invoice, ref context, ref payment_hash, ref payment_secret } => {
+				42u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, invoice, required),
+					(2, context, option),
+					(4, payment_hash, required),
+					(6, payment_secret, required),
+				});
+			},
 			&Event::FundingTxBroadcastSafe {
 				ref channel_id,
 				ref user_channel_id,
@@ -2535,6 +2570,23 @@ impl MaybeReadable for Event {
 						invoice: invoice.0.unwrap(),
 						context,
 						responder,
+					}))
+				};
+				f()
+			},
+			42u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, invoice, required),
+						(2, context, option),
+						(4, payment_hash, required),
+						(6, payment_secret, required),
+					});
+					Ok(Some(Event::InvoiceSent {
+						invoice: invoice.0.unwrap(),
+						context,
+						payment_hash: payment_hash.0.unwrap(),
+						payment_secret: payment_secret.0.unwrap(),
 					}))
 				};
 				f()
