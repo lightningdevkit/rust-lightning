@@ -1223,32 +1223,33 @@ mod tests {
 	#[cfg(not(c_bindings))]
 	type LockingWrapper<T> = std::sync::Mutex<T>;
 
-	type ChannelManager = channelmanager::ChannelManager<
-		Arc<ChainMonitor>,
-		Arc<test_utils::TestBroadcaster>,
-		Arc<KeysManager>,
-		Arc<KeysManager>,
-		Arc<KeysManager>,
-		Arc<test_utils::TestFeeEstimator>,
-		Arc<
-			DefaultRouter<
-				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
-				Arc<test_utils::TestLogger>,
-				Arc<KeysManager>,
-				Arc<LockingWrapper<TestScorer>>,
-				(),
-				TestScorer,
-			>,
-		>,
-		Arc<
-			DefaultMessageRouter<
-				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
-				Arc<test_utils::TestLogger>,
-				Arc<KeysManager>,
-			>,
-		>,
-		Arc<test_utils::TestLogger>,
-	>;
+	        type ChannelManager = channelmanager::ChannelManager<
+            Arc<ChainMonitor>,
+            Arc<test_utils::TestBroadcaster>,
+            Arc<KeysManager>,
+            Arc<KeysManager>,
+            Arc<KeysManager>,
+            Arc<test_utils::TestFeeEstimator>,
+            Arc<
+                DefaultRouter<
+                    Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+                    Arc<test_utils::TestLogger>,
+                    Arc<KeysManager>,
+                    Arc<LockingWrapper<TestScorer>>,
+                    (),
+                    TestScorer,
+                >,
+            >,
+            Arc<
+                DefaultMessageRouter<
+                    Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+                    Arc<test_utils::TestLogger>,
+                    Arc<KeysManager>,
+                >,
+            >,
+            Arc<test_utils::TestLogger>,
+            Arc<channelmanager::DefaultHTLCInterceptHandler>,
+        >;
 
 	type ChainMonitor = chainmonitor::ChainMonitor<
 		InMemorySigner,
@@ -1689,6 +1690,7 @@ mod tests {
 				UserConfig::default(),
 				params,
 				genesis_block.header.time,
+				Arc::new(channelmanager::DefaultHTLCInterceptHandler),
 			));
 			let messenger = Arc::new(OnionMessenger::new(
 				keys_manager.clone(),
