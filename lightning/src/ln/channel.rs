@@ -1946,8 +1946,12 @@ impl FundingScope {
 
 	/// Construct FundingScope for a splicing channel
 	#[cfg(splicing)]
-	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_satoshis: u64, post_channel_value: u64, counterparty_funding_pubkey: PublicKey) -> Self where SP::Target: SignerProvider {
-		let post_value_to_self_msat = prev_funding.value_to_self_msat.saturating_add(our_funding_satoshis);
+	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution_sats: i64, post_channel_value: u64, counterparty_funding_pubkey: PublicKey) -> Self where SP::Target: SignerProvider {
+		let post_value_to_self_msat = if our_funding_contribution_sats < 0 {
+			prev_funding.value_to_self_msat.saturating_sub((-our_funding_contribution_sats as u64) * 1000)
+		} else {
+			prev_funding.value_to_self_msat.saturating_add((our_funding_contribution_sats as u64) * 1000)
+		};
 
 		let prev_funding_txid = prev_funding.channel_transaction_parameters.funding_outpoint
 			.map(|outpoint| outpoint.txid);
@@ -9192,14 +9196,14 @@ impl<SP: Deref> FundedChannel<SP> where
 
 		let post_channel_value = PendingSplice::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
 
-		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
+		let (our_funding_satoshis, their_funding_satoshis) = calculate_total_funding_contribution(
 			pre_channel_value,
 			our_funding_contribution,
 			msg.funding_contribution_satoshis,
 			false, // is_outbound
 		)?;
 
-		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_contribution, post_channel_value, msg.funding_pubkey);
 
 		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
@@ -9287,14 +9291,14 @@ impl<SP: Deref> FundedChannel<SP> where
 		// TODO(splicing): Pre-check for reserve requirement
 		// (Note: It should also be checked later at tx_complete)
 
-		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
+		let (our_funding_satoshis, their_funding_satoshis) = calculate_total_funding_contribution(
 			pre_channel_value,
 			our_funding_contribution,
 			their_funding_contribution_satoshis,
 			true, // is_outbound
 		)?;
 
-		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_contribution, post_channel_value, msg.funding_pubkey);
 
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
@@ -10653,14 +10657,15 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
-/// Calculate funding values for interactive tx for splicing, based on channel value changes
+/// Calculate total funding contributions, needed for interactive tx for splicing,
+/// based on the current channel value and the splice contributions.
 #[cfg(splicing)]
-fn calculate_funding_values(
-	pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64, is_initiator: bool,
+fn calculate_total_funding_contribution(
+	pre_channel_value: u64, our_splice_contribution: i64, their_splice_contribution: i64, is_initiator: bool,
 ) -> Result<(u64, u64), ChannelError> {
 	// Initiator also adds the previous funding as input
-	let mut our_contribution_with_prev = our_funding_contribution;
-	let mut their_contribution_with_prev = their_funding_contribution;
+	let mut our_contribution_with_prev = our_splice_contribution;
+	let mut their_contribution_with_prev = their_splice_contribution;
 	if is_initiator {
 		our_contribution_with_prev = our_contribution_with_prev.saturating_add(pre_channel_value as i64);
 	} else {
@@ -10670,7 +10675,7 @@ fn calculate_funding_values(
 		return Err(ChannelError::Warn(format!(
 			"Funding contribution cannot be negative! ours {}  theirs {}  pre {}  initiator {}  acceptor {}",
 			our_contribution_with_prev, their_contribution_with_prev, pre_channel_value,
-			our_funding_contribution, their_funding_contribution
+			our_splice_contribution, their_splice_contribution
 		)));
 	}
 	Ok((our_contribution_with_prev.abs() as u64, their_contribution_with_prev.abs() as u64))
