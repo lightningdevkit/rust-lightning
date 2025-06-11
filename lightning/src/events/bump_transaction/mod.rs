@@ -572,7 +572,7 @@ where
 	}
 
 	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction> {
-		Box::pin(async move { self.source.sign_psbt(psbt).await })
+		self.source.sign_psbt(psbt)
 	}
 }
 
