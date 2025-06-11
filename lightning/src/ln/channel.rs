@@ -1631,23 +1631,12 @@ impl<SP: Deref> Channel<SP> where
 	where
 		L::Target: Logger
 	{
-		match self.phase {
-			ChannelPhase::UnfundedV2(ref mut chan) => {
-				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let (commitment_signed, event) = chan.as_negotiating_channel().funding_tx_constructed(signing_session, &&logger)?;
-				Ok((commitment_signed, event))
-			}
-			#[cfg(splicing)]
-			ChannelPhase::Funded(ref mut chan) => {
-				let logger = WithChannelContext::from(logger, &chan.context, None);
-				let (commitment_signed, event) = chan.as_renegotiating_channel()
-					.map_err(|err| ChannelError::Warn(err.into()))?
-					.funding_tx_constructed(signing_session, &&logger)?;
-				Ok((commitment_signed, event))
-			}
-			_ => {
-				Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
-			}
+		let logger = WithChannelContext::from(logger, self.context(), None);
+		if let Ok(mut negotiating_channel) = self.as_negotiating_channel() {
+			let (commitment_signed, event) = negotiating_channel.funding_tx_constructed(signing_session, &&logger)?;
+			Ok((commitment_signed, event))
+		} else {
+			Err(ChannelError::Warn("Got a tx_complete message with no interactive transaction construction expected or in-progress".to_owned()))
 		}
 	}
 
