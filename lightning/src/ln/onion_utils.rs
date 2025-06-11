@@ -1611,8 +1611,6 @@ pub enum LocalHTLCFailureReason {
 	/// The HTLC was failed back because its expiry height was reached and funds were timed out
 	/// on chain.
 	OnChainTimeout,
-	/// The HTLC was failed because its amount is greater than the capacity of the channel.
-	AmountExceedsCapacity,
 	/// The HTLC was failed because zero amount HTLCs are not allowed.
 	ZeroAmount,
 	/// The HTLC was failed because its amount is less than the smallest HTLC that the channel
@@ -1646,7 +1644,6 @@ impl LocalHTLCFailureReason {
 			| Self::DustLimitCounterparty
 			| Self::FeeSpikeBuffer
 			| Self::ChannelNotReady
-			| Self::AmountExceedsCapacity
 			| Self::ZeroAmount
 			| Self::HTLCMinimum
 			| Self::HTLCMaximum
@@ -1801,11 +1798,10 @@ impl_writeable_tlv_based_enum!(LocalHTLCFailureReason,
 	(71, OutgoingCLTVTooSoon) => {},
 	(73, ChannelClosed) => {},
 	(75, OnChainTimeout) => {},
-	(77, AmountExceedsCapacity) => {},
-	(79, ZeroAmount) => {},
-	(81, HTLCMinimum) => {},
-	(83, HTLCMaximum) => {},
-	(85, PeerOffline) => {},
+	(77, ZeroAmount) => {},
+	(79, HTLCMinimum) => {},
+	(81, HTLCMaximum) => {},
+	(83, PeerOffline) => {},
 );
 
 impl From<&HTLCFailReason> for HTLCHandlingFailureReason {
@@ -1918,7 +1914,6 @@ impl HTLCFailReason {
 			| LocalHTLCFailureReason::DustLimitCounterparty
 			| LocalHTLCFailureReason::FeeSpikeBuffer
 			| LocalHTLCFailureReason::ChannelNotReady
-			| LocalHTLCFailureReason::AmountExceedsCapacity
 			| LocalHTLCFailureReason::ZeroAmount
 			| LocalHTLCFailureReason::HTLCMinimum
 			| LocalHTLCFailureReason::HTLCMaximum
