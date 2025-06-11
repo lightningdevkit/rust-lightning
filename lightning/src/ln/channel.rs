@@ -9174,7 +9174,7 @@ impl<SP: Deref> FundedChannel<SP> where
 
 	/// Checks during handling splice_init
 	#[cfg(splicing)]
-	pub fn splice_init_checks(&mut self, msg: &msgs::SpliceInit) -> Result<(), ChannelError> {
+	pub fn validate_splice_init(&mut self, msg: &msgs::SpliceInit) -> Result<(), ChannelError> {
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
 		let our_funding_contribution_satoshis = 0i64;
@@ -9266,7 +9266,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	/// See also [`splice_init_checks`]
+	/// See also [`validate_splice_init`]
 	#[cfg(splicing)]
 	fn splice_init<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution: i64,
@@ -9274,7 +9274,7 @@ impl<SP: Deref> FundedChannel<SP> where
 	) -> Result<msgs::SpliceAck, ChannelError>
 	where ES::Target: EntropySource, L::Target: Logger
 	{
-		let _res = self.splice_init_checks(msg)?;
+		let _res = self.validate_splice_init(msg)?;
 
 		let pre_channel_value = self.funding.get_value_satoshis();
 		let their_funding_contribution = msg.funding_contribution_satoshis;
