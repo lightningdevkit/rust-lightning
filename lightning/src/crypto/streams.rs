@@ -9,6 +9,8 @@ use crate::util::ser::{
 	FixedLengthReader, LengthLimitedRead, LengthReadableArgs, Readable, Writeable, Writer,
 };
 
+use alloc::vec::Vec;
+
 pub(crate) struct ChaChaReader<'a, R: io::Read> {
 	pub chacha: &'a mut ChaCha20,
 	pub read: R,
@@ -49,6 +51,31 @@ impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 
 		Ok(())
 	}
+}
+
+/// Encrypts the provided plaintext with the given key using ChaCha20Poly1305 in the modified
+/// with-AAD form used in [`ChaChaDualPolyReadAdapter`].
+pub(crate) fn chachapoly_encrypt_with_swapped_aad(mut plaintext: Vec<u8>, key: [u8; 32], aad: [u8; 32]) -> Vec<u8> {
+	let mut chacha = ChaCha20::new(&key[..], &[0; 12]);
+	let mut mac_key = [0u8; 64];
+	chacha.process_in_place(&mut mac_key);
+
+	let mut mac = Poly1305::new(&mac_key[..32]);
+	chacha.process_in_place(&mut plaintext[..]);
+	mac.input(&plaintext[..]);
+
+	if plaintext.len() % 16 != 0 {
+		mac.input(&[0; 16][0..16 - (plaintext.len() % 16)]);
+	}
+
+	mac.input(&aad[..]);
+	// Note that we don't need to pad the AAD since its a multiple of 16 bytes
+
+	mac.input(&(plaintext.len() as u64).to_le_bytes());
+	mac.input(&32u64.to_le_bytes());
+
+	plaintext.extend_from_slice(&mac.result());
+	plaintext
 }
 
 /// Enables the use of the serialization macros for objects that need to be simultaneously decrypted
