@@ -9248,7 +9248,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			is_splice: true,
 		};
 
-		// Start interactive funding negotiation. No extra input, as we are not the splice initiator
+		// Start interactive funding negotiation. TODO(splicing): Add current funding as extra input, once shared inputs are supported, see #3842.
 		let _msg = negotiating_view.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id.clone(), false, None, None)
 			.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
 
