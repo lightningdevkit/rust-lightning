@@ -3981,17 +3981,21 @@ where
 
 	fn get_dust_exposure_limiting_feerate<F: Deref>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
-	) -> u32
+	) -> Option<u32>
 	where
 		F::Target: FeeEstimator,
 	{
-		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate)
+		Some(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate))
 	}
 
-	pub fn get_max_dust_htlc_exposure_msat(&self, limiting_feerate_sat_per_kw: u32) -> u64 {
+	/// Returns the maximum configured dust exposure.
+	///
+	/// Uses a default of 1 sat/vbyte if `limiting_feerate_sat_per_kw` is `None` and the dust
+	/// exposure policy depends on fee rate.
+	pub fn get_max_dust_htlc_exposure_msat(&self, limiting_feerate_sat_per_kw: Option<u32>) -> u64 {
 		match self.config.options.max_dust_htlc_exposure {
 			MaxDustHTLCExposure::FeeRateMultiplier(multiplier) => {
-				(limiting_feerate_sat_per_kw as u64).saturating_mul(multiplier)
+				(limiting_feerate_sat_per_kw.unwrap_or(250) as u64).saturating_mul(multiplier)
 			},
 			MaxDustHTLCExposure::FixedLimitMsat(limit) => limit,
 		}
@@ -4338,7 +4342,7 @@ where
 	#[rustfmt::skip]
 	fn can_accept_incoming_htlc<L: Deref>(
 		&self, funding: &FundingScope, msg: &msgs::UpdateAddHTLC,
-		dust_exposure_limiting_feerate: u32, logger: &L,
+		dust_exposure_limiting_feerate: Option<u32>, logger: &L,
 	) -> Result<(), LocalHTLCFailureReason>
 	where
 		L::Target: Logger,
@@ -4678,7 +4682,7 @@ where
 	#[rustfmt::skip]
 	fn get_pending_htlc_stats(
 		&self, funding: &FundingScope, outbound_feerate_update: Option<u32>,
-		dust_exposure_limiting_feerate: u32,
+		dust_exposure_limiting_feerate: Option<u32>,
 	) -> HTLCStats {
 		let context = self;
 		let uses_0_htlc_fee_anchors = funding.get_channel_type().supports_anchors_zero_fee_htlc_tx();
@@ -4757,7 +4761,13 @@ where
 		let excess_feerate_opt = outbound_feerate_update
 			.or(self.pending_update_fee.map(|(fee, _)| fee))
 			.unwrap_or(self.feerate_per_kw)
-			.checked_sub(dust_exposure_limiting_feerate);
+			.checked_sub(dust_exposure_limiting_feerate.unwrap_or(0));
+
+		let is_zero_fee_comm = funding.get_channel_type().supports_anchor_zero_fee_commitments();
+		if is_zero_fee_comm {
+			debug_assert_eq!(excess_feerate_opt, Some(0));
+		}
+
 		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
 			let extra_htlc_commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 			let extra_htlc_htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());

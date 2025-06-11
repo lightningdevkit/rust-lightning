@@ -9941,7 +9941,7 @@ fn do_test_max_dust_htlc_exposure(
 		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
 		(
 			chan.context().get_dust_buffer_feerate(None) as u64,
-			chan.context().get_max_dust_htlc_exposure_msat(253),
+			chan.context().get_max_dust_htlc_exposure_msat(Some(253)),
 		)
 	};
 	assert_eq!(dust_buffer_feerate, expected_dust_buffer_feerate as u64);
