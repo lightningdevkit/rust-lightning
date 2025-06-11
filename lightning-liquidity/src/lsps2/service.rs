@@ -634,7 +634,7 @@ where
 	/// [`LSPS2ServiceEvent::GetInfo`]: crate::lsps2::event::LSPS2ServiceEvent::GetInfo
 	pub fn opening_fee_params_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId,
-		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>,
+		opening_fee_params_menu: Vec<LSPS2RawOpeningFeeParams>, ongoing_proportional: bool,
 	) -> Result<(), APIError> {
 		let (result, response) = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
@@ -652,6 +652,7 @@ where
 										param.into_opening_fee_params(&self.config.promise_secret)
 									})
 									.collect(),
+								ongoing_proportional,
 							});
 							(Ok(()), Some(response))
 						},

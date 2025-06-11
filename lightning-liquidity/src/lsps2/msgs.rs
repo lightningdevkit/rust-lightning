@@ -115,6 +115,8 @@ pub struct LSPS2OpeningFeeParams {
 pub struct LSPS2GetInfoResponse {
 	/// A set of opening fee parameters.
 	pub opening_fee_params_menu: Vec<LSPS2OpeningFeeParams>,
+	/// A flag for whether ongoing proportional fees will be collected.
+	pub ongoing_proportional: bool,
 }
 
 /// A request to buy a JIT channel.
@@ -348,6 +350,7 @@ mod tests {
 		let max_client_to_self_delay = 128;
 		let min_payment_size_msat = 1;
 		let max_payment_size_msat = 100_000_000;
+		let ongoing_proportional = true;
 
 		let raw = LSPS2RawOpeningFeeParams {
 			min_fee_msat,
@@ -382,7 +385,7 @@ mod tests {
 		assert_eq!(buy_request_variable, serde_json::from_str(json_str).unwrap());
 
 		// Check we still deserialize correctly if payment_size_msat is 'null'.
-		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"payment_size_msat":null}"#;
+		let json_str = r#"{"opening_fee_params":{"max_client_to_self_delay":128,"max_payment_size_msat":"100000000","min_fee_msat":"100","min_lifetime":144,"min_payment_size_msat":"1","promise":"1134a5c51e3ba2e8f4259610d5e12c1bf4c50ddcd3f8af563e0a00d1fff41dea","proportional":21,"valid_until":"2023-05-20T08:30:45Z"},"ongoing_proportional":true,"payment_size_msat":null}"#;
 		assert_eq!(buy_request_variable, serde_json::from_str(json_str).unwrap());
 	}
 
@@ -411,7 +414,8 @@ mod tests {
 				"max_payment_size_msat": "1000000",
 				"promise": "abcdefghijklmnopqrstuvwxyz"
 			}
-			]
+			],
+			"ongoing_proportional": true
 		}"#;
 		let _get_info_response: LSPS2GetInfoResponse = serde_json::from_str(json_str).unwrap();
 
@@ -426,6 +430,7 @@ mod tests {
 				"max_payment_size_msat": "1000000",
 				"promise": "abcdefghijklmnopqrstuvwxyz"
 			},
+			"ongoing_proportional": true,
 			"payment_size_msat": "42000"
 		}"#;
 		let _buy_request: LSPS2BuyRequest = serde_json::from_str(json_str).unwrap();

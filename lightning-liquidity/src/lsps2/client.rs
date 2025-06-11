@@ -214,6 +214,7 @@ where
 					request_id,
 					counterparty_node_id: *counterparty_node_id,
 					opening_fee_params_menu: result.opening_fee_params_menu,
+					ongoing_proportional: result.ongoing_proportional,
 				});
 			},
 			None => {

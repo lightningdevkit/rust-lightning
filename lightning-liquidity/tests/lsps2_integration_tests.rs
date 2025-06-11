@@ -154,11 +154,14 @@ fn invoice_generation_flow() {
 		max_payment_size_msat: 100_000_000,
 	};
 
+	let ongoing_proportional = true;
+
 	service_handler
 		.opening_fee_params_generated(
 			&client_node_id,
 			get_info_request_id.clone(),
 			vec![raw_opening_params],
+			ongoing_proportional,
 		)
 		.unwrap();
 	let get_info_response = get_lsps_message!(service_node, client_node_id);
@@ -174,9 +177,11 @@ fn invoice_generation_flow() {
 			request_id,
 			counterparty_node_id,
 			opening_fee_params_menu,
+			ongoing_proportional,
 		}) => {
 			assert_eq!(request_id, get_info_request_id);
 			assert_eq!(counterparty_node_id, service_node_id);
+			assert_eq!(ongoing_proportional, ongoing_proportional);
 			let opening_fee_params = opening_fee_params_menu.first().unwrap().clone();
 			assert!(is_valid_opening_fee_params(&opening_fee_params, &promise_secret));
 			opening_fee_params
@@ -282,11 +287,15 @@ fn channel_open_failed() {
 		min_payment_size_msat: 1,
 		max_payment_size_msat: 100_000_000,
 	};
+
+	let ongoing_proportional = true;
+
 	service_handler
 		.opening_fee_params_generated(
 			&client_node_id,
 			get_info_request_id.clone(),
 			vec![raw_opening_params],
+			ongoing_proportional,
 		)
 		.unwrap();
 
@@ -430,11 +439,14 @@ fn channel_open_abandoned() {
 		min_payment_size_msat: 1,
 		max_payment_size_msat: 100_000_000,
 	};
+	let ongoing_proportional = true;
+
 	service_handler
 		.opening_fee_params_generated(
 			&client_node_id,
 			get_info_request_id.clone(),
 			vec![raw_opening_params],
+			ongoing_proportional,
 		)
 		.unwrap();
 
@@ -584,9 +596,15 @@ fn max_total_requests_buy_rejected() {
 			min_payment_size_msat: 1,
 			max_payment_size_msat: 100_000_000,
 		};
+		let ongoing_proportional = true;
 
 		service_handler
-			.opening_fee_params_generated(&special_node_id, request_id, vec![raw_opening_params])
+			.opening_fee_params_generated(
+				&special_node_id,
+				request_id,
+				vec![raw_opening_params],
+				ongoing_proportional,
+			)
 			.unwrap();
 	} else {
 		panic!("Unexpected event");
@@ -713,11 +731,13 @@ fn invalid_token_flow() {
 			min_payment_size_msat: 1,
 			max_payment_size_msat: 100_000_000,
 		};
+		let ongoing_proportional = true;
 
 		let result = service_handler.opening_fee_params_generated(
 			&client_node_id,
 			request_id.clone(),
 			vec![raw_opening_params],
+			ongoing_proportional,
 		);
 
 		assert!(result.is_err(), "Request should have been removed from pending_requests");

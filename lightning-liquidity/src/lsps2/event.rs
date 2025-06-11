@@ -38,6 +38,8 @@ pub enum LSPS2ClientEvent {
 		/// The menu of fee parameters the LSP is offering at this time.
 		/// You must select one of these if you wish to proceed.
 		opening_fee_params_menu: Vec<LSPS2OpeningFeeParams>,
+		/// A flag indicating whether the LSP will collect ongoing proportional fees after the initial channel is opened.
+		ongoing_proportional: bool,
 	},
 	/// Provides the necessary information to generate a payable invoice that then may be given to
 	/// the payer.
