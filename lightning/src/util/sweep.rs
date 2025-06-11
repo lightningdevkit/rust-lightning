@@ -36,6 +36,7 @@ use bitcoin::{BlockHash, ScriptBuf, Transaction, Txid};
 
 use core::future::Future;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task;
 
@@ -414,7 +415,7 @@ where
 	/// Returns `Err` on persistence failure, in which case the call may be safely retried.
 	///
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
-	pub fn track_spendable_outputs(
+	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
@@ -430,29 +431,34 @@ where
 			return Ok(());
 		}
 
-		let mut state_lock = self.sweeper_state.lock().unwrap();
-		for descriptor in relevant_descriptors {
-			let output_info = TrackedSpendableOutput {
-				descriptor,
-				channel_id,
-				status: OutputSpendStatus::PendingInitialBroadcast {
-					delayed_until_height: delay_until_height,
-				},
-			};
+		let persist_fut;
+		{
+			let mut state_lock = self.sweeper_state.lock().unwrap();
+			for descriptor in relevant_descriptors {
+				let output_info = TrackedSpendableOutput {
+					descriptor,
+					channel_id,
+					status: OutputSpendStatus::PendingInitialBroadcast {
+						delayed_until_height: delay_until_height,
+					},
+				};
 
-			let mut outputs = state_lock.persistent.outputs.iter();
-			if outputs.find(|o| o.descriptor == output_info.descriptor).is_some() {
-				continue;
+				let mut outputs = state_lock.persistent.outputs.iter();
+				if outputs.find(|o| o.descriptor == output_info.descriptor).is_some() {
+					continue;
+				}
+
+				state_lock.persistent.outputs.push(output_info);
 			}
-
-			state_lock.persistent.outputs.push(output_info);
+			persist_fut = self.persist_state(&state_lock.persistent);
+			state_lock.dirty = false;
 		}
-		self.persist_state(&state_lock.persistent).map_err(|e| {
-			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-		})?;
-		state_lock.dirty = false;
 
-		Ok(())
+		persist_fut.await.map_err(|e| {
+			self.sweeper_state.lock().unwrap().dirty = true;
+
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		})
 	}
 
 	/// Returns a list of the currently tracked spendable outputs.
@@ -508,23 +514,34 @@ where
 		};
 
 		// See if there is anything to sweep before requesting a change address.
+		let persist_fut;
+		let has_respends;
 		{
 			let mut sweeper_state = self.sweeper_state.lock().unwrap();
 
 			let cur_height = sweeper_state.persistent.best_block.height;
-			let has_respends =
+			has_respends =
 				sweeper_state.persistent.outputs.iter().any(|o| filter_fn(o, cur_height));
-			if !has_respends {
+			if !has_respends && sweeper_state.dirty {
 				// If there is nothing to sweep, we still persist the state if it is dirty.
-				if sweeper_state.dirty {
-					self.persist_state(&sweeper_state.persistent).map_err(|e| {
-						log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-					})?;
-					sweeper_state.dirty = false;
-				}
-
-				return Ok(());
+				persist_fut = Some(self.persist_state(&sweeper_state.persistent));
+				sweeper_state.dirty = false;
+			} else {
+				persist_fut = None;
 			}
+		}
+
+		if let Some(persist_fut) = persist_fut {
+			persist_fut.await.map_err(|e| {
+				self.sweeper_state.lock().unwrap().dirty = true;
+
+				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+			})?;
+		};
+
+		if !has_respends {
+			// If there is nothing to sweep, we return early.
+			return Ok(());
 		}
 
 		// Request a new change address outside of the mutex to avoid the mutex crossing await.
@@ -532,6 +549,7 @@ where
 			self.change_destination_source.get_change_destination_script().await?;
 
 		// Sweep the outputs.
+		let persist_fut;
 		{
 			let mut sweeper_state = self.sweeper_state.lock().unwrap();
 
@@ -581,13 +599,16 @@ where
 				output_info.status.broadcast(cur_hash, cur_height, spending_tx.clone());
 			}
 
-			self.persist_state(&sweeper_state.persistent).map_err(|e| {
-				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-			})?;
+			persist_fut = self.persist_state(&sweeper_state.persistent);
 			sweeper_state.dirty = false;
-
 			self.broadcaster.broadcast_transactions(&[&spending_tx]);
 		}
+
+		persist_fut.await.map_err(|e| {
+			self.sweeper_state.lock().unwrap().dirty = true;
+
+			log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
+		})?;
 
 		Ok(())
 	}
@@ -614,25 +635,19 @@ where
 		sweeper_state.dirty = true;
 	}
 
-	fn persist_state(&self, sweeper_state: &PersistentSweeperState) -> Result<(), io::Error> {
-		self.kv_store
-			.write(
-				OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-				OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
-				OUTPUT_SWEEPER_PERSISTENCE_KEY,
-				&sweeper_state.encode(),
-			)
-			.map_err(|e| {
-				log_error!(
-					self.logger,
-					"Write for key {}/{}/{} failed due to: {}",
-					OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-					OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
-					OUTPUT_SWEEPER_PERSISTENCE_KEY,
-					e
-				);
-				e
-			})
+	fn persist_state<'a>(
+		&self, sweeper_state: &PersistentSweeperState,
+	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'a + Send>> {
+		let encoded = &sweeper_state.encode();
+
+		let result = self.kv_store.write(
+			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+			OUTPUT_SWEEPER_PERSISTENCE_KEY,
+			encoded,
+		);
+
+		Box::pin(async move { result })
 	}
 
 	fn spend_outputs(
@@ -993,16 +1008,18 @@ where
 	}
 
 	/// Tells the sweeper to track the given outputs descriptors. Wraps [`OutputSweeper::track_spendable_outputs`].
-	pub fn track_spendable_outputs(
+	pub async fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) -> Result<(), ()> {
-		self.sweeper.track_spendable_outputs(
-			output_descriptors,
-			channel_id,
-			exclude_static_outputs,
-			delay_until_height,
-		)
+		self.sweeper
+			.track_spendable_outputs(
+				output_descriptors,
+				channel_id,
+				exclude_static_outputs,
+				delay_until_height,
+			)
+			.await
 	}
 
 	/// Returns a list of the currently tracked spendable outputs. Wraps [`OutputSweeper::tracked_spendable_outputs`].
