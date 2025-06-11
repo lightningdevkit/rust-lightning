@@ -767,14 +767,19 @@ pub(crate) use self::fuzzy_channelmanager::*;
 
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 impl core::hash::Hash for HTLCSource {
-	#[rustfmt::skip]
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
 		match self {
 			HTLCSource::PreviousHopData(prev_hop_data) => {
 				0u8.hash(hasher);
 				prev_hop_data.hash(hasher);
 			},
-			HTLCSource::OutboundRoute { path, session_priv, payment_id, first_hop_htlc_msat, bolt12_invoice } => {
+			HTLCSource::OutboundRoute {
+				path,
+				session_priv,
+				payment_id,
+				first_hop_htlc_msat,
+				bolt12_invoice,
+			} => {
 				1u8.hash(hasher);
 				path.hash(hasher);
 				session_priv[..].hash(hasher);
@@ -1503,17 +1508,19 @@ where
 	/// Indicates that a peer meets the criteria where we're ok to remove it from our storage.
 	/// If true is passed for `require_disconnected`, the function will return false if we haven't
 	/// disconnected from the node already, ie. `PeerState::is_connected` is set to `true`.
-	#[rustfmt::skip]
 	fn ok_to_remove(&self, require_disconnected: bool) -> bool {
 		if require_disconnected && self.is_connected {
-			return false
+			return false;
 		}
 		for (_, updates) in self.in_flight_monitor_updates.values() {
 			if !updates.is_empty() {
 				return false;
 			}
 		}
-		!self.channel_by_id.iter().any(|(_, channel)| channel.is_funded() || channel.funding().is_outbound())
+		!self
+			.channel_by_id
+			.iter()
+			.any(|(_, channel)| channel.is_funded() || channel.funding().is_outbound())
 			&& self.monitor_update_blocked_actions.is_empty()
 			&& self.closed_channel_monitor_update_ids.is_empty()
 	}
@@ -2844,9 +2851,9 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
-	#[rustfmt::skip]
-	fn optionally_notify<F: FnOnce() -> NotifyOption, C: AChannelManager>(cm: &'a C, persist_check: F)
-	-> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
+	fn optionally_notify<F: FnOnce() -> NotifyOption, C: AChannelManager>(
+		cm: &'a C, persist_check: F,
+	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
 		let force_notify = cm.get_cm().process_background_events();
 
@@ -2860,8 +2867,12 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 				match (notify, force_notify) {
 					(NotifyOption::DoPersist, _) => NotifyOption::DoPersist,
 					(_, NotifyOption::DoPersist) => NotifyOption::DoPersist,
-					(NotifyOption::SkipPersistHandleEvents, _) => NotifyOption::SkipPersistHandleEvents,
-					(_, NotifyOption::SkipPersistHandleEvents) => NotifyOption::SkipPersistHandleEvents,
+					(NotifyOption::SkipPersistHandleEvents, _) => {
+						NotifyOption::SkipPersistHandleEvents
+					},
+					(_, NotifyOption::SkipPersistHandleEvents) => {
+						NotifyOption::SkipPersistHandleEvents
+					},
 					_ => NotifyOption::SkipPersistNoEvents,
 				}
 			}),
@@ -3308,37 +3319,45 @@ macro_rules! emit_funding_tx_broadcast_safe_event {
 	}
 }
 
-#[rustfmt::skip]
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_pending_event() {
-			$locked_events.push_back((events::Event::ChannelPending {
-				channel_id: $channel.context.channel_id(),
-				former_temporary_channel_id: $channel.context.temporary_channel_id(),
-				counterparty_node_id: $channel.context.get_counterparty_node_id(),
-				user_channel_id: $channel.context.get_user_id(),
-				funding_txo: $channel.funding.get_funding_txo().unwrap().into_bitcoin_outpoint(),
-				channel_type: Some($channel.funding.get_channel_type().clone()),
-			}, None));
+			$locked_events.push_back((
+				events::Event::ChannelPending {
+					channel_id: $channel.context.channel_id(),
+					former_temporary_channel_id: $channel.context.temporary_channel_id(),
+					counterparty_node_id: $channel.context.get_counterparty_node_id(),
+					user_channel_id: $channel.context.get_user_id(),
+					funding_txo: $channel
+						.funding
+						.get_funding_txo()
+						.unwrap()
+						.into_bitcoin_outpoint(),
+					channel_type: Some($channel.funding.get_channel_type().clone()),
+				},
+				None,
+			));
 			$channel.context.set_channel_pending_event_emitted();
 		}
-	}
+	};
 }
 
-#[rustfmt::skip]
 macro_rules! emit_channel_ready_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_ready_event() {
 			debug_assert!($channel.context.channel_pending_event_emitted());
-			$locked_events.push_back((events::Event::ChannelReady {
-				channel_id: $channel.context.channel_id(),
-				user_channel_id: $channel.context.get_user_id(),
-				counterparty_node_id: $channel.context.get_counterparty_node_id(),
-				channel_type: $channel.funding.get_channel_type().clone(),
-			}, None));
+			$locked_events.push_back((
+				events::Event::ChannelReady {
+					channel_id: $channel.context.channel_id(),
+					user_channel_id: $channel.context.get_user_id(),
+					counterparty_node_id: $channel.context.get_counterparty_node_id(),
+					channel_type: $channel.funding.get_channel_type().clone(),
+				},
+				None,
+			));
 			$channel.context.set_channel_ready_event_emitted();
 		}
-	}
+	};
 }
 
 macro_rules! handle_monitor_update_completion {
@@ -3783,22 +3802,31 @@ where
 		self.create_and_insert_outbound_scid_alias()
 	}
 
-	#[rustfmt::skip]
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
 		let height = self.best_block.read().unwrap().height;
 		let mut outbound_scid_alias = 0;
 		let mut i = 0;
 		loop {
-			if cfg!(fuzzing) { // fuzzing chacha20 doesn't use the key at all so we always get the same alias
+			if cfg!(fuzzing) {
+				// fuzzing chacha20 doesn't use the key at all so we always get the same alias
 				outbound_scid_alias += 1;
 			} else {
-				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(height, &self.chain_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
+				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(
+					height,
+					&self.chain_hash,
+					&self.fake_scid_rand_bytes,
+					&self.entropy_source,
+				);
 			}
-			if outbound_scid_alias != 0 && self.outbound_scid_aliases.lock().unwrap().insert(outbound_scid_alias) {
+			if outbound_scid_alias != 0
+				&& self.outbound_scid_aliases.lock().unwrap().insert(outbound_scid_alias)
+			{
 				break;
 			}
 			i += 1;
-			if i > 1_000_000 { panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels"); }
+			if i > 1_000_000 {
+				panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels");
+			}
 		}
 		outbound_scid_alias
 	}
@@ -3897,8 +3925,9 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	#[rustfmt::skip]
-	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_funded_channels_with_filter<Fn: FnMut(&(&ChannelId, &Channel<SP>)) -> bool + Copy>(
+		&self, f: Fn,
+	) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
 		// a scid or a scid alias. Therefore reallocations may still occur, but is
@@ -3911,16 +3940,21 @@ where
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				res.extend(peer_state.channel_by_id.iter()
-					// Only `Channels` in the `Channel::Funded` phase can be considered funded.
-					.filter(|(_, chan)| chan.is_funded())
-					.filter(f)
-					.map(|(_channel_id, channel)| {
-						ChannelDetails::from_channel(
-							channel, best_block_height, peer_state.latest_features.clone(),
-							&self.fee_estimator,
-						)
-					})
+				res.extend(
+					peer_state
+						.channel_by_id
+						.iter()
+						// Only `Channels` in the `Channel::Funded` phase can be considered funded.
+						.filter(|(_, chan)| chan.is_funded())
+						.filter(f)
+						.map(|(_channel_id, channel)| {
+							ChannelDetails::from_channel(
+								channel,
+								best_block_height,
+								peer_state.latest_features.clone(),
+								&self.fee_estimator,
+							)
+						}),
 				);
 			}
 		}
@@ -3929,7 +3963,6 @@ where
 
 	/// Gets the list of open channels, in random order. See [`ChannelDetails`] field documentation for
 	/// more information.
-	#[rustfmt::skip]
 	pub fn list_channels(&self) -> Vec<ChannelDetails> {
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -3945,7 +3978,9 @@ where
 				let peer_state = &mut *peer_state_lock;
 				for (_, channel) in peer_state.channel_by_id.iter() {
 					let details = ChannelDetails::from_channel(
-						channel, best_block_height, peer_state.latest_features.clone(),
+						channel,
+						best_block_height,
+						peer_state.latest_features.clone(),
 						&self.fee_estimator,
 					);
 					res.push(details);
@@ -3969,8 +4004,9 @@ where
 	}
 
 	/// Gets the list of channels we have with a given counterparty, in random order.
-	#[rustfmt::skip]
-	pub fn list_channels_with_counterparty(&self, counterparty_node_id: &PublicKey) -> Vec<ChannelDetails> {
+	pub fn list_channels_with_counterparty(
+		&self, counterparty_node_id: &PublicKey,
+	) -> Vec<ChannelDetails> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
@@ -3980,10 +4016,14 @@ where
 			let features = &peer_state.latest_features;
 			let channel_to_details = |channel| {
 				ChannelDetails::from_channel(
-					channel, best_block_height, features.clone(), &self.fee_estimator,
+					channel,
+					best_block_height,
+					features.clone(),
+					&self.fee_estimator,
 				)
 			};
-			return peer_state.channel_by_id
+			return peer_state
+				.channel_by_id
 				.iter()
 				.map(|(_, chan)| (chan))
 				.map(channel_to_details)
@@ -4580,14 +4620,14 @@ where
 
 	/// Executes a callback `C` that returns some value `X` on the channel found with the given
 	/// `scid`. `None` is returned when the channel is not found.
-	#[rustfmt::skip]
 	fn do_funded_channel_callback<X, C: Fn(&mut FundedChannel<SP>) -> X>(
 		&self, scid: u64, callback: C,
 	) -> Option<X> {
-		let (counterparty_node_id, channel_id) = match self.short_to_chan_info.read().unwrap().get(&scid).cloned() {
-			None => return None,
-			Some((cp_id, id)) => (cp_id, id),
-		};
+		let (counterparty_node_id, channel_id) =
+			match self.short_to_chan_info.read().unwrap().get(&scid).cloned() {
+				None => return None,
+				Some((cp_id, id)) => (cp_id, id),
+			};
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
 		if peer_state_mutex_opt.is_none() {
@@ -4754,19 +4794,27 @@ where
 	///
 	/// [`channel_update`]: msgs::ChannelUpdate
 	/// [`internal_closing_signed`]: Self::internal_closing_signed
-	#[rustfmt::skip]
-	fn get_channel_update_for_broadcast(&self, chan: &FundedChannel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_broadcast(
+		&self, chan: &FundedChannel<SP>,
+	) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.context.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
-				action: msgs::ErrorAction::IgnoreError
+				action: msgs::ErrorAction::IgnoreError,
 			});
 		}
 		if chan.context.get_short_channel_id().is_none() {
-			return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError});
+			return Err(LightningError {
+				err: "Channel not yet established".to_owned(),
+				action: msgs::ErrorAction::IgnoreError,
+			});
 		}
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-		log_trace!(logger, "Attempting to generate broadcast channel update for channel {}", &chan.context.channel_id());
+		log_trace!(
+			logger,
+			"Attempting to generate broadcast channel update for channel {}",
+			&chan.context.channel_id()
+		);
 		self.get_channel_update_for_unicast(chan)
 	}
 
@@ -4996,28 +5044,50 @@ where
 	/// [`UpdateHTLCs`]: MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	#[rustfmt::skip]
 	pub fn send_payment(
-		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
-		route_params: RouteParameters, retry_strategy: Retry
+		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry,
 	) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments
-			.send_payment(payment_hash, recipient_onion, payment_id, retry_strategy, route_params,
-				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
-				&self.pending_events, |args| self.send_payment_along_path(args))
+		self.pending_outbound_payments.send_payment(
+			payment_hash,
+			recipient_onion,
+			payment_id,
+			retry_strategy,
+			route_params,
+			&self.router,
+			self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			best_block_height,
+			&self.logger,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+		)
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
-	#[rustfmt::skip]
-	pub(super) fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
+	pub(super) fn test_send_payment_internal(
+		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId,
+		recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>,
+	) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments.test_send_payment_internal(route, payment_hash, recipient_onion,
-			keysend_preimage, payment_id, recv_value_msat, onion_session_privs, &self.node_signer,
-			best_block_height, |args| self.send_payment_along_path(args))
+		self.pending_outbound_payments.test_send_payment_internal(
+			route,
+			payment_hash,
+			recipient_onion,
+			keysend_preimage,
+			payment_id,
+			recv_value_msat,
+			onion_session_privs,
+			&self.node_signer,
+			best_block_height,
+			|args| self.send_payment_along_path(args),
+		)
 	}
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
@@ -5072,18 +5142,28 @@ where
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
 	/// To use default settings, call the function with [`RouteParametersConfig::default`].
-	#[rustfmt::skip]
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
-		route_params_config: RouteParametersConfig, retry_strategy: Retry
+		route_params_config: RouteParametersConfig, retry_strategy: Retry,
 	) -> Result<(), Bolt11PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments
-			.pay_for_bolt11_invoice(invoice, payment_id, amount_msats, route_params_config, retry_strategy,
-				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
-				&self.pending_events, |args| self.send_payment_along_path(args))
+		self.pending_outbound_payments.pay_for_bolt11_invoice(
+			invoice,
+			payment_id,
+			amount_msats,
+			route_params_config,
+			retry_strategy,
+			&self.router,
+			self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			best_block_height,
+			&self.logger,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+		)
 	}
 
 	/// Pays the [`Bolt12Invoice`] associated with the `payment_id` encoded in its `payer_metadata`.
@@ -5132,18 +5212,28 @@ where
 		}
 	}
 
-	#[rustfmt::skip]
-	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
+	fn send_payment_for_verified_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
+	) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let features = self.bolt12_invoice_features();
-		self.pending_outbound_payments
-			.send_payment_for_bolt12_invoice(
-				invoice, payment_id, &self.router, self.list_usable_channels(), features,
-				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
-				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
-				|args| self.send_payment_along_path(args)
-			)
+		self.pending_outbound_payments.send_payment_for_bolt12_invoice(
+			invoice,
+			payment_id,
+			&self.router,
+			self.list_usable_channels(),
+			features,
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			&self,
+			&self.secp_ctx,
+			best_block_height,
+			&self.logger,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+		)
 	}
 
 	#[cfg(async_payments)]
@@ -7191,14 +7281,20 @@ where
 	}
 
 	/// Gets error data to form an [`HTLCFailReason`] given a [`FailureCode`] and [`ClaimableHTLC`].
-	#[rustfmt::skip]
-	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
+	fn get_htlc_fail_reason_from_failure_code(
+		&self, failure_code: FailureCode, htlc: &ClaimableHTLC,
+	) -> HTLCFailReason {
 		match failure_code {
-			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code.into()),
-			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(failure_code.into()),
+			FailureCode::TemporaryNodeFailure => {
+				HTLCFailReason::from_failure_code(failure_code.into())
+			},
+			FailureCode::RequiredNodeFeatureMissing => {
+				HTLCFailReason::from_failure_code(failure_code.into())
+			},
 			FailureCode::IncorrectOrUnknownPaymentDetails => {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
-				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height.to_be_bytes());
+				htlc_msat_height_data
+					.extend_from_slice(&self.best_block.read().unwrap().height.to_be_bytes());
 				HTLCFailReason::reason(failure_code.into(), htlc_msat_height_data)
 			},
 			FailureCode::InvalidOnionPayload(data) => {
@@ -7207,7 +7303,7 @@ where
 					None => Vec::new(),
 				};
 				HTLCFailReason::reason(failure_code.into(), fail_data)
-			}
+			},
 		}
 	}
 
@@ -8327,16 +8423,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	///
 	/// The filter is called for each peer and provided with the number of unfunded, inbound, and
 	/// non-0-conf channels we have with the peer.
-	#[rustfmt::skip]
 	fn peers_without_funded_channels<Filter>(&self, maybe_count_peer: Filter) -> usize
-	where Filter: Fn(&PeerState<SP>) -> bool {
+	where
+		Filter: Fn(&PeerState<SP>) -> bool,
+	{
 		let mut peers_without_funded_channels = 0;
 		let best_block_height = self.best_block.read().unwrap().height;
 		{
 			let peer_state_lock = self.per_peer_state.read().unwrap();
 			for (_, peer_mtx) in peer_state_lock.iter() {
 				let peer = peer_mtx.lock().unwrap();
-				if !maybe_count_peer(&*peer) { continue; }
+				if !maybe_count_peer(&*peer) {
+					continue;
+				}
 				let num_unfunded_channels = Self::unfunded_channel_count(&peer, best_block_height);
 				if num_unfunded_channels == peer.total_channel_count() {
 					peers_without_funded_channels += 1;
@@ -8824,37 +8923,40 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_add_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_add_output(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::TxAddOutput,
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					Ok(unfunded_channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id))
-				},
+				Some(unfunded_channel) => Ok(unfunded_channel
+					.tx_add_output(msg)
+					.into_msg_send_event(counterparty_node_id)),
 				None => Err("tx_add_output"),
 			}
 		})
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_remove_input(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_remove_input(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveInput,
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					Ok(unfunded_channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id))
-				},
+				Some(unfunded_channel) => Ok(unfunded_channel
+					.tx_remove_input(msg)
+					.into_msg_send_event(counterparty_node_id)),
 				None => Err("tx_remove_input"),
 			}
 		})
 	}
 
-	#[rustfmt::skip]
-	fn internal_tx_remove_output(&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_remove_output(
+		&self, counterparty_node_id: PublicKey, msg: &msgs::TxRemoveOutput,
+	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => {
-					Ok(unfunded_channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id))
-				},
+				Some(unfunded_channel) => Ok(unfunded_channel
+					.tx_remove_output(msg)
+					.into_msg_send_event(counterparty_node_id)),
 				None => Err("tx_remove_output"),
 			}
 		})
@@ -9436,17 +9538,22 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 	}
 
-	#[rustfmt::skip]
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
 		let mut push_forward_event = self.forward_htlcs.lock().unwrap().is_empty();
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
 		push_forward_event &= decode_update_add_htlcs.is_empty();
 		let scid = update_add_htlcs.0;
 		match decode_update_add_htlcs.entry(scid) {
-			hash_map::Entry::Occupied(mut e) => { e.get_mut().append(&mut update_add_htlcs.1); },
-			hash_map::Entry::Vacant(e) => { e.insert(update_add_htlcs.1); },
+			hash_map::Entry::Occupied(mut e) => {
+				e.get_mut().append(&mut update_add_htlcs.1);
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(update_add_htlcs.1);
+			},
 		}
-		if push_forward_event { self.push_pending_forwards_ev(); }
+		if push_forward_event {
+			self.push_pending_forwards_ev();
+		}
 	}
 
 	#[inline]
@@ -9554,13 +9661,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		push_forward_event
 	}
 
-	#[rustfmt::skip]
 	fn push_pending_forwards_ev(&self) {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let is_processing_events = self.pending_events_processor.load(Ordering::Acquire);
-		let num_forward_events = pending_events.iter().filter(|(ev, _)|
-			if let events::Event::PendingHTLCsForwardable { .. } = ev { true } else { false }
-		).count();
+		let num_forward_events = pending_events
+			.iter()
+			.filter(|(ev, _)| {
+				if let events::Event::PendingHTLCsForwardable { .. } = ev {
+					true
+				} else {
+					false
+				}
+			})
+			.count();
 		// We only want to push a PendingHTLCsForwardable event if no others are queued. Processing
 		// events is done in batches and they are not removed until we're done processing each
 		// batch. Since handling a `PendingHTLCsForwardable` event will call back into the
@@ -9568,9 +9681,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// payments will need an additional forwarding event before being claimed to make them look
 		// real by taking more time.
 		if (is_processing_events && num_forward_events <= 1) || num_forward_events < 1 {
-			pending_events.push_back((Event::PendingHTLCsForwardable {
-				time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
-			}, None));
+			pending_events.push_back((
+				Event::PendingHTLCsForwardable {
+					time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
+				},
+				None,
+			));
 		}
 	}
 
@@ -9595,9 +9711,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	#[rustfmt::skip]
-	pub(crate) fn test_raa_monitor_updates_held(&self,
-		counterparty_node_id: PublicKey, channel_id: ChannelId
+	pub(crate) fn test_raa_monitor_updates_held(
+		&self, counterparty_node_id: PublicKey, channel_id: ChannelId,
 	) -> bool {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mtx) = per_peer_state.get(&counterparty_node_id) {
@@ -9605,8 +9720,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			let peer_state = &mut *peer_state_lck;
 
 			if let Some(chan) = peer_state.channel_by_id.get(&channel_id) {
-				return self.raa_monitor_updates_held(&peer_state.actions_blocking_raa_monitor_updates,
-					chan.funding().get_funding_txo().unwrap(), channel_id, counterparty_node_id);
+				return self.raa_monitor_updates_held(
+					&peer_state.actions_blocking_raa_monitor_updates,
+					chan.funding().get_funding_txo().unwrap(),
+					channel_id,
+					counterparty_node_id,
+				);
 			}
 		}
 		false
@@ -10839,26 +10958,36 @@ where
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
-	#[rustfmt::skip]
 	pub fn pay_for_offer(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
-		route_params_config: RouteParametersConfig
+		route_params_config: RouteParametersConfig,
 	) -> Result<(), Bolt12SemanticError> {
-		self.pay_for_offer_intern(offer, quantity, amount_msats, payer_note, payment_id, None, |invoice_request, nonce| {
-			let expiration = StaleExpiration::TimerTicks(1);
-			let retryable_invoice_request = RetryableInvoiceRequest {
-				invoice_request: invoice_request.clone(),
-				nonce,
-				needs_retry: true,
-			};
-			self.pending_outbound_payments
-				.add_new_awaiting_invoice(
-					payment_id, expiration, retry_strategy, route_params_config,
-					Some(retryable_invoice_request)
-				)
-				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
-		})
+		self.pay_for_offer_intern(
+			offer,
+			quantity,
+			amount_msats,
+			payer_note,
+			payment_id,
+			None,
+			|invoice_request, nonce| {
+				let expiration = StaleExpiration::TimerTicks(1);
+				let retryable_invoice_request = RetryableInvoiceRequest {
+					invoice_request: invoice_request.clone(),
+					nonce,
+					needs_retry: true,
+				};
+				self.pending_outbound_payments
+					.add_new_awaiting_invoice(
+						payment_id,
+						expiration,
+						retry_strategy,
+						route_params_config,
+						Some(retryable_invoice_request),
+					)
+					.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+			},
+		)
 	}
 
 	#[rustfmt::skip]
@@ -11005,23 +11134,32 @@ where
 	/// [`PaymentFailureReason::UserAbandoned`]: crate::events::PaymentFailureReason::UserAbandoned
 	/// [`PaymentFailureReason::InvoiceRequestRejected`]: crate::events::PaymentFailureReason::InvoiceRequestRejected
 	#[cfg(feature = "dnssec")]
-	#[rustfmt::skip]
 	pub fn pay_for_offer_from_human_readable_name(
-		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId, payer_note: Option<String>,
-		retry_strategy: Retry, route_params_config: RouteParametersConfig,
-		dns_resolvers: Vec<Destination>,
+		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
+		payer_note: Option<String>, retry_strategy: Retry,
+		route_params_config: RouteParametersConfig, dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
 		let (onion_message, context) =
 			self.flow.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 
 		let expiration = StaleExpiration::TimerTicks(1);
-		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, route_params_config, amount_msats, payer_note)?;
+		self.pending_outbound_payments.add_new_awaiting_offer(
+			payment_id,
+			expiration,
+			retry_strategy,
+			route_params_config,
+			amount_msats,
+			payer_note,
+		)?;
 
-		self.flow.enqueue_dns_onion_message(
-			onion_message, context, dns_resolvers,
-			self.get_peers_for_blinded_path()
-		).map_err(|_| ())
-
+		self.flow
+			.enqueue_dns_onion_message(
+				onion_message,
+				context,
+				dns_resolvers,
+				self.get_peers_for_blinded_path(),
+			)
+			.map_err(|_| ())
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
@@ -11151,16 +11289,18 @@ where
 		now
 	}
 
-	#[rustfmt::skip]
 	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
-		self.per_peer_state.read().unwrap()
+		self.per_peer_state
+			.read()
+			.unwrap()
 			.iter()
 			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
 			.filter(|(_, peer)| peer.is_connected)
 			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
 			.map(|(node_id, peer)| MessageForwardNode {
 				node_id: *node_id,
-				short_channel_id: peer.channel_by_id
+				short_channel_id: peer
+					.channel_by_id
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
 					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
@@ -11172,16 +11312,20 @@ where
 	#[cfg(all(test, async_payments))]
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
-	#[rustfmt::skip]
 	pub(super) fn test_create_blinded_payment_paths(
-		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
-		relative_expiry_seconds: u32
+		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret,
+		payment_context: PaymentContext, relative_expiry_seconds: u32,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let entropy = &*self.entropy_source;
 
 		self.flow.test_create_blinded_payment_paths(
-			&self.router, entropy, self.list_usable_channels(),
-			amount_msats, payment_secret, payment_context, relative_expiry_seconds
+			&self.router,
+			entropy,
+			self.list_usable_channels(),
+			amount_msats,
+			payment_secret,
+			payment_context,
+			relative_expiry_seconds,
 		)
 	}
 
@@ -11264,7 +11408,6 @@ where
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	#[rustfmt::skip]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
@@ -11275,7 +11418,9 @@ where
 		// we test all generated events round-trip:
 		for event in &collected_events {
 			let ser = event.encode();
-			if let Some(deser) = events::Event::read(&mut &ser[..]).expect("event should deserialize") {
+			if let Some(deser) =
+				events::Event::read(&mut &ser[..]).expect("event should deserialize")
+			{
 				assert_eq!(&deser, event, "event should roundtrip correctly");
 			}
 		}
@@ -11798,11 +11943,12 @@ where
 		self.best_block_updated(header, height);
 	}
 
-	#[rustfmt::skip]
 	fn block_disconnected(&self, header: &Header, height: u32) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
-				self, || -> NotifyOption { NotifyOption::DoPersist });
+				self,
+				|| -> NotifyOption { NotifyOption::DoPersist },
+			);
 		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
@@ -11813,7 +11959,16 @@ where
 			*best_block = BestBlock::new(header.prev_blockhash, new_height)
 		}
 
-		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None)));
+		self.do_chain_event(Some(new_height), |channel| {
+			channel.best_block_updated(
+				new_height,
+				header.time,
+				self.chain_hash,
+				&self.node_signer,
+				&self.default_configuration,
+				&&WithChannelContext::from(&self.logger, &channel.context, None),
+			)
+		});
 	}
 }
 
@@ -11929,7 +12084,6 @@ where
 		self.flow.best_block_updated(header, height);
 	}
 
-	#[rustfmt::skip]
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
 		for (_cp_id, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
@@ -11939,7 +12093,9 @@ where
 				let txid_opt = chan.funding.get_funding_txo();
 				let height_opt = chan.context.get_funding_tx_confirmation_height();
 				let hash_opt = chan.context.get_funding_tx_confirmed_in();
-				if let (Some(funding_txo), Some(conf_height), Some(block_hash)) = (txid_opt, height_opt, hash_opt) {
+				if let (Some(funding_txo), Some(conf_height), Some(block_hash)) =
+					(txid_opt, height_opt, hash_opt)
+				{
 					res.push((funding_txo.txid, conf_height, Some(block_hash)));
 				}
 			}
@@ -11947,17 +12103,28 @@ where
 		res
 	}
 
-	#[rustfmt::skip]
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
-				self, || -> NotifyOption { NotifyOption::DoPersist });
+				self,
+				|| -> NotifyOption { NotifyOption::DoPersist },
+			);
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.funding.get_funding_txo() {
 				if funding_txo.txid == *txid {
-					channel.funding_transaction_unconfirmed(&&WithChannelContext::from(&self.logger, &channel.context, None)).map(|()| (None, Vec::new(), None))
-				} else { Ok((None, Vec::new(), None)) }
-			} else { Ok((None, Vec::new(), None)) }
+					channel
+						.funding_transaction_unconfirmed(&&WithChannelContext::from(
+							&self.logger,
+							&channel.context,
+							None,
+						))
+						.map(|()| (None, Vec::new(), None))
+				} else {
+					Ok((None, Vec::new(), None))
+				}
+			} else {
+				Ok((None, Vec::new(), None))
+			}
 		});
 	}
 }
@@ -12278,13 +12445,13 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	#[rustfmt::skip]
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let res = self.internal_open_channel(&counterparty_node_id, OpenChannelMessageRef::V1(msg));
+			let res =
+				self.internal_open_channel(&counterparty_node_id, OpenChannelMessageRef::V1(msg));
 			let persist = match &res {
 				Err(e) if e.closes_channel() => {
 					debug_assert!(false, "We shouldn't close a new channel");
@@ -12387,17 +12554,18 @@ where
 		});
 	}
 
-	#[rustfmt::skip]
 	fn handle_stfu(&self, counterparty_node_id: PublicKey, msg: &msgs::Stfu) {
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
 			let res = self.internal_stfu(&counterparty_node_id, msg);
 			let persist = match &res {
 				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
 				Err(_) => NotifyOption::SkipPersistHandleEvents,
-				Ok(sent_stfu) => if *sent_stfu {
-					NotifyOption::SkipPersistHandleEvents
-				} else {
-					NotifyOption::SkipPersistNoEvents
+				Ok(sent_stfu) => {
+					if *sent_stfu {
+						NotifyOption::SkipPersistHandleEvents
+					} else {
+						NotifyOption::SkipPersistNoEvents
+					}
 				},
 			};
 			let _ = handle_error!(self, res, counterparty_node_id);
@@ -12786,18 +12954,27 @@ where
 		});
 	}
 
-	#[rustfmt::skip]
 	fn message_received(&self) {
-		for (payment_id, retryable_invoice_request) in self
-			.pending_outbound_payments
-			.release_invoice_requests_awaiting_invoice()
+		for (payment_id, retryable_invoice_request) in
+			self.pending_outbound_payments.release_invoice_requests_awaiting_invoice()
 		{
 			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
 
-			if self.flow.enqueue_invoice_request(
-				invoice_request, payment_id, nonce, self.get_peers_for_blinded_path()
-			).is_err() {
-				log_warn!(self.logger, "Retry failed for invoice request with payment_id {}", payment_id);
+			if self
+				.flow
+				.enqueue_invoice_request(
+					invoice_request,
+					payment_id,
+					nonce,
+					self.get_peers_for_blinded_path(),
+				)
+				.is_err()
+			{
+				log_warn!(
+					self.logger,
+					"Retry failed for invoice request with payment_id {}",
+					payment_id
+				);
 			}
 		}
 	}
@@ -13375,12 +13552,9 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 });
 
 impl Writeable for ClaimableHTLC {
-	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let (payment_data, keysend_preimage) = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data } => {
-				(_legacy_hop_data.as_ref(), None)
-			},
+			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
 			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
 		};
 		write_tlv_fields!(writer, {
@@ -13501,27 +13675,32 @@ impl Readable for HTLCSource {
 }
 
 impl Writeable for HTLCSource {
-	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, bolt12_invoice } => {
+			HTLCSource::OutboundRoute {
+				ref session_priv,
+				ref first_hop_htlc_msat,
+				ref path,
+				payment_id,
+				bolt12_invoice,
+			} => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
-					(0, session_priv, required),
-					(1, payment_id_opt, option),
-					(2, first_hop_htlc_msat, required),
-					// 3 was previously used to write a PaymentSecret for the payment.
-					(4, path.hops, required_vec),
-					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
-					(6, path.blinded_tail, option),
-					(7, bolt12_invoice, option),
-				 });
-			}
+				   (0, session_priv, required),
+				   (1, payment_id_opt, option),
+				   (2, first_hop_htlc_msat, required),
+				   // 3 was previously used to write a PaymentSecret for the payment.
+				   (4, path.hops, required_vec),
+				   (5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
+				   (6, path.blinded_tail, option),
+				   (7, bolt12_invoice, option),
+				});
+			},
 			HTLCSource::PreviousHopData(ref field) => {
 				1u8.write(writer)?;
 				field.write(writer)?;
-			}
+			},
 		}
 		Ok(())
 	}
@@ -13872,13 +14051,13 @@ where
 }
 
 impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
-	#[rustfmt::skip]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u64).write(w)?;
 		for (event, action) in self.iter() {
 			event.write(w)?;
 			action.write(w)?;
-			#[cfg(debug_assertions)] {
+			#[cfg(debug_assertions)]
+			{
 				// Events are MaybeReadable, in some cases indicating that they shouldn't actually
 				// be persisted and are regenerated on restart. However, if such an event has a
 				// post-event-handling action we'll write nothing for the event and would have to
@@ -13887,20 +14066,23 @@ impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
 				let event_encoded = event.encode();
 				let event_read: Option<Event> =
 					MaybeReadable::read(&mut &event_encoded[..]).unwrap();
-				if action.is_some() { assert!(event_read.is_some()); }
+				if action.is_some() {
+					assert!(event_read.is_some());
+				}
 			}
 		}
 		Ok(())
 	}
 }
 impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
-	#[rustfmt::skip]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let len: u64 = Readable::read(reader)?;
 		const MAX_ALLOC_SIZE: u64 = 1024 * 16;
 		let mut events: Self = VecDeque::with_capacity(cmp::min(
-			MAX_ALLOC_SIZE/mem::size_of::<(events::Event, Option<EventCompletionAction>)>() as u64,
-			len) as usize);
+			MAX_ALLOC_SIZE
+				/ mem::size_of::<(events::Event, Option<EventCompletionAction>)>() as u64,
+			len,
+		) as usize);
 		for _ in 0..len {
 			let ev_opt = MaybeReadable::read(reader)?;
 			let action = Readable::read(reader)?;
