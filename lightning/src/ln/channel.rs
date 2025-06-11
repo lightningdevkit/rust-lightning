@@ -1957,7 +1957,7 @@ impl FundingScope {
 
 	/// Construct FundingScope for a splicing channel
 	#[cfg(splicing)]
-	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_satoshis: u64, post_channel_value: u64, is_initiator: bool, counterparty_funding_pubkey: PublicKey) -> Self where SP::Target: SignerProvider {
+	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_satoshis: u64, post_channel_value: u64, counterparty_funding_pubkey: PublicKey) -> Self where SP::Target: SignerProvider {
 		let post_value_to_self_msat = prev_funding.value_to_self_msat.saturating_add(our_funding_satoshis);
 
 		let prev_funding_txid = prev_funding.channel_transaction_parameters.funding_outpoint
@@ -1973,8 +1973,8 @@ impl FundingScope {
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
 			holder_pubkeys,
 			holder_selected_contest_delay: prev_funding.channel_transaction_parameters.holder_selected_contest_delay,
-			// The 'outbound' attribute may change, if the the splice is being initiated by the previous acceptor
-			is_outbound_from_holder: is_initiator,
+			// The 'outbound' attribute doesn't change, even if the splice initiator is the other node
+			is_outbound_from_holder: prev_funding.channel_transaction_parameters.is_outbound_from_holder,
 			counterparty_parameters: prev_funding.channel_transaction_parameters.counterparty_parameters.clone(),
 			funding_outpoint: None, // filled later
 			splice_parent_funding_txid: prev_funding_txid,
@@ -9210,7 +9210,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			false, // is_outbound
 		)?;
 
-		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, false, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, msg.funding_pubkey);
 
 		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
@@ -9305,7 +9305,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			true, // is_outbound
 		)?;
 
-		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, true, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_satoshis, post_channel_value, msg.funding_pubkey);
 
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
