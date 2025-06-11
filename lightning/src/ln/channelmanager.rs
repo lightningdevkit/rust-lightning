@@ -9800,13 +9800,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						node_id: *counterparty_node_id,
 						msg: splice_ack_msg,
 					});
+					Ok(())
 				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel is not funded, cannot be spliced"), msg.channel_id));
+					try_channel_entry!(self, peer_state, Err(ChannelError::close("Channel is not funded, cannot be spliced".into())), chan_entry)
 				}
 			},
-		};
-
-		Ok(())
+		}
 	}
 
 	/// Handle incoming splice request ack, transition channel to splice-pending (unless some check fails).
@@ -9840,7 +9839,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					}
 					Ok(())
 				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel is not funded, cannot be spliced"), msg.channel_id));
+					try_channel_entry!(self, peer_state, Err(ChannelError::close("Channel is not funded, cannot be spliced".into())), chan_entry)
 				}
 			},
 		}
