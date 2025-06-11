@@ -9316,8 +9316,8 @@ impl<SP: Deref> FundedChannel<SP> where
 		// update funding values
 		pending_splice.funding_negotiation_context.our_funding_satoshis = our_funding_satoshis;
 		pending_splice.funding_negotiation_context.their_funding_satoshis = Some(their_funding_satoshis);
-		pending_splice.interactive_tx_constructor = None;
-		pending_splice.interactive_tx_signing_session = None;
+		debug_assert!(pending_splice.interactive_tx_constructor.is_none());
+		debug_assert!(pending_splice.interactive_tx_signing_session.is_none());
 
 		log_info!(logger, "Splicing process started after splice_ack, new channel value {}, old {}, outgoing {}, channel_id {}",
 			post_channel_value, pre_channel_value, true, self.context.channel_id);
