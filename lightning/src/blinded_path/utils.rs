@@ -113,9 +113,13 @@ pub(crate) fn construct_keys_for_onion_message<'a, T, I, F>(
 where
 	T: secp256k1::Signing + secp256k1::Verification,
 	I: Iterator<Item = PublicKey>,
-	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+	F: FnMut(SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
 {
-	build_keys_helper!(session_priv, secp_ctx, callback);
+	let mut callback_wrapper =
+		|_, ss, pk, encrypted_payload_rho, unblinded_hop_data, encrypted_payload| {
+			callback(ss, pk, encrypted_payload_rho, unblinded_hop_data, encrypted_payload);
+		};
+	build_keys_helper!(session_priv, secp_ctx, callback_wrapper);
 
 	for pk in unblinded_path {
 		build_keys_in_loop!(pk, false, None);
