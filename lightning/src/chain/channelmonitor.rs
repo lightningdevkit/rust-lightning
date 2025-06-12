@@ -2618,7 +2618,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			pending_commitment_tx_conf_thresh = Some(conf_thresh);
 		}
 
-		#[rustfmt::skip]
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $counterparty_revoked_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
@@ -2868,7 +2867,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 
 		let mut res = new_hash_map();
-		#[rustfmt::skip]
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
@@ -3329,7 +3327,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		// If the channel is force closed, try to claim the output from this preimage.
 		// First check if a counterparty commitment transaction has been broadcasted:
-		#[rustfmt::skip]
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr, $htlcs: expr) => {
 				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs);
@@ -3836,7 +3833,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let commitment_txid = tx.compute_txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.funding.counterparty_claimable_outpoints.get(&commitment_txid);
 
-		#[rustfmt::skip]
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
 				match $thing {
@@ -4186,13 +4182,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
 
-		#[rustfmt::skip]
 		macro_rules! append_onchain_update {
 			($updates: expr, $to_watch: expr) => {
 				claim_requests = $updates.0;
 				self.broadcasted_holder_revokable_script = $updates.1;
 				watch_outputs.append(&mut $to_watch);
-			}
+			};
 		}
 
 		// HTLCs set may differ between last and previous holder commitment txn, in case of one them hitting chain, ensure we cancel all HTLCs backward
@@ -4968,7 +4963,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
-			#[rustfmt::skip]
 			macro_rules! check_htlc_valid_counterparty {
 				($htlc_output: expr, $per_commitment_data: expr) => {
 						for &(ref pending_htlc, ref pending_source) in $per_commitment_data {
@@ -4983,7 +4977,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
-			#[rustfmt::skip]
 			macro_rules! scan_commitment {
 				($htlcs: expr, $tx_info: expr, $holder_tx: expr) => {
 					for (ref htlc_output, source_option) in $htlcs {
@@ -5309,7 +5302,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		let commitment_secrets = Readable::read(reader)?;
 
-		#[rustfmt::skip]
 		macro_rules! read_htlc_in_commitment {
 			() => {
 				{
@@ -5809,7 +5801,6 @@ mod tests {
 
 		let dummy_source = HTLCSource::dummy();
 
-		#[rustfmt::skip]
 		macro_rules! preimages_slice_to_htlcs {
 			($preimages_slice: expr) => {
 				{
@@ -5827,7 +5818,6 @@ mod tests {
 				}
 			}
 		}
-		#[rustfmt::skip]
 		macro_rules! preimages_slice_to_htlc_outputs {
 			($preimages_slice: expr) => {
 				preimages_slice_to_htlcs!($preimages_slice).into_iter().map(|htlc| (htlc, None)).collect()
@@ -5837,7 +5827,6 @@ mod tests {
 			&bitcoin::secp256k1::Message::from_digest([42; 32]),
 			&SecretKey::from_slice(&[42; 32]).unwrap());
 
-		#[rustfmt::skip]
 		macro_rules! test_preimages_exist {
 			($preimages_slice: expr, $monitor: expr) => {
 				for preimage in $preimages_slice {
@@ -5968,7 +5957,6 @@ mod tests {
 		let pubkey = PublicKey::from_secret_key(&secp_ctx, &privkey);
 
 		use crate::ln::channel_keys::{HtlcKey, HtlcBasepoint};
-		#[rustfmt::skip]
 		macro_rules! sign_input {
 			($sighash_parts: expr, $idx: expr, $amount: expr, $weight: expr, $sum_actual_sigs: expr, $opt_anchors: expr) => {
 				let htlc = HTLCOutputInCommitment {

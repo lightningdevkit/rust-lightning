@@ -942,7 +942,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							}
 						}
 
-						#[rustfmt::skip]
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
 								let entry = OnchainEventEntry {

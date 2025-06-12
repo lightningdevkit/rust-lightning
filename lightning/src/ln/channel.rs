@@ -4424,7 +4424,6 @@ where
 			self.channel_id,
 			if local { "us" } else { "remote" }, if generated_by_local { "us" } else { "remote" }, feerate_per_kw);
 
-		#[rustfmt::skip]
 		macro_rules! get_htlc_in_commitment {
 			($htlc: expr, $offered: expr) => {
 				HTLCOutputInCommitment {
@@ -4437,7 +4436,6 @@ where
 			}
 		}
 
-		#[rustfmt::skip]
 		macro_rules! add_htlc_output {
 			($htlc: expr, $outbound: expr, $source: expr) => {
 				let htlc_in_tx = get_htlc_in_commitment!($htlc, $outbound == local);
@@ -6971,7 +6969,6 @@ where
 		let release_monitor = self.context.blocked_monitor_updates.is_empty() && !hold_mon_update;
 		let release_state_str =
 			if hold_mon_update { "Holding" } else if release_monitor { "Releasing" } else { "Blocked" };
-		#[rustfmt::skip]
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
 				if !release_monitor {
@@ -8398,7 +8395,6 @@ where
 
 		let (our_min_fee, our_max_fee) = self.calculate_closing_fee_limits(fee_estimator);
 
-		#[rustfmt::skip]
 		macro_rules! propose_fee {
 			($new_fee: expr) => {
 				let (closing_tx, used_fee) = if $new_fee == msg.fee_satoshis {

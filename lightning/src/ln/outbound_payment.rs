@@ -1441,7 +1441,6 @@ impl OutboundPayments {
 			}
 		}
 
-		#[rustfmt::skip]
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
 				$payment.get_mut().mark_abandoned($reason);
@@ -2465,7 +2464,6 @@ impl OutboundPayments {
 		let path_amt = path.final_value_msat();
 		let path_fee = path.fee_msat();
 
-		#[rustfmt::skip]
 		macro_rules! new_retryable {
 			() => {
 				PendingOutboundPayment::Retryable {
