@@ -183,7 +183,7 @@ impl Connection {
 		// a chance to do some work.
 		let mut buf = [0; 4096];
 
-		let mut our_descriptor = SocketDescriptor::new(us.clone());
+		let mut our_descriptor = SocketDescriptor::new(Arc::clone(&us));
 		// An enum describing why we did/are disconnecting:
 		enum Disconnect {
 			// Rust-Lightning told us to disconnect, either by returning an Err or by calling
@@ -338,7 +338,7 @@ where
 
 	let handle_opt = if peer_manager
 		.as_ref()
-		.new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr)
+		.new_inbound_connection(SocketDescriptor::new(Arc::clone(&us)), remote_addr)
 		.is_ok()
 	{
 		let handle = tokio::spawn(Connection::schedule_read(
@@ -391,7 +391,7 @@ where
 	let last_us = Arc::clone(&us);
 	let handle_opt = if let Ok(initial_send) = peer_manager.as_ref().new_outbound_connection(
 		their_node_id,
-		SocketDescriptor::new(us.clone()),
+		SocketDescriptor::new(Arc::clone(&us)),
 		remote_addr,
 	) {
 		let handle = tokio::spawn(async move {
@@ -402,7 +402,7 @@ where
 			// and use a relatively tight timeout.
 			let send_fut = async {
 				loop {
-					match SocketDescriptor::new(us.clone()).send_data(&initial_send, true) {
+					match SocketDescriptor::new(Arc::clone(&us)).send_data(&initial_send, true) {
 						v if v == initial_send.len() => break Ok(()),
 						0 => {
 							write_receiver.recv().await;
