@@ -623,7 +623,6 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
-	// Update LatestHolderCommitmentTXInfo in channel.rs if adding new fields to this variant.
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
 		/// Note that LDK after 0.0.115 supports this only containing dust HTLCs (implying the
@@ -635,6 +634,11 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
 		nondust_htlc_sources: Vec<HTLCSource>,
+	},
+	LatestHolderCommitment {
+		commitment_txs: Vec<HolderCommitmentTransaction>,
+		htlc_data: CommitmentHTLCData,
+		claimed_htlcs: Vec<(SentHTLCId, PaymentPreimage)>,
 	},
 	LatestCounterpartyCommitmentTXInfo {
 		commitment_txid: Txid,
@@ -683,6 +687,7 @@ impl ChannelMonitorUpdateStep {
 	fn variant_name(&self) -> &'static str {
 		match self {
 			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. } => "LatestHolderCommitmentTXInfo",
+			ChannelMonitorUpdateStep::LatestHolderCommitment { .. } => "LatestHolderCommitment",
 			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } => "LatestCounterpartyCommitmentTXInfo",
 			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { .. } => "LatestCounterpartyCommitmentTX",
 			ChannelMonitorUpdateStep::PaymentPreimage { .. } => "PaymentPreimage",
@@ -727,6 +732,11 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(6, LatestCounterpartyCommitmentTX) => {
 		(0, htlc_outputs, required_vec),
 		(2, commitment_tx, required),
+	},
+	(8, LatestHolderCommitment) => {
+		(1, commitment_txs, required_vec),
+		(3, htlc_data, required),
+		(5, claimed_htlcs, required_vec),
 	},
 	(10, RenegotiatedFunding) => {
 		(1, channel_parameters, (required: ReadableArgs, None)),
@@ -988,12 +998,12 @@ where
 	}
 }
 
-#[derive(Clone, PartialEq)]
-struct CommitmentHTLCData {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommitmentHTLCData {
 	// These must be sorted in increasing output index order to match the expected order of the
 	// HTLCs in the `CommitmentTransaction`.
-	nondust_htlc_sources: Vec<HTLCSource>,
-	dust_htlcs: Vec<(HTLCOutputInCommitment, Option<HTLCSource>)>,
+	pub nondust_htlc_sources: Vec<HTLCSource>,
+	pub dust_htlcs: Vec<(HTLCOutputInCommitment, Option<HTLCSource>)>,
 }
 
 impl CommitmentHTLCData {
@@ -1001,6 +1011,11 @@ impl CommitmentHTLCData {
 		Self { nondust_htlc_sources: Vec::new(), dust_htlcs: Vec::new() }
 	}
 }
+
+impl_writeable_tlv_based!(CommitmentHTLCData, {
+	(1, nondust_htlc_sources, required_vec),
+	(3, dust_htlcs, required_vec),
+});
 
 impl TryFrom<HolderSignedTx> for CommitmentHTLCData {
 	type Error = ();
@@ -1866,9 +1881,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	#[rustfmt::skip]
 	fn provide_latest_holder_commitment_tx(
 		&self, holder_commitment_tx: HolderCommitmentTransaction,
-		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+		htlc_outputs: &[(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)],
 	) {
-		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new())
+		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(
+			holder_commitment_tx, htlc_outputs, &Vec::new(), Vec::new(),
+		).unwrap()
 	}
 
 	/// This is used to provide payment preimage(s) out-of-band during startup without updating the
@@ -3309,11 +3326,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Panics if set_on_holder_tx_csv has never been called.
 	#[rustfmt::skip]
 	fn provide_latest_holder_commitment_tx(
-		&mut self, mut holder_commitment_tx: HolderCommitmentTransaction,
-		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+		&mut self, holder_commitment_tx: HolderCommitmentTransaction,
+		htlc_outputs: &[(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)],
 		claimed_htlcs: &[(SentHTLCId, PaymentPreimage)], mut nondust_htlc_sources: Vec<HTLCSource>,
-	) {
-		let dust_htlcs: Vec<_> = if htlc_outputs.iter().any(|(_, s, _)| s.is_some()) {
+	) -> Result<(), &'static str> {
+		let dust_htlcs = if htlc_outputs.iter().any(|(_, s, _)| s.is_some()) {
 			// If we have non-dust HTLCs in htlc_outputs, ensure they match the HTLCs in the
 			// `holder_commitment_tx`. In the future, we'll no longer provide the redundant data
 			// and just pass in source data via `nondust_htlc_sources`.
@@ -3329,19 +3346,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// Backfill the non-dust HTLC sources.
 			debug_assert!(nondust_htlc_sources.is_empty());
 			nondust_htlc_sources.reserve_exact(holder_commitment_tx.nondust_htlcs().len());
-			let dust_htlcs = htlc_outputs.into_iter().filter_map(|(htlc, _, source)| {
+			htlc_outputs.iter().filter_map(|(htlc, _, source)| {
 				// Filter our non-dust HTLCs, while at the same time pushing their sources into
 				// `nondust_htlc_sources`.
 				if htlc.transaction_output_index.is_none() {
-					return Some((htlc, source));
+					return Some((htlc.clone(), source.clone()));
 				}
 				if htlc.offered {
-					nondust_htlc_sources.push(source.expect("Outbound HTLCs should have a source"));
+					nondust_htlc_sources.push(source.clone().expect("Outbound HTLCs should have a source"));
 				}
 				None
-			}).collect();
-
-			dust_htlcs
+			}).collect()
 		} else {
 			// If we don't have any non-dust HTLCs in htlc_outputs, assume they were all passed via
 			// `nondust_htlc_sources`, building up the final htlc_outputs by combining
@@ -3368,30 +3383,110 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			assert!(sources.next().is_none(), "All HTLC sources should have been exhausted");
 
 			// This only includes dust HTLCs as checked above.
-			htlc_outputs.into_iter().map(|(htlc, _, source)| (htlc, source)).collect()
+			htlc_outputs.iter().map(|(htlc, _, source)| (htlc.clone(), source.clone())).collect()
 		};
 
-		self.current_holder_commitment_number = holder_commitment_tx.trust().commitment_number();
-		self.onchain_tx_handler.provide_latest_holder_tx(holder_commitment_tx.clone());
+		let htlc_data = CommitmentHTLCData { nondust_htlc_sources, dust_htlcs };
+		self.update_holder_commitment_data(vec![holder_commitment_tx], htlc_data, claimed_htlcs)
+	}
 
-		mem::swap(&mut holder_commitment_tx, &mut self.funding.current_holder_commitment_tx);
-		self.funding.prev_holder_commitment_tx = Some(holder_commitment_tx);
-		let mut holder_htlc_data = CommitmentHTLCData { nondust_htlc_sources, dust_htlcs };
-		mem::swap(&mut holder_htlc_data, &mut self.current_holder_htlc_data);
-		self.prev_holder_htlc_data = Some(holder_htlc_data);
+	fn verify_matching_commitment_transactions<
+		'a,
+		I: ExactSizeIterator<Item = &'a CommitmentTransaction>,
+	>(
+		&self, commitment_txs: I,
+	) -> Result<(), &'static str> {
+		if self.pending_funding.len() + 1 != commitment_txs.len() {
+			return Err("Commitment transaction count mismatch");
+		}
+
+		let mut other_commitment_tx = None::<&CommitmentTransaction>;
+		for (funding, commitment_tx) in
+			core::iter::once(&self.funding).chain(self.pending_funding.iter()).zip(commitment_txs)
+		{
+			let trusted_tx = &commitment_tx.trust().built_transaction().transaction;
+			if trusted_tx.input.len() != 1 {
+				return Err("Commitment transactions must only spend one input");
+			}
+			let funding_outpoint_spent = trusted_tx.input[0].previous_output;
+			if funding_outpoint_spent != funding.funding_outpoint().into_bitcoin_outpoint() {
+				return Err("Commitment transaction spends invalid funding outpoint");
+			}
+
+			if let Some(other_commitment_tx) = other_commitment_tx {
+				if commitment_tx.commitment_number() != other_commitment_tx.commitment_number() {
+					return Err("Commitment number mismatch");
+				}
+				if commitment_tx.per_commitment_point()
+					!= other_commitment_tx.per_commitment_point()
+				{
+					return Err("Per-commitment-point mismatch");
+				}
+				if commitment_tx.feerate_per_kw() != other_commitment_tx.feerate_per_kw() {
+					return Err("Commitment fee rate mismatch");
+				}
+				let nondust_htlcs = commitment_tx.nondust_htlcs();
+				let other_nondust_htlcs = other_commitment_tx.nondust_htlcs();
+				if nondust_htlcs.len() != other_nondust_htlcs.len() {
+					return Err("Non-dust HTLC count mismatch");
+				}
+				for (nondust_htlc, other_nondust_htlc) in
+					nondust_htlcs.iter().zip(other_nondust_htlcs.iter())
+				{
+					if !nondust_htlc.is_data_equal(other_nondust_htlc) {
+						return Err("Non-dust HTLC mismatch");
+					}
+				}
+			}
+
+			other_commitment_tx = Some(commitment_tx);
+		}
+
+		Ok(())
+	}
+
+	fn update_holder_commitment_data(
+		&mut self, commitment_txs: Vec<HolderCommitmentTransaction>,
+		mut htlc_data: CommitmentHTLCData, claimed_htlcs: &[(SentHTLCId, PaymentPreimage)],
+	) -> Result<(), &'static str> {
+		self.verify_matching_commitment_transactions(
+			commitment_txs.iter().map(|holder_commitment_tx| holder_commitment_tx.deref()),
+		)?;
+
+		let current_funding_commitment_tx = commitment_txs.first().unwrap();
+		self.current_holder_commitment_number = current_funding_commitment_tx.commitment_number();
+		self.onchain_tx_handler.provide_latest_holder_tx(current_funding_commitment_tx.clone());
+		for (funding, mut commitment_tx) in core::iter::once(&mut self.funding)
+			.chain(self.pending_funding.iter_mut())
+			.zip(commitment_txs.into_iter())
+		{
+			mem::swap(&mut commitment_tx, &mut funding.current_holder_commitment_tx);
+			funding.prev_holder_commitment_tx = Some(commitment_tx);
+		}
+
+		mem::swap(&mut htlc_data, &mut self.current_holder_htlc_data);
+		self.prev_holder_htlc_data = Some(htlc_data);
 
 		for (claimed_htlc_id, claimed_preimage) in claimed_htlcs {
-			#[cfg(debug_assertions)] {
-				let cur_counterparty_htlcs = self.funding.counterparty_claimable_outpoints.get(
-						&self.funding.current_counterparty_commitment_txid.unwrap()).unwrap();
+			#[cfg(debug_assertions)]
+			{
+				let cur_counterparty_htlcs = self
+					.funding
+					.counterparty_claimable_outpoints
+					.get(&self.funding.current_counterparty_commitment_txid.unwrap())
+					.unwrap();
 				assert!(cur_counterparty_htlcs.iter().any(|(_, source_opt)| {
 					if let Some(source) = source_opt {
 						SentHTLCId::from_source(source) == *claimed_htlc_id
-					} else { false }
+					} else {
+						false
+					}
 				}));
 			}
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
+
+		Ok(())
 	}
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
@@ -3734,9 +3829,27 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs, claimed_htlcs, nondust_htlc_sources } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone(), &claimed_htlcs, nondust_htlc_sources.clone());
+					if let Err(e) = self.provide_latest_holder_commitment_tx(
+						commitment_tx.clone(), htlc_outputs, &claimed_htlcs,
+						nondust_htlc_sources.clone()
+					) {
+						log_error!(logger, "Failed updating latest holder commitment transaction info: {}", e);
+						ret = Err(());
+					}
 				}
-				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitmentTX`.
+				ChannelMonitorUpdateStep::LatestHolderCommitment {
+					commitment_txs, htlc_data, claimed_htlcs,
+				} => {
+					log_trace!(logger, "Updating ChannelMonitor with {} latest holder commitment(s)", commitment_txs.len());
+					assert!(!self.lockdown_from_offchain);
+					if let Err(e) = self.update_holder_commitment_data(
+						commitment_txs.clone(), htlc_data.clone(), claimed_htlcs,
+					) {
+						log_error!(logger, "Failed updating latest holder commitment state: {}", e);
+						ret = Err(());
+					}
+				},
+				// Soon we will drop the `LatestCounterpartyCommitmentTXInfo` variant in favor of `LatestCounterpartyCommitment`.
 				// For now we just add the code to handle the new updates.
 				// Next step: in channel, switch channel monitor updates to use the `LatestCounterpartyCommitmentTX` variant.
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point, .. } => {
@@ -3819,6 +3932,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. }
+					|ChannelMonitorUpdateStep::LatestHolderCommitment { .. }
 					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }
 					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX { .. }
 					|ChannelMonitorUpdateStep::ShutdownScript { .. }
@@ -6122,17 +6236,17 @@ mod tests {
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, Vec::new()),
+			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
 			best_block, dummy_key, channel_id,
 		);
 
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..10]);
-		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, nondust_htlcs);
+		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, nondust_htlcs);
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
+			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>());
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
@@ -6168,11 +6282,11 @@ mod tests {
 		// Now update holder commitment tx info, pruning only element 18 as we still care about the
 		// previous commitment tx's preimages too
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..5]);
-		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, nondust_htlcs);
+		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, nondust_htlcs);
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
+			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>());
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 12);
@@ -6181,11 +6295,11 @@ mod tests {
 
 		// But if we do it again, we'll prune 5-10
 		let nondust_htlcs = preimages_slice_to_htlcs!(preimages[0..3]);
-		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, nondust_htlcs);
+		let dummy_commitment_tx = HolderCommitmentTransaction::dummy(0, funding_outpoint, nondust_htlcs);
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
+			&nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect::<Vec<_>>());
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);
@@ -6382,7 +6496,7 @@ mod tests {
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(
 			Secp256k1::new(), keys, Some(shutdown_script.into_inner()), 0, &ScriptBuf::new(),
-			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, Vec::new()),
+			&channel_parameters, true, 0, HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
 			best_block, dummy_key, channel_id,
 		);
 
