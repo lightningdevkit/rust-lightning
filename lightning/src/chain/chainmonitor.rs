@@ -320,18 +320,16 @@ where
 		for channel_id in channel_ids.iter() {
 			let monitor_lock = self.monitors.read().unwrap();
 			if let Some(monitor_state) = monitor_lock.get(channel_id) {
-				if self
-					.update_monitor_with_chain_data(
-						header,
-						best_height,
-						txdata,
-						&process,
-						channel_id,
-						&monitor_state,
-						channel_count,
-					)
-					.is_err()
-				{
+				let update_res = self.update_monitor_with_chain_data(
+					header,
+					best_height,
+					txdata,
+					&process,
+					channel_id,
+					&monitor_state,
+					channel_count,
+				);
+				if update_res.is_err() {
 					// Take the monitors lock for writing so that we poison it and any future
 					// operations going forward fail immediately.
 					core::mem::drop(monitor_lock);
@@ -346,18 +344,16 @@ where
 		let monitor_states = self.monitors.write().unwrap();
 		for (channel_id, monitor_state) in monitor_states.iter() {
 			if !channel_ids.contains(channel_id) {
-				if self
-					.update_monitor_with_chain_data(
-						header,
-						best_height,
-						txdata,
-						&process,
-						channel_id,
-						&monitor_state,
-						channel_count,
-					)
-					.is_err()
-				{
+				let update_res = self.update_monitor_with_chain_data(
+					header,
+					best_height,
+					txdata,
+					&process,
+					channel_id,
+					&monitor_state,
+					channel_count,
+				);
+				if update_res.is_err() {
 					log_error!(self.logger, "{}", err_str);
 					panic!("{}", err_str);
 				}
@@ -564,9 +560,8 @@ where
 	/// that have not yet been fully persisted. Note that if a full monitor is persisted all the pending
 	/// monitor updates must be individually marked completed by calling [`ChainMonitor::channel_monitor_updated`].
 	pub fn list_pending_monitor_updates(&self) -> Vec<(ChannelId, Vec<u64>)> {
-		self.monitors
-			.read()
-			.unwrap()
+		let monitors = self.monitors.read().unwrap();
+		monitors
 			.iter()
 			.map(|(channel_id, holder)| {
 				(*channel_id, holder.pending_monitor_updates.lock().unwrap().clone())
@@ -1491,14 +1486,10 @@ mod tests {
 				"Channel force-closed".to_string(),
 			)
 			.unwrap();
-		check_closed_event!(
-			&nodes[0],
-			1,
-			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) },
-			false,
-			[nodes[2].node.get_our_node_id()],
-			1000000
-		);
+		let closure_reason =
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		let node_c_id = nodes[2].node.get_our_node_id();
+		check_closed_event!(&nodes[0], 1, closure_reason, false, [node_c_id], 1000000);
 		check_closed_broadcast(&nodes[0], 1, true);
 		let close_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(close_tx.len(), 1);
@@ -1506,14 +1497,9 @@ mod tests {
 		mine_transaction(&nodes[2], &close_tx[0]);
 		check_added_monitors(&nodes[2], 1);
 		check_closed_broadcast(&nodes[2], 1, true);
-		check_closed_event!(
-			&nodes[2],
-			1,
-			ClosureReason::CommitmentTxConfirmed,
-			false,
-			[nodes[0].node.get_our_node_id()],
-			1000000
-		);
+		let closure_reason = ClosureReason::CommitmentTxConfirmed;
+		let node_a_id = nodes[0].node.get_our_node_id();
+		check_closed_event!(&nodes[2], 1, closure_reason, false, [node_a_id], 1000000);
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[2].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
