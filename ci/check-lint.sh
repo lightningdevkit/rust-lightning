@@ -6,6 +6,10 @@ RUSTFLAGS='-D warnings' cargo clippy -- \
 	-D clippy::clone_on_ref_ptr \
 	`# Things where clippy is just wrong` \
 	-A clippy::unwrap-or-default \
+	-A clippy::upper_case_acronyms \
+	`# Things where we do odd stuff on purpose ` \
+	-A clippy::unusual_byte_groupings \
+	-A clippy::unit_arg \
 	`# Errors` \
 	-A clippy::erasing_op \
 	-A clippy::never_loop \
