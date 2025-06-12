@@ -2,6 +2,8 @@
 set -e
 set -x
 RUSTFLAGS='-D warnings' cargo clippy -- \
+	`# Things clippy defaults to allowing but we should avoid` \
+	-D clippy::clone_on_ref_ptr \
 	`# Things where clippy is just wrong` \
 	-A clippy::unwrap-or-default \
 	`# Errors` \
