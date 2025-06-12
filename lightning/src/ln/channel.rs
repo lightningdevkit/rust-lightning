@@ -6399,6 +6399,10 @@ where
 	{
 		self.commitment_signed_check_state()?;
 
+		if !self.pending_funding.is_empty() {
+			return Err(ChannelError::close("Got a single commitment_signed message when expecting a batch".to_owned()));
+		}
+
 		let updates = self
 			.context
 			.validate_commitment_signed(&self.funding, &self.holder_commitment_point, msg, logger)
