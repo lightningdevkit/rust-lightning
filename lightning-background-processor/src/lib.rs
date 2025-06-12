@@ -1659,6 +1659,7 @@ mod tests {
 			let msg_router = Arc::new(DefaultMessageRouter::new(
 				network_graph.clone(),
 				Arc::clone(&keys_manager),
+				keys_manager.get_expanded_key(),
 			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store =

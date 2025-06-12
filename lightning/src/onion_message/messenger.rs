@@ -13,6 +13,7 @@
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 #[cfg(async_payments)]
@@ -20,8 +21,8 @@ use super::async_payments::AsyncPaymentsMessage;
 use super::async_payments::AsyncPaymentsMessageHandler;
 use super::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler};
 use super::offers::{OffersMessage, OffersMessageHandler};
-use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
+use super::packet::{DummyControlTlvs, OnionMessageContents};
 use super::packet::{
 	ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, BIG_PACKET_HOP_DATA_LEN,
 	SMALL_PACKET_HOP_DATA_LEN,
@@ -29,16 +30,17 @@ use super::packet::{
 #[cfg(async_payments)]
 use crate::blinded_path::message::AsyncPaymentsContext;
 use crate::blinded_path::message::{
-	BlindedMessagePath, DNSResolverContext, ForwardTlvs, MessageContext, MessageForwardNode,
-	NextMessageHop, OffersContext, ReceiveTlvs,
+	BlindedMessagePath, DNSResolverContext, DummyTlv, ForwardTlvs, MessageContext,
+	MessageForwardNode, NextMessageHop, OffersContext, PrimaryDummyTlv, ReceiveTlvs,
 };
 use crate::blinded_path::utils;
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
+use crate::ln::channelmanager::Verification;
 use crate::ln::msgs::{
 	self, BaseMessageHandler, MessageSendEvent, OnionMessage, OnionMessageHandler, SocketAddress,
 };
-use crate::ln::onion_utils;
+use crate::ln::{inbound_payment, onion_utils};
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
@@ -539,6 +541,7 @@ where
 {
 	network_graph: G,
 	entropy_source: ES,
+	expanded_key: inbound_payment::ExpandedKey,
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
@@ -547,8 +550,10 @@ where
 	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
-	pub fn new(network_graph: G, entropy_source: ES) -> Self {
-		Self { network_graph, entropy_source }
+	pub fn new(
+		network_graph: G, entropy_source: ES, expanded_key: inbound_payment::ExpandedKey,
+	) -> Self {
+		Self { network_graph, entropy_source, expanded_key }
 	}
 
 	fn create_blinded_paths_from_iter<
@@ -556,7 +561,8 @@ where
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: I,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>, compact_paths: bool,
+		entropy_source: &ES, expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
+		compact_paths: bool,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -564,6 +570,21 @@ where
 		// Ensure peers have at least three channels so that it is more difficult to infer the
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
+
+		// Add a random number (0 to 5) of dummy hops to each non-compact blinded path
+		// to make it harder to infer the recipient's position.
+		//
+		// # Note on compact paths:
+		//
+		// Compact paths are optimized for minimal size. Adding dummy hops to them
+		// would increase their size and negate their primary advantage.
+		// Therefore, we avoid adding dummy hops to compact paths.
+		let dummy_hops_count = if compact_paths {
+			0
+		} else {
+			let random_byte = entropy_source.get_secure_random_bytes()[0];
+			random_byte % 6
+		};
 
 		let network_graph = network_graph.deref().read_only();
 		let is_recipient_announced =
@@ -595,7 +616,15 @@ where
 		let paths = peer_info
 			.into_iter()
 			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(&[peer], recipient, context.clone(), entropy, secp_ctx)
+				BlindedMessagePath::new_with_dummy_hops(
+					&[peer],
+					dummy_hops_count,
+					recipient,
+					context.clone(),
+					entropy,
+					expanded_key,
+					secp_ctx,
+				)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -664,7 +693,7 @@ where
 
 	pub(crate) fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+		entropy_source: &ES, expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let peers =
 			peers.into_iter().map(|node_id| MessageForwardNode { node_id, short_channel_id: None });
@@ -674,6 +703,7 @@ where
 			context,
 			peers.into_iter(),
 			entropy_source,
+			expanded_key,
 			secp_ctx,
 			false,
 		)
@@ -681,7 +711,8 @@ where
 
 	pub(crate) fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext,
-		peers: Vec<MessageForwardNode>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+		peers: Vec<MessageForwardNode>, entropy_source: &ES,
+		expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		Self::create_blinded_paths_from_iter(
 			network_graph,
@@ -689,6 +720,7 @@ where
 			context,
 			peers.into_iter(),
 			entropy_source,
+			expanded_key,
 			secp_ctx,
 			true,
 		)
@@ -717,6 +749,7 @@ where
 			context,
 			peers,
 			&self.entropy_source,
+			&self.expanded_key,
 			secp_ctx,
 		)
 	}
@@ -731,6 +764,7 @@ where
 			context,
 			peers,
 			&self.entropy_source,
+			&self.expanded_key,
 			secp_ctx,
 		)
 	}
@@ -1045,44 +1079,46 @@ where
 	L::Target: Logger,
 	CMH::Target: CustomOnionMessageHandler,
 {
-	let control_tlvs_ss = match node_signer.ecdh(Recipient::Node, &msg.blinding_point, None) {
-		Ok(ss) => ss,
-		Err(e) => {
-			log_error!(logger, "Failed to retrieve node secret: {:?}", e);
-			return Err(());
-		},
-	};
-	let onion_decode_ss = {
-		let blinding_factor = {
-			let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
-			hmac.input(control_tlvs_ss.as_ref());
-			let hmac = Hmac::from_engine(hmac).to_byte_array();
-			Scalar::from_be_bytes(hmac).unwrap()
-		};
-		let packet_pubkey = &msg.onion_routing_packet.public_key;
-		match node_signer.ecdh(Recipient::Node, packet_pubkey, Some(&blinding_factor)) {
-			Ok(ss) => ss.secret_bytes(),
-			Err(()) => {
-				log_trace!(logger, "Failed to compute onion packet shared secret");
+	// Helper function to compute shared secrets for onion decoding
+	let compute_shared_secrets = |blinding_point: &PublicKey,
+	                              packet_pubkey: &PublicKey|
+	 -> Result<(SharedSecret, [u8; 32]), ()> {
+		let control_tlvs_ss = match node_signer.ecdh(Recipient::Node, blinding_point, None) {
+			Ok(ss) => ss,
+			Err(e) => {
+				log_error!(logger, "Failed to retrieve node secret: {:?}", e);
 				return Err(());
 			},
-		}
+		};
+
+		let onion_decode_ss = {
+			let blinding_factor = {
+				let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+				hmac.input(control_tlvs_ss.as_ref());
+				let hmac = Hmac::from_engine(hmac).to_byte_array();
+				Scalar::from_be_bytes(hmac).unwrap()
+			};
+			match node_signer.ecdh(Recipient::Node, packet_pubkey, Some(&blinding_factor)) {
+				Ok(ss) => ss.secret_bytes(),
+				Err(()) => {
+					log_trace!(logger, "Failed to compute onion packet shared secret");
+					return Err(());
+				},
+			}
+		};
+
+		Ok((control_tlvs_ss, onion_decode_ss))
 	};
-	let next_hop = onion_utils::decode_next_untagged_hop(
-		onion_decode_ss,
-		&msg.onion_routing_packet.hop_data[..],
-		msg.onion_routing_packet.hmac,
-		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
-	);
-	match next_hop {
-		Ok((
-			Payload::Receive {
-				message,
-				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
-				reply_path,
-			},
-			None,
-		)) => match (message, context) {
+
+	// Helper function to process receive payloads
+	let process_receive_payload = |message,
+	                               context,
+	                               reply_path|
+	 -> Result<
+		PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>,
+		(),
+	> {
+		match (message, context) {
 			(ParsedOnionMessageContents::Offers(msg), Some(MessageContext::Offers(ctx))) => {
 				Ok(PeeledOnion::Offers(msg, Some(ctx), reply_path))
 			},
@@ -1114,6 +1150,184 @@ where
 				);
 				Err(())
 			},
+		}
+	};
+
+	// Constructs the next onion message using packet data and blinding logic.
+	let compute_onion_message = |packet_pubkey: PublicKey,
+	                             next_hop_hmac: [u8; 32],
+	                             new_packet_bytes: Vec<u8>,
+	                             current_blinding_point: PublicKey,
+	                             current_control_tlvs_ss: SharedSecret,
+	                             current_onion_decode_ss: [u8; 32],
+	                             blinding_point_opt: Option<PublicKey>|
+	 -> Result<OnionMessage, ()> {
+		let new_pubkey = match onion_utils::next_hop_pubkey(
+			&secp_ctx,
+			packet_pubkey,
+			&current_onion_decode_ss,
+		) {
+			Ok(pk) => pk,
+			Err(e) => {
+				log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
+				return Err(());
+			},
+		};
+		let outgoing_packet = Packet {
+			version: 0,
+			public_key: new_pubkey,
+			hop_data: new_packet_bytes,
+			hmac: next_hop_hmac,
+		};
+		let blinding_point = match blinding_point_opt {
+			Some(bp) => bp,
+			None => match onion_utils::next_hop_pubkey(
+				&secp_ctx,
+				current_blinding_point,
+				current_control_tlvs_ss.as_ref(),
+			) {
+				Ok(bp) => bp,
+				Err(e) => {
+					log_trace!(logger, "Failed to compute next blinding point: {}", e);
+					return Err(());
+				},
+			},
+		};
+		Ok(OnionMessage { blinding_point, onion_routing_packet: outgoing_packet })
+	};
+
+	let (control_tlvs_ss, onion_decode_ss) =
+		compute_shared_secrets(&msg.blinding_point, &msg.onion_routing_packet.public_key)?;
+
+	let next_hop = onion_utils::decode_next_untagged_hop(
+		onion_decode_ss,
+		&msg.onion_routing_packet.hop_data[..],
+		msg.onion_routing_packet.hmac,
+		(control_tlvs_ss, custom_handler.deref(), logger.deref()),
+	);
+
+	match next_hop {
+		Ok((
+			Payload::Receive {
+				message,
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
+				reply_path,
+			},
+			None,
+		)) => process_receive_payload(message, context, reply_path),
+		Ok((
+			Payload::Dummy(DummyControlTlvs::Unblinded(DummyTlv::Primary(PrimaryDummyTlv {
+				dummy_tlv,
+				authentication,
+			}))),
+			Some((next_hop_hmac, new_packet_bytes)),
+		)) => {
+			let expanded_key = node_signer.get_expanded_key();
+			dummy_tlv.verify_data(authentication.0, authentication.1, &expanded_key)?;
+
+			// Start iterative processing of the dummy chain
+			let mut current_message = compute_onion_message(
+				msg.onion_routing_packet.public_key,
+				next_hop_hmac,
+				new_packet_bytes,
+				msg.blinding_point,
+				control_tlvs_ss,
+				onion_decode_ss,
+				None,
+			)?;
+
+			// Process subsequent dummy hops iteratively
+			loop {
+				let (current_control_tlvs_ss, current_onion_decode_ss) = compute_shared_secrets(
+					&current_message.blinding_point,
+					&current_message.onion_routing_packet.public_key,
+				)?;
+
+				let current_next_hop = onion_utils::decode_next_untagged_hop(
+					current_onion_decode_ss,
+					&current_message.onion_routing_packet.hop_data[..],
+					current_message.onion_routing_packet.hmac,
+					(current_control_tlvs_ss, custom_handler.deref(), logger.deref()),
+				);
+
+				match current_next_hop {
+					Ok((
+						Payload::Dummy(DummyControlTlvs::Unblinded(DummyTlv::Subsequent)),
+						Some((next_hop_hmac, new_packet_bytes)),
+					)) => {
+						// Valid: Subsequent dummy after Primary dummy, continue processing
+						let new_pubkey = match onion_utils::next_hop_pubkey(
+							&secp_ctx,
+							current_message.onion_routing_packet.public_key,
+							&current_onion_decode_ss,
+						) {
+							Ok(pk) => pk,
+							Err(e) => {
+								log_trace!(
+									logger,
+									"Failed to compute next hop packet pubkey: {}",
+									e
+								);
+								return Err(());
+							},
+						};
+						let outgoing_packet = Packet {
+							version: 0,
+							public_key: new_pubkey,
+							hop_data: new_packet_bytes,
+							hmac: next_hop_hmac,
+						};
+						let blinding_point = match onion_utils::next_hop_pubkey(
+							&secp_ctx,
+							current_message.blinding_point,
+							current_control_tlvs_ss.as_ref(),
+						) {
+							Ok(bp) => bp,
+							Err(e) => {
+								log_trace!(logger, "Failed to compute next blinding point: {}", e);
+								return Err(());
+							},
+						};
+						current_message =
+							OnionMessage { blinding_point, onion_routing_packet: outgoing_packet };
+					},
+					Ok((
+						Payload::Receive {
+							message,
+							control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
+							reply_path,
+						},
+						None,
+					)) => {
+						// End of dummy chain, process the final receive payload
+						return process_receive_payload(message, context, reply_path);
+					},
+					Err(e) => {
+						log_trace!(
+							logger,
+							"Errored decoding onion message packet in dummy chain: {:?}",
+							e
+						);
+						return Err(());
+					},
+					_ => {
+						// Invalid: anything else breaks the expected structure
+						log_trace!(
+							logger,
+							"Invalid payload type in dummy chain. Expected Subsequent dummy or Receive payload."
+						);
+						return Err(());
+					},
+				}
+			}
+		},
+		Ok((Payload::Dummy(DummyControlTlvs::Unblinded(DummyTlv::Subsequent)), _)) => {
+			// ERROR: Subsequent dummy without preceding Primary dummy
+			log_trace!(
+				logger,
+				"Received Subsequent dummy without preceding Primary dummy - invalid structure"
+			);
+			Err(())
 		},
 		Ok((
 			Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
@@ -1122,47 +1336,15 @@ where
 			})),
 			Some((next_hop_hmac, new_packet_bytes)),
 		)) => {
-			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
-			// blinded hop and this onion message is destined for us. In this situation, we should keep
-			// unwrapping the onion layers to get to the final payload. Since we don't have the option
-			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
-			// for now.
-			let packet_pubkey = msg.onion_routing_packet.public_key;
-			let new_pubkey_opt =
-				onion_utils::next_hop_pubkey(&secp_ctx, packet_pubkey, &onion_decode_ss);
-			let new_pubkey = match new_pubkey_opt {
-				Ok(pk) => pk,
-				Err(e) => {
-					log_trace!(logger, "Failed to compute next hop packet pubkey: {}", e);
-					return Err(());
-				},
-			};
-			let outgoing_packet = Packet {
-				version: 0,
-				public_key: new_pubkey,
-				hop_data: new_packet_bytes,
-				hmac: next_hop_hmac,
-			};
-			let onion_message = OnionMessage {
-				blinding_point: match next_blinding_override {
-					Some(blinding_point) => blinding_point,
-					None => {
-						match onion_utils::next_hop_pubkey(
-							&secp_ctx,
-							msg.blinding_point,
-							control_tlvs_ss.as_ref(),
-						) {
-							Ok(bp) => bp,
-							Err(e) => {
-								log_trace!(logger, "Failed to compute next blinding point: {}", e);
-								return Err(());
-							},
-						}
-					},
-				},
-				onion_routing_packet: outgoing_packet,
-			};
-
+			let onion_message = compute_onion_message(
+				msg.onion_routing_packet.public_key,
+				next_hop_hmac,
+				new_packet_bytes,
+				msg.blinding_point,
+				control_tlvs_ss,
+				onion_decode_ss,
+				next_blinding_override,
+			)?;
 			Ok(PeeledOnion::Forward(next_hop, onion_message))
 		},
 		Err(e) => {

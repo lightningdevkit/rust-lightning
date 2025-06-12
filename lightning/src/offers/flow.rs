@@ -845,7 +845,7 @@ where
 		match response {
 			Ok(invoice) => {
 				let nonce = Nonce::from_entropy_source(entropy);
-				let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
+				let hmac = payment_hash.hmac_data(nonce, expanded_key);
 				let context = MessageContext::Offers(OffersContext::InboundPayment {
 					payment_hash,
 					nonce,
@@ -889,7 +889,7 @@ where
 	) -> Result<(), Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 
-		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
+		let hmac = payment_id.hmac_data(nonce, expanded_key);
 		let context = MessageContext::Offers(OffersContext::OutboundPayment {
 			payment_id,
 			nonce,
@@ -948,7 +948,7 @@ where
 		let payment_hash = invoice.payment_hash();
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
+		let hmac = payment_hash.hmac_data(nonce, expanded_key);
 
 		let context =
 			MessageContext::Offers(OffersContext::InboundPayment { payment_hash, nonce, hmac });

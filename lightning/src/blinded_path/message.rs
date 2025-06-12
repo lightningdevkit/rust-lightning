@@ -11,6 +11,7 @@
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
+use crate::offers::signer;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -19,9 +20,9 @@ use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, 
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
 use crate::io::Cursor;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{PaymentId, Verification};
 use crate::ln::msgs::DecodeError;
-use crate::ln::onion_utils;
+use crate::ln::{inbound_payment, onion_utils};
 use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
@@ -68,7 +69,6 @@ impl BlindedMessagePath {
 	/// pubkey in `node_pks` will be the destination node.
 	///
 	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
-	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
 		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>,
@@ -88,9 +88,53 @@ impl BlindedMessagePath {
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: blinded_hops(
 				secp_ctx,
+				entropy_source,
+				None,
 				intermediate_nodes,
 				recipient_node_id,
 				context,
+				0,
+				&blinding_secret,
+			)
+			.map_err(|_| ())?,
+		}))
+	}
+
+	/// Create a path for an onion message, to be forwarded along `node_pks`.
+	///
+	/// Additionally allows appending a number of dummy hops before the final hop,
+	/// increasing the total path length and enhancing privacy by obscuring the true
+	/// distance between sender and recipient.
+	///
+	/// The last node pubkey in `node_pks` will be the destination node.
+	///
+	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
+	pub fn new_with_dummy_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[MessageForwardNode], dummy_hops_count: u8,
+		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES,
+		expanded_key: &inbound_payment::ExpandedKey, secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()>
+	where
+		ES::Target: EntropySource,
+	{
+		let introduction_node = IntroductionNode::NodeId(
+			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id),
+		);
+		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
+		let blinding_secret =
+			SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+
+		Ok(Self(BlindedPath {
+			introduction_node,
+			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
+			blinded_hops: blinded_hops(
+				secp_ctx,
+				entropy_source,
+				Some(expanded_key),
+				intermediate_nodes,
+				recipient_node_id,
+				context,
+				dummy_hops_count,
 				&blinding_secret,
 			)
 			.map_err(|_| ())?,
@@ -262,6 +306,94 @@ pub(crate) struct ForwardTlvs {
 	/// Senders to a blinded path use this value to concatenate the route they find to the
 	/// introduction node with the blinded path.
 	pub(crate) next_blinding_override: Option<PublicKey>,
+}
+
+/// Represents a dummy TLV that can be used in a blinded path to extend the path length.
+/// The first dummy TLV is authenticated and contains an HMAC, while subsequent dummy TLVs are
+/// empty and do not contain any data. This allows for the path length to be extended without
+/// adding any additional data, while still ensuring that the path is legitimate and terminates
+/// in valid [`ReceiveTlvs`] data.
+pub(crate) enum DummyTlv {
+	/// The first dummy TLV, which contains an HMAC and is authenticated.
+	/// This TLV is used to ensure that the path is legitimate and terminates in valid
+	/// [`ReceiveTlvs`] data.
+	Primary(PrimaryDummyTlv),
+	/// Subsequent dummy TLVs, which are empty and do not contain any data.
+	/// These TLVs are used to extend the path length without adding any additional data.
+	Subsequent,
+}
+
+impl Writeable for DummyTlv {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			DummyTlv::Primary(primary) => primary.write(writer)?,
+			DummyTlv::Subsequent => {
+				// Subsequent dummy TLVs are empty, so we don't write anything.
+				// This is to ensure that the path length can be extended without
+				// adding any additional data.
+				encode_tlv_stream!(writer, {
+					(65541, (), required), // Represents that this is a Dummy Tlv variant
+				})
+			},
+		}
+		Ok(())
+	}
+}
+
+/// Represents the first dummy TLV in a blinded path, which is authenticated and contains an HMAC.
+/// These TLV are intended for the final node.
+///
+/// ## Authentication
+/// Authentication provides an additional layer of security, ensuring that the path is legitimate
+/// and terminates in valid [`ReceiveTlvs`] data. Verification begins with the first dummy hop and
+/// continues recursively until the final [`ReceiveTlvs`] is reached.
+///
+/// This prevents an attacker from crafting a bogus blinded path consisting solely of dummy tlv
+/// without any valid payload, which could otherwise waste resources through recursive
+/// processing — a potential vector for DoS-like attacks.
+pub(crate) struct PrimaryDummyTlv {
+	/// The dummy TLV that holds the empty data for the Dummy Hop.
+	pub(crate) dummy_tlv: UnauthenticatedDummyTlv,
+	/// An HMAC of `tlvs` along with a nonce used to construct it.
+	pub(crate) authentication: (Hmac<Sha256>, Nonce),
+}
+
+impl Writeable for PrimaryDummyTlv {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		encode_tlv_stream!(writer, {
+			(65539, self.authentication, required),
+			// The Some(()) represents that this is a Dummy Tlv variant
+			(65541, (), required),
+		});
+
+		Ok(())
+	}
+}
+
+/// A blank struct, representing a dummy TLV prior to authentication.
+///
+/// For more details, see [`PrimaryDummyTlv`].
+pub(crate) struct UnauthenticatedDummyTlv {}
+
+impl Writeable for UnauthenticatedDummyTlv {
+	fn write<W: Writer>(&self, _writer: &mut W) -> Result<(), io::Error> {
+		Ok(())
+	}
+}
+
+impl Verification for UnauthenticatedDummyTlv {
+	/// Constructs an HMAC to include in [`OffersContext`] for the data along with the given
+	/// [`Nonce`].
+	fn hmac_data(&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey) -> Hmac<Sha256> {
+		signer::hmac_for_dummy_tlv(self, nonce, expanded_key)
+	}
+
+	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
+	fn verify_data(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_dummy_tlv(self, hmac, nonce, expanded_key)
+	}
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
@@ -511,13 +643,23 @@ impl_writeable_tlv_based!(DNSResolverContext, {
 pub(crate) const MESSAGE_PADDING_ROUND_OFF: usize = 100;
 
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
-pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
-	recipient_node_id: PublicKey, context: MessageContext, session_priv: &SecretKey,
-) -> Result<Vec<BlindedHop>, secp256k1::Error> {
+pub(super) fn blinded_hops<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<T>, entropy_source: ES,
+	expanded_key: Option<&inbound_payment::ExpandedKey>, intermediate_nodes: &[MessageForwardNode],
+	recipient_node_id: PublicKey, context: MessageContext, dummy_hops_count: u8,
+	session_priv: &SecretKey,
+) -> Result<Vec<BlindedHop>, secp256k1::Error>
+where
+	ES::Target: EntropySource,
+{
+	if expanded_key.is_none() && dummy_hops_count > 0 {
+		debug_assert!(false, "Dummy hops are not supported without expanded keys");
+	}
+
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| node.node_id)
+		.chain((0..dummy_hops_count).map(|_| recipient_node_id))
 		.chain(core::iter::once(recipient_node_id));
 	let is_compact = intermediate_nodes.iter().any(|node| node.short_channel_id.is_some());
 
@@ -532,6 +674,14 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		.map(|next_hop| {
 			ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None })
 		})
+		.chain((0..1).filter(|_| dummy_hops_count > 0).map(|_| {
+			let dummy_tlv = UnauthenticatedDummyTlv {};
+			let nonce = Nonce::from_entropy_source(&*entropy_source);
+			let hmac = dummy_tlv.hmac_data(nonce, expanded_key.unwrap());
+			let tlv = PrimaryDummyTlv { dummy_tlv, authentication: (hmac, nonce) };
+			ControlTlvs::Dummy(DummyTlv::Primary(tlv))
+		}))
+		.chain((1..dummy_hops_count).map(|_| ControlTlvs::Dummy(DummyTlv::Subsequent)))
 		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { context: Some(context) })));
 
 	if is_compact {

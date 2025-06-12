@@ -5,7 +5,6 @@
 #![allow(unused_macros)]
 
 use lightning::chain::Filter;
-use lightning::sign::{EntropySource, NodeSigner};
 
 use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 use bitcoin::blockdata::transaction::Transaction;
@@ -24,7 +23,7 @@ use lightning::onion_message::messenger::DefaultMessageRouter;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path};
 use lightning::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
-use lightning::sign::{InMemorySigner, KeysManager};
+use lightning::sign::{EntropySource, InMemorySigner, KeysManager, NodeSigner};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{
 	KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -420,8 +419,11 @@ pub(crate) fn create_liquidity_node(
 		scorer.clone(),
 		Default::default(),
 	));
-	let msg_router =
-		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager)));
+	let msg_router = Arc::new(DefaultMessageRouter::new(
+		Arc::clone(&network_graph),
+		Arc::clone(&keys_manager),
+		keys_manager.get_expanded_key(),
+	));
 	let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 	let kv_store =
 		Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));

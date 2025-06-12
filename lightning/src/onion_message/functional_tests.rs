@@ -26,6 +26,7 @@ use crate::blinded_path::message::{
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::EmptyNodeIdLookUp;
 use crate::events::{Event, EventsProvider};
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::routing::test_utils::{add_channel, add_or_update_node};
@@ -279,8 +280,11 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 		let node_signer = Arc::new(TestNodeSigner::new(secret_key));
 
 		let node_id_lookup = Arc::new(EmptyNodeIdLookUp {});
-		let message_router =
-			Arc::new(DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone()));
+		let message_router = Arc::new(DefaultMessageRouter::new(
+			network_graph.clone(),
+			entropy_source.clone(),
+			node_signer.get_expanded_key(),
+		));
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let async_payments_message_handler = Arc::new(TestAsyncPaymentsMessageHandler {});
 		let dns_resolver_message_handler = Arc::new(TestDNSResolverMessageHandler {});
@@ -411,6 +415,34 @@ fn one_blinded_hop() {
 	let entropy = &*nodes[1].entropy_source;
 	let blinded_path =
 		BlindedMessagePath::new(&[], nodes[1].node_id, context, entropy, &secp_ctx).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
+}
+
+#[test]
+fn blinded_path_with_dummy() {
+	let nodes = create_nodes(2);
+	let test_msg = TestCustomMessage::Pong;
+
+	let secp_ctx = Secp256k1::new();
+	let context = MessageContext::Custom(Vec::new());
+	let entropy = &*nodes[1].entropy_source;
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let blinded_path = BlindedMessagePath::new_with_dummy_hops(
+		&[],
+		5,
+		nodes[1].node_id,
+		context,
+		entropy,
+		&expanded_key,
+		&secp_ctx,
+	)
+	.unwrap();
+	// Ensure that dummy hops are added to the blinded path.
+	assert_eq!(blinded_path.blinded_hops().len(), 6);
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
@@ -611,11 +643,14 @@ fn test_blinded_path_padding_for_full_length_path() {
 	// Update the context to create a larger final receive TLVs, ensuring that
 	// the hop sizes vary before padding.
 	let context = MessageContext::Custom(vec![0u8; 42]);
-	let blinded_path = BlindedMessagePath::new(
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let blinded_path = BlindedMessagePath::new_with_dummy_hops(
 		&intermediate_nodes,
+		5,
 		nodes[3].node_id,
 		context,
 		&*nodes[3].entropy_source,
+		&expanded_key,
 		&secp_ctx,
 	)
 	.unwrap();
@@ -644,15 +679,19 @@ fn test_blinded_path_no_padding_for_compact_path() {
 	// Update the context to create a larger final receive TLVs, ensuring that
 	// the hop sizes vary before padding.
 	let context = MessageContext::Custom(vec![0u8; 42]);
-	let blinded_path = BlindedMessagePath::new(
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let blinded_path = BlindedMessagePath::new_with_dummy_hops(
 		&intermediate_nodes,
+		5,
 		nodes[3].node_id,
 		context,
 		&*nodes[3].entropy_source,
+		&expanded_key,
 		&secp_ctx,
 	)
 	.unwrap();
 
+	// Ensure that the hops are not padded.
 	assert!(!is_padded(&blinded_path.blinded_hops(), MESSAGE_PADDING_ROUND_OFF));
 }
 
