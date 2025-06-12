@@ -28,6 +28,10 @@ use std::time::Duration;
 use core::future::Future as StdFuture;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use std::{
+	sync::atomic::{AtomicBool, Ordering},
+	thread,
+};
 
 /// Used to signal to one of many waiters that the condition they're waiting on has happened.
 ///
@@ -337,6 +341,47 @@ impl Sleeper {
 			};
 		notified_fut.lock().unwrap().callbacks_made = true;
 		true
+	}
+}
+
+pub struct Sleep {
+	is_done: Arc<AtomicBool>,
+	waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl Sleep {
+	pub fn new(duration: Duration) -> Self {
+		let is_done = Arc::new(AtomicBool::new(false));
+		let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+
+		let is_done_clone = is_done.clone();
+		let waker_clone = waker.clone();
+
+		thread::spawn(move || {
+			thread::sleep(duration);
+			is_done_clone.store(true, Ordering::SeqCst);
+
+			if let Some(w) = waker_clone.lock().unwrap().take() {
+				w.wake();
+			}
+		});
+
+		Self { is_done, waker }
+	}
+}
+
+impl core::future::Future for Sleep {
+	type Output = ();
+
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+		if self.is_done.load(Ordering::SeqCst) {
+			Poll::Ready(())
+		} else {
+			let mut waker_lock = self.waker.lock().unwrap();
+			// Store latest waker in case the task is moved or re-polled
+			*waker_lock = Some(cx.waker().clone());
+			Poll::Pending
+		}
 	}
 }
 
