@@ -1517,10 +1517,10 @@ where
 				return false;
 			}
 		}
-		!self
-			.channel_by_id
-			.iter()
-			.any(|(_, channel)| channel.is_funded() || channel.funding().is_outbound())
+		let chan_is_funded_or_outbound = |(_, channel): (_, &Channel<SP>)| {
+			channel.is_funded() || channel.funding().is_outbound()
+		};
+		!self.channel_by_id.iter().any(chan_is_funded_or_outbound)
 			&& self.monitor_update_blocked_actions.is_empty()
 			&& self.closed_channel_monitor_update_ids.is_empty()
 	}
@@ -3322,17 +3322,14 @@ macro_rules! emit_funding_tx_broadcast_safe_event {
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_pending_event() {
+			let funding_txo = $channel.funding.get_funding_txo().unwrap();
 			$locked_events.push_back((
 				events::Event::ChannelPending {
 					channel_id: $channel.context.channel_id(),
 					former_temporary_channel_id: $channel.context.temporary_channel_id(),
 					counterparty_node_id: $channel.context.get_counterparty_node_id(),
 					user_channel_id: $channel.context.get_user_id(),
-					funding_txo: $channel
-						.funding
-						.get_funding_txo()
-						.unwrap()
-						.into_bitcoin_outpoint(),
+					funding_txo: funding_txo.into_bitcoin_outpoint(),
 					channel_type: Some($channel.funding.get_channel_type().clone()),
 				},
 				None,
@@ -3807,8 +3804,8 @@ where
 		let mut outbound_scid_alias = 0;
 		let mut i = 0;
 		loop {
+			// fuzzing chacha20 doesn't use the key at all so we always get the same alias
 			if cfg!(fuzzing) {
-				// fuzzing chacha20 doesn't use the key at all so we always get the same alias
 				outbound_scid_alias += 1;
 			} else {
 				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(
@@ -3940,22 +3937,17 @@ where
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				res.extend(
-					peer_state
-						.channel_by_id
-						.iter()
-						// Only `Channels` in the `Channel::Funded` phase can be considered funded.
-						.filter(|(_, chan)| chan.is_funded())
-						.filter(f)
-						.map(|(_channel_id, channel)| {
-							ChannelDetails::from_channel(
-								channel,
-								best_block_height,
-								peer_state.latest_features.clone(),
-								&self.fee_estimator,
-							)
-						}),
-				);
+				// Only `Channels` in the `Channel::Funded` phase can be considered funded.
+				let filtered_chan_by_id =
+					peer_state.channel_by_id.iter().filter(|(_, chan)| chan.is_funded()).filter(f);
+				res.extend(filtered_chan_by_id.map(|(_channel_id, channel)| {
+					ChannelDetails::from_channel(
+						channel,
+						best_block_height,
+						peer_state.latest_features.clone(),
+						&self.fee_estimator,
+					)
+				}));
 			}
 		}
 		res
@@ -4022,12 +4014,8 @@ where
 					&self.fee_estimator,
 				)
 			};
-			return peer_state
-				.channel_by_id
-				.iter()
-				.map(|(_, chan)| (chan))
-				.map(channel_to_details)
-				.collect();
+			let chan_by_id = peer_state.channel_by_id.iter();
+			return chan_by_id.map(|(_, chan)| (chan)).map(channel_to_details).collect();
 		}
 		vec![]
 	}
@@ -8928,9 +8916,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => Ok(unfunded_channel
-					.tx_add_output(msg)
-					.into_msg_send_event(counterparty_node_id)),
+				Some(unfunded_channel) => {
+					let msg_send_event = unfunded_channel
+						.tx_add_output(msg)
+						.into_msg_send_event(counterparty_node_id);
+					Ok(msg_send_event)
+				},
 				None => Err("tx_add_output"),
 			}
 		})
@@ -8941,9 +8932,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => Ok(unfunded_channel
-					.tx_remove_input(msg)
-					.into_msg_send_event(counterparty_node_id)),
+				Some(unfunded_channel) => {
+					let msg_send_event = unfunded_channel
+						.tx_remove_input(msg)
+						.into_msg_send_event(counterparty_node_id);
+					Ok(msg_send_event)
+				},
 				None => Err("tx_remove_input"),
 			}
 		})
@@ -8954,9 +8948,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 	) -> Result<(), MsgHandleErrInternal> {
 		self.internal_tx_msg(&counterparty_node_id, msg.channel_id, |channel: &mut Channel<SP>| {
 			match channel.as_unfunded_v2_mut() {
-				Some(unfunded_channel) => Ok(unfunded_channel
-					.tx_remove_output(msg)
-					.into_msg_send_event(counterparty_node_id)),
+				Some(unfunded_channel) => {
+					let msg_send_event = unfunded_channel
+						.tx_remove_output(msg)
+						.into_msg_send_event(counterparty_node_id);
+					Ok(msg_send_event)
+				},
 				None => Err("tx_remove_output"),
 			}
 		})
@@ -9666,13 +9663,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let is_processing_events = self.pending_events_processor.load(Ordering::Acquire);
 		let num_forward_events = pending_events
 			.iter()
-			.filter(|(ev, _)| {
-				if let events::Event::PendingHTLCsForwardable { .. } = ev {
-					true
-				} else {
-					false
-				}
-			})
+			.filter(|(ev, _)| matches!(ev, events::Event::PendingHTLCsForwardable { .. }))
 			.count();
 		// We only want to push a PendingHTLCsForwardable event if no others are queued. Processing
 		// events is done in batches and they are not removed until we're done processing each
@@ -10963,6 +10954,24 @@ where
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		route_params_config: RouteParametersConfig,
 	) -> Result<(), Bolt12SemanticError> {
+		let create_pending_payment_fn = |invoice_request: &InvoiceRequest, nonce| {
+			let expiration = StaleExpiration::TimerTicks(1);
+			let retryable_invoice_request = RetryableInvoiceRequest {
+				invoice_request: invoice_request.clone(),
+				nonce,
+				needs_retry: true,
+			};
+			self.pending_outbound_payments
+				.add_new_awaiting_invoice(
+					payment_id,
+					expiration,
+					retry_strategy,
+					route_params_config,
+					Some(retryable_invoice_request),
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		};
+
 		self.pay_for_offer_intern(
 			offer,
 			quantity,
@@ -10970,23 +10979,7 @@ where
 			payer_note,
 			payment_id,
 			None,
-			|invoice_request, nonce| {
-				let expiration = StaleExpiration::TimerTicks(1);
-				let retryable_invoice_request = RetryableInvoiceRequest {
-					invoice_request: invoice_request.clone(),
-					nonce,
-					needs_retry: true,
-				};
-				self.pending_outbound_payments
-					.add_new_awaiting_invoice(
-						payment_id,
-						expiration,
-						retry_strategy,
-						route_params_config,
-						Some(retryable_invoice_request),
-					)
-					.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
-			},
+			create_pending_payment_fn,
 		)
 	}
 
@@ -11290,9 +11283,8 @@ where
 	}
 
 	fn get_peers_for_blinded_path(&self) -> Vec<MessageForwardNode> {
-		self.per_peer_state
-			.read()
-			.unwrap()
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		per_peer_state
 			.iter()
 			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
 			.filter(|(_, peer)| peer.is_connected)
@@ -12112,13 +12104,10 @@ where
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.funding.get_funding_txo() {
 				if funding_txo.txid == *txid {
-					channel
-						.funding_transaction_unconfirmed(&&WithChannelContext::from(
-							&self.logger,
-							&channel.context,
-							None,
-						))
-						.map(|()| (None, Vec::new(), None))
+					let chan_context =
+						WithChannelContext::from(&self.logger, &channel.context, None);
+					let res = channel.funding_transaction_unconfirmed(&&chan_context);
+					res.map(|()| (None, Vec::new(), None))
 				} else {
 					Ok((None, Vec::new(), None))
 				}
@@ -12445,13 +12434,13 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	fn handle_open_channel(&self, counterparty_node_id: PublicKey, msg: &msgs::OpenChannel) {
+	fn handle_open_channel(&self, counterparty_node_id: PublicKey, message: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let res =
-				self.internal_open_channel(&counterparty_node_id, OpenChannelMessageRef::V1(msg));
+			let msg = OpenChannelMessageRef::V1(message);
+			let res = self.internal_open_channel(&counterparty_node_id, msg);
 			let persist = match &res {
 				Err(e) if e.closes_channel() => {
 					debug_assert!(false, "We shouldn't close a new channel");
@@ -12960,16 +12949,10 @@ where
 		{
 			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
 
-			if self
-				.flow
-				.enqueue_invoice_request(
-					invoice_request,
-					payment_id,
-					nonce,
-					self.get_peers_for_blinded_path(),
-				)
-				.is_err()
-			{
+			let peers = self.get_peers_for_blinded_path();
+			let enqueue_invreq_res =
+				self.flow.enqueue_invoice_request(invoice_request, payment_id, nonce, peers);
+			if enqueue_invreq_res.is_err() {
 				log_warn!(
 					self.logger,
 					"Retry failed for invoice request with payment_id {}",
@@ -14078,11 +14061,9 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let len: u64 = Readable::read(reader)?;
 		const MAX_ALLOC_SIZE: u64 = 1024 * 16;
-		let mut events: Self = VecDeque::with_capacity(cmp::min(
-			MAX_ALLOC_SIZE
-				/ mem::size_of::<(events::Event, Option<EventCompletionAction>)>() as u64,
-			len,
-		) as usize);
+		let event_size = mem::size_of::<(events::Event, Option<EventCompletionAction>)>();
+		let mut events: Self =
+			VecDeque::with_capacity(cmp::min(MAX_ALLOC_SIZE / event_size as u64, len) as usize);
 		for _ in 0..len {
 			let ev_opt = MaybeReadable::read(reader)?;
 			let action = Readable::read(reader)?;
