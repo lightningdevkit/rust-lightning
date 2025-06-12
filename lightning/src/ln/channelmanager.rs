@@ -15935,7 +15935,7 @@ mod tests {
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Receive { payment_hash: our_payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -16155,7 +16155,7 @@ mod tests {
 		// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
 		// fails), the second will process the resulting failure and fail the HTLC backward
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Receive { payment_hash }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Receive { payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -16200,7 +16200,7 @@ mod tests {
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Receive { payment_hash }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Receive { payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -16247,7 +16247,7 @@ mod tests {
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Receive { payment_hash }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Receive { payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());

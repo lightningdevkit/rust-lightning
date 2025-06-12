@@ -747,7 +747,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 
 	if intercept_node_fails {
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid }]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], [HTLCHandlingFailureType::InvalidForward { requested_forward_scid: intercept_scid }]);
 		nodes[1].node.process_pending_htlc_forwards();
 		check_added_monitors!(&nodes[1], 1);
 		fail_blinded_htlc_backwards(payment_hash, 1, &[&nodes[0], &nodes[1]], false);
@@ -1046,7 +1046,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
 			expect_pending_htlcs_forwardable!(nodes[2]);
 			expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[2],
-				vec![HTLCHandlingFailureType::Receive { payment_hash }]);
+				[HTLCHandlingFailureType::Receive { payment_hash }]);
 			check_added_monitors!(nodes[2], 1);
 		},
 		ReceiveCheckFail::PaymentConstraints => {

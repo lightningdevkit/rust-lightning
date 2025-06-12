@@ -89,7 +89,7 @@ fn chanmon_fail_from_stale_commitment() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCHandlingFailureType::Forward { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
 	check_added_monitors!(nodes[1], 1);
 	let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
@@ -2997,7 +2997,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	for event in spendable_output_events {
 		if let Event::SpendableOutputs { outputs, channel_id } = event {
 			assert_eq!(outputs.len(), 1);
-			assert!(vec![chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
+			assert!([chan_b.2, chan_a.2].contains(&channel_id.unwrap()));
 			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
 				&[&outputs[0]], Vec::new(), ScriptBuf::new_op_return(&[]), 253, None, &Secp256k1::new(),
 			).unwrap();

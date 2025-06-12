@@ -825,7 +825,7 @@ mod tests {
 	#[test]
 	fn read_lnd_node_announcement() {
 		// Taken from lnd v0.9.0-beta.
-		let buffer = vec![
+		let buffer = [
 			1, 1, 91, 164, 146, 213, 213, 165, 21, 227, 102, 33, 105, 179, 214, 21, 221, 175, 228,
 			93, 57, 177, 191, 127, 107, 229, 31, 50, 21, 81, 179, 71, 39, 18, 35, 2, 89, 224, 110,
 			123, 66, 39, 148, 246, 177, 85, 12, 19, 70, 226, 173, 132, 156, 26, 122, 146, 71, 213,
@@ -928,7 +928,7 @@ mod tests {
 
 	#[test]
 	fn read_custom_message() {
-		let buffer = vec![35, 40];
+		let buffer = [35, 40];
 		let decoded_msg = read(&mut &buffer[..], &TestCustomMessageReader {}).unwrap();
 		match decoded_msg {
 			Message::Custom(custom) => {
@@ -941,7 +941,7 @@ mod tests {
 
 	#[test]
 	fn read_with_custom_reader_unknown_message_type() {
-		let buffer = vec![35, 42];
+		let buffer = [35, 42];
 		let decoded_msg = read(&mut &buffer[..], &TestCustomMessageReader {}).unwrap();
 		match decoded_msg {
 			Message::Unknown(_) => {},

@@ -676,7 +676,7 @@ pub fn holding_cell_htlc_counting() {
 	// fails), the second will process the resulting failure and fail the HTLC backward.
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	let fail = HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 };
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![fail]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [fail]);
 	check_added_monitors(&nodes[1], 1);
 
 	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], node_a_id);
@@ -768,7 +768,7 @@ pub fn test_basic_channel_reserve() {
 	unwrap_send_err!(nodes[0], err, true, APIError::ChannelUnavailable { .. }, {});
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send);
+	send_payment(&nodes[0], &[&nodes[1]], max_can_send);
 }
 
 #[xtest(feature = "_externalize_tests")]

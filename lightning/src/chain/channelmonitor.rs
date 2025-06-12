@@ -6260,7 +6260,7 @@ mod tests {
 				value: Amount::ZERO,
 			});
 			let base_weight = claim_tx.weight().to_wu();
-			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(channel_type_features), weight_revoked_offered_htlc(channel_type_features), weight_revoked_received_htlc(channel_type_features)];
+			let inputs_weight = [WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(channel_type_features), weight_revoked_offered_htlc(channel_type_features), weight_revoked_received_htlc(channel_type_features)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
@@ -6292,7 +6292,7 @@ mod tests {
 				value: Amount::ZERO,
 			});
 			let base_weight = claim_tx.weight().to_wu();
-			let inputs_weight = vec![weight_offered_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features)];
+			let inputs_weight = [weight_offered_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
@@ -6322,7 +6322,7 @@ mod tests {
 				value: Amount::ZERO,
 			});
 			let base_weight = claim_tx.weight().to_wu();
-			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
+			let inputs_weight = [WEIGHT_REVOKED_OUTPUT];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
