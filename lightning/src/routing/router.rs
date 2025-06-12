@@ -8414,8 +8414,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
-		let gossip_sync = P2PGossipSync::new(network_graph.clone(), None, logger.clone());
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), network_graph.clone(), logger.clone());
+		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), Arc::clone(&network_graph), Arc::clone(&logger));
 		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
@@ -8478,7 +8478,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), network_graph.clone(), logger.clone());
+		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), Arc::clone(&network_graph), Arc::clone(&logger));
 		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 

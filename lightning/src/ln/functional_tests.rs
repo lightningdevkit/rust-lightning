@@ -5173,8 +5173,9 @@ pub fn test_key_derivation_params() {
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[0].logger));
 	let scorer = RwLock::new(test_utils::TestScorer::new());
 	let router =
-		test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[0].logger, &scorer);
-	let message_router = test_utils::TestMessageRouter::new(network_graph.clone(), &keys_manager);
+		test_utils::TestRouter::new(Arc::clone(&network_graph), &chanmon_cfgs[0].logger, &scorer);
+	let message_router =
+		test_utils::TestMessageRouter::new(Arc::clone(&network_graph), &keys_manager);
 	let node = NodeCfg {
 		chain_source: &chanmon_cfgs[0].chain_source,
 		logger: &chanmon_cfgs[0].logger,

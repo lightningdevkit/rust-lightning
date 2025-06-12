@@ -992,7 +992,7 @@ where
 	pub fn sweeper_async(
 		&self,
 	) -> Arc<OutputSweeper<B, Arc<ChangeDestinationSourceSyncWrapper<D>>, E, F, K, L, O>> {
-		self.sweeper.clone()
+		Arc::clone(&self.sweeper)
 	}
 }
 

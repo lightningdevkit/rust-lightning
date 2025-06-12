@@ -449,7 +449,7 @@ mod tests {
 		let thread_notifier = Arc::clone(&persistence_notifier);
 
 		let exit_thread = Arc::new(AtomicBool::new(false));
-		let exit_thread_clone = exit_thread.clone();
+		let exit_thread_clone = Arc::clone(&exit_thread);
 		thread::spawn(move || loop {
 			thread_notifier.notify();
 			if exit_thread_clone.load(Ordering::SeqCst) {

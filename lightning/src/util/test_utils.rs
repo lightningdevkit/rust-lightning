@@ -157,7 +157,7 @@ impl<'a> TestRouter<'a> {
 		let next_blinded_payment_paths = Mutex::new(Vec::new());
 		Self {
 			router: DefaultRouter::new(
-				network_graph.clone(),
+				Arc::clone(&network_graph),
 				logger,
 				entropy_source,
 				scorer,

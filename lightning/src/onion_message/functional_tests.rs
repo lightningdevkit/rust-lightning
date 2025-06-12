@@ -266,8 +266,8 @@ impl MessengerCfg {
 
 fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 	let gossip_logger = Arc::new(TestLogger::with_id("gossip".to_string()));
-	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, gossip_logger.clone()));
-	let gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), None, gossip_logger));
+	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&gossip_logger)));
+	let gossip_sync = Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, gossip_logger));
 
 	let mut nodes = Vec::new();
 	for (i, cfg) in cfgs.into_iter().enumerate() {
@@ -280,34 +280,34 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 
 		let node_id_lookup = Arc::new(EmptyNodeIdLookUp {});
 		let message_router =
-			Arc::new(DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone()));
+			DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&entropy_source));
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let async_payments_message_handler = Arc::new(TestAsyncPaymentsMessageHandler {});
 		let dns_resolver_message_handler = Arc::new(TestDNSResolverMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
 		let messenger = if cfg.intercept_offline_peer_oms {
 			OnionMessenger::new_with_offline_peer_interception(
-				entropy_source.clone(),
-				node_signer.clone(),
-				logger.clone(),
+				Arc::clone(&entropy_source),
+				Arc::clone(&node_signer),
+				logger,
 				node_id_lookup,
-				message_router,
+				Arc::new(message_router),
 				offers_message_handler,
 				async_payments_message_handler,
 				dns_resolver_message_handler,
-				custom_message_handler.clone(),
+				Arc::clone(&custom_message_handler),
 			)
 		} else {
 			OnionMessenger::new(
-				entropy_source.clone(),
-				node_signer.clone(),
-				logger.clone(),
+				Arc::clone(&entropy_source),
+				Arc::clone(&node_signer),
+				logger,
 				node_id_lookup,
-				message_router,
+				Arc::new(message_router),
 				offers_message_handler,
 				async_payments_message_handler,
 				dns_resolver_message_handler,
-				custom_message_handler.clone(),
+				Arc::clone(&custom_message_handler),
 			)
 		};
 		nodes.push(MessengerNode {
@@ -316,7 +316,7 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 			entropy_source,
 			messenger,
 			custom_message_handler,
-			gossip_sync: gossip_sync.clone(),
+			gossip_sync: Arc::clone(&gossip_sync),
 		});
 	}
 	for i in 0..nodes.len() - 1 {

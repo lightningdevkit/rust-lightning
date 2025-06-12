@@ -408,16 +408,16 @@ pub(crate) fn create_liquidity_node(
 	let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
 	let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 	let genesis_block = genesis_block(network);
-	let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
+	let network_graph = Arc::new(NetworkGraph::new(network, Arc::clone(&logger)));
 	let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 	let now = Duration::from_secs(genesis_block.header.time as u64);
 	let seed = [i as u8; 32];
 	let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 	let router = Arc::new(DefaultRouter::new(
 		Arc::clone(&network_graph),
-		logger.clone(),
-		keys_manager.clone(),
-		scorer.clone(),
+		Arc::clone(&logger),
+		Arc::clone(&keys_manager),
+		Arc::clone(&scorer),
 		Default::default(),
 	));
 	let msg_router =
@@ -426,34 +426,34 @@ pub(crate) fn create_liquidity_node(
 	let kv_store =
 		Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
 	let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
-		Some(chain_source.clone()),
-		tx_broadcaster.clone(),
-		logger.clone(),
-		fee_estimator.clone(),
-		kv_store.clone(),
-		keys_manager.clone(),
+		Some(Arc::clone(&chain_source)),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&logger),
+		Arc::clone(&fee_estimator),
+		Arc::clone(&kv_store),
+		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
 	));
 	let best_block = BestBlock::from_network(network);
 	let chain_params = ChainParameters { network, best_block };
 	let channel_manager = Arc::new(ChannelManager::new(
-		fee_estimator.clone(),
-		chain_monitor.clone(),
-		tx_broadcaster.clone(),
-		router.clone(),
-		msg_router.clone(),
-		logger.clone(),
-		keys_manager.clone(),
-		keys_manager.clone(),
-		keys_manager.clone(),
+		Arc::clone(&fee_estimator),
+		Arc::clone(&chain_monitor),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&router),
+		Arc::clone(&msg_router),
+		Arc::clone(&logger),
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
 		UserConfig::default(),
 		chain_params,
 		genesis_block.header.time,
 	));
 	let p2p_gossip_sync = Arc::new(P2PGossipSync::new(
-		network_graph.clone(),
-		Some(chain_source.clone()),
-		logger.clone(),
+		Arc::clone(&network_graph),
+		Some(Arc::clone(&chain_source)),
+		Arc::clone(&logger),
 	));
 
 	let liquidity_manager = Arc::new(LiquidityManager::new(
@@ -474,13 +474,13 @@ pub(crate) fn create_liquidity_node(
 		send_only_message_handler: Arc::clone(&chain_monitor),
 	};
 	let peer_manager =
-		Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), keys_manager.clone()));
+		PeerManager::new(msg_handler, 0, &seed, Arc::clone(&logger), Arc::clone(&keys_manager));
 
 	Node {
 		channel_manager,
 		keys_manager,
 		p2p_gossip_sync,
-		peer_manager,
+		peer_manager: Arc::new(peer_manager),
 		liquidity_manager,
 		chain_monitor,
 		kv_store,

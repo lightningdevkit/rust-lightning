@@ -3355,8 +3355,8 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 			logger: &chanmon_cfgs[i].logger,
 			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
 			fee_estimator: &chanmon_cfgs[i].fee_estimator,
-			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
-			message_router: test_utils::TestMessageRouter::new(network_graph.clone(), &chanmon_cfgs[i].keys_manager),
+			router: test_utils::TestRouter::new(Arc::clone(&network_graph), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
+			message_router: test_utils::TestMessageRouter::new(Arc::clone(&network_graph), &chanmon_cfgs[i].keys_manager),
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
@@ -3425,19 +3425,19 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));
-		let wallet = Arc::new(WalletSync::new(wallet_source.clone(), cfgs[i].logger));
+		let wallet = Arc::new(WalletSync::new(Arc::clone(&wallet_source), cfgs[i].logger));
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
 			fee_estimator: cfgs[i].fee_estimator, router: &cfgs[i].router,
 			message_router: &cfgs[i].message_router, chain_monitor: &cfgs[i].chain_monitor,
 			keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i],
 			network_graph: cfgs[i].network_graph.as_ref(), gossip_sync,
-			node_seed: cfgs[i].node_seed, onion_messenger, network_chan_count: chan_count.clone(),
-			network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
+			node_seed: cfgs[i].node_seed, onion_messenger, network_chan_count: Rc::clone(&chan_count),
+			network_payment_count: Rc::clone(&payment_count), logger: cfgs[i].logger,
 			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
 			connect_style: Rc::clone(&connect_style),
 			override_init_features: Rc::clone(&cfgs[i].override_init_features),
-			wallet_source: wallet_source.clone(),
+			wallet_source: Arc::clone(&wallet_source),
 			bump_tx_handler: BumpTransactionEventHandlerSync::new(
 				cfgs[i].tx_broadcaster, wallet,
 				&cfgs[i].keys_manager, cfgs[i].logger,

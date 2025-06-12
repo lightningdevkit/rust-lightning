@@ -93,7 +93,8 @@ mod tests {
 		let protocols: Vec<u16> = vec![];
 		let pending_messages = Arc::new(MessageQueue::new());
 
-		let lsps0_handler = Arc::new(LSPS0ServiceHandler::new(protocols, pending_messages.clone()));
+		let lsps0_handler =
+			Arc::new(LSPS0ServiceHandler::new(protocols, Arc::clone(&pending_messages)));
 
 		let list_protocols_request = LSPS0Message::Request(
 			LSPSRequestId("xyz123".to_string()),

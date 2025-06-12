@@ -1462,6 +1462,6 @@ mod tests {
 	#[test]
 	fn kvstore_trait_object_usage() {
 		let store: Arc<dyn KVStore + Send + Sync> = Arc::new(TestStore::new(false));
-		assert!(persist_fn::<_, TestChannelSigner>(store.clone()));
+		assert!(persist_fn::<_, TestChannelSigner>(Arc::clone(&store)));
 	}
 }
