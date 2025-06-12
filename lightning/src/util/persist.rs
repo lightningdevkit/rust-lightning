@@ -446,6 +446,13 @@ where
 /// If you have many stale updates stored (such as after a crash with pending lazy deletes), and
 /// would like to get rid of them, consider using the
 /// [`MonitorUpdatingPersister::cleanup_stale_updates`] function.
+///
+/// # Size-based persistence optimization
+///
+/// For small channel monitors (below `min_monitor_size_for_updates_bytes` bytes when serialized),
+/// this persister will always write the full monitor instead of individual updates. This avoids
+/// the overhead of managing update files and later compaction for tiny monitors that don't benefit
+/// from differential updates.
 pub struct MonitorUpdatingPersister<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
 where
 	K::Target: KVStore,
@@ -458,6 +465,7 @@ where
 	kv_store: K,
 	logger: L,
 	maximum_pending_updates: u64,
+	min_monitor_size_for_updates_bytes: usize,
 	entropy_source: ES,
 	signer_provider: SP,
 	broadcaster: BI,
@@ -475,7 +483,7 @@ where
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator,
 {
-	/// Constructs a new [`MonitorUpdatingPersister`].
+	/// Constructs a new [`MonitorUpdatingPersister`] with a default minimum monitor size threshold.
 	///
 	/// The `maximum_pending_updates` parameter controls how many updates may be stored before a
 	/// [`MonitorUpdatingPersister`] consolidates updates by writing a full monitor. Note that
@@ -491,14 +499,45 @@ where
 	/// less frequent "waves."
 	///   - [`MonitorUpdatingPersister`] will potentially have more listing to do if you need to run
 	/// [`MonitorUpdatingPersister::cleanup_stale_updates`].
+	///
+	/// This sets `min_monitor_size_for_updates_bytes` to 4096 bytes (4 KiB), which is a reasonable
+	/// default for most use cases. Monitors smaller than this will be persisted in full rather than
+	/// using update-based persistence. Use [`MonitorUpdatingPersister::new_with_monitor_size_threshold`]
+	/// if you need a custom threshold.
 	pub fn new(
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
+	) -> Self {
+		Self::new_with_monitor_size_threshold(
+			kv_store,
+			logger,
+			maximum_pending_updates,
+			4096,
+			entropy_source,
+			signer_provider,
+			broadcaster,
+			fee_estimator,
+		)
+	}
+
+	/// Constructs a new [`MonitorUpdatingPersister`] with a custom minimum monitor size threshold.
+	///
+	/// The `min_monitor_size_for_updates_bytes` parameter sets the minimum serialized size (in bytes)
+	/// for a [`ChannelMonitor`] to use update-based persistence. Monitors smaller than this threshold
+	/// will always be persisted in full, avoiding the overhead of managing update files for tiny
+	/// monitors. Set to 0 to always use update-based persistence regardless of size.
+	///
+	/// For other parameters, see [`MonitorUpdatingPersister::new`].
+	pub fn new_with_monitor_size_threshold(
+		kv_store: K, logger: L, maximum_pending_updates: u64,
+		min_monitor_size_for_updates_bytes: usize, entropy_source: ES, signer_provider: SP,
+		broadcaster: BI, fee_estimator: FE,
 	) -> Self {
 		MonitorUpdatingPersister {
 			kv_store,
 			logger,
 			maximum_pending_updates,
+			min_monitor_size_for_updates_bytes,
 			entropy_source,
 			signer_provider,
 			broadcaster,
@@ -752,7 +791,12 @@ where
 	) -> chain::ChannelMonitorUpdateStatus {
 		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
 		if let Some(update) = update {
-			let persist_update = update.update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID
+			// Check if monitor is too small for update-based persistence
+			let monitor_size = monitor.serialized_length();
+			let use_full_persistence = monitor_size < self.min_monitor_size_for_updates_bytes;
+
+			let persist_update = !use_full_persistence
+				&& update.update_id != LEGACY_CLOSED_CHANNEL_UPDATE_ID
 				&& update.update_id % self.maximum_pending_updates != 0;
 			if persist_update {
 				let monitor_key = monitor_name.to_string();
