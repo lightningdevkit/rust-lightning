@@ -1021,7 +1021,7 @@ impl BackgroundProcessor {
 		K::Target: 'static + KVStore,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
-		let stop_thread_clone = stop_thread.clone();
+		let stop_thread_clone = Arc::clone(&stop_thread);
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
 			let event_handler = |event| {
 				let network_graph = gossip_sync.network_graph();
