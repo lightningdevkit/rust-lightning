@@ -40,10 +40,7 @@ pub fn to_compressed_pubkey(hex: &str) -> Option<PublicKey> {
 		Some(bytes) => bytes,
 		None => return None,
 	};
-	match PublicKey::from_slice(&data) {
-		Ok(pk) => Some(pk),
-		Err(_) => None,
-	}
+	PublicKey::from_slice(&data).ok()
 }
 
 pub fn parse_pubkey(pubkey_str: &str) -> Result<PublicKey, io::Error> {

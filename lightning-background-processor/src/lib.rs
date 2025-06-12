@@ -2255,7 +2255,7 @@ mod tests {
 		get_event!(nodes[1], Event::ChannelPending);
 		let msg_1 = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_0_id);
 		nodes[0].node.handle_funding_signed(node_1_id, &msg_1);
-		let _ = channel_pending_recv
+		channel_pending_recv
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("ChannelPending not handled within deadline");
 
