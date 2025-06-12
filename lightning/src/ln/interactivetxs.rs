@@ -106,14 +106,20 @@ pub(crate) enum AbortReason {
 	InsufficientFees,
 	OutputsValueExceedsInputsValue,
 	InvalidTx,
+	/// No funding (shared) input found.
+	MissingFundingInput,
 	/// No funding (shared) output found.
 	MissingFundingOutput,
 	/// More than one funding (shared) output found.
 	DuplicateFundingOutput,
+	/// More than one funding (shared) input found.
+	DuplicateFundingInput,
 	/// The intended local part of the funding output is higher than the actual shared funding output,
 	/// if funding output is provided by the peer this is an interop error,
 	/// if provided by the same node than internal input consistency error.
 	InvalidLowFundingOutputValue,
+	/// The intended local part of the funding input is higher than the actual shared funding input.
+	InvalidLowFundingInputValue,
 	/// Internal error
 	InternalError(&'static str),
 }
@@ -158,12 +164,17 @@ impl Display for AbortReason {
 				f.write_str("Total value of outputs exceeds total value of inputs")
 			},
 			AbortReason::InvalidTx => f.write_str("The transaction is invalid"),
+			AbortReason::MissingFundingInput => f.write_str("No shared funding input found"),
 			AbortReason::MissingFundingOutput => f.write_str("No shared funding output found"),
 			AbortReason::DuplicateFundingOutput => {
 				f.write_str("More than one funding output found")
 			},
+			AbortReason::DuplicateFundingInput => f.write_str("More than one funding input found"),
 			AbortReason::InvalidLowFundingOutputValue => f.write_str(
 				"Local part of funding output value is greater than the funding output value",
+			),
+			AbortReason::InvalidLowFundingInputValue => f.write_str(
+				"Local part of shared input value is greater than the shared input value",
 			),
 			AbortReason::InternalError(text) => {
 				f.write_fmt(format_args!("Internal error: {}", text))
@@ -476,9 +487,14 @@ struct NegotiationContext {
 	/// as shared, and split between the peers according to the local value.
 	/// If the local value is found to be larger than the actual funding output, an error is generated.
 	expected_shared_funding_output: (ScriptBuf, u64),
+	/// Expected shared input (previous funding input) to be added by the remote peer.
+	/// Specified by OutPoint, value, and locally owned value.
+	expected_shared_funding_input: Option<(OutPoint, u64, u64)>,
 	/// The actual new funding output, set only after the output has actually been added.
 	/// NOTE: this output is also included in `outputs`.
 	actual_new_funding_output: Option<SharedOwnedOutput>,
+	/// The actual funding input, set only after the input has actually been added.
+	actual_funding_input: Option<SharedOwnedInput>,
 	prevtx_outpoints: HashSet<OutPoint>,
 	/// The outputs added so far.
 	outputs: HashMap<SerialId, InteractiveTxOutput>,
@@ -515,7 +531,8 @@ fn is_serial_id_valid_for_counterparty(holder_is_initiator: bool, serial_id: Ser
 impl NegotiationContext {
 	fn new(
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, holder_is_initiator: bool,
-		expected_shared_funding_output: (ScriptBuf, u64), tx_locktime: AbsoluteLockTime,
+		expected_shared_funding_output: (ScriptBuf, u64),
+		expected_shared_funding_input: Option<(OutPoint, u64, u64)>, tx_locktime: AbsoluteLockTime,
 		feerate_sat_per_kw: u32,
 	) -> Self {
 		NegotiationContext {
@@ -526,7 +543,9 @@ impl NegotiationContext {
 			received_tx_add_output_count: 0,
 			inputs: new_hash_map(),
 			expected_shared_funding_output,
+			expected_shared_funding_input,
 			actual_new_funding_output: None,
+			actual_funding_input: None,
 			prevtx_outpoints: new_hash_set(),
 			outputs: new_hash_map(),
 			tx_locktime,
@@ -549,6 +568,27 @@ impl NegotiationContext {
 		let shared_output = SharedOwnedOutput::new(tx_out, local_owned);
 		self.actual_new_funding_output = Some(shared_output.clone());
 		Ok(shared_output)
+	}
+
+	fn set_actual_funding_input(&mut self, txin: TxIn) -> Result<SharedOwnedInput, AbortReason> {
+		if self.actual_funding_input.is_some() {
+			return Err(AbortReason::DuplicateFundingInput);
+		}
+		if let Some(expected_shared_funding_input) = &self.expected_shared_funding_input {
+			let value = expected_shared_funding_input.1;
+			let local_owned = expected_shared_funding_input.2;
+			// Sanity check
+			if local_owned > value {
+				return Err(AbortReason::InvalidLowFundingInputValue);
+			}
+			let txout =
+				TxOut { value: Amount::from_sat(value), script_pubkey: txin.script_sig.to_p2wsh() };
+			let shared_input = SharedOwnedInput::new(txin, txout, local_owned);
+			self.actual_funding_input = Some(shared_input.clone());
+			Ok(shared_input)
+		} else {
+			return Err(AbortReason::MissingFundingInput);
+		}
 	}
 
 	fn is_serial_id_valid_for_counterparty(&self, serial_id: &SerialId) -> bool {
@@ -619,36 +659,70 @@ impl NegotiationContext {
 			return Err(AbortReason::IncorrectInputSequenceValue);
 		}
 
-		let transaction = msg.prevtx.as_transaction();
-		let txid = transaction.compute_txid();
-
-		if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
-			if !tx_out.script_pubkey.is_witness_program() {
-				// The receiving node:
-				//  - MUST fail the negotiation if:
-				//     - the `scriptPubKey` is not a witness program
-				return Err(AbortReason::PrevTxOutInvalid);
-			}
-
-			if !self.prevtx_outpoints.insert(OutPoint { txid, vout: msg.prevtx_out }) {
-				// The receiving node:
-				//  - MUST fail the negotiation if:
-				//     - the `prevtx` and `prevtx_vout` are identical to a previously added
-				//       (and not removed) input's
-				return Err(AbortReason::PrevTxOutInvalid);
+		// Extract info from msg, check if shared
+		let (input, prev_outpoint) = if let Some(shared_txid) = &msg.shared_input_txid {
+			// Shared input
+			if let Some(expected_shared) = &self.expected_shared_funding_input {
+				// Check if receied shared input matches the expected
+				if expected_shared.0.txid != *shared_txid {
+					// Shared input TXID differs from expected
+					return Err(AbortReason::MissingFundingInput);
+				} else {
+					let prev_outpoint = OutPoint { txid: *shared_txid, vout: msg.prevtx_out };
+					let txin = TxIn {
+						previous_output: prev_outpoint,
+						sequence: Sequence(msg.sequence),
+						..Default::default()
+					};
+					let shared_input = self.set_actual_funding_input(txin)?;
+					(InputOwned::Shared(shared_input), prev_outpoint)
+				}
+			} else {
+				// Unexpected shared input received
+				return Err(AbortReason::MissingFundingInput);
 			}
 		} else {
-			// The receiving node:
-			//  - MUST fail the negotiation if:
-			//     - `prevtx_vout` is greater or equal to the number of outputs on `prevtx`
-			return Err(AbortReason::PrevTxOutInvalid);
-		}
+			// Non-shared input
+			let transaction = msg.prevtx.as_ref().unwrap().as_transaction();
+			let txid = transaction.compute_txid();
 
-		let prev_out = if let Some(prev_out) = transaction.output.get(msg.prevtx_out as usize) {
-			prev_out.clone()
-		} else {
-			return Err(AbortReason::PrevTxOutInvalid);
+			if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
+				if !tx_out.script_pubkey.is_witness_program() {
+					// The receiving node:
+					//  - MUST fail the negotiation if:
+					//     - the `scriptPubKey` is not a witness program
+					return Err(AbortReason::PrevTxOutInvalid);
+				}
+
+				if !self.prevtx_outpoints.insert(OutPoint { txid, vout: msg.prevtx_out }) {
+					// The receiving node:
+					//  - MUST fail the negotiation if:
+					//     - the `prevtx` and `prevtx_vout` are identical to a previously added
+					//       (and not removed) input's
+					return Err(AbortReason::PrevTxOutInvalid);
+				}
+
+				let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
+				let txin = TxIn {
+					previous_output: prev_outpoint,
+					sequence: Sequence(msg.sequence),
+					..Default::default()
+				};
+				(
+					InputOwned::Single(SingleOwnedInput {
+						input: txin,
+						prev_output: tx_out.clone(),
+					}),
+					prev_outpoint,
+				)
+			} else {
+				// The receiving node:
+				//  - MUST fail the negotiation if:
+				//     - `prevtx_vout` is greater or equal to the number of outputs on `prevtx`
+				return Err(AbortReason::PrevTxOutInvalid);
+			}
 		};
+
 		match self.inputs.entry(msg.serial_id) {
 			hash_map::Entry::Occupied(_) => {
 				// The receiving node:
@@ -657,16 +731,11 @@ impl NegotiationContext {
 				Err(AbortReason::DuplicateSerialId)
 			},
 			hash_map::Entry::Vacant(entry) => {
-				let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
-				entry.insert(InteractiveTxInput::Remote(LocalOrRemoteInput {
+				entry.insert(InteractiveTxInput {
 					serial_id: msg.serial_id,
-					input: TxIn {
-						previous_output: prev_outpoint,
-						sequence: Sequence(msg.sequence),
-						..Default::default()
-					},
-					prev_output: prev_out,
-				}));
+					added_by: AddingRole::Remote,
+					input,
+				});
 				self.prevtx_outpoints.insert(prev_outpoint);
 				Ok(())
 			},
@@ -791,9 +860,45 @@ impl NegotiationContext {
 	}
 
 	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
-		let tx = msg.prevtx.as_transaction();
+		let vout = msg.prevtx_out as usize;
+		let (input, prev_txid) = if let Some(shared_input_txid) = msg.shared_input_txid {
+			// Shared input
+			if let Some(_expected_input) = &self.expected_shared_funding_input {
+				let prev_outpoint = OutPoint { txid: shared_input_txid, vout: msg.prevtx_out };
+				let txin = TxIn {
+					previous_output: prev_outpoint,
+					sequence: Sequence(msg.sequence),
+					..Default::default()
+				};
+				let shared_input = self.set_actual_funding_input(txin.clone())?;
+				(InputOwned::Shared(shared_input), shared_input_txid)
+			} else {
+				return Err(AbortReason::MissingFundingInput);
+			}
+		} else {
+			// Non-shared input
+			if let Some(prevtx) = &msg.prevtx {
+				let prev_txid = prevtx.as_transaction().compute_txid();
+				let prev_outpoint = OutPoint { txid: prev_txid, vout: msg.prevtx_out };
+				let prev_output = prevtx
+					.as_transaction()
+					.output
+					.get(vout)
+					.ok_or(AbortReason::PrevTxOutInvalid)?
+					.clone();
+				let txin = TxIn {
+					previous_output: prev_outpoint,
+					sequence: Sequence(msg.sequence),
+					..Default::default()
+				};
+				let single_input = SingleOwnedInput { input: txin, prev_output };
+				(InputOwned::Single(single_input), prev_txid)
+			} else {
+				return Err(AbortReason::PrevTxOutInvalid);
+			}
+		};
 		let txin = TxIn {
-			previous_output: OutPoint { txid: tx.compute_txid(), vout: msg.prevtx_out },
+			previous_output: OutPoint { txid: prev_txid, vout: msg.prevtx_out },
 			sequence: Sequence(msg.sequence),
 			..Default::default()
 		};
@@ -801,13 +906,8 @@ impl NegotiationContext {
 			// We have added an input that already exists
 			return Err(AbortReason::PrevTxOutInvalid);
 		}
-		let vout = txin.previous_output.vout as usize;
-		let prev_output = tx.output.get(vout).ok_or(AbortReason::PrevTxOutInvalid)?.clone();
-		let input = InteractiveTxInput::Local(LocalOrRemoteInput {
-			serial_id: msg.serial_id,
-			input: txin,
-			prev_output,
-		});
+		let input =
+			InteractiveTxInput { serial_id: msg.serial_id, added_by: AddingRole::Local, input };
 		self.inputs.insert(msg.serial_id, input);
 		Ok(())
 	}
@@ -888,6 +988,10 @@ impl NegotiationContext {
 
 		if self.actual_new_funding_output.is_none() {
 			return Err(AbortReason::MissingFundingOutput);
+		}
+
+		if self.expected_shared_funding_input.is_some() && self.actual_funding_input.is_none() {
+			return Err(AbortReason::MissingFundingInput);
 		}
 
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
@@ -1108,12 +1212,14 @@ impl StateMachine {
 		holder_node_id: PublicKey, counterparty_node_id: PublicKey, feerate_sat_per_kw: u32,
 		is_initiator: bool, tx_locktime: AbsoluteLockTime,
 		expected_shared_funding_output: (ScriptBuf, u64),
+		expected_shared_funding_input: Option<(OutPoint, u64, u64)>,
 	) -> Self {
 		let context = NegotiationContext::new(
 			holder_node_id,
 			counterparty_node_id,
 			is_initiator,
 			expected_shared_funding_output,
+			expected_shared_funding_input,
 			tx_locktime,
 			feerate_sat_per_kw,
 		);
@@ -1175,6 +1281,15 @@ impl StateMachine {
 	]);
 }
 
+/// An input to be added in Negotiation, specified by:
+/// - TxIn and full previous Transaction, for non-shared inputs, or
+/// - Prev Txid and input amount for shared inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum NegotiationInput {
+	Nonshared(TxIn, TransactionU16LenLimited),
+	Shared(OutPoint, u64, u64),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AddingRole {
 	Local,
@@ -1188,29 +1303,131 @@ impl_writeable_tlv_based_enum!(AddingRole,
 
 /// Represents an input -- local or remote (both have the same fields)
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocalOrRemoteInput {
-	serial_id: SerialId,
+pub struct SingleOwnedInput {
 	input: TxIn,
 	prev_output: TxOut,
 }
 
-impl_writeable_tlv_based!(LocalOrRemoteInput, {
-	(1, serial_id, required),
-	(3, input, required),
-	(5, prev_output, required),
+impl_writeable_tlv_based!(SingleOwnedInput, {
+	(1, input, required),
+	(3, prev_output, required),
 });
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum InteractiveTxInput {
-	Local(LocalOrRemoteInput),
-	Remote(LocalOrRemoteInput),
-	// TODO(splicing) SharedInput should be added
+pub(super) struct SharedOwnedInput {
+	input: TxIn,
+	prev_output: TxOut,
+	local_owned: u64,
 }
 
-impl_writeable_tlv_based_enum!(InteractiveTxInput,
-	{1, Local} => (),
-	{3, Remote} => (),
+impl_writeable_tlv_based!(SharedOwnedInput, {
+	(1, input, required),
+	(3, prev_output, required),
+	(5, local_owned, required),
+});
+
+impl SharedOwnedInput {
+	pub fn new(input: TxIn, prev_output: TxOut, local_owned: u64) -> Self {
+		debug_assert!(
+			local_owned <= prev_output.value.to_sat(),
+			"SharedOwnedInput: Inconsistent local_owned value {}, larger than prev out value {}",
+			local_owned,
+			prev_output.value.to_sat(),
+		);
+		Self { input, prev_output, local_owned }
+	}
+
+	fn remote_owned(&self) -> u64 {
+		self.prev_output.value.to_sat().saturating_sub(self.local_owned)
+	}
+}
+
+/// A transaction input, differentiated by ownership:
+/// - exclusive by the adder, or
+/// - shared
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum InputOwned {
+	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
+	/// Includes the input and the previous output
+	Single(SingleOwnedInput),
+	// Input with shared control and value split between the two ends (or fully at one side)
+	Shared(SharedOwnedInput),
+}
+
+impl_writeable_tlv_based_enum!(InputOwned,
+	{1, Single} => (),
+	{3, Shared} => (),
 );
+
+impl InputOwned {
+	pub fn tx_in(&self) -> &TxIn {
+		match &self {
+			InputOwned::Single(single) => &single.input,
+			InputOwned::Shared(shared) => &shared.input,
+		}
+	}
+
+	pub fn tx_in_mut(&mut self) -> &mut TxIn {
+		match self {
+			InputOwned::Single(ref mut single) => &mut single.input,
+			InputOwned::Shared(shared) => &mut shared.input,
+		}
+	}
+
+	pub fn into_tx_in(self) -> TxIn {
+		match self {
+			InputOwned::Single(single) => single.input,
+			InputOwned::Shared(shared) => shared.input,
+		}
+	}
+
+	pub fn prev_output(&self) -> &TxOut {
+		match self {
+			InputOwned::Single(single) => &single.prev_output,
+			InputOwned::Shared(shared) => &shared.prev_output,
+		}
+	}
+
+	fn is_shared(&self) -> bool {
+		match self {
+			InputOwned::Single(_) => false,
+			InputOwned::Shared(_) => true,
+		}
+	}
+
+	fn local_value(&self, local_role: AddingRole) -> u64 {
+		match self {
+			InputOwned::Single(single) => match local_role {
+				AddingRole::Local => single.prev_output.value.to_sat(),
+				AddingRole::Remote => 0,
+			},
+			InputOwned::Shared(shared) => shared.local_owned,
+		}
+	}
+
+	fn remote_value(&self, local_role: AddingRole) -> u64 {
+		match self {
+			InputOwned::Single(single) => match local_role {
+				AddingRole::Local => 0,
+				AddingRole::Remote => single.prev_output.value.to_sat(),
+			},
+			InputOwned::Shared(shared) => shared.remote_owned(),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InteractiveTxInput {
+	serial_id: SerialId,
+	added_by: AddingRole,
+	input: InputOwned,
+}
+
+impl_writeable_tlv_based!(InteractiveTxInput, {
+	(1, serial_id, required),
+	(3, added_by, required),
+	(5, input, required),
+});
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SharedOwnedOutput {
@@ -1224,14 +1441,14 @@ impl_writeable_tlv_based!(SharedOwnedOutput, {
 });
 
 impl SharedOwnedOutput {
-	pub fn new(tx_out: TxOut, local_owned: u64) -> SharedOwnedOutput {
+	pub fn new(tx_out: TxOut, local_owned: u64) -> Self {
 		debug_assert!(
 			local_owned <= tx_out.value.to_sat(),
 			"SharedOwnedOutput: Inconsistent local_owned value {}, larger than output value {}",
 			local_owned,
-			tx_out.value
+			tx_out.value.to_sat(),
 		);
-		SharedOwnedOutput { tx_out, local_owned }
+		Self { tx_out, local_owned }
 	}
 
 	fn remote_owned(&self) -> u64 {
@@ -1239,9 +1456,9 @@ impl SharedOwnedOutput {
 	}
 }
 
-/// Represents an output, with information about
-/// its control -- exclusive by the adder or shared --, and
-/// its ownership -- value fully owned by the adder or jointly
+/// A transaction output, differentiated by ownership:
+/// - exclusive by the adder, or
+/// - shared
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum OutputOwned {
 	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
@@ -1343,38 +1560,23 @@ impl InteractiveTxOutput {
 
 impl InteractiveTxInput {
 	pub fn serial_id(&self) -> SerialId {
-		match self {
-			InteractiveTxInput::Local(input) => input.serial_id,
-			InteractiveTxInput::Remote(input) => input.serial_id,
-		}
+		self.serial_id
 	}
 
 	pub fn txin(&self) -> &TxIn {
-		match self {
-			InteractiveTxInput::Local(input) => &input.input,
-			InteractiveTxInput::Remote(input) => &input.input,
-		}
+		self.input.tx_in()
 	}
 
 	pub fn txin_mut(&mut self) -> &mut TxIn {
-		match self {
-			InteractiveTxInput::Local(input) => &mut input.input,
-			InteractiveTxInput::Remote(input) => &mut input.input,
-		}
+		self.input.tx_in_mut()
 	}
 
 	pub fn into_txin(self) -> TxIn {
-		match self {
-			InteractiveTxInput::Local(input) => input.input,
-			InteractiveTxInput::Remote(input) => input.input,
-		}
+		self.input.into_tx_in()
 	}
 
 	pub fn prev_output(&self) -> &TxOut {
-		match self {
-			InteractiveTxInput::Local(input) => &input.prev_output,
-			InteractiveTxInput::Remote(input) => &input.prev_output,
-		}
+		self.input.prev_output()
 	}
 
 	pub fn value(&self) -> u64 {
@@ -1382,17 +1584,11 @@ impl InteractiveTxInput {
 	}
 
 	pub fn local_value(&self) -> u64 {
-		match self {
-			InteractiveTxInput::Local(input) => input.prev_output.value.to_sat(),
-			InteractiveTxInput::Remote(_input) => 0,
-		}
+		self.input.local_value(self.added_by)
 	}
 
 	pub fn remote_value(&self) -> u64 {
-		match self {
-			InteractiveTxInput::Local(_input) => 0,
-			InteractiveTxInput::Remote(input) => input.prev_output.value.to_sat(),
-		}
+		self.input.remote_value(self.added_by)
 	}
 }
 
@@ -1400,7 +1596,7 @@ pub(super) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
 	initiator_first_message: Option<InteractiveTxMessageSend>,
 	channel_id: ChannelId,
-	inputs_to_contribute: Vec<(SerialId, TxIn, TransactionU16LenLimited)>,
+	inputs_to_contribute: Vec<(SerialId, NegotiationInput)>,
 	outputs_to_contribute: Vec<(SerialId, OutputOwned)>,
 }
 
@@ -1526,13 +1722,22 @@ where
 	pub feerate_sat_per_kw: u32,
 	pub is_initiator: bool,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<(TxIn, TransactionU16LenLimited)>,
+	pub inputs_to_contribute: Vec<NegotiationInput>,
 	pub outputs_to_contribute: Vec<OutputOwned>,
 	pub expected_remote_shared_funding_output: Option<(ScriptBuf, u64)>,
+	pub expected_remote_shared_funding_input: Option<(OutPoint, u64, u64)>,
 }
 
 impl InteractiveTxConstructor {
 	/// Instantiates a new `InteractiveTxConstructor`.
+	///
+	/// `expected_remote_shared_funding_input`: In the case when the local node doesn't
+	/// add a shared input, but it expects a shared input to be added by the remote node,
+	/// it has to specify the TxIn, used to determine the shared input,
+	/// and its (local) contribution from the shared input:
+	///   0 when the whole value belongs to the remote node, or
+	///   positive if owned also by local.
+	/// Note: The local value cannot be larger than the actual shared input.
 	///
 	/// `expected_remote_shared_funding_output`: In the case when the local node doesn't
 	/// add a shared output, but it expects a shared output to be added by the remote node,
@@ -1559,7 +1764,33 @@ impl InteractiveTxConstructor {
 			inputs_to_contribute,
 			outputs_to_contribute,
 			expected_remote_shared_funding_output,
+			expected_remote_shared_funding_input,
 		} = args;
+
+		// Sanity check: There can be at most one shared input, local-added or remote-added
+		let mut expected_shared_funding_input: Option<(OutPoint, u64, u64)> = None;
+		for input in &inputs_to_contribute {
+			let new_input = match input {
+				NegotiationInput::Nonshared(_, _) => None,
+				NegotiationInput::Shared(prev_outpoint, value, local_owned) => {
+					Some((prev_outpoint.clone(), *value, *local_owned))
+				},
+			};
+			if new_input.is_some() {
+				if expected_shared_funding_input.is_some()
+					|| expected_remote_shared_funding_input.is_some()
+				{
+					// more than one local-added shared input or
+					// one local-added and one remote-expected shared input
+					return Err(AbortReason::DuplicateFundingInput);
+				}
+				expected_shared_funding_input = new_input;
+			}
+		}
+		if let Some(expected_remote_shared_funding_input) = expected_remote_shared_funding_input {
+			expected_shared_funding_input = Some(expected_remote_shared_funding_input);
+		}
+
 		// Sanity check: There can be at most one shared output, local-added or remote-added
 		let mut expected_shared_funding_output: Option<(ScriptBuf, u64)> = None;
 		for output in &outputs_to_contribute {
@@ -1595,19 +1826,19 @@ impl InteractiveTxConstructor {
 				is_initiator,
 				funding_tx_locktime,
 				expected_shared_funding_output,
+				expected_shared_funding_input,
 			);
-			let mut inputs_to_contribute: Vec<(SerialId, TxIn, TransactionU16LenLimited)> =
-				inputs_to_contribute
-					.into_iter()
-					.map(|(input, tx)| {
-						let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
-						(serial_id, input, tx)
-					})
-					.collect();
+			let mut inputs_to_contribute: Vec<(SerialId, NegotiationInput)> = inputs_to_contribute
+				.into_iter()
+				.map(|negotiating_input| {
+					let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
+					(serial_id, negotiating_input)
+				})
+				.collect();
 			// We'll sort by the randomly generated serial IDs, effectively shuffling the order of the inputs
 			// as the user passed them to us to avoid leaking any potential categorization of transactions
 			// before we pass any of the inputs to the counterparty.
-			inputs_to_contribute.sort_unstable_by_key(|(serial_id, _, _)| *serial_id);
+			inputs_to_contribute.sort_unstable_by_key(|(serial_id, _)| *serial_id);
 			let mut outputs_to_contribute: Vec<_> = outputs_to_contribute
 				.into_iter()
 				.map(|output| {
@@ -1641,14 +1872,24 @@ impl InteractiveTxConstructor {
 	fn maybe_send_message(&mut self) -> Result<InteractiveTxMessageSend, AbortReason> {
 		// We first attempt to send inputs we want to add, then outputs. Once we are done sending
 		// them both, then we always send tx_complete.
-		if let Some((serial_id, input, prevtx)) = self.inputs_to_contribute.pop() {
-			let msg = msgs::TxAddInput {
-				channel_id: self.channel_id,
-				serial_id,
-				prevtx,
-				prevtx_out: input.previous_output.vout,
-				sequence: input.sequence.to_consensus_u32(),
-				shared_input_txid: None,
+		if let Some((serial_id, input)) = self.inputs_to_contribute.pop() {
+			let msg = match input {
+				NegotiationInput::Nonshared(txin, prevtx) => msgs::TxAddInput {
+					channel_id: self.channel_id,
+					serial_id,
+					prevtx: Some(prevtx),
+					prevtx_out: txin.previous_output.vout,
+					sequence: txin.sequence.to_consensus_u32(),
+					shared_input_txid: None,
+				},
+				NegotiationInput::Shared(prev_outpoint, _value, _local_owned) => msgs::TxAddInput {
+					channel_id: self.channel_id,
+					serial_id,
+					prevtx: None,
+					prevtx_out: 0,
+					sequence: 0,
+					shared_input_txid: Some(prev_outpoint.txid),
+				},
 			};
 			do_state_transition!(self, sent_tx_add_input, &msg)?;
 			Ok(InteractiveTxMessageSend::TxAddInput(msg))
@@ -1742,26 +1983,35 @@ impl InteractiveTxConstructor {
 ///   `Err(AbortReason::InsufficientFees)`
 #[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 pub(super) fn calculate_change_output_value(
-	is_initiator: bool, our_contribution: u64,
-	funding_inputs: &Vec<(TxIn, TransactionU16LenLimited)>, funding_outputs: &Vec<OutputOwned>,
-	funding_feerate_sat_per_1000_weight: u32, change_output_dust_limit: u64,
+	is_initiator: bool, our_contribution: u64, funding_inputs: &Vec<NegotiationInput>,
+	funding_outputs: &Vec<OutputOwned>, funding_feerate_sat_per_1000_weight: u32,
+	change_output_dust_limit: u64,
 ) -> Result<Option<u64>, AbortReason> {
 	// Process inputs and their prev txs:
 	// calculate value sum and weight sum of inputs, also perform checks
 	let mut total_input_satoshis = 0u64;
 	let mut our_funding_inputs_weight = 0u64;
-	for (txin, tx) in funding_inputs.iter() {
-		let txid = tx.as_transaction().compute_txid();
-		if txin.previous_output.txid != txid {
-			return Err(AbortReason::PrevTxOutInvalid);
-		}
-		if let Some(output) = tx.as_transaction().output.get(txin.previous_output.vout as usize) {
-			total_input_satoshis = total_input_satoshis.saturating_add(output.value.to_sat());
-			our_funding_inputs_weight =
-				our_funding_inputs_weight.saturating_add(estimate_input_weight(output).to_wu());
-		} else {
-			return Err(AbortReason::PrevTxOutInvalid);
-		}
+	for input in funding_inputs.iter() {
+		let (value, weight) = match input {
+			NegotiationInput::Nonshared(txin, tx) => {
+				let txid = tx.as_transaction().compute_txid();
+				if txin.previous_output.txid != txid {
+					return Err(AbortReason::PrevTxOutInvalid);
+				}
+				if let Some(output) =
+					tx.as_transaction().output.get(txin.previous_output.vout as usize)
+				{
+					(output.value.to_sat(), estimate_input_weight(output).to_wu())
+				} else {
+					return Err(AbortReason::PrevTxOutInvalid);
+				}
+			},
+			NegotiationInput::Shared(_prev_outpoint, value, _local_owned) => {
+				(*value, P2WSH_INPUT_WEIGHT_LOWER_BOUND)
+			},
+		};
+		total_input_satoshis = total_input_satoshis.saturating_add(value);
+		our_funding_inputs_weight = our_funding_inputs_weight.saturating_add(weight);
 	}
 
 	let our_funding_outputs_weight = funding_outputs.iter().fold(0u64, |weight, out| {
@@ -1799,8 +2049,8 @@ mod tests {
 	use crate::ln::interactivetxs::{
 		calculate_change_output_value, generate_holder_serial_id, AbortReason,
 		HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxConstructorArgs,
-		InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
-		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
+		InteractiveTxMessageSend, NegotiationInput, MAX_INPUTS_OUTPUTS_COUNT,
+		MAX_RECEIVED_TX_ADD_INPUT_COUNT, MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
 	};
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
@@ -1869,15 +2119,17 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<(TxIn, TransactionU16LenLimited)>,
+		inputs_a: Vec<NegotiationInput>,
 		outputs_a: Vec<OutputOwned>,
-		inputs_b: Vec<(TxIn, TransactionU16LenLimited)>,
+		inputs_b: Vec<NegotiationInput>,
 		outputs_b: Vec<OutputOwned>,
 		expect_error: Option<(AbortReason, ErrorCulprit)>,
 		/// A node adds no shared output, but expects the peer to add one, with the specific script pubkey, and local contribution
 		a_expected_remote_shared_output: Option<(ScriptBuf, u64)>,
 		/// B node adds no shared output, but expects the peer to add one, with the specific script pubkey, and local contribution
 		b_expected_remote_shared_output: Option<(ScriptBuf, u64)>,
+		a_expected_remote_shared_input: Option<(OutPoint, u64, u64)>,
+		b_expected_remote_shared_input: Option<(OutPoint, u64, u64)>,
 	}
 
 	fn do_test_interactive_tx_constructor(session: TestSession) {
@@ -1971,6 +2223,7 @@ mod tests {
 			inputs_to_contribute: session.inputs_a,
 			outputs_to_contribute: session.outputs_a.to_vec(),
 			expected_remote_shared_funding_output: session.a_expected_remote_shared_output,
+			expected_remote_shared_funding_input: session.a_expected_remote_shared_input,
 		}) {
 			Ok(r) => r,
 			Err(abort_reason) => {
@@ -1994,6 +2247,7 @@ mod tests {
 			inputs_to_contribute: session.inputs_b,
 			outputs_to_contribute: session.outputs_b.to_vec(),
 			expected_remote_shared_funding_output: session.b_expected_remote_shared_output,
+			expected_remote_shared_funding_input: session.b_expected_remote_shared_input,
 		}) {
 			Ok(r) => r,
 			Err(abort_reason) => {
@@ -2144,22 +2398,31 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, TransactionU16LenLimited)> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<NegotiationInput> {
 		let tx = generate_tx(outputs);
 		let txid = tx.compute_txid();
 		tx.output
 			.iter()
 			.enumerate()
 			.map(|(idx, _)| {
-				let input = TxIn {
+				let txin = TxIn {
 					previous_output: OutPoint { txid, vout: idx as u32 },
 					script_sig: Default::default(),
 					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Default::default(),
 				};
-				(input, TransactionU16LenLimited::new(tx.clone()).unwrap())
+				NegotiationInput::Nonshared(
+					txin,
+					TransactionU16LenLimited::new(tx.clone()).unwrap(),
+				)
 			})
 			.collect()
+	}
+
+	fn generate_shared_input(prev_funding_tx: &Transaction, vout: u32) -> NegotiationInput {
+		let txid = prev_funding_tx.compute_txid();
+		let value = prev_funding_tx.output.get(vout as usize).unwrap().value.to_sat();
+		NegotiationInput::Shared(OutPoint { txid, vout }, value, value)
 	}
 
 	fn generate_p2wsh_script_pubkey() -> ScriptBuf {
@@ -2207,12 +2470,12 @@ mod tests {
 		vec![generate_shared_funding_output_one(value, local_value)]
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, TransactionU16LenLimited)> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<NegotiationInput> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<(TxIn, TransactionU16LenLimited)> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<NegotiationInput> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
@@ -2225,7 +2488,7 @@ mod tests {
 			);
 			let txid = tx.compute_txid();
 
-			let mut temp: Vec<(TxIn, TransactionU16LenLimited)> = tx
+			let mut temp: Vec<NegotiationInput> = tx
 				.output
 				.iter()
 				.enumerate()
@@ -2236,7 +2499,10 @@ mod tests {
 						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 						witness: Default::default(),
 					};
-					(input, TransactionU16LenLimited::new(tx.clone()).unwrap())
+					NegotiationInput::Nonshared(
+						input,
+						TransactionU16LenLimited::new(tx.clone()).unwrap(),
+					)
 				})
 				.collect();
 
@@ -2264,6 +2530,18 @@ mod tests {
 
 	#[test]
 	fn test_interactive_tx_constructor() {
+		// A transaction that can be used as a previous funding transaction
+		let prev_funding_tx_1 = Transaction {
+			input: Vec::new(),
+			output: vec![TxOut {
+				value: Amount::from_sat(60_000),
+				script_pubkey: ScriptBuf::new(),
+			}],
+			lock_time: AbsoluteLockTime::ZERO,
+			version: Version::TWO,
+		};
+		let prev_funding_tx_1_txid = prev_funding_tx_1.compute_txid();
+
 		do_test_interactive_tx_constructor(TestSession {
 			description: "No contributions",
 			inputs_a: vec![],
@@ -2273,6 +2551,8 @@ mod tests {
 			expect_error: Some((AbortReason::MissingFundingOutput, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, no initiator inputs",
@@ -2283,6 +2563,8 @@ mod tests {
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, no initiator outputs",
@@ -2293,6 +2575,8 @@ mod tests {
 			expect_error: Some((AbortReason::MissingFundingOutput, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, no fees",
@@ -2303,6 +2587,8 @@ mod tests {
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		let p2wpkh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WPKH_INPUT_WEIGHT_LOWER_BOUND);
 		let outputs_fee = fee_for_weight(
@@ -2325,6 +2611,8 @@ mod tests {
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution with P2WPKH input, sufficient fees",
@@ -2335,6 +2623,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		let p2wsh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WSH_INPUT_WEIGHT_LOWER_BOUND);
 		let amount_adjusted_with_p2wsh_fee =
@@ -2350,6 +2640,8 @@ mod tests {
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution with P2WSH input, sufficient fees",
@@ -2360,6 +2652,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		let p2tr_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2TR_INPUT_WEIGHT_LOWER_BOUND);
 		let amount_adjusted_with_p2tr_fee =
@@ -2375,6 +2669,8 @@ mod tests {
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution with P2TR input, sufficient fees",
@@ -2385,6 +2681,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator contributes sufficient fees, but non-initiator does not",
@@ -2395,6 +2693,8 @@ mod tests {
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeB)),
 			a_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Multi-input-output contributions from both sides",
@@ -2411,6 +2711,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 800_000)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		do_test_interactive_tx_constructor(TestSession {
@@ -2422,6 +2724,8 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		let tx =
@@ -2432,13 +2736,15 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
-			inputs_a: vec![(invalid_sequence_input, tx.clone())],
+			inputs_a: vec![NegotiationInput::Nonshared(invalid_sequence_input, tx.clone())],
 			outputs_a: generate_output(&TestOutput::P2WPKH(1_000_000)),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		let duplicate_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
@@ -2447,13 +2753,18 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
+			inputs_a: vec![
+				NegotiationInput::Nonshared(duplicate_input.clone(), tx.clone()),
+				NegotiationInput::Nonshared(duplicate_input, tx.clone()),
+			],
 			outputs_a: generate_output(&TestOutput::P2WPKH(1_000_000)),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		// Non-initiator uses same prevout as initiator.
 		let duplicate_input = TxIn {
@@ -2463,13 +2774,15 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![NegotiationInput::Nonshared(duplicate_input.clone(), tx.clone())],
 			outputs_a: generate_shared_funding_output(1_000_000, 905_000),
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![NegotiationInput::Nonshared(duplicate_input.clone(), tx.clone())],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 95_000)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		let duplicate_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
@@ -2478,13 +2791,15 @@ mod tests {
 		};
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_a: vec![NegotiationInput::Nonshared(duplicate_input.clone(), tx.clone())],
 			outputs_a: generate_output(&TestOutput::P2WPKH(1_000_000)),
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			inputs_b: vec![NegotiationInput::Nonshared(duplicate_input.clone(), tx.clone())],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator sends too many TxAddInputs",
@@ -2495,6 +2810,8 @@ mod tests {
 			expect_error: Some((AbortReason::ReceivedTooManyTxAddInputs, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor_with_entropy_source(
 			TestSession {
@@ -2507,6 +2824,8 @@ mod tests {
 				expect_error: Some((AbortReason::DuplicateSerialId, ErrorCulprit::NodeA)),
 				a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 				b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+				a_expected_remote_shared_input: None,
+				b_expected_remote_shared_input: None,
 			},
 			&DuplicateEntropySource,
 		);
@@ -2519,6 +2838,8 @@ mod tests {
 			expect_error: Some((AbortReason::ReceivedTooManyTxAddOutputs, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator sends an output below dust value",
@@ -2531,6 +2852,8 @@ mod tests {
 			expect_error: Some((AbortReason::BelowDustLimit, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator sends an output above maximum sats allowed",
@@ -2541,6 +2864,8 @@ mod tests {
 			expect_error: Some((AbortReason::ExceededMaximumSatsAllowed, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator sends an output without a witness program",
@@ -2551,6 +2876,8 @@ mod tests {
 			expect_error: Some((AbortReason::InvalidOutputScript, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor_with_entropy_source(
 			TestSession {
@@ -2563,6 +2890,8 @@ mod tests {
 				expect_error: Some((AbortReason::DuplicateSerialId, ErrorCulprit::NodeA)),
 				a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 				b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+				a_expected_remote_shared_input: None,
+				b_expected_remote_shared_input: None,
 			},
 			&DuplicateEntropySource,
 		);
@@ -2576,6 +2905,8 @@ mod tests {
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		do_test_interactive_tx_constructor(TestSession {
@@ -2590,6 +2921,8 @@ mod tests {
 			)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Peer contributed more than allowed number of outputs",
@@ -2603,6 +2936,8 @@ mod tests {
 			)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// Adding multiple outputs to the funding output pubkey is an error
@@ -2615,6 +2950,8 @@ mod tests {
 			expect_error: Some((AbortReason::DuplicateFundingOutput, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// We add the funding output, but we contribute a little
@@ -2627,6 +2964,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 990_000)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// They add the funding output, and we contribute a little
@@ -2639,6 +2978,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 10_000)),
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// We add the funding output, and we contribute most
@@ -2651,6 +2992,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 10_000)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// They add the funding output, but we contribute most
@@ -2663,6 +3006,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 990_000)),
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// During a splice-out, with peer providing more output value than input value
@@ -2677,6 +3022,8 @@ mod tests {
 			expect_error: None,
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// During a splice-out, with peer providing more output value than input value
@@ -2691,6 +3038,8 @@ mod tests {
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// The actual funding output value is lower than the intended local contribution by the same node
@@ -2703,6 +3052,8 @@ mod tests {
 			expect_error: Some((AbortReason::InvalidLowFundingOutputValue, ErrorCulprit::NodeA)),
 			a_expected_remote_shared_output: None,
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 20_000)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 
 		// The actual funding output value is lower than the intended local contribution of the other node
@@ -2716,6 +3067,62 @@ mod tests {
 			expect_error: Some((AbortReason::InvalidLowFundingOutputValue, ErrorCulprit::NodeB)),
 			a_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 120_000)), // this is higher than the actual output value
 			b_expected_remote_shared_output: None,
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
+		});
+
+		// Provide and expect a shared input
+		let mut inputs_a = vec![generate_shared_input(&prev_funding_tx_1, 0)];
+		inputs_a.append(&mut generate_inputs(&[TestOutput::P2WPKH(50_000)]));
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Provide and expect a shared input",
+			inputs_a: inputs_a.clone(),
+			outputs_a: generate_funding_output(108_000),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+			a_expected_remote_shared_output: None,
+			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: Some((
+				OutPoint { txid: prev_funding_tx_1_txid.clone(), vout: 0 },
+				60_000,
+				10,
+			)),
+		});
+
+		// Expect a shared input, but it's missing
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Expect a shared input, but it's missing",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(110_000)]),
+			outputs_a: generate_funding_output(108_000),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::MissingFundingInput, ErrorCulprit::NodeA)),
+			a_expected_remote_shared_output: None,
+			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: Some((
+				OutPoint { txid: prev_funding_tx_1_txid.clone(), vout: 0 },
+				60_000,
+				0,
+			)),
+		});
+
+		// Provide a shared input, but it's not expected
+		let mut inputs_a = vec![generate_shared_input(&prev_funding_tx_1, 0)];
+		inputs_a.append(&mut generate_inputs(&[TestOutput::P2WPKH(50_000)]));
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Provide a shared input, but it's not expected",
+			inputs_a: inputs_a.clone(),
+			outputs_a: generate_funding_output(108_000),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::MissingFundingInput, ErrorCulprit::NodeA)),
+			a_expected_remote_shared_output: None,
+			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 0)),
+			a_expected_remote_shared_input: None,
+			b_expected_remote_shared_input: None,
 		});
 	}
 
@@ -2750,9 +3157,9 @@ mod tests {
 					sequence: Sequence::ZERO,
 					witness: Witness::new(),
 				};
-				(txin, TransactionU16LenLimited::new(tx).unwrap())
+				NegotiationInput::Nonshared(txin, TransactionU16LenLimited::new(tx).unwrap())
 			})
-			.collect::<Vec<(TxIn, TransactionU16LenLimited)>>();
+			.collect::<Vec<NegotiationInput>>();
 		let our_contributed = 110_000;
 		let txout = TxOut { value: Amount::from_sat(128_000), script_pubkey: ScriptBuf::new() };
 		let value = txout.value.to_sat();
