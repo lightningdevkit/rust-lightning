@@ -20,7 +20,6 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::events::bump_transaction::WalletSource;
 use crate::events::{
 	ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PathFailure, PaymentFailureReason,
 	PaymentPurpose,
@@ -1534,6 +1533,8 @@ pub fn claim_htlc_outputs() {
 // This is a regression test for https://github.com/lightningdevkit/rust-lightning/issues/3537.
 #[xtest(feature = "_externalize_tests")]
 pub fn test_multiple_package_conflicts() {
+	use crate::events::bump_transaction::sync::WalletSourceSync;
+
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut user_cfg = test_default_channel_config();

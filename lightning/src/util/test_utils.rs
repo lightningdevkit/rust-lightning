@@ -21,7 +21,8 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
-use crate::events::bump_transaction::{Utxo, WalletSource};
+use crate::events::bump_transaction::sync::WalletSourceSync;
+use crate::events::bump_transaction::Utxo;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
@@ -83,7 +84,6 @@ use crate::io;
 use crate::prelude::*;
 use crate::sign::{EntropySource, NodeSigner, RandomBytes, Recipient, SignerProvider};
 use crate::sync::{Arc, Mutex};
-use core::cell::RefCell;
 use core::mem;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -1883,36 +1883,36 @@ impl Drop for TestScorer {
 
 pub struct TestWalletSource {
 	secret_key: SecretKey,
-	utxos: RefCell<Vec<Utxo>>,
+	utxos: Mutex<Vec<Utxo>>,
 	secp: Secp256k1<bitcoin::secp256k1::All>,
 }
 
 impl TestWalletSource {
 	pub fn new(secret_key: SecretKey) -> Self {
-		Self { secret_key, utxos: RefCell::new(Vec::new()), secp: Secp256k1::new() }
+		Self { secret_key, utxos: Mutex::new(Vec::new()), secp: Secp256k1::new() }
 	}
 
 	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
 		let utxo = Utxo::new_p2pkh(outpoint, value, &public_key.pubkey_hash());
-		self.utxos.borrow_mut().push(utxo.clone());
+		self.utxos.lock().unwrap().push(utxo.clone());
 		utxo.output
 	}
 
 	pub fn add_custom_utxo(&self, utxo: Utxo) -> TxOut {
 		let output = utxo.output.clone();
-		self.utxos.borrow_mut().push(utxo);
+		self.utxos.lock().unwrap().push(utxo);
 		output
 	}
 
 	pub fn remove_utxo(&self, outpoint: bitcoin::OutPoint) {
-		self.utxos.borrow_mut().retain(|utxo| utxo.outpoint != outpoint);
+		self.utxos.lock().unwrap().retain(|utxo| utxo.outpoint != outpoint);
 	}
 }
 
-impl WalletSource for TestWalletSource {
+impl WalletSourceSync for TestWalletSource {
 	fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
-		Ok(self.utxos.borrow().clone())
+		Ok(self.utxos.lock().unwrap().clone())
 	}
 
 	fn get_change_script(&self) -> Result<ScriptBuf, ()> {
@@ -1922,7 +1922,7 @@ impl WalletSource for TestWalletSource {
 
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
 		let mut tx = psbt.extract_tx_unchecked_fee_rate();
-		let utxos = self.utxos.borrow();
+		let utxos = self.utxos.lock().unwrap();
 		for i in 0..tx.input.len() {
 			if let Some(utxo) =
 				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
