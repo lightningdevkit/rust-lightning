@@ -33,6 +33,7 @@ pub mod full_stack;
 pub mod indexedmap;
 pub mod invoice_deser;
 pub mod invoice_request_deser;
+pub mod lsps_message;
 pub mod offer_deser;
 pub mod onion_hop_data;
 pub mod onion_message;
