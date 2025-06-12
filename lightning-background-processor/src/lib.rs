@@ -1343,7 +1343,7 @@ mod tests {
 			Arc<test_utils::TestChainSource>,
 			Arc<test_utils::TestLogger>,
 		> {
-			GossipSync::P2P(self.p2p_gossip_sync.clone())
+			GossipSync::P2P(Arc::clone(&self.p2p_gossip_sync))
 		}
 
 		fn rapid_gossip_sync(
@@ -1355,7 +1355,7 @@ mod tests {
 			Arc<test_utils::TestChainSource>,
 			Arc<test_utils::TestLogger>,
 		> {
-			GossipSync::Rapid(self.rapid_gossip_sync.clone())
+			GossipSync::Rapid(Arc::clone(&self.rapid_gossip_sync))
 		}
 
 		fn no_gossip_sync(
@@ -1644,20 +1644,20 @@ mod tests {
 			let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let genesis_block = genesis_block(network);
-			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
+			let network_graph = Arc::new(NetworkGraph::new(network, Arc::clone(&logger)));
 			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let seed = [i as u8; 32];
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let router = Arc::new(DefaultRouter::new(
-				network_graph.clone(),
-				logger.clone(),
+				Arc::clone(&network_graph),
+				Arc::clone(&logger),
 				Arc::clone(&keys_manager),
-				scorer.clone(),
+				Arc::clone(&scorer),
 				Default::default(),
 			));
 			let msg_router = Arc::new(DefaultMessageRouter::new(
-				network_graph.clone(),
+				Arc::clone(&network_graph),
 				Arc::clone(&keys_manager),
 			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
@@ -1666,38 +1666,38 @@ mod tests {
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
-				Some(chain_source.clone()),
-				tx_broadcaster.clone(),
-				logger.clone(),
-				fee_estimator.clone(),
-				kv_store.clone(),
-				keys_manager.clone(),
+				Some(Arc::clone(&chain_source)),
+				Arc::clone(&tx_broadcaster),
+				Arc::clone(&logger),
+				Arc::clone(&fee_estimator),
+				Arc::clone(&kv_store),
+				Arc::clone(&keys_manager),
 				keys_manager.get_peer_storage_key(),
 			));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(
-				fee_estimator.clone(),
-				chain_monitor.clone(),
-				tx_broadcaster.clone(),
-				router.clone(),
-				msg_router.clone(),
-				logger.clone(),
-				keys_manager.clone(),
-				keys_manager.clone(),
-				keys_manager.clone(),
+				Arc::clone(&fee_estimator),
+				Arc::clone(&chain_monitor),
+				Arc::clone(&tx_broadcaster),
+				Arc::clone(&router),
+				Arc::clone(&msg_router),
+				Arc::clone(&logger),
+				Arc::clone(&keys_manager),
+				Arc::clone(&keys_manager),
+				Arc::clone(&keys_manager),
 				UserConfig::default(),
 				params,
 				genesis_block.header.time,
 			));
 			let messenger = Arc::new(OnionMessenger::new(
-				keys_manager.clone(),
-				keys_manager.clone(),
-				logger.clone(),
-				manager.clone(),
-				msg_router.clone(),
+				Arc::clone(&keys_manager),
+				Arc::clone(&keys_manager),
+				Arc::clone(&logger),
+				Arc::clone(&manager),
+				Arc::clone(&msg_router),
 				IgnoringMessageHandler {},
-				manager.clone(),
+				Arc::clone(&manager),
 				IgnoringMessageHandler {},
 				IgnoringMessageHandler {},
 			));
@@ -1713,18 +1713,18 @@ mod tests {
 				Arc::clone(&logger),
 			));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(
-				network_graph.clone(),
-				Some(chain_source.clone()),
-				logger.clone(),
+				Arc::clone(&network_graph),
+				Some(Arc::clone(&chain_source)),
+				Arc::clone(&logger),
 			));
 			let rapid_gossip_sync =
-				Arc::new(RapidGossipSync::new(network_graph.clone(), logger.clone()));
+				Arc::new(RapidGossipSync::new(Arc::clone(&network_graph), Arc::clone(&logger)));
 			let msg_handler = MessageHandler {
 				chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new(
 					ChainHash::using_genesis_block(Network::Testnet),
 				)),
 				route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()),
-				onion_message_handler: messenger.clone(),
+				onion_message_handler: Arc::clone(&messenger),
 				custom_message_handler: IgnoringMessageHandler {},
 				send_only_message_handler: IgnoringMessageHandler {},
 			};
@@ -1732,8 +1732,8 @@ mod tests {
 				msg_handler,
 				0,
 				&seed,
-				logger.clone(),
-				keys_manager.clone(),
+				Arc::clone(&logger),
+				Arc::clone(&keys_manager),
 			));
 			let liquidity_manager = Arc::new(LiquidityManager::new(
 				Arc::clone(&keys_manager),
@@ -1941,15 +1941,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].p2p_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		macro_rules! check_persisted_data {
@@ -2036,15 +2036,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -2080,15 +2080,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
@@ -2113,15 +2113,15 @@ mod tests {
 		let bp_future = super::process_events_async(
 			persister,
 			|_: _| async { Ok(()) },
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			Some(nodes[0].sweeper.sweeper_async()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
 				Box::pin(async move {
 					tokio::time::sleep(dur).await;
@@ -2151,15 +2151,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].p2p_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		match bg_processor.stop() {
@@ -2182,15 +2182,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		match bg_processor.stop() {
@@ -2230,15 +2230,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		// Open a channel and check that the FundingGenerationReady event was handled.
@@ -2294,15 +2294,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		// Force close the channel and check that the SpendableOutputs event was handled.
@@ -2346,7 +2346,7 @@ mod tests {
 
 		advance_chain(&mut nodes[0], 3);
 
-		let tx_broadcaster = nodes[0].tx_broadcaster.clone();
+		let tx_broadcaster = Arc::clone(&nodes[0].tx_broadcaster);
 		let wait_for_sweep_tx = || -> Transaction {
 			loop {
 				let sweep_tx = tx_broadcaster.txn_broadcasted.lock().unwrap().pop();
@@ -2459,15 +2459,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
@@ -2490,15 +2490,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		loop {
@@ -2587,15 +2587,15 @@ mod tests {
 		let background_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		do_test_not_pruning_network_graph_until_graph_sync_completion!(
@@ -2620,15 +2620,15 @@ mod tests {
 		let bp_future = super::process_events_async(
 			persister,
 			|_: _| async { Ok(()) },
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].rapid_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			Some(nodes[0].sweeper.sweeper_async()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
 				Box::pin(async move {
@@ -2784,15 +2784,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
-			Some(nodes[0].sweeper.clone()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 		);
 
 		do_test_payment_path_scoring!(
@@ -2835,15 +2835,15 @@ mod tests {
 		let bp_future = super::process_events_async(
 			persister,
 			event_handler,
-			nodes[0].chain_monitor.clone(),
-			nodes[0].node.clone(),
-			Some(nodes[0].messenger.clone()),
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
 			nodes[0].no_gossip_sync(),
-			nodes[0].peer_manager.clone(),
+			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
 			Some(nodes[0].sweeper.sweeper_async()),
-			nodes[0].logger.clone(),
-			Some(nodes[0].scorer.clone()),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
 			move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
 				Box::pin(async move {
