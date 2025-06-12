@@ -239,7 +239,9 @@ pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_t
 pub(super) fn second_stage_tx_fees_sat(
 	channel_type: &ChannelTypeFeatures, feerate_sat_per_1000_weight: u32,
 ) -> (u64, u64) {
-	if channel_type.supports_anchors_zero_fee_htlc_tx() {
+	if channel_type.supports_anchors_zero_fee_htlc_tx()
+		|| channel_type.supports_anchor_zero_fee_commitments()
+	{
 		(0, 0)
 	} else {
 		(
