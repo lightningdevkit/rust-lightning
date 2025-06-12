@@ -1946,12 +1946,15 @@ impl FundingScope {
 
 	/// Construct FundingScope for a splicing channel
 	#[cfg(splicing)]
-	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution_sats: i64, post_channel_value: u64, counterparty_funding_pubkey: PublicKey) -> Self where SP::Target: SignerProvider {
-		let post_value_to_self_msat = if our_funding_contribution_sats < 0 {
-			prev_funding.value_to_self_msat.saturating_sub((-our_funding_contribution_sats as u64) * 1000)
-		} else {
-			prev_funding.value_to_self_msat.saturating_add((our_funding_contribution_sats as u64) * 1000)
-		};
+	pub fn for_splice<SP: Deref>(prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution_sats: i64, post_channel_value: u64, counterparty_funding_pubkey: PublicKey) -> Result<Self, ChannelError> where SP::Target: SignerProvider {
+		let post_value_to_self_msat_signed = (prev_funding.value_to_self_msat as i64).saturating_add(our_funding_contribution_sats * 1000);
+		if post_value_to_self_msat_signed < 0 {
+			// Splice out and more than our balance, error
+			return Err(ChannelError::Warn(format!("Cannot splice out more than the current balance, {} sats, {} msats",
+				post_value_to_self_msat_signed, prev_funding.value_to_self_msat)));
+		}
+		debug_assert!(post_value_to_self_msat_signed >= 0);
+		let post_value_to_self_msat = post_value_to_self_msat_signed as u64;
 
 		let prev_funding_txid = prev_funding.channel_transaction_parameters.funding_outpoint
 			.map(|outpoint| outpoint.txid);
@@ -1984,7 +1987,7 @@ impl FundingScope {
 			post_channel_value, context.counterparty_dust_limit_satoshis));
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS);
-		Self {
+		Ok(Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
@@ -1998,7 +2001,7 @@ impl FundingScope {
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, fuzzing))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
-		}
+		})
 	}
 }
 
@@ -9203,7 +9206,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			false, // is_outbound
 		)?;
 
-		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_contribution, post_channel_value, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_contribution, post_channel_value, msg.funding_pubkey)?;
 
 		let funding_negotiation_context = FundingNegotiationContext {
 			our_funding_satoshis,
@@ -9298,7 +9301,7 @@ impl<SP: Deref> FundedChannel<SP> where
 			true, // is_outbound
 		)?;
 
-		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_contribution, post_channel_value, msg.funding_pubkey);
+		let funding_scope = FundingScope::for_splice(&self.funding, &self.context, our_funding_contribution, post_channel_value, msg.funding_pubkey)?;
 
 		let pre_funding_transaction = &self.funding.funding_transaction;
 		let pre_funding_txo = &self.funding.get_funding_txo();
