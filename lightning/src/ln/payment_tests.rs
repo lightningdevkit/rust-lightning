@@ -1747,7 +1747,7 @@ fn claimed_send_payment_idempotent() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let (route, hash_b, preimage_b, second_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
@@ -1830,7 +1830,7 @@ fn abandoned_send_payment_idempotent() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let (route, hash_b, second_payment_preimage, second_payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
@@ -2434,14 +2434,14 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		crate::events::Event::PaymentClaimable {
-			ref payment_hash,
+			payment_hash: pmt_hash,
 			ref purpose,
 			amount_msat,
 			counterparty_skimmed_fee_msat,
 			receiver_node_id,
 			..
 		} => {
-			assert_eq!(payment_hash, payment_hash);
+			assert_eq!(pmt_hash, payment_hash);
 			assert_eq!(amt_msat - skimmed_fee_msat * num_mpp_parts as u64, amount_msat);
 			assert_eq!(skimmed_fee_msat * num_mpp_parts as u64, counterparty_skimmed_fee_msat);
 			assert_eq!(node_c_id, receiver_node_id.unwrap());
@@ -3065,7 +3065,7 @@ fn fails_paying_after_rejected_by_payee() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Marshall data to send the payment
 	let amt_msat = 20_000;
@@ -4159,7 +4159,6 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	send_msgs.sort_by(|a, _| {
 		let a_node_id =
 			if let MessageSendEvent::UpdateHTLCs { node_id, .. } = a { node_id } else { panic!() };
-		let node_b_id = node_b_id;
 		if *a_node_id == node_b_id {
 			Ordering::Less
 		} else {

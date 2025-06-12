@@ -6346,7 +6346,7 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::new();
 		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap(), 42)
+		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[2; 33]).unwrap(), 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap()
 			.with_route_hints(vec![RouteHint(vec![RouteHintHop {
 				src_node_id: nodes[2],

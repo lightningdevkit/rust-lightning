@@ -361,7 +361,7 @@ fn add_channel_to_graph(
 
 fn pass_along_path(path: &Vec<MessengerNode>) {
 	let mut prev_node = &path[0];
-	for node in path.into_iter().skip(1) {
+	for node in path.iter().skip(1) {
 		let events = prev_node.messenger.release_pending_msgs();
 		let onion_msg = {
 			let msgs = events.get(&node.node_id).unwrap();

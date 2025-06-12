@@ -207,7 +207,7 @@ fn mpp_to_one_hop_blinded_path() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 0, 2);
 	let chan_upd_1_3 = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents;
-	create_announced_chan_between_nodes(&nodes, 2, 3).0.contents;
+	create_announced_chan_between_nodes(&nodes, 2, 3);
 
 	// Ensure all nodes start at the same height.
 	connect_blocks(&nodes[0], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
@@ -1976,7 +1976,7 @@ fn test_trampoline_inbound_payment_decoding() {
 		&carol_update_add, &carol_node_signer, &logger, &secp_ctx
 	).unwrap_or_else(|_| panic!());
 
-	let _carol_trampoline_update_add = if let onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, .. } = carol_peeled_onion {
+	if let onion_utils::Hop::TrampolineForward { next_trampoline_hop_data, .. } = carol_peeled_onion {
 		assert_eq!(next_trampoline_hop_data.next_trampoline, dave_node_id);
 	} else {
 		panic!();

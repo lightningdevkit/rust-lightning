@@ -955,7 +955,7 @@ pub struct TestChannelMessageHandler {
 
 impl TestChannelMessageHandler {
 	thread_local! {
-		pub static MESSAGE_FETCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+		pub static MESSAGE_FETCH_COUNTER: AtomicUsize = const { AtomicUsize::new(0) };
 	}
 }
 

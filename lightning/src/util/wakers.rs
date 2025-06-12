@@ -458,7 +458,7 @@ mod tests {
 		});
 
 		// Check that we can block indefinitely until updates are available.
-		let _ = persistence_notifier.get_future().wait();
+		persistence_notifier.get_future().wait();
 
 		// Check that the Notifier will return after the given duration if updates are
 		// available.

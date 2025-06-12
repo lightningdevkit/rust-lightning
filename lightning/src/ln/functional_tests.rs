@@ -516,34 +516,35 @@ pub fn fake_network_test() {
 	send_payment(&nodes[1], &[&nodes[3]], 8000000);
 
 	// Do some rebalance loop payments, simultaneously
-	let mut hops = Vec::with_capacity(3);
-	hops.push(RouteHop {
-		pubkey: node_c_id,
-		node_features: NodeFeatures::empty(),
-		short_channel_id: chan_2.0.contents.short_channel_id,
-		channel_features: ChannelFeatures::empty(),
-		fee_msat: 0,
-		cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32,
-		maybe_announced_channel: true,
-	});
-	hops.push(RouteHop {
-		pubkey: node_d_id,
-		node_features: NodeFeatures::empty(),
-		short_channel_id: chan_3.0.contents.short_channel_id,
-		channel_features: ChannelFeatures::empty(),
-		fee_msat: 0,
-		cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32,
-		maybe_announced_channel: true,
-	});
-	hops.push(RouteHop {
-		pubkey: node_b_id,
-		node_features: nodes[1].node.node_features(),
-		short_channel_id: chan_4.0.contents.short_channel_id,
-		channel_features: nodes[1].node.channel_features(),
-		fee_msat: 1000000,
-		cltv_expiry_delta: TEST_FINAL_CLTV,
-		maybe_announced_channel: true,
-	});
+	let mut hops = vec![
+		RouteHop {
+			pubkey: node_c_id,
+			node_features: NodeFeatures::empty(),
+			short_channel_id: chan_2.0.contents.short_channel_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32,
+			maybe_announced_channel: true,
+		},
+		RouteHop {
+			pubkey: node_d_id,
+			node_features: NodeFeatures::empty(),
+			short_channel_id: chan_3.0.contents.short_channel_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32,
+			maybe_announced_channel: true,
+		},
+		RouteHop {
+			pubkey: node_b_id,
+			node_features: nodes[1].node.node_features(),
+			short_channel_id: chan_4.0.contents.short_channel_id,
+			channel_features: nodes[1].node.channel_features(),
+			fee_msat: 1000000,
+			cltv_expiry_delta: TEST_FINAL_CLTV,
+			maybe_announced_channel: true,
+		},
+	];
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64
 		+ chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64
@@ -559,34 +560,35 @@ pub fn fake_network_test() {
 	let path: &[_] = &[&nodes[2], &nodes[3], &nodes[1]];
 	let payment_preimage_1 = send_along_route(&nodes[1], route, path, 1000000).0;
 
-	let mut hops = Vec::with_capacity(3);
-	hops.push(RouteHop {
-		pubkey: node_d_id,
-		node_features: NodeFeatures::empty(),
-		short_channel_id: chan_4.0.contents.short_channel_id,
-		channel_features: ChannelFeatures::empty(),
-		fee_msat: 0,
-		cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32,
-		maybe_announced_channel: true,
-	});
-	hops.push(RouteHop {
-		pubkey: node_c_id,
-		node_features: NodeFeatures::empty(),
-		short_channel_id: chan_3.0.contents.short_channel_id,
-		channel_features: ChannelFeatures::empty(),
-		fee_msat: 0,
-		cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32,
-		maybe_announced_channel: true,
-	});
-	hops.push(RouteHop {
-		pubkey: node_b_id,
-		node_features: nodes[1].node.node_features(),
-		short_channel_id: chan_2.0.contents.short_channel_id,
-		channel_features: nodes[1].node.channel_features(),
-		fee_msat: 1000000,
-		cltv_expiry_delta: TEST_FINAL_CLTV,
-		maybe_announced_channel: true,
-	});
+	let mut hops = vec![
+		RouteHop {
+			pubkey: node_d_id,
+			node_features: NodeFeatures::empty(),
+			short_channel_id: chan_4.0.contents.short_channel_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32,
+			maybe_announced_channel: true,
+		},
+		RouteHop {
+			pubkey: node_c_id,
+			node_features: NodeFeatures::empty(),
+			short_channel_id: chan_3.0.contents.short_channel_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32,
+			maybe_announced_channel: true,
+		},
+		RouteHop {
+			pubkey: node_b_id,
+			node_features: nodes[1].node.node_features(),
+			short_channel_id: chan_2.0.contents.short_channel_id,
+			channel_features: nodes[1].node.channel_features(),
+			fee_msat: 1000000,
+			cltv_expiry_delta: TEST_FINAL_CLTV,
+			maybe_announced_channel: true,
+		},
+	];
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64
 		+ chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64
@@ -1498,9 +1500,8 @@ pub fn claim_htlc_outputs() {
 
 		// The ChannelMonitor should claim the accepted HTLC output separately from the offered
 		// HTLC and to_self outputs.
-		let accepted_claim = node_txn.iter().filter(|tx| tx.input.len() == 1).next().unwrap();
-		let offered_to_self_claim =
-			node_txn.iter().filter(|tx| tx.input.len() == 2).next().unwrap();
+		let accepted_claim = node_txn.iter().find(|tx| tx.input.len() == 1).unwrap();
+		let offered_to_self_claim = node_txn.iter().find(|tx| tx.input.len() == 2).unwrap();
 		check_spends!(accepted_claim, revoked_local_txn[0]);
 		check_spends!(offered_to_self_claim, revoked_local_txn[0]);
 		assert_eq!(
@@ -1512,7 +1513,7 @@ pub fn claim_htlc_outputs() {
 		witness_lens.insert(offered_to_self_claim.input[0].witness.last().unwrap().len());
 		witness_lens.insert(offered_to_self_claim.input[1].witness.last().unwrap().len());
 		assert_eq!(witness_lens.len(), 2);
-		assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
+		assert_eq!(*witness_lens.iter().next().unwrap(), 77); // revoked to_local
 		assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT);
 
 		// Finally, mine the penalty transaction and check that we get an HTLC failure after
@@ -7542,7 +7543,7 @@ pub fn test_manually_accept_inbound_channel_request() {
 	};
 	match &events[1] {
 		crate::events::Event::ChannelPending { counterparty_node_id, .. } => {
-			assert_eq!(*&node_b_id, *counterparty_node_id);
+			assert_eq!(node_b_id, *counterparty_node_id);
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -7959,7 +7960,7 @@ pub fn test_preimage_storage() {
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
-	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	{
 		let (payment_hash, payment_secret) =
@@ -8002,7 +8003,7 @@ pub fn test_bad_secret_hash() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let random_hash = PaymentHash([42; 32]);
 	let random_secret = PaymentSecret([43; 32]);
@@ -8195,7 +8196,7 @@ pub fn test_concurrent_monitor_claim() {
 	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
 	// Route a HTLC from node 0 to node 1 (but don't settle)
-	route_payment(&nodes[0], &[&nodes[1]], 9_000_000).0;
+	route_payment(&nodes[0], &[&nodes[1]], 9_000_000);
 
 	// Copy ChainMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
@@ -10088,7 +10089,7 @@ fn do_test_max_dust_htlc_exposure(
 		}
 		{
 			let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
-			*feerate_lock = *feerate_lock * 10;
+			*feerate_lock *= 10;
 		}
 		nodes[0].node.timer_tick_occurred();
 		check_added_monitors(&nodes[0], 1);
@@ -11745,7 +11746,7 @@ pub fn test_funding_signed_event() {
 	};
 	match &events[1] {
 		crate::events::Event::ChannelPending { counterparty_node_id, .. } => {
-			assert_eq!(*&node_b_id, *counterparty_node_id);
+			assert_eq!(node_b_id, *counterparty_node_id);
 		},
 		_ => panic!("Unexpected event"),
 	};

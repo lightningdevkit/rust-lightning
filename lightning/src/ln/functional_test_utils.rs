@@ -1089,9 +1089,9 @@ macro_rules! unwrap_send_err {
 		let events = $node.node.get_and_clear_pending_events();
 		assert!(events.len() == 2);
 		match &events[0] {
-			crate::events::Event::PaymentPathFailed { failure, .. } => {
+			$crate::events::Event::PaymentPathFailed { failure, .. } => {
 				match failure {
-					crate::events::PathFailure::InitialSend { err } => {
+					$crate::events::PathFailure::InitialSend { err } => {
 						match err {
 							$type => { $check },
 							_ => panic!()
@@ -1103,7 +1103,7 @@ macro_rules! unwrap_send_err {
 			_ => panic!()
 		}
 		match &events[1] {
-			crate::events::Event::PaymentFailed { .. } => {},
+			$crate::events::Event::PaymentFailed { .. } => {},
 			_ => panic!()
 		}
 	}
@@ -2203,7 +2203,7 @@ macro_rules! get_payment_preimage_hash {
 		get_payment_preimage_hash!($dest_node, None)
 	};
 	($dest_node: expr, $min_value_msat: expr) => {
-		crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
+		$crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
 	};
 	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
 		$crate::ln::functional_test_utils::get_payment_preimage_hash(&$dest_node, $min_value_msat, $min_final_cltv_expiry_delta)

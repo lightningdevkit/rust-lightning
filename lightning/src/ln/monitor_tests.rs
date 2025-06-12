@@ -761,7 +761,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// Confirm node B's claim for node A to remove that claim from the aggregated claim transaction.
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
 	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	let a_htlc_timeout_tx = a_broadcast_txn.into_iter().last().unwrap();
+	let a_htlc_timeout_tx = a_broadcast_txn.into_iter().next_back().unwrap();
 
 	// Once the HTLC-Timeout transaction confirms, A will no longer consider the HTLC
 	// "MaybeClaimable", but instead move it to "AwaitingConfirmations".
