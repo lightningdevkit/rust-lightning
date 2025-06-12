@@ -2647,7 +2647,7 @@ where
 			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
 		);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_commitment_tx.clone(), logger,
+			counterparty_initial_commitment_tx.clone(),
 		);
 
 		self.context_mut().cur_counterparty_commitment_transaction_number -= 1;
@@ -10614,32 +10614,54 @@ where
 		}
 		self.context.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let mut updates = Vec::with_capacity(self.pending_funding.len() + 1);
-		for funding in core::iter::once(&self.funding).chain(self.pending_funding.iter()) {
+		let update = if self.pending_funding.is_empty() {
 			let (htlcs_ref, counterparty_commitment_tx) =
-				self.build_commitment_no_state_update(funding, logger);
-			let htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
-				htlcs_ref.into_iter().map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
+				self.build_commitment_no_state_update(&self.funding, logger);
+			let htlc_outputs = htlcs_ref.into_iter()
+				.map(|(htlc, htlc_source)| (
+					htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone()))
+				))
+				.collect();
 
-			if self.pending_funding.is_empty() {
-				// Soon, we will switch this to `LatestCounterpartyCommitmentTX`,
-				// and provide the full commit tx instead of the information needed to rebuild it.
-				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
-					commitment_txid: counterparty_commitment_tx.trust().txid(),
-					htlc_outputs,
-					commitment_number: self.context.cur_counterparty_commitment_transaction_number,
-					their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
-					feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
-					to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
-					to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
-				});
-			} else {
-				updates.push(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTX {
-					htlc_outputs,
-					commitment_tx: counterparty_commitment_tx,
-				});
+			// Soon, we will switch this to `LatestCounterpartyCommitment`,
+			// and provide the full commit tx instead of the information needed to rebuild it.
+			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
+				commitment_txid: counterparty_commitment_tx.trust().txid(),
+				htlc_outputs,
+				commitment_number: self.context.cur_counterparty_commitment_transaction_number,
+				their_per_commitment_point: self.context.counterparty_cur_commitment_point.unwrap(),
+				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
+				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
+				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
 			}
-		}
+		} else {
+			let mut htlc_data = None;
+			let commitment_txs = core::iter::once(&self.funding)
+				.chain(self.pending_funding.iter())
+				.map(|funding| {
+					let (htlcs_ref, counterparty_commitment_tx) =
+						self.build_commitment_no_state_update(funding, logger);
+					if htlc_data.is_none() {
+						let nondust_htlc_sources = htlcs_ref.iter()
+							// We check !offered as this is the HTLC from the counterparty's point of view.
+							.filter(|(htlc, _)| !htlc.offered && htlc.transaction_output_index.is_some())
+							.map(|(_, source)| source.expect("Outbound HTLC must have a source").clone())
+							.collect();
+						let dust_htlcs = htlcs_ref.into_iter()
+							.filter(|(htlc, _)| htlc.transaction_output_index.is_none())
+							.map(|(htlc, source)| (htlc, source.cloned()))
+							.collect();
+						htlc_data = Some(CommitmentHTLCData {
+							nondust_htlc_sources,
+							dust_htlcs,
+						});
+					}
+					counterparty_commitment_tx
+				})
+				.collect();
+			let htlc_data = htlc_data.unwrap();
+			ChannelMonitorUpdateStep::LatestCounterpartyCommitment { commitment_txs, htlc_data }
+		};
 
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent {
 			self.context.announcement_sigs_state = AnnouncementSigsState::Committed;
@@ -10648,7 +10670,7 @@ where
 		self.context.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
-			updates,
+			updates: vec![update],
 			channel_id: Some(self.context.channel_id()),
 		};
 		self.context.channel_state.set_awaiting_remote_revoke();
