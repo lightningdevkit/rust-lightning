@@ -1308,9 +1308,8 @@ impl HolderCommitmentPoint {
 		L::Target: Logger,
 	{
 		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
-			if let Ok(next) =
-				signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx)
-			{
+			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx);
+			if let Ok(next) = next {
 				log_trace!(
 					logger,
 					"Retrieved next per-commitment point {}",
@@ -2056,10 +2055,8 @@ impl FundingScope {
 	}
 
 	pub fn get_counterparty_selected_contest_delay(&self) -> Option<u16> {
-		self.channel_transaction_parameters
-			.counterparty_parameters
-			.as_ref()
-			.map(|params| params.selected_contest_delay)
+		let params_opt = self.channel_transaction_parameters.counterparty_parameters.as_ref();
+		params_opt.map(|params| params.selected_contest_delay)
 	}
 
 	fn get_counterparty_pubkeys(&self) -> &ChannelPublicKeys {
@@ -5496,9 +5493,10 @@ fn get_holder_max_htlc_value_in_flight_msat(
 pub(crate) fn get_holder_selected_channel_reserve_satoshis(
 	channel_value_satoshis: u64, config: &UserConfig,
 ) -> u64 {
-	let calculated_reserve = channel_value_satoshis.saturating_mul(
-		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64,
-	) / 1_000_000;
+	let counterparty_chan_reserve_prop_mil =
+		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64;
+	let calculated_reserve =
+		channel_value_satoshis.saturating_mul(counterparty_chan_reserve_prop_mil) / 1_000_000;
 	cmp::min(channel_value_satoshis, cmp::max(calculated_reserve, MIN_THEIR_CHAN_RESERVE_SATOSHIS))
 }
 
@@ -5735,6 +5733,12 @@ impl FailHTLCMessageName for msgs::UpdateFailMalformedHTLC {
 		"update_fail_malformed_htlc"
 	}
 }
+
+type BestBlockUpdatedRes = (
+	Option<msgs::ChannelReady>,
+	Vec<(HTLCSource, PaymentHash)>,
+	Option<msgs::AnnouncementSignatures>,
+);
 
 impl<SP: Deref> FundedChannel<SP>
 where
@@ -8943,14 +8947,7 @@ where
 	pub fn best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32, chain_hash: ChainHash, node_signer: &NS,
 		user_config: &UserConfig, logger: &L,
-	) -> Result<
-		(
-			Option<msgs::ChannelReady>,
-			Vec<(HTLCSource, PaymentHash)>,
-			Option<msgs::AnnouncementSignatures>,
-		),
-		ClosureReason,
-	>
+	) -> Result<BestBlockUpdatedRes, ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger,
@@ -12401,13 +12398,9 @@ mod tests {
 
 		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();
-			let channel_monitor_claim_key = SecretKey::from_slice(
-				&<Vec<u8>>::from_hex(
-					"0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-				)
-				.unwrap()[..],
-			)
-			.unwrap();
+			let hex = "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+			let channel_monitor_claim_key =
+				SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
 			let channel_monitor_claim_key_hash = WPubkeyHash::hash(
 				&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize(),
 			);
@@ -12419,13 +12412,9 @@ mod tests {
 
 		fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 			let secp_ctx = Secp256k1::signing_only();
-			let channel_close_key = SecretKey::from_slice(
-				&<Vec<u8>>::from_hex(
-					"0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-				)
-				.unwrap()[..],
-			)
-			.unwrap();
+			let hex = "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+			let channel_close_key =
+				SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
 			Ok(ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(
 				&secp_ctx,
 				&channel_close_key,
@@ -12438,10 +12427,8 @@ mod tests {
 		secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str,
 	) -> PublicKey {
 		assert!(cfg!(not(feature = "grind_signatures")));
-		PublicKey::from_secret_key(
-			&secp_ctx,
-			&SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap(),
-		)
+		let secret = SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap();
+		PublicKey::from_secret_key(&secp_ctx, &secret)
 	}
 
 	#[test]
