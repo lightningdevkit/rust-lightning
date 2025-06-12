@@ -5049,6 +5049,11 @@ where
 		let context = self;
 		assert!(funding.is_outbound());
 
+		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			debug_assert_eq!(context.feerate_per_kw, 0);
+			return 0;
+		}
+
 		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
 			funding.get_channel_type(), context.feerate_per_kw,
 		);
@@ -5150,10 +5155,15 @@ where
 	fn next_remote_commit_tx_fee_msat(
 		&self, funding: &FundingScope, htlc: Option<HTLCCandidate>, fee_spike_buffer_htlc: Option<()>,
 	) -> u64 {
-		debug_assert!(htlc.is_some() || fee_spike_buffer_htlc.is_some(), "At least one of the options must be set");
-
 		let context = self;
 		assert!(!funding.is_outbound());
+
+		if funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			debug_assert_eq!(context.feerate_per_kw, 0);
+			return 0
+		}
+
+		debug_assert!(htlc.is_some() || fee_spike_buffer_htlc.is_some(), "At least one of the options must be set");
 
 		let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
 			funding.get_channel_type(), context.feerate_per_kw,
@@ -7961,6 +7971,12 @@ where
 			// unable to increase the fee, we don't try to force-close directly here.
 			return Ok(());
 		}
+
+		if self.funding.get_channel_type().supports_anchor_zero_fee_commitments() {
+			debug_assert_eq!(self.context.feerate_per_kw, 0);
+			return Ok(());
+		}
+
 		if self.context.feerate_per_kw < min_feerate {
 			log_info!(logger,
 				"Closing channel as feerate of {} is below required {} (the minimum required rate over the past day)",
