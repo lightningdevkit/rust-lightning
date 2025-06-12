@@ -2351,83 +2351,51 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 		}
@@ -2437,23 +2405,15 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710654, secrets.last().unwrap().clone())
 				.is_err());
@@ -2464,43 +2424,27 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710652, secrets.last().unwrap().clone())
 				.is_err());
@@ -2511,43 +2455,27 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710652, secrets.last().unwrap().clone())
 				.is_err());
@@ -2558,83 +2486,51 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710648, secrets.last().unwrap().clone())
 				.is_err());
@@ -2645,63 +2541,39 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710650, secrets.last().unwrap().clone())
 				.is_err());
@@ -2712,83 +2584,51 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710648, secrets.last().unwrap().clone())
 				.is_err());
@@ -2799,83 +2639,51 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710648, secrets.last().unwrap().clone())
 				.is_err());
@@ -2886,83 +2694,51 @@ mod tests {
 			monitor = CounterpartyCommitmentSecrets::new();
 			secrets.clear();
 
+			let hex = "7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
+			let hex = "a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4";
 			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(
-				&<Vec<u8>>::from_hex(
-					"a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4",
-				)
-				.unwrap(),
-			);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex(hex).unwrap());
 			assert!(monitor
 				.provide_secret(281474976710648, secrets.last().unwrap().clone())
 				.is_err());
