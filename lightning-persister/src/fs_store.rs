@@ -1,6 +1,7 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::utils::{check_namespace_key_validity, is_valid_kvstore_str};
 
+use lightning::util::async_poll::{AsyncResult, AsyncResultType};
 use lightning::util::persist::{KVStore, MigratableKVStore};
 use lightning::util::string::PrintableString;
 
@@ -92,7 +93,7 @@ impl FilesystemStore {
 	}
 }
 
-impl KVStore for FilesystemStore {
+impl FilesystemStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> lightning::io::Result<Vec<u8>> {
@@ -120,7 +121,7 @@ impl KVStore for FilesystemStore {
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
-	) -> lightning::io::Result<()> {
+	) -> Result<(), lightning::io::Error> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -203,6 +204,23 @@ impl KVStore for FilesystemStore {
 		self.garbage_collect_locks();
 
 		res
+	}
+}
+
+impl KVStore for FilesystemStore {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> AsyncResultType<'static, Vec<u8>, lightning::io::Error> {
+		let res = self.read(primary_namespace, secondary_namespace, key);
+		Box::pin(async move { res })
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> AsyncResultType<'static, (), lightning::io::Error> {
+		let res = self.write(primary_namespace, secondary_namespace, key, buf);
+
+		Box::pin(async move { res })
 	}
 
 	fn remove(

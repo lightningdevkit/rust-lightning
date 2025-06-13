@@ -23,8 +23,8 @@ use crate::sync::Arc;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 use crate::util::persist::{
-	KVStore, OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-	OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_PERSISTENCE_KEY,
+	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::{impl_writeable_tlv_based, log_debug, log_error};
@@ -640,14 +640,12 @@ where
 	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'a + Send>> {
 		let encoded = &sweeper_state.encode();
 
-		let result = self.kv_store.write(
+		self.kv_store.write(
 			OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
 			OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 			OUTPUT_SWEEPER_PERSISTENCE_KEY,
 			encoded,
-		);
-
-		Box::pin(async move { result })
+		)
 	}
 
 	fn spend_outputs(
@@ -953,11 +951,21 @@ where
 	D::Target: ChangeDestinationSourceSync,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
-	sweeper: Arc<OutputSweeper<B, Arc<ChangeDestinationSourceSyncWrapper<D>>, E, F, K, L, O>>,
+	sweeper: Arc<
+		OutputSweeper<
+			B,
+			Arc<ChangeDestinationSourceSyncWrapper<D>>,
+			E,
+			F,
+			Arc<KVStoreSyncWrapper<K>>,
+			L,
+			O,
+		>,
+	>,
 }
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
@@ -967,7 +975,7 @@ where
 	D::Target: ChangeDestinationSourceSync,
 	E::Target: FeeEstimator,
 	F::Target: Filter,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {
@@ -978,6 +986,8 @@ where
 	) -> Self {
 		let change_destination_source =
 			Arc::new(ChangeDestinationSourceSyncWrapper::new(change_destination_source));
+
+		let kv_store = Arc::new(KVStoreSyncWrapper::new(kv_store));
 
 		let sweeper = OutputSweeper::new(
 			best_block,
@@ -1043,7 +1053,7 @@ where
 	D::Target: ChangeDestinationSourceSync,
 	E::Target: FeeEstimator,
 	F::Target: Filter + Sync + Send,
-	K::Target: KVStore,
+	K::Target: KVStoreSync,
 	L::Target: Logger,
 	O::Target: OutputSpender,
 {

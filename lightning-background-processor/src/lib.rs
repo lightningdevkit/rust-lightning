@@ -39,8 +39,11 @@ use lightning::sign::ChangeDestinationSource;
 use lightning::sign::ChangeDestinationSourceSync;
 use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
+use lightning::util::async_poll::FutureSpawner;
 use lightning::util::logger::Logger;
-use lightning::util::persist::{KVStore, Persister};
+use lightning::util::persist::{
+	KVStore, KVStoreSync, KVStoreSyncWrapper, Persister, PersisterSync,
+};
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -311,6 +314,15 @@ fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + Wri
 	true
 }
 
+macro_rules! maybe_await {
+	(true, $e:expr) => {
+		$e.await
+	};
+	(false, $e:expr) => {
+		$e
+	};
+}
+
 macro_rules! define_run_body {
 	(
 		$persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
@@ -319,7 +331,7 @@ macro_rules! define_run_body {
 		$peer_manager: ident, $gossip_sync: ident,
 		$process_sweeper: expr,
 		$logger: ident, $scorer: ident, $loop_exit_check: expr, $await: expr, $get_timer: expr,
-		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
+		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr, $async: tt,
 	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.get_cm().timer_tick_occurred();
@@ -375,7 +387,7 @@ macro_rules! define_run_body {
 
 			if $channel_manager.get_cm().get_and_clear_needs_persistence() {
 				log_trace!($logger, "Persisting ChannelManager...");
-				$persister.persist_manager(&$channel_manager)?;
+				maybe_await!($async, $persister.persist_manager(&$channel_manager))?;
 				log_trace!($logger, "Done persisting ChannelManager.");
 			}
 			if $timer_elapsed(&mut last_freshness_call, FRESHNESS_TIMER) {
@@ -436,7 +448,7 @@ macro_rules! define_run_body {
 						log_trace!($logger, "Persisting network graph.");
 					}
 
-					if let Err(e) = $persister.persist_graph(network_graph) {
+					if let Err(e) = maybe_await!($async, $persister.persist_graph(network_graph)) {
 						log_error!($logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
 					}
 
@@ -464,7 +476,7 @@ macro_rules! define_run_body {
 					} else {
 						log_trace!($logger, "Persisting scorer");
 					}
-					if let Err(e) = $persister.persist_scorer(&scorer) {
+					if let Err(e) = maybe_await!($async, $persister.persist_scorer(&scorer)) {
 						log_error!($logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 					}
 				}
@@ -487,16 +499,16 @@ macro_rules! define_run_body {
 		// After we exit, ensure we persist the ChannelManager one final time - this avoids
 		// some races where users quit while channel updates were in-flight, with
 		// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-		$persister.persist_manager(&$channel_manager)?;
+		maybe_await!($async, $persister.persist_manager(&$channel_manager))?;
 
 		// Persist Scorer on exit
 		if let Some(ref scorer) = $scorer {
-			$persister.persist_scorer(&scorer)?;
+			maybe_await!($async, $persister.persist_scorer(&scorer))?;
 		}
 
 		// Persist NetworkGraph on exit
 		if let Some(network_graph) = $gossip_sync.network_graph() {
-			$persister.persist_graph(network_graph)?;
+			maybe_await!($async, $persister.persist_graph(network_graph))?;
 		}
 
 		Ok(())
@@ -782,8 +794,11 @@ pub async fn process_events_async<
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
 	ES: 'static + Deref + Send,
+	FS: FutureSpawner,
 	M: 'static
-		+ Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
+		+ Deref<
+			Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES, FS>,
+		>
 		+ Send
 		+ Sync,
 	CM: 'static + Deref,
@@ -841,7 +856,7 @@ where
 				if let Some(duration_since_epoch) = fetch_time() {
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = persister.persist_scorer(&*scorer) {
+						if let Err(e) = persister.persist_scorer(&*scorer).await {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
 							// We opt not to abort early on persistence failure here as persisting
 							// the scorer is non-critical and we still hope that it will have
@@ -919,6 +934,7 @@ where
 		},
 		mobile_interruptable_platform,
 		fetch_time,
+		true,
 	)
 }
 
@@ -982,7 +998,16 @@ impl BackgroundProcessor {
 		ES: 'static + Deref + Send,
 		M: 'static
 			+ Deref<
-				Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>,
+				Target = ChainMonitor<
+					<CM::Target as AChannelManager>::Signer,
+					CF,
+					T,
+					F,
+					L,
+					P,
+					ES,
+					FS,
+				>,
 			>
 			+ Send
 			+ Sync,
@@ -998,6 +1023,7 @@ impl BackgroundProcessor {
 		O: 'static + Deref,
 		K: 'static + Deref,
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
+		FS: FutureSpawner,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
@@ -1010,7 +1036,7 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, S>,
+		PS::Target: 'static + PersisterSync<'a, CM, L, S>,
 		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager,
 		OM::Target: AOnionMessenger,
@@ -1018,7 +1044,7 @@ impl BackgroundProcessor {
 		LM::Target: ALiquidityManager,
 		D::Target: ChangeDestinationSourceSync,
 		O::Target: 'static + OutputSpender,
-		K::Target: 'static + KVStore,
+		K::Target: 'static + KVStoreSync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -1098,6 +1124,7 @@ impl BackgroundProcessor {
 							.expect("Time should be sometime after 1970"),
 					)
 				},
+				false,
 			)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
