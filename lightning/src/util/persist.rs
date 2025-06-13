@@ -1152,24 +1152,28 @@ mod tests {
 		// Intentionally set this to a smaller value to test a different alignment.
 		let persister_1_max_pending_updates = 3;
 		let chanmon_cfgs = create_chanmon_cfgs(4);
-		let persister_0 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: persister_0_max_pending_updates,
-			entropy_source: &chanmon_cfgs[0].keys_manager,
-			signer_provider: &chanmon_cfgs[0].keys_manager,
-			broadcaster: &chanmon_cfgs[0].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[0].fee_estimator,
-		};
-		let persister_1 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: persister_1_max_pending_updates,
-			entropy_source: &chanmon_cfgs[1].keys_manager,
-			signer_provider: &chanmon_cfgs[1].keys_manager,
-			broadcaster: &chanmon_cfgs[1].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[1].fee_estimator,
-		};
+		let kv_store = &TestStore::new(false);
+		let logger = &TestLogger::new();
+		let persister_0 = MonitorUpdatingPersister::new(
+			kv_store,
+			logger,
+			persister_0_max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let kv_store = &TestStore::new(false);
+		let logger = &TestLogger::new();
+		let persister_1 = MonitorUpdatingPersister::new(
+			kv_store,
+			logger,
+			persister_1_max_pending_updates,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].fee_estimator,
+		);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(
 			Some(&chanmon_cfgs[0].chain_source),
@@ -1326,15 +1330,17 @@ mod tests {
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
 			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
 
-			let ro_persister = MonitorUpdatingPersister {
-				kv_store: &TestStore::new(true),
-				logger: &TestLogger::new(),
-				maximum_pending_updates: 11,
-				entropy_source: node_cfgs[0].keys_manager,
-				signer_provider: node_cfgs[0].keys_manager,
-				broadcaster: node_cfgs[0].tx_broadcaster,
-				fee_estimator: node_cfgs[0].fee_estimator,
-			};
+			let kv_store = &TestStore::new(true);
+			let logger = &TestLogger::new();
+			let ro_persister = MonitorUpdatingPersister::new(
+				kv_store,
+				logger,
+				11,
+				node_cfgs[0].keys_manager,
+				node_cfgs[0].keys_manager,
+				node_cfgs[0].tx_broadcaster,
+				node_cfgs[0].fee_estimator,
+			);
 			let monitor_name = added_monitors[0].1.persistence_key();
 			match ro_persister.persist_new_channel(monitor_name, &added_monitors[0].1) {
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
@@ -1372,24 +1378,28 @@ mod tests {
 	fn clean_stale_updates_works() {
 		let test_max_pending_updates = 7;
 		let chanmon_cfgs = create_chanmon_cfgs(3);
-		let persister_0 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: test_max_pending_updates,
-			entropy_source: &chanmon_cfgs[0].keys_manager,
-			signer_provider: &chanmon_cfgs[0].keys_manager,
-			broadcaster: &chanmon_cfgs[0].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[0].fee_estimator,
-		};
-		let persister_1 = MonitorUpdatingPersister {
-			kv_store: &TestStore::new(false),
-			logger: &TestLogger::new(),
-			maximum_pending_updates: test_max_pending_updates,
-			entropy_source: &chanmon_cfgs[1].keys_manager,
-			signer_provider: &chanmon_cfgs[1].keys_manager,
-			broadcaster: &chanmon_cfgs[1].tx_broadcaster,
-			fee_estimator: &chanmon_cfgs[1].fee_estimator,
-		};
+		let kv_store = &TestStore::new(false);
+		let logger = &TestLogger::new();
+		let persister_0 = MonitorUpdatingPersister::new(
+			kv_store,
+			logger,
+			test_max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let kv_store = &TestStore::new(false);
+		let logger = &TestLogger::new();
+		let persister_1 = MonitorUpdatingPersister::new(
+			kv_store,
+			logger,
+			test_max_pending_updates,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].tx_broadcaster,
+			&chanmon_cfgs[1].fee_estimator,
+		);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let chain_mon_0 = test_utils::TestChainMonitor::new(
 			Some(&chanmon_cfgs[0].chain_source),
