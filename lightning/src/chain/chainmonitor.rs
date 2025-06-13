@@ -27,13 +27,13 @@ use bitcoin::block::Header;
 use bitcoin::hash_types::{BlockHash, Txid};
 use types::features::{InitFeatures, NodeFeatures};
 
-use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{
 	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
 	WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::chain::{self, Watch};
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::ln::channel_state::ChannelDetails;
@@ -44,7 +44,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, PeerStorageKey};
 use crate::sync::Arc;
 use crate::util::async_poll::{
-	poll_or_spawn, AsyncResult, AsyncVoid, FutureSpawner, FutureSpawnerSync,
+	dummy_waker, poll_or_spawn, AsyncResult, AsyncVoid, FutureSpawner, FutureSpawnerSync,
 };
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
@@ -54,8 +54,10 @@ use crate::util::wakers::{Future, Notifier};
 use crate::prelude::*;
 use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use bitcoin::secp256k1::PublicKey;
+use core::future::Future as _;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task;
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
@@ -365,6 +367,39 @@ where
 	) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
 		self.0.get_monitor(channel_id)
 	}
+
+	/// See [`ChainMonitor::list_monitors`].
+	pub fn list_monitors(&self) -> Vec<ChannelId> {
+		self.0.list_monitors()
+	}
+
+	/// See [`ChainMonitor::get_claimable_balances`].
+	pub fn get_claimable_balances(&self, ignored_channels: &[&ChannelDetails]) -> Vec<Balance> {
+		self.0.get_claimable_balances(ignored_channels)
+	}
+
+	/// See [`ChainMonitor::archive_fully_resolved_channel_monitors`].
+	pub fn archive_fully_resolved_channel_monitors(&self) {
+		let mut fut = Box::pin(self.0.archive_fully_resolved_channel_monitors());
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				unreachable!("Can't poll a future in a sync context, this should never happen");
+			},
+		}
+	}
+
+	/// See [`ChainMonitor::get_and_clear_pending_events`].
+	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+		self.0.get_and_clear_pending_events()
+	}
+
+	/// See [`ChainMonitor::remove_monitor`].
+	pub fn remove_monitor(&self, channel_id: &ChannelId) -> ChannelMonitor<ChannelSigner> {
+		self.0.remove_monitor(channel_id)
+	}
 }
 
 impl<
@@ -429,6 +464,42 @@ where
 		H::Target: EventHandler,
 	{
 		self.0.process_pending_events(handler)
+	}
+}
+
+impl<
+		ChannelSigner: EcdsaChannelSigner + 'static,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> Watch<ChannelSigner> for ChainMonitorSync<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: PersistSync<ChannelSigner>,
+	ES::Target: EntropySource,
+{
+	fn watch_channel(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()> {
+		todo!()
+	}
+
+	fn update_channel(
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus {
+		todo!()
+	}
+
+	fn release_pending_monitor_events(
+		&self,
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
+		todo!()
 	}
 }
 
