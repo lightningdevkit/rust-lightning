@@ -3616,6 +3616,13 @@ where
 		self.latest_monitor_update_id
 	}
 
+	pub fn get_latest_unblocked_monitor_update_id(&self) -> u64 {
+		if self.blocked_monitor_updates.is_empty() {
+			return self.get_latest_monitor_update_id();
+		}
+		self.blocked_monitor_updates[0].update.update_id - 1
+	}
+
 	pub fn should_announce(&self) -> bool {
 		self.config.announce_for_forwarding
 	}
@@ -5379,7 +5386,7 @@ where
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if !self.channel_state.is_pre_funded_state() {
-				self.latest_monitor_update_id += 1;
+				self.latest_monitor_update_id = self.get_latest_unblocked_monitor_update_id() + 1;
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
@@ -9301,10 +9308,7 @@ where
 
 	/// Gets the latest [`ChannelMonitorUpdate`] ID which has been released and is in-flight.
 	pub fn get_latest_unblocked_monitor_update_id(&self) -> u64 {
-		if self.context.blocked_monitor_updates.is_empty() {
-			return self.context.get_latest_monitor_update_id();
-		}
-		self.context.blocked_monitor_updates[0].update.update_id - 1
+		self.context.get_latest_unblocked_monitor_update_id()
 	}
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
