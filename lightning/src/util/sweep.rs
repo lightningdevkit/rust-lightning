@@ -1041,7 +1041,17 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn sweeper_async(
 		&self,
-	) -> Arc<OutputSweeper<B, Arc<ChangeDestinationSourceSyncWrapper<D>>, E, F, K, L, O>> {
+	) -> Arc<
+		OutputSweeper<
+			B,
+			Arc<ChangeDestinationSourceSyncWrapper<D>>,
+			E,
+			F,
+			Arc<KVStoreSyncWrapper<K>>,
+			L,
+			O,
+		>,
+	> {
 		self.sweeper.clone()
 	}
 }
