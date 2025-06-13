@@ -6852,7 +6852,7 @@ where
 		NotifyOption::DoPersist
 	}
 
-	#[cfg(fuzzing)]
+	#[cfg(any(test, fuzzing, feature = "_externalize_tests"))]
 	/// In chanmon_consistency we want to sometimes do the channel fee updates done in
 	/// timer_tick_occurred, but we can't generate the disabled channel updates as it considers
 	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what

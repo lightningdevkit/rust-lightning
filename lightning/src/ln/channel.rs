@@ -6717,14 +6717,11 @@ where
 					}
 				}
 			}
-			if update_add_count == 0 && update_fulfill_count == 0 && update_fail_count == 0 && self.context.holding_cell_update_fee.is_none() {
+			let update_fee = self.context.holding_cell_update_fee.take().and_then(|feerate| self.send_update_fee(feerate, false, fee_estimator, logger));
+
+			if update_add_count == 0 && update_fulfill_count == 0 && update_fail_count == 0 && update_fee.is_none() {
 				return (None, htlcs_to_fail);
 			}
-			let update_fee = if let Some(feerate) = self.context.holding_cell_update_fee.take() {
-				self.send_update_fee(feerate, false, fee_estimator, logger)
-			} else {
-				None
-			};
 
 			let mut additional_update = self.build_commitment_no_status_check(logger);
 			// build_commitment_no_status_check and get_update_fulfill_htlc may bump latest_monitor_id
