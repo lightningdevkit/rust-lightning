@@ -386,7 +386,7 @@ pub trait SyncPersist: PersistSync<TestChannelSigner> + Sync {}
 #[cfg(feature = "std")]
 impl<T: chaininterface::BroadcasterInterface + Sync> SyncBroadcaster for T {}
 #[cfg(feature = "std")]
-impl<T: Persist<TestChannelSigner> + Sync> SyncPersist for T {}
+impl<T: PersistSync<TestChannelSigner> + Sync> SyncPersist for T {}
 
 #[cfg(not(feature = "std"))]
 pub trait SyncBroadcaster: chaininterface::BroadcasterInterface {}
