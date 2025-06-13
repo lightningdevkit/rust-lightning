@@ -611,10 +611,10 @@ impl WatchtowerPersister {
 }
 
 #[cfg(any(test, feature = "_externalize_tests"))]
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> Result<(), ()> {
 		let res = self.persister.persist_new_channel(monitor_name, data);
 
 		assert!(self
@@ -648,7 +648,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		data: &ChannelMonitor<Signer>,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> Result<(), ()> {
 		let res = self.persister.update_persisted_channel(monitor_name, update, data);
 
 		if let Some(update) = update {
@@ -690,7 +690,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPers
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		<TestPersister as Persist<TestChannelSigner>>::archive_persisted_channel(
+		<TestPersister as PersistSync<TestChannelSigner>>::archive_persisted_channel(
 			&self.persister,
 			monitor_name,
 		);
