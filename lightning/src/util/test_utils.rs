@@ -15,7 +15,7 @@ use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
-use crate::chain::chainmonitor::{ChainMonitor, Persist};
+use crate::chain::chainmonitor::{ChainMonitor, ChainMonitorSync, Persist, PersistSync};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
@@ -50,6 +50,7 @@ use crate::sign;
 use crate::sign::{ChannelSigner, PeerStorageKey};
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use crate::util::async_poll::FutureSpawnerSync;
 use crate::util::config::UserConfig;
 use crate::util::dyn_signer::{
 	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
@@ -57,7 +58,7 @@ use crate::util::dyn_signer::{
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
-use crate::util::persist::{KVStore, MonitorName};
+use crate::util::persist::{KVStore, KVStoreSync, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
@@ -381,7 +382,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 #[cfg(feature = "std")]
 pub trait SyncBroadcaster: chaininterface::BroadcasterInterface + Sync {}
 #[cfg(feature = "std")]
-pub trait SyncPersist: Persist<TestChannelSigner> + Sync {}
+pub trait SyncPersist: PersistSync<TestChannelSigner> + Sync {}
 #[cfg(feature = "std")]
 impl<T: chaininterface::BroadcasterInterface + Sync> SyncBroadcaster for T {}
 #[cfg(feature = "std")]
@@ -400,7 +401,7 @@ pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(ChannelId, ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (u64, u64)>>,
-	pub chain_monitor: ChainMonitor<
+	pub chain_monitor: ChainMonitorSync<
 		TestChannelSigner,
 		&'a TestChainSource,
 		&'a dyn SyncBroadcaster,
@@ -430,7 +431,7 @@ impl<'a> TestChainMonitor<'a> {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(new_hash_map()),
 			latest_monitor_update_id: Mutex::new(new_hash_map()),
-			chain_monitor: ChainMonitor::new(
+			chain_monitor: ChainMonitorSync::new(
 				chain_source,
 				broadcaster,
 				logger,
@@ -720,20 +721,24 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for TestPersister {
+impl<Signer: sign::ecdsa::EcdsaChannelSigner> PersistSync<Signer> for TestPersister {
 	fn persist_new_channel(
 		&self, _monitor_name: MonitorName, _data: &ChannelMonitor<Signer>,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> Result<(), ()> {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
-			return update_ret;
+			return match update_ret {
+				chain::ChannelMonitorUpdateStatus::Completed => Ok(()),
+				chain::ChannelMonitorUpdateStatus::InProgress => Err(()),
+				chain::ChannelMonitorUpdateStatus::UnrecoverableError => Err(()),
+			};
 		}
-		chain::ChannelMonitorUpdateStatus::Completed
+		Ok(())
 	}
 
 	fn update_persisted_channel(
 		&self, monitor_name: MonitorName, update: Option<&ChannelMonitorUpdate>,
 		_data: &ChannelMonitor<Signer>,
-	) -> chain::ChannelMonitorUpdateStatus {
+	) -> Result<(), ()> {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;
@@ -771,7 +776,7 @@ impl TestStore {
 	}
 }
 
-impl KVStore for TestStore {
+impl KVStoreSync for TestStore {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
 	) -> io::Result<Vec<u8>> {

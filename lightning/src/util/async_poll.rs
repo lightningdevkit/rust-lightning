@@ -13,7 +13,7 @@ use crate::prelude::*;
 use core::future::Future;
 use core::marker::Unpin;
 use core::pin::Pin;
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::task::{self, Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 pub(crate) enum ResultFuture<F: Future<Output = Result<(), E>>, E: Copy + Unpin> {
 	Pending(F),
@@ -129,6 +129,16 @@ pub type AsyncResultType<'a, T, V> = Pin<Box<dyn Future<Output = Result<T, V>> +
 pub trait FutureSpawner: Send + Sync + 'static {
 	/// Spawns a future on a runtime.
 	fn spawn<T: Future<Output = ()> + Send + 'static>(&self, future: T);
+}
+
+pub struct FutureSpawnerSync {}
+
+impl FutureSpawner for FutureSpawnerSync {
+	fn spawn<T: Future<Output = ()> + Send + 'static>(&self, fut: T) {
+		unreachable!(
+			"FutureSpawnerSync should not be used directly, use a concrete implementation instead"
+		);
+	}
 }
 
 /// Polls a future and either returns true if it is ready or spawns it on the tokio runtime if it is not.

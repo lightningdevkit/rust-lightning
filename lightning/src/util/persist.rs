@@ -12,11 +12,13 @@
 
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::{BlockHash, Txid};
-use core::cmp;
+use core::future::Future;
 use core::ops::Deref;
 use core::str::FromStr;
+use core::{cmp, task};
 
 use crate::prelude::*;
+use crate::util::async_poll::dummy_waker;
 use crate::{io, log_error};
 
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -750,6 +752,23 @@ where
 			fee_estimator,
 		);
 		Self(persister)
+	}
+
+	pub fn read_all_channel_monitors_with_updates(
+		&self,
+	) -> Result<
+		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		io::Error,
+	> {
+		let mut fut = Box::pin(self.0.state.read_all_channel_monitors_with_updates());
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				unreachable!("Can't poll a future in a sync context, this should never happen");
+			},
+		}
 	}
 }
 
@@ -1548,7 +1567,7 @@ mod tests {
 		let chanmon_cfgs = create_chanmon_cfgs(4);
 		let kv_store = &TestStore::new(false);
 		let logger = &TestLogger::new();
-		let persister_0 = MonitorUpdatingPersister::new(
+		let persister_0 = MonitorUpdatingPersisterSync::new(
 			kv_store,
 			logger,
 			persister_0_max_pending_updates,
@@ -1559,7 +1578,7 @@ mod tests {
 		);
 		let kv_store = &TestStore::new(false);
 		let logger = &TestLogger::new();
-		let persister_1 = MonitorUpdatingPersister::new(
+		let persister_1 = MonitorUpdatingPersisterSync::new(
 			kv_store,
 			logger,
 			persister_1_max_pending_updates,
@@ -1726,7 +1745,7 @@ mod tests {
 
 			let kv_store = &TestStore::new(true);
 			let logger = &TestLogger::new();
-			let ro_persister = MonitorUpdatingPersister::new(
+			let ro_persister = MonitorUpdatingPersisterSync::new(
 				kv_store,
 				logger,
 				11,
@@ -1774,7 +1793,7 @@ mod tests {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let kv_store = &TestStore::new(false);
 		let logger = &TestLogger::new();
-		let persister_0 = MonitorUpdatingPersister::new(
+		let persister_0 = MonitorUpdatingPersisterSync::new(
 			kv_store,
 			logger,
 			test_max_pending_updates,
@@ -1785,7 +1804,7 @@ mod tests {
 		);
 		let kv_store = &TestStore::new(false);
 		let logger = &TestLogger::new();
-		let persister_1 = MonitorUpdatingPersister::new(
+		let persister_1 = MonitorUpdatingPersisterSync::new(
 			kv_store,
 			logger,
 			test_max_pending_updates,
