@@ -12,7 +12,6 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use lightning_types::features::ChannelTypeFeatures;
 
 #[test]
-#[rustfmt::skip]
 fn test_outbound_chans_unlimited() {
 	// Test that we never refuse an outbound channel even if a peer is unfuned-channel-limited
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -29,14 +28,17 @@ fn test_outbound_chans_unlimited() {
 	for _ in 0..MAX_UNFUNDED_CHANS_PER_PEER {
 		nodes[1].node.handle_open_channel(node_a, &open_channel_msg);
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a);
-		open_channel_msg.common_fields.temporary_channel_id = ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+		open_channel_msg.common_fields.temporary_channel_id =
+			ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
 	}
 
 	// Once we have MAX_UNFUNDED_CHANS_PER_PEER unfunded channels, new inbound channels will be
 	// rejected.
 	nodes[1].node.handle_open_channel(node_a, &open_channel_msg);
-	assert_eq!(get_err_msg(&nodes[1], &node_a).channel_id,
-		open_channel_msg.common_fields.temporary_channel_id);
+	assert_eq!(
+		get_err_msg(&nodes[1], &node_a).channel_id,
+		open_channel_msg.common_fields.temporary_channel_id
+	);
 
 	// but we can still open an outbound channel.
 	nodes[1].node.create_channel(node_a, 100_000, 0, 42, None, None).unwrap();
@@ -44,12 +46,13 @@ fn test_outbound_chans_unlimited() {
 
 	// but even with such an outbound channel, additional inbound channels will still fail.
 	nodes[1].node.handle_open_channel(node_a, &open_channel_msg);
-	assert_eq!(get_err_msg(&nodes[1], &node_a).channel_id,
-		open_channel_msg.common_fields.temporary_channel_id);
+	assert_eq!(
+		get_err_msg(&nodes[1], &node_a).channel_id,
+		open_channel_msg.common_fields.temporary_channel_id
+	);
 }
 
 #[test]
-#[rustfmt::skip]
 fn test_0conf_limiting() {
 	// Tests that we properly limit inbound channels when we have the manual-channel-acceptance
 	// flag set and (sometimes) accept channels as 0conf.
@@ -65,53 +68,80 @@ fn test_0conf_limiting() {
 	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
 	let init_msg = &msgs::Init {
-		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
 	};
 
 	// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
 	for _ in 0..MAX_UNFUNDED_CHANNEL_PEERS - 1 {
-		let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
-			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
+		let random_pk = PublicKey::from_secret_key(
+			&nodes[0].node.secp_ctx,
+			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap(),
+		);
 		nodes[1].node.peer_connected(random_pk, init_msg, true).unwrap();
 
 		nodes[1].node.handle_open_channel(random_pk, &open_channel_msg);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		match events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &random_pk, 23, None).unwrap();
-			}
+				nodes[1]
+					.node
+					.accept_inbound_channel(&temporary_channel_id, &random_pk, 23, None)
+					.unwrap();
+			},
 			_ => panic!("Unexpected event"),
 		}
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, random_pk);
-		open_channel_msg.common_fields.temporary_channel_id = ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+		open_channel_msg.common_fields.temporary_channel_id =
+			ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
 	}
 
 	// If we try to accept a channel from another peer non-0conf it will fail.
-	let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
-		&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
+	let last_random_pk = PublicKey::from_secret_key(
+		&nodes[0].node.secp_ctx,
+		&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap(),
+	);
 	nodes[1].node.peer_connected(last_random_pk, init_msg, true).unwrap();
 	nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &last_random_pk, 23, None) {
-				Err(APIError::APIMisuseError { err }) =>
-					assert_eq!(err, "Too many peers with unfunded channels, refusing to accept new ones"),
+			match nodes[1].node.accept_inbound_channel(
+				&temporary_channel_id,
+				&last_random_pk,
+				23,
+				None,
+			) {
+				Err(APIError::APIMisuseError { err }) => assert_eq!(
+					err,
+					"Too many peers with unfunded channels, refusing to accept new ones"
+				),
 				_ => panic!(),
 			}
-		}
+		},
 		_ => panic!("Unexpected event"),
 	}
-	assert_eq!(get_err_msg(&nodes[1], &last_random_pk).channel_id,
-		open_channel_msg.common_fields.temporary_channel_id);
+	assert_eq!(
+		get_err_msg(&nodes[1], &last_random_pk).channel_id,
+		open_channel_msg.common_fields.temporary_channel_id
+	);
 
 	// ...however if we accept the same channel 0conf it should work just fine.
 	nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &last_random_pk, 23, None).unwrap();
-		}
+			nodes[1]
+				.node
+				.accept_inbound_channel_from_trusted_peer_0conf(
+					&temporary_channel_id,
+					&last_random_pk,
+					23,
+					None,
+				)
+				.unwrap();
+		},
 		_ => panic!("Unexpected event"),
 	}
 	get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, last_random_pk);
@@ -157,17 +187,19 @@ fn test_inbound_zero_fee_commitments_manual_acceptance() {
 	do_test_manual_inbound_accept_with_override(zero_fee_cfg, None);
 }
 
-#[rustfmt::skip]
-fn do_test_manual_inbound_accept_with_override(start_cfg: UserConfig,
-	config_overrides: Option<ChannelConfigOverrides>) -> AcceptChannel {
-
+fn do_test_manual_inbound_accept_with_override(
+	start_cfg: UserConfig, config_overrides: Option<ChannelConfigOverrides>,
+) -> AcceptChannel {
 	let mut mannual_accept_cfg = start_cfg.clone();
 	mannual_accept_cfg.manually_accept_inbound_channels = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs,
-		&[Some(start_cfg.clone()), Some(start_cfg.clone()), Some(mannual_accept_cfg.clone())]);
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(start_cfg.clone()), Some(start_cfg.clone()), Some(mannual_accept_cfg.clone())],
+	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a = nodes[0].node.get_our_node_id();
@@ -182,19 +214,22 @@ fn do_test_manual_inbound_accept_with_override(start_cfg: UserConfig,
 		MessageSendEvent::HandleError { node_id, action } => {
 			assert_eq!(*node_id, node_a);
 			match action {
-				ErrorAction::SendErrorMessage { msg } =>
-					assert_eq!(msg.data, "No channels with anchor outputs accepted".to_owned()),
+				ErrorAction::SendErrorMessage { msg } => {
+					assert_eq!(msg.data, "No channels with anchor outputs accepted".to_owned())
+				},
 				_ => panic!("Unexpected error action"),
 			}
-		}
+		},
 		_ => panic!("Unexpected event"),
 	}
 
 	nodes[2].node.handle_open_channel(node_a, &open_channel_msg);
 	let events = nodes[2].node.get_and_clear_pending_events();
 	match events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, .. } =>
-			nodes[2].node.accept_inbound_channel(&temporary_channel_id, &node_a, 23, config_overrides).unwrap(),
+		Event::OpenChannelRequest { temporary_channel_id, .. } => nodes[2]
+			.node
+			.accept_inbound_channel(&temporary_channel_id, &node_a, 23, config_overrides)
+			.unwrap(),
 		_ => panic!("Unexpected event"),
 	}
 	get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, node_a)
@@ -284,12 +319,14 @@ fn test_zero_fee_commitments_downgrade_to_static_remote() {
 	do_test_channel_type_downgrade(initiator_cfg, receiver_cfg, start_type, vec![end_type]);
 }
 
-#[rustfmt::skip]
-fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserConfig,
-	start_type: ChannelTypeFeatures, downgrade_types: Vec<ChannelTypeFeatures>) {
+fn do_test_channel_type_downgrade(
+	initiator_cfg: UserConfig, acceptor_cfg: UserConfig, start_type: ChannelTypeFeatures,
+	downgrade_types: Vec<ChannelTypeFeatures>,
+) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(acceptor_cfg)]);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(acceptor_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let error_message = "Channel force-closed";
 
@@ -304,8 +341,15 @@ fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserC
 		let events = nodes[1].node.get_and_clear_pending_events();
 		match events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &node_a, error_message.to_string()).unwrap();
-			}
+				nodes[1]
+					.node
+					.force_close_broadcasting_latest_txn(
+						&temporary_channel_id,
+						&node_a,
+						error_message.to_string(),
+					)
+					.unwrap();
+			},
 			_ => panic!("Unexpected event"),
 		}
 
@@ -323,7 +367,6 @@ fn do_test_channel_type_downgrade(initiator_cfg: UserConfig, acceptor_cfg: UserC
 }
 
 #[test]
-#[rustfmt::skip]
 fn test_no_channel_downgrade() {
 	// Tests that the local node will not retry when a `option_static_remote` channel is
 	// rejected by a peer that advertises support for the feature.
@@ -334,7 +377,8 @@ fn test_no_channel_downgrade() {
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(receiver_cfg)]);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(initiator_cfg), Some(receiver_cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let error_message = "Channel force-closed";
 
@@ -350,8 +394,15 @@ fn test_no_channel_downgrade() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &node_a, error_message.to_string()).unwrap();
-		}
+			nodes[1]
+				.node
+				.force_close_broadcasting_latest_txn(
+					&temporary_channel_id,
+					&node_a,
+					error_message.to_string(),
+				)
+				.unwrap();
+		},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -361,5 +412,8 @@ fn test_no_channel_downgrade() {
 	// Since nodes[0] could not retry the channel with a different type, it should close it.
 	let chan_closed_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(chan_closed_events.len(), 1);
-	if let Event::ChannelClosed { .. } = chan_closed_events[0] { } else { panic!(); }
+	if let Event::ChannelClosed { .. } = chan_closed_events[0] {
+	} else {
+		panic!();
+	}
 }
