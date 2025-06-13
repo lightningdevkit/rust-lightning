@@ -375,7 +375,7 @@ where
 	where
 		H::Target: EventHandler,
 	{
-		self.0.process_pending_events(handler);
+		self.0.process_pending_events(handler)
 	}
 }
 

@@ -233,6 +233,16 @@ where
 	}
 }
 
+impl<K: Deref> Deref for KVStoreSyncWrapper<K>
+where
+	K::Target: KVStoreSync,
+{
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+
 impl<K: Deref> KVStore for KVStoreSyncWrapper<K>
 where
 	K::Target: KVStoreSync,
@@ -661,6 +671,86 @@ where
 	FE::Target: FeeEstimator,
 {
 	state: Arc<MonitorUpdatingPersisterState<K, L, ES, SP, BI, FE>>,
+}
+
+impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
+	MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
+where
+	K::Target: KVStore,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
+	pub fn new(
+		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
+		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
+	) -> Self {
+		let state = MonitorUpdatingPersisterState::new(
+			kv_store,
+			logger,
+			maximum_pending_updates,
+			entropy_source,
+			signer_provider,
+			broadcaster,
+			fee_estimator,
+		);
+		Self { state: Arc::new(state) }
+	}
+
+	pub async fn read_all_channel_monitors_with_updates(
+		&self,
+	) -> Result<
+		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
+		io::Error,
+	> {
+		self.state.read_all_channel_monitors_with_updates().await
+	}
+}
+
+pub struct MonitorUpdatingPersisterSync<
+	K: Deref,
+	L: Deref,
+	ES: Deref,
+	SP: Deref,
+	BI: Deref,
+	FE: Deref,
+>(MonitorUpdatingPersister<KVStoreSyncWrapper<K>, L, ES, SP, BI, FE>)
+where
+	K::Target: KVStoreSync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator;
+
+impl<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
+	MonitorUpdatingPersisterSync<K, L, ES, SP, BI, FE>
+where
+	K::Target: KVStoreSync,
+	L::Target: Logger,
+	ES::Target: EntropySource + Sized,
+	SP::Target: SignerProvider + Sized,
+	BI::Target: BroadcasterInterface,
+	FE::Target: FeeEstimator,
+{
+	pub fn new(
+		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
+		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
+	) -> Self {
+		let kv_store_sync = KVStoreSyncWrapper::new(kv_store);
+		let persister = MonitorUpdatingPersister::new(
+			kv_store_sync,
+			logger,
+			maximum_pending_updates,
+			entropy_source,
+			signer_provider,
+			broadcaster,
+			fee_estimator,
+		);
+		Self(persister)
+	}
 }
 
 struct MonitorUpdatingPersisterState<K: Deref, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
