@@ -2,6 +2,22 @@
 set -e
 set -x
 
+# Parse command line arguments
+OUTPUT_DIR="target/llvm-cov/html"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--output-dir OUTPUT_DIRECTORY]"
+            exit 1
+            ;;
+    esac
+done
+
 # Check if we're in the root directory, if so change to fuzz
 if [ -d "fuzz" ]; then
     cd fuzz
@@ -32,11 +48,20 @@ if [ "$show_corpus_message" = true ]; then
     echo ""
 fi
 
+# Create output directory if it doesn't exist
+mkdir -p "$OUTPUT_DIR"
+
 export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 # ignore anything in fuzz directory since we don't want coverage of targets 
-cargo llvm-cov --html --ignore-filename-regex "fuzz/"
+cargo llvm-cov --html --ignore-filename-regex "fuzz/" --output-dir "$OUTPUT_DIR"
+
+# Check if coverage report was generated successfully
+if [ ! -f "$OUTPUT_DIR/index.html" ]; then
+    echo "Error: Failed to generate coverage report"
+    exit 1
+fi
 
 echo ""
-echo "Coverage report generated in target/llvm-cov/html/index.html"
+echo "Coverage report generated in $OUTPUT_DIR/index.html"
 
 

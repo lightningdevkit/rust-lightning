@@ -137,3 +137,15 @@ RUSTFLAGS="--cfg=splicing" cargo test --verbose --color always -p lightning
 RUSTFLAGS="--cfg=async_payments" cargo test --verbose --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=lsps1_service" cargo test --verbose --color always -p lightning-liquidity
+
+# Generate fuzz coverage report
+echo -e "\n\nGenerating fuzz coverage report"
+if [ -n "$CI" ]; then
+    # In CI, store coverage in a specific directory for artifact collection
+    COVERAGE_DIR="coverage-report"
+    mkdir -p "$COVERAGE_DIR"
+    ./contrib/generate_fuzz_coverage.sh --output-dir "$COVERAGE_DIR"
+else
+    # Local development
+    ./contrib/generate_fuzz_coverage.sh
+fi
