@@ -39,6 +39,8 @@ use bitcoin::Weight;
 use core::cmp::min;
 use core::ops::Deref;
 
+use super::async_poll::FutureSpawner;
+
 // Transaction weights based on:
 // https://github.com/lightning/bolts/blob/master/03-transactions.md#appendix-a-expected-weights
 const COMMITMENT_TRANSACTION_BASE_WEIGHT: u64 = 900 + 224;
@@ -271,13 +273,14 @@ pub fn get_supportable_anchor_channels(
 /// [Event::OpenChannelRequest]: crate::events::Event::OpenChannelRequest
 pub fn can_support_additional_anchor_channel<
 	AChannelManagerRef: Deref,
-	ChannelSigner: EcdsaChannelSigner,
+	ChannelSigner: EcdsaChannelSigner + Send + Sync + 'static,
 	FilterRef: Deref,
 	BroadcasterRef: Deref,
 	EstimatorRef: Deref,
 	LoggerRef: Deref,
 	PersistRef: Deref,
 	EntropySourceRef: Deref,
+	FS: FutureSpawner,
 	ChainMonitorRef: Deref<
 		Target = ChainMonitor<
 			ChannelSigner,
@@ -287,6 +290,7 @@ pub fn can_support_additional_anchor_channel<
 			LoggerRef,
 			PersistRef,
 			EntropySourceRef,
+			FS,
 		>,
 	>,
 >(

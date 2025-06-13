@@ -449,7 +449,7 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref, SM: D
 
 	/// A message handler which only allows sending messages. This should generally be a
 	/// [`ChainMonitor`].
-	/// 
+	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub send_only_message_handler: SM,
 }
@@ -740,7 +740,7 @@ impl Peer {
 ///
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
-pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
+pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S, FS> = PeerManager<
 	SD,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, C, Arc<L>>>,
@@ -748,7 +748,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
 	Arc<L>,
 	IgnoringMessageHandler,
 	Arc<KeysManager>,
-	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>, Arc<KeysManager>>>,
+	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>, Arc<KeysManager>, FS>>,
 >;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
@@ -761,7 +761,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
 pub type SimpleRefPeerManager<
-	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, 'mr, SD, M, T, F, C, L
+	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, 'mr, SD, M, T, F, C, L, FS
 > = PeerManager<
 	SD,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'mr, M, T, F, L>,
@@ -770,7 +770,7 @@ pub type SimpleRefPeerManager<
 	&'logger L,
 	IgnoringMessageHandler,
 	&'c KeysManager,
-	&'j ChainMonitor<&'a M, C, &'b T, &'c F, &'logger L, &'c KeysManager, &'c KeysManager>,
+	&'j ChainMonitor<&'a M, C, &'b T, &'c F, &'logger L, &'c KeysManager, &'c KeysManager, FS>,
 >;
 
 

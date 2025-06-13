@@ -33,7 +33,7 @@ use crate::sign::{ChannelSigner, ChannelTransactionParameters, HTLCDescriptor};
 ///
 /// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 /// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-pub trait EcdsaChannelSigner: ChannelSigner {
+pub trait EcdsaChannelSigner: ChannelSigner + Send {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Policy checks should be implemented in this function, including checking the amount
