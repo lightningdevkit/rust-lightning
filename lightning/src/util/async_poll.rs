@@ -131,6 +131,7 @@ pub trait FutureSpawner: Send + Sync + 'static {
 	fn spawn<T: Future<Output = ()> + Send + 'static>(&self, future: T);
 }
 
+/// A no-op implementation of `FutureSpawner` for synchronous contexts.
 pub struct FutureSpawnerSync {}
 
 impl FutureSpawner for FutureSpawnerSync {

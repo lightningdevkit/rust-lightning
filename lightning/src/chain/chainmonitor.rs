@@ -324,6 +324,7 @@ where
 	P::Target: PersistSync<ChannelSigner>,
 	ES::Target: EntropySource,
 {
+	/// Create a new `ChainMonitorSync` instance.
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
 		entropy_source: ES, our_peerstorage_encryption_key: PeerStorageKey,
@@ -356,6 +357,13 @@ where
 	/// See [`ChainMonitor::list_pending_monitor_updates`].
 	pub fn list_pending_monitor_updates(&self) -> HashMap<ChannelId, Vec<u64>> {
 		self.0.list_pending_monitor_updates()
+	}
+
+	/// See [`ChainMonitor::get_monitor`].
+	pub fn get_monitor(
+		&self, channel_id: ChannelId,
+	) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
+		self.0.get_monitor(channel_id)
 	}
 }
 
@@ -455,6 +463,32 @@ where
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		self.0.get_relevant_txids()
+	}
+}
+
+impl<
+		ChannelSigner: EcdsaChannelSigner + 'static,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> chain::Listen for ChainMonitorSync<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: PersistSync<ChannelSigner>,
+	ES::Target: EntropySource,
+{
+	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
+		self.0.filtered_block_connected(header, txdata, height);
+	}
+
+	fn block_disconnected(&self, header: &Header, height: u32) {
+		self.0.block_disconnected(header, height);
 	}
 }
 

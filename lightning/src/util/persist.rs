@@ -685,6 +685,7 @@ where
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator,
 {
+	/// Constructs a new [`MonitorUpdatingPersister`].
 	pub fn new(
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
@@ -701,6 +702,7 @@ where
 		Self { state: Arc::new(state) }
 	}
 
+	/// Pass through to [`MonitorUpdatingPersisterState::read_all_channel_monitors_with_updates`].
 	pub async fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
@@ -710,11 +712,13 @@ where
 		self.state.read_all_channel_monitors_with_updates().await
 	}
 
+	/// Pass through to [`MonitorUpdatingPersisterState::cleanup_stale_updates`].
 	pub async fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
 		self.state.cleanup_stale_updates(lazy).await
 	}
 }
 
+/// A synchronous version of [`MonitorUpdatingPersister`].
 pub struct MonitorUpdatingPersisterSync<
 	K: Deref,
 	L: Deref,
@@ -776,6 +780,7 @@ where
 	BI::Target: BroadcasterInterface,
 	FE::Target: FeeEstimator,
 {
+	/// Constructs a new [`MonitorUpdatingPersisterSync`].
 	pub fn new(
 		kv_store: K, logger: L, maximum_pending_updates: u64, entropy_source: ES,
 		signer_provider: SP, broadcaster: BI, fee_estimator: FE,
@@ -793,6 +798,7 @@ where
 		Self(persister)
 	}
 
+	/// An synchronous version of [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`].
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<
@@ -810,6 +816,7 @@ where
 		}
 	}
 
+	/// A synchronous version of [`MonitorUpdatingPersister::cleanup_stale_updates`].
 	pub fn cleanup_stale_updates(&self, lazy: bool) -> Result<(), io::Error> {
 		let mut fut = Box::pin(self.0.cleanup_stale_updates(lazy));
 		let mut waker = dummy_waker();

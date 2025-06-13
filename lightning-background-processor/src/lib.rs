@@ -1006,7 +1006,6 @@ impl BackgroundProcessor {
 					L,
 					P,
 					ES,
-					FS,
 				>,
 			>
 			+ Send
@@ -1023,7 +1022,6 @@ impl BackgroundProcessor {
 		O: 'static + Deref,
 		K: 'static + Deref,
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
-		FS: FutureSpawner,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
