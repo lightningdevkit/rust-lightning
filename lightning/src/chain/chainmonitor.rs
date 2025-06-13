@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -26,30 +24,33 @@
 //! servicing [`ChannelMonitor`] updates from the client.
 
 use bitcoin::block::Header;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::{BlockHash, Txid};
 
 use crate::chain;
-use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
+use crate::chain::channelmonitor::{
+	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
+	WithChannelMonitor,
+};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::ln::types::ChannelId;
+use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
+use crate::events::{self, Event, EventHandler, ReplayEvent};
+use crate::ln::channel_state::ChannelDetails;
 use crate::ln::msgs::{self, BaseMessageHandler, Init, MessageSendEvent};
 use crate::ln::our_peer_storage::DecryptedOurPeerStorage;
+use crate::ln::types::ChannelId;
+use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, PeerStorageKey};
-use crate::events::{self, Event, EventHandler, ReplayEvent};
-use crate::util::logger::{Logger, WithContext};
+use crate::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::util::errors::APIError;
+use crate::util::logger::{Logger, WithContext};
 use crate::util::persist::MonitorName;
 use crate::util::wakers::{Future, Notifier};
-use crate::ln::channel_state::ChannelDetails;
-use crate::prelude::*;
-use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
-use crate::types::features::{InitFeatures, NodeFeatures};
+use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use bitcoin::secp256k1::PublicKey;
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
@@ -125,6 +126,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
+	#[rustfmt::skip]
 	fn persist_new_channel(&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
 
 	/// Update one channel's data. The provided [`ChannelMonitor`] has already applied the given
@@ -164,6 +166,7 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus`] for requirements when returning errors.
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
+	#[rustfmt::skip]
 	fn update_persisted_channel(&self, monitor_name: MonitorName, monitor_update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
 	/// Prevents the channel monitor from being loaded on startup.
 	///
@@ -236,13 +239,21 @@ impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, Chann
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [module-level documentation]: crate::chain::chainmonitor
 /// [`rebroadcast_pending_claims`]: Self::rebroadcast_pending_claims
-pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref>
-	where C::Target: chain::Filter,
-		  T::Target: BroadcasterInterface,
-		  F::Target: FeeEstimator,
-		  L::Target: Logger,
-		  P::Target: Persist<ChannelSigner>,
-		  ES::Target: EntropySource,
+pub struct ChainMonitor<
+	ChannelSigner: EcdsaChannelSigner,
+	C: Deref,
+	T: Deref,
+	F: Deref,
+	L: Deref,
+	P: Deref,
+	ES: Deref,
+> where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
+	ES::Target: EntropySource,
 {
 	monitors: RwLock<HashMap<ChannelId, MonitorHolder<ChannelSigner>>>,
 	chain_source: Option<C>,
@@ -267,13 +278,22 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
 	our_peerstorage_encryption_key: PeerStorageKey,
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
-where C::Target: chain::Filter,
-	  T::Target: BroadcasterInterface,
-	  F::Target: FeeEstimator,
-	  L::Target: Logger,
-	  P::Target: Persist<ChannelSigner>,
-	  ES::Target: EntropySource,
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
+	ES::Target: EntropySource,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the given chain data. See
@@ -286,6 +306,7 @@ where C::Target: chain::Filter,
 	/// updated `txdata`.
 	///
 	/// Calls which represent a new blockchain tip height should set `best_height`.
+	#[rustfmt::skip]
 	fn process_chain_data<FN>(&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN)
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
@@ -329,6 +350,7 @@ where C::Target: chain::Filter,
 		}
 	}
 
+	#[rustfmt::skip]
 	fn update_monitor_with_chain_data<FN>(
 		&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN, channel_id: &ChannelId,
 		monitor_state: &MonitorHolder<ChannelSigner>, channel_count: usize,
@@ -411,6 +433,7 @@ where C::Target: chain::Filter,
 	/// [`NodeSigner`]: crate::sign::NodeSigner
 	/// [`NodeSigner::get_peer_storage_key`]: crate::sign::NodeSigner::get_peer_storage_key
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	#[rustfmt::skip]
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P, entropy_source: ES, our_peerstorage_encryption_key: PeerStorageKey) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
@@ -457,7 +480,9 @@ where C::Target: chain::Filter,
 	///
 	/// Note that the result holds a mutex over our monitor set, and should not be held
 	/// indefinitely.
-	pub fn get_monitor(&self, channel_id: ChannelId) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
+	pub fn get_monitor(
+		&self, channel_id: ChannelId,
+	) -> Result<LockedChannelMonitor<'_, ChannelSigner>, ()> {
 		let lock = self.monitors.read().unwrap();
 		if lock.get(&channel_id).is_some() {
 			Ok(LockedChannelMonitor { lock, channel_id })
@@ -490,12 +515,12 @@ where C::Target: chain::Filter,
 	/// Each `Vec<u64>` contains `update_id`s from [`ChannelMonitor::get_latest_update_id`] for updates
 	/// that have not yet been fully persisted. Note that if a full monitor is persisted all the pending
 	/// monitor updates must be individually marked completed by calling [`ChainMonitor::channel_monitor_updated`].
+	#[rustfmt::skip]
 	pub fn list_pending_monitor_updates(&self) -> Vec<(ChannelId, Vec<u64>)> {
 		self.monitors.read().unwrap().iter().map(|(channel_id, holder)| {
 			(*channel_id, holder.pending_monitor_updates.lock().unwrap().clone())
 		}).collect()
 	}
-
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn remove_monitor(&self, channel_id: &ChannelId) -> ChannelMonitor<ChannelSigner> {
@@ -522,6 +547,7 @@ where C::Target: chain::Filter,
 	///
 	/// Returns an [`APIError::APIMisuseError`] if `funding_txo` does not match any currently
 	/// registered [`ChannelMonitor`]s.
+	#[rustfmt::skip]
 	pub fn channel_monitor_updated(&self, channel_id: ChannelId, completed_update_id: u64) -> Result<(), APIError> {
 		let monitors = self.monitors.read().unwrap();
 		let monitor_data = if let Some(mon) = monitors.get(&channel_id) { mon } else {
@@ -561,6 +587,7 @@ where C::Target: chain::Filter,
 	/// chain::Watch API wherein we mark a monitor fully-updated by just calling
 	/// channel_monitor_updated once with the highest ID.
 	#[cfg(any(test, fuzzing))]
+	#[rustfmt::skip]
 	pub fn force_channel_monitor_updated(&self, channel_id: ChannelId, monitor_update_id: u64) {
 		let monitors = self.monitors.read().unwrap();
 		let monitor = &monitors.get(&channel_id).unwrap().monitor;
@@ -589,6 +616,7 @@ where C::Target: chain::Filter,
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
 	///
 	/// [`EventsProvider`]: crate::events::EventsProvider
+	#[rustfmt::skip]
 	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
@@ -624,6 +652,7 @@ where C::Target: chain::Filter,
 	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
 	/// invoking this every 30 seconds, or lower if running in an environment with spotty
 	/// connections, like on mobile.
+	#[rustfmt::skip]
 	pub fn rebroadcast_pending_claims(&self) {
 		let monitors = self.monitors.read().unwrap();
 		for (_, monitor_holder) in &*monitors {
@@ -637,6 +666,7 @@ where C::Target: chain::Filter,
 	/// signature generation failure.
 	///
 	/// `monitor_opt` can be used as a filter to only trigger them for a specific channel monitor.
+	#[rustfmt::skip]
 	pub fn signer_unblocked(&self, monitor_opt: Option<ChannelId>) {
 		let monitors = self.monitors.read().unwrap();
 		if let Some(channel_id) = monitor_opt {
@@ -663,6 +693,7 @@ where C::Target: chain::Filter,
 	///
 	/// Depending on the implementation of [`Persist::archive_persisted_channel`] the monitor
 	/// data could be moved to an archive location or removed entirely.
+	#[rustfmt::skip]
 	pub fn archive_fully_resolved_channel_monitors(&self) {
 		let mut have_monitors_to_prune = false;
 		for monitor_holder in self.monitors.read().unwrap().values() {
@@ -696,6 +727,7 @@ where C::Target: chain::Filter,
 
 	/// This function collects the counterparty node IDs from all monitors into a `HashSet`,
 	/// ensuring unique IDs are returned.
+	#[rustfmt::skip]
 	fn all_counterparty_node_ids(&self) -> HashSet<PublicKey> {
 		let mon = self.monitors.read().unwrap();
 		mon
@@ -704,6 +736,7 @@ where C::Target: chain::Filter,
 			.collect()
 	}
 
+	#[rustfmt::skip]
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		// TODO: Serialize `ChannelMonitor`s inside `our_peer_storage`.
 
@@ -721,13 +754,22 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> BaseMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
-where C::Target: chain::Filter,
-	  T::Target: BroadcasterInterface,
-	  F::Target: FeeEstimator,
-	  L::Target: Logger,
-	  P::Target: Persist<ChannelSigner>,
-	  ES::Target: EntropySource,
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> BaseMessageHandler for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
+	ES::Target: EntropySource,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut pending_events = self.pending_send_only_events.lock().unwrap();
@@ -744,11 +786,19 @@ where C::Target: chain::Filter,
 		InitFeatures::empty()
 	}
 
+	#[rustfmt::skip]
 	fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref>
-chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
 	C::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
@@ -757,6 +807,7 @@ where
 	P::Target: Persist<ChannelSigner>,
 	ES::Target: EntropySource,
 {
+	#[rustfmt::skip]
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via block_connected", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
@@ -773,6 +824,7 @@ where
 		self.event_notifier.notify();
 	}
 
+	#[rustfmt::skip]
 	fn block_disconnected(&self, header: &Header, height: u32) {
 		let monitor_states = self.monitors.read().unwrap();
 		log_debug!(self.logger, "Latest block {} at height {} removed via block_disconnected", header.block_hash(), height);
@@ -783,8 +835,15 @@ where
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref>
-chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
 where
 	C::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
@@ -793,6 +852,7 @@ where
 	P::Target: Persist<ChannelSigner>,
 	ES::Target: EntropySource,
 {
+	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "{} provided transactions confirmed at height {} in block {}", txdata.len(), height, header.block_hash());
 		self.process_chain_data(header, None, txdata, |monitor, txdata| {
@@ -803,6 +863,7 @@ where
 		self.event_notifier.notify();
 	}
 
+	#[rustfmt::skip]
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		log_debug!(self.logger, "Transaction {} reorganized out of chain", txid);
 		let monitor_states = self.monitors.read().unwrap();
@@ -811,6 +872,7 @@ where
 		}
 	}
 
+	#[rustfmt::skip]
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via best_block_updated", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &[], |monitor, txdata| {
@@ -844,15 +906,24 @@ where
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref, ES: Deref>
-chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
-where C::Target: chain::Filter,
-	  T::Target: BroadcasterInterface,
-	  F::Target: FeeEstimator,
-	  L::Target: Logger,
-	  P::Target: Persist<ChannelSigner>,
-	  ES::Target: EntropySource,
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
+	ES::Target: EntropySource,
 {
+	#[rustfmt::skip]
 	fn watch_channel(&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
@@ -891,6 +962,7 @@ where C::Target: chain::Filter,
 		Ok(persist_res)
 	}
 
+	#[rustfmt::skip]
 	fn update_channel(&self, channel_id: ChannelId, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// `ChannelMonitorUpdate`'s `channel_id` is `None` prior to 0.0.121 and all channels in those
 		// versions are V1-established. For 0.0.121+ the `channel_id` fields is always `Some`.
@@ -969,6 +1041,7 @@ where C::Target: chain::Filter,
 		}
 	}
 
+	#[rustfmt::skip]
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)> {
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
@@ -984,13 +1057,22 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, ES: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
-where C::Target: chain::Filter,
-	  T::Target: BroadcasterInterface,
-	  F::Target: FeeEstimator,
-	  L::Target: Logger,
-	  P::Target: Persist<ChannelSigner>,
-	  ES::Target: EntropySource,
+impl<
+		ChannelSigner: EcdsaChannelSigner,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+	> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P, ES>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
+	ES::Target: EntropySource,
 {
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
@@ -1005,6 +1087,7 @@ where C::Target: chain::Filter,
 	///
 	/// [`SpendableOutputs`]: events::Event::SpendableOutputs
 	/// [`BumpTransaction`]: events::Event::BumpTransaction
+	#[rustfmt::skip]
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		for monitor_state in self.monitors.read().unwrap().values() {
 			match monitor_state.monitor.process_pending_events(&handler, &self.logger) {
@@ -1019,18 +1102,19 @@ where C::Target: chain::Filter,
 
 #[cfg(test)]
 mod tests {
-	use crate::{check_added_monitors, check_closed_event};
-	use crate::{expect_payment_path_successful, get_event_msg};
-	use crate::{get_htlc_update_msgs, get_revoke_commit_msgs};
-	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 	use crate::chain::channelmonitor::ANTI_REORG_DELAY;
+	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 	use crate::events::{ClosureReason, Event};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+	use crate::{check_added_monitors, check_closed_event};
+	use crate::{expect_payment_path_successful, get_event_msg};
+	use crate::{get_htlc_update_msgs, get_revoke_commit_msgs};
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_async_ooo_offchain_updates() {
 		// Test that if we have multiple offchain updates being persisted and they complete
 		// out-of-order, the ChainMonitor waits until all have completed before informing the
@@ -1136,6 +1220,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_chainsync_triggers_distributed_monitor_persistence() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -1210,6 +1295,7 @@ mod tests {
 
 	#[test]
 	#[cfg(feature = "std")]
+	#[rustfmt::skip]
 	fn update_during_chainsync_poisons_channel() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1232,4 +1318,3 @@ mod tests {
 		}).is_err());
 	}
 }
-
