@@ -341,6 +341,42 @@ where
 			future_spawner,
 		))
 	}
+
+	/// See [`ChainMonitor::rebroadcast_pending_claims`].
+	pub fn rebroadcast_pending_claims(&self) {
+		self.0.rebroadcast_pending_claims();
+	}
+
+	/// See [`ChainMonitor::get_update_future`].
+	pub fn get_update_future(&self) -> Future {
+		self.0.get_update_future()
+	}
+}
+
+impl<
+		ChannelSigner: EcdsaChannelSigner + 'static,
+		C: Deref,
+		T: Deref,
+		F: Deref,
+		L: Deref,
+		P: Deref,
+		ES: Deref,
+		FS: FutureSpawner,
+	> events::EventsProvider for ChainMonitorSync<ChannelSigner, C, T, F, L, P, ES, FS>
+where
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: PersistSync<ChannelSigner>,
+	ES::Target: EntropySource,
+{
+	fn process_pending_events<H: Deref>(&self, handler: H)
+	where
+		H::Target: EventHandler,
+	{
+		self.0.process_pending_events(handler);
+	}
 }
 
 impl<

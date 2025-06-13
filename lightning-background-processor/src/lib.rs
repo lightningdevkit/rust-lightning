@@ -21,6 +21,8 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 #[cfg(feature = "std")]
+use lightning::chain::chainmonitor::{ChainMonitorSync, PersistSync};
+#[cfg(feature = "std")]
 use lightning::events::EventHandler;
 #[cfg(feature = "std")]
 use lightning::events::EventsProvider;
@@ -41,9 +43,7 @@ use lightning::sign::EntropySource;
 use lightning::sign::OutputSpender;
 use lightning::util::async_poll::FutureSpawner;
 use lightning::util::logger::Logger;
-use lightning::util::persist::{
-	KVStore, KVStoreSync, KVStoreSyncWrapper, Persister, PersisterSync,
-};
+use lightning::util::persist::{KVStore, KVStoreSync, Persister, PersisterSync};
 use lightning::util::sweep::OutputSweeper;
 #[cfg(feature = "std")]
 use lightning::util::sweep::OutputSweeperSync;
@@ -998,7 +998,7 @@ impl BackgroundProcessor {
 		ES: 'static + Deref + Send,
 		M: 'static
 			+ Deref<
-				Target = ChainMonitor<
+				Target = ChainMonitorSync<
 					<CM::Target as AChannelManager>::Signer,
 					CF,
 					T,
@@ -1035,7 +1035,7 @@ impl BackgroundProcessor {
 		T::Target: 'static + BroadcasterInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+		P::Target: 'static + PersistSync<<CM::Target as AChannelManager>::Signer>,
 		PS::Target: 'static + PersisterSync<'a, CM, L, S>,
 		ES::Target: 'static + EntropySource,
 		CM::Target: AChannelManager,
