@@ -17,9 +17,8 @@ use lightning::sign::KeysManager;
 use lightning::sign::NodeSigner;
 use lightning::util::config::UserConfig;
 use lightning::util::test_utils::{
-	TestBroadcaster, TestChainSource, TestFeeEstimator, TestLogger, TestScorer,
+	TestBroadcaster, TestChainSource, TestFeeEstimator, TestLogger, TestScorer, TestStore,
 };
-use lightning_persister::fs_store::FilesystemStore;
 
 use lightning_liquidity::lsps0::ser::LSPS_MESSAGE_TYPE_ID;
 use lightning_liquidity::LiquidityManager;
@@ -36,43 +35,43 @@ pub fn do_test(data: &[u8]) {
 	let fee_estimator = Arc::new(TestFeeEstimator::new(253));
 	let logger = Arc::new(TestLogger::with_id("node".into()));
 	let genesis_block = genesis_block(network);
-	let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
+	let network_graph = Arc::new(NetworkGraph::new(network, Arc::clone(&logger)));
 	let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 	let now = Duration::from_secs(genesis_block.header.time as u64);
 	let seed = sha256::Hash::hash(b"lsps-message-seed").to_byte_array();
 	let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 	let router = Arc::new(DefaultRouter::new(
-		network_graph.clone(),
-		logger.clone(),
+		Arc::clone(&network_graph),
+		Arc::clone(&logger),
 		Arc::clone(&keys_manager),
-		scorer.clone(),
+		Arc::clone(&scorer),
 		Default::default(),
 	));
 	let msg_router =
-		Arc::new(DefaultMessageRouter::new(network_graph.clone(), Arc::clone(&keys_manager)));
+		Arc::new(DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&keys_manager)));
 	let chain_source = Arc::new(TestChainSource::new(Network::Bitcoin));
-	let kv_store = Arc::new(FilesystemStore::new("persister".into()));
+	let kv_store = Arc::new(TestStore::new(false));
 	let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
-		Some(chain_source.clone()),
-		tx_broadcaster.clone(),
-		logger.clone(),
-		fee_estimator.clone(),
-		kv_store.clone(),
-		keys_manager.clone(),
+		Some(Arc::clone(&chain_source)),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&logger),
+		Arc::clone(&fee_estimator),
+		Arc::clone(&kv_store),
+		Arc::clone(&keys_manager),
 		keys_manager.get_peer_storage_key(),
 	));
 	let best_block = BestBlock::from_network(network);
 	let params = ChainParameters { network, best_block };
 	let manager = Arc::new(ChannelManager::new(
-		fee_estimator.clone(),
-		chain_monitor.clone(),
-		tx_broadcaster.clone(),
-		router.clone(),
-		msg_router.clone(),
-		logger.clone(),
-		keys_manager.clone(),
-		keys_manager.clone(),
-		keys_manager.clone(),
+		Arc::clone(&fee_estimator),
+		Arc::clone(&chain_monitor),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&router),
+		Arc::clone(&msg_router),
+		Arc::clone(&logger),
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
 		UserConfig::default(),
 		params,
 		genesis_block.header.time,
