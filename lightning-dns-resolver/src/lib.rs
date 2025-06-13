@@ -467,7 +467,7 @@ mod test {
 	#[tokio::test]
 	async fn end_to_end_test() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_cfgs = create_node_cfgs_with_node_id_message_router(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
