@@ -921,7 +921,7 @@ where
 	///
 	/// Depending on the implementation of [`Persist::archive_persisted_channel`] the monitor
 	/// data could be moved to an archive location or removed entirely.
-	pub fn archive_fully_resolved_channel_monitors(&self) {
+	pub async fn archive_fully_resolved_channel_monitors(&self) {
 		let mut have_monitors_to_prune = false;
 		for monitor_holder in self.monitors.read().unwrap().values() {
 			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
@@ -931,16 +931,20 @@ where
 				have_monitors_to_prune = true;
 			}
 			if needs_persistence {
-				self.persister.update_persisted_channel(
-					monitor_holder.monitor.persistence_key(),
-					None,
-					&monitor_holder.monitor,
-				);
+				self.persister
+					.update_persisted_channel(
+						monitor_holder.monitor.persistence_key(),
+						None,
+						&monitor_holder.monitor,
+					)
+					.await;
 			}
 		}
 		if have_monitors_to_prune {
 			let mut monitors = self.monitors.write().unwrap();
-			monitors.retain(|channel_id, monitor_holder| {
+
+			let mut to_remove = Vec::new();
+			for (channel_id, monitor_holder) in monitors.iter() {
 				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
 				let (is_fully_resolved, _) =
 					monitor_holder.monitor.check_and_update_full_resolution_status(&logger);
@@ -951,12 +955,15 @@ where
 						channel_id
 					);
 					self.persister
-						.archive_persisted_channel(monitor_holder.monitor.persistence_key());
-					false
-				} else {
-					true
+						.archive_persisted_channel(monitor_holder.monitor.persistence_key())
+						.await;
+					to_remove.push(channel_id.clone());
 				}
-			});
+			}
+
+			for channel_id in to_remove {
+				monitors.remove(&channel_id);
+			}
 		}
 	}
 
