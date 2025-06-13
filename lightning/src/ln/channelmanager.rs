@@ -2820,10 +2820,12 @@ enum NotifyOption {
 /// We allow callers to either always notify by constructing with `notify_on_drop` or choose to
 /// notify or not based on whether relevant changes have been made, providing a closure to
 /// `optionally_notify` which returns a `NotifyOption`.
-struct PersistenceNotifierGuard<'a, F: FnMut() -> NotifyOption> {
+struct PersistenceNotifierGuard<'a, F: FnOnce() -> NotifyOption> {
 	event_persist_notifier: &'a Notifier,
 	needs_persist_flag: &'a AtomicBool,
-	should_persist: F,
+	// Always `Some` once initialized, but tracked as an `Option` to obtain the closure by value in
+	// [`PersistenceNotifierGuard::drop`].
+	should_persist: Option<F>,
 	// We hold onto this result so the lock doesn't get released immediately.
 	_read_guard: RwLockReadGuard<'a, ()>,
 }
@@ -2838,20 +2840,20 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 	/// isn't ideal.
 	fn notify_on_drop<C: AChannelManager>(
 		cm: &'a C,
-	) -> PersistenceNotifierGuard<'a, impl FnMut() -> NotifyOption> {
+	) -> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
 		Self::optionally_notify(cm, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
 	#[rustfmt::skip]
-	fn optionally_notify<F: FnMut() -> NotifyOption, C: AChannelManager>(cm: &'a C, mut persist_check: F)
-	-> PersistenceNotifierGuard<'a, impl FnMut() -> NotifyOption> {
+	fn optionally_notify<F: FnOnce() -> NotifyOption, C: AChannelManager>(cm: &'a C, persist_check: F)
+	-> PersistenceNotifierGuard<'a, impl FnOnce() -> NotifyOption> {
 		let read_guard = cm.get_cm().total_consistency_lock.read().unwrap();
 		let force_notify = cm.get_cm().process_background_events();
 
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			needs_persist_flag: &cm.get_cm().needs_persist_flag,
-			should_persist: move || {
+			should_persist: Some(move || {
 				// Pick the "most" action between `persist_check` and the background events
 				// processing and return that.
 				let notify = persist_check();
@@ -2862,7 +2864,7 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 					(_, NotifyOption::SkipPersistHandleEvents) => NotifyOption::SkipPersistHandleEvents,
 					_ => NotifyOption::SkipPersistNoEvents,
 				}
-			},
+			}),
 			_read_guard: read_guard,
 		}
 	}
@@ -2878,15 +2880,22 @@ impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> {
 		PersistenceNotifierGuard {
 			event_persist_notifier: &cm.get_cm().event_persist_notifier,
 			needs_persist_flag: &cm.get_cm().needs_persist_flag,
-			should_persist: persist_check,
+			should_persist: Some(persist_check),
 			_read_guard: read_guard,
 		}
 	}
 }
 
-impl<'a, F: FnMut() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
+impl<'a, F: FnOnce() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 	fn drop(&mut self) {
-		match (self.should_persist)() {
+		let should_persist = match self.should_persist.take() {
+			Some(should_persist) => should_persist,
+			None => {
+				debug_assert!(false);
+				return;
+			},
+		};
+		match should_persist() {
 			NotifyOption::DoPersist => {
 				self.needs_persist_flag.store(true, Ordering::Release);
 				self.event_persist_notifier.notify()
