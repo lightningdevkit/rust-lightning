@@ -24,7 +24,7 @@ mod test {
 
 	impl Instant {
 		thread_local! {
-			static ELAPSED: Cell<Duration> = core::cell::Cell::new(Duration::from_secs(0));
+			static ELAPSED: Cell<Duration> = const { Cell::new(Duration::from_secs(0)) };
 		}
 
 		pub fn advance(duration: Duration) {

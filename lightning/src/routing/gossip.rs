@@ -4162,7 +4162,7 @@ pub(crate) mod tests {
 	fn displays_node_alias() {
 		let format_str_alias = |alias: &str| {
 			let mut bytes = [0u8; 32];
-			bytes[..alias.as_bytes().len()].copy_from_slice(alias.as_bytes());
+			bytes[..alias.len()].copy_from_slice(alias.as_bytes());
 			format!("{}", NodeAlias(bytes))
 		};
 

@@ -5747,7 +5747,7 @@ mod tests {
 		// and provides the claim preimages for the two pending HTLCs. The first update generates
 		// an error, but the point of this test is to ensure the later updates are still applied.
 		let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
-		let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().rev().next().unwrap().clone();
+		let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().next_back().unwrap().clone();
 		assert_eq!(replay_update.updates.len(), 1);
 		if let ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } = replay_update.updates[0] {
 		} else { panic!(); }
@@ -5886,7 +5886,7 @@ mod tests {
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			nondust_htlcs.into_iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
+			nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
 			preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
@@ -5926,7 +5926,7 @@ mod tests {
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			nondust_htlcs.into_iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
+			nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 12);
@@ -5939,7 +5939,7 @@ mod tests {
 		// These HTLCs now have their output indices assigned
 		let nondust_htlcs = dummy_commitment_tx.nondust_htlcs();
 		monitor.provide_latest_holder_commitment_tx(dummy_commitment_tx.clone(),
-			nondust_htlcs.into_iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
+			nondust_htlcs.iter().map(|htlc| (htlc.clone(), Some(dummy_sig), Some(dummy_source.clone()))).collect());
 		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);

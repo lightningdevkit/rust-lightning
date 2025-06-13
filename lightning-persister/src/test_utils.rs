@@ -46,7 +46,7 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStore + RefUnwindSafe>(kv_s
 
 	// Ensure we have no issue operating with primary_namespace/secondary_namespace/key being
 	// KVSTORE_NAMESPACE_KEY_MAX_LEN
-	let max_chars: String = std::iter::repeat('A').take(KVSTORE_NAMESPACE_KEY_MAX_LEN).collect();
+	let max_chars = "A".repeat(KVSTORE_NAMESPACE_KEY_MAX_LEN);
 	kv_store.write(&max_chars, &max_chars, &max_chars, &data).unwrap();
 
 	let listed_keys = kv_store.list(&max_chars, &max_chars).unwrap();

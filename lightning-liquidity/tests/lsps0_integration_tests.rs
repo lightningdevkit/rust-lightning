@@ -51,7 +51,7 @@ fn list_protocols_integration_test() {
 	let client_handler = client_node.liquidity_manager.lsps0_client_handler();
 	let client_node_id = client_node.channel_manager.get_our_node_id();
 
-	let _ = client_handler.list_protocols(&service_node_id);
+	client_handler.list_protocols(&service_node_id);
 	let list_protocols_request = get_lsps_message!(client_node, service_node_id);
 
 	service_node

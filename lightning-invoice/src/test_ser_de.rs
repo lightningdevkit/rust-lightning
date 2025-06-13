@@ -269,7 +269,7 @@ fn private_route() {
 	use crate::{PrivateRoute, PublicKey, RouteHint, RouteHintHop, RoutingFees};
 
 	let private_route = PrivateRoute(RouteHint(vec![RouteHintHop {
-		src_node_id: PublicKey::from_slice(&vec![2; 33]).unwrap(),
+		src_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
 		short_channel_id: 0x0102030405060708,
 		fees: RoutingFees { base_msat: 1, proportional_millionths: 20 },
 		cltv_expiry_delta: 3,

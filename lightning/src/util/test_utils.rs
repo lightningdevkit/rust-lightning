@@ -157,7 +157,7 @@ impl<'a> TestRouter<'a> {
 		let next_blinded_payment_paths = Mutex::new(Vec::new());
 		Self {
 			router: DefaultRouter::new(
-				network_graph.clone(),
+				Arc::clone(&network_graph),
 				logger,
 				entropy_source,
 				scorer,
@@ -955,7 +955,7 @@ pub struct TestChannelMessageHandler {
 
 impl TestChannelMessageHandler {
 	thread_local! {
-		pub static MESSAGE_FETCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+		pub static MESSAGE_FETCH_COUNTER: AtomicUsize = const { AtomicUsize::new(0) };
 	}
 }
 
@@ -1435,17 +1435,9 @@ impl TestLogger {
 
 impl Logger for TestLogger {
 	fn log(&self, record: Record) {
-		let s = format!(
-			"{:<55} {}",
-			format_args!(
-				"{} {} [{}:{}]",
-				self.id,
-				record.level.to_string(),
-				record.module_path,
-				record.line
-			),
-			record.args
-		);
+		let context =
+			format!("{} {} [{}:{}]", self.id, record.level, record.module_path, record.line);
+		let s = format!("{:<55} {}", context, record.args);
 		#[cfg(ldk_bench)]
 		{
 			// When benchmarking, we don't actually want to print logs, but we do want to format

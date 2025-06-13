@@ -4105,7 +4105,6 @@ mod tests {
 		let decay_params = ProbabilisticScoringDecayParameters {
 			liquidity_offset_half_life: Duration::from_secs(60 * 60),
 			historical_no_updates_half_life: Duration::from_secs(10),
-			..ProbabilisticScoringDecayParameters::default()
 		};
 
 		let capacity_msat = 100_000_000_000;

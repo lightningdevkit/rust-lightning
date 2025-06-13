@@ -1025,37 +1025,38 @@ mod test {
 			fqxu92d8lr6fvg0r5gv0heeeqgcrqlnm6jhphu9y00rrhy4grqszsvpcgpy9qqqqqqgqqqqq7qqzq".as_bytes()
 		);
 
-		let mut expected = Vec::<RouteHintHop>::new();
-		expected.push(RouteHintHop {
-			src_node_id: PublicKey::from_slice(
-				&[
-					0x02u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4, 0x3c,
-					0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a, 0x95, 0xc3,
-					0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55,
-				][..],
-			)
-			.unwrap(),
-			short_channel_id: 0x0102030405060708,
-			fees: RoutingFees { base_msat: 1, proportional_millionths: 20 },
-			cltv_expiry_delta: 3,
-			htlc_minimum_msat: None,
-			htlc_maximum_msat: None,
-		});
-		expected.push(RouteHintHop {
-			src_node_id: PublicKey::from_slice(
-				&[
-					0x03u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4, 0x3c,
-					0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a, 0x95, 0xc3,
-					0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55,
-				][..],
-			)
-			.unwrap(),
-			short_channel_id: 0x030405060708090a,
-			fees: RoutingFees { base_msat: 2, proportional_millionths: 30 },
-			cltv_expiry_delta: 4,
-			htlc_minimum_msat: None,
-			htlc_maximum_msat: None,
-		});
+		let expected = vec![
+			RouteHintHop {
+				src_node_id: PublicKey::from_slice(
+					&[
+						0x02u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4,
+						0x3c, 0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a,
+						0x95, 0xc3, 0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55,
+					][..],
+				)
+				.unwrap(),
+				short_channel_id: 0x0102030405060708,
+				fees: RoutingFees { base_msat: 1, proportional_millionths: 20 },
+				cltv_expiry_delta: 3,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
+			},
+			RouteHintHop {
+				src_node_id: PublicKey::from_slice(
+					&[
+						0x03u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4,
+						0x3c, 0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a,
+						0x95, 0xc3, 0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55,
+					][..],
+				)
+				.unwrap(),
+				short_channel_id: 0x030405060708090a,
+				fees: RoutingFees { base_msat: 2, proportional_millionths: 30 },
+				cltv_expiry_delta: 4,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
+			},
+		];
 
 		assert_eq!(PrivateRoute::from_base32(&input), Ok(PrivateRoute(RouteHint(expected))));
 
@@ -1316,7 +1317,7 @@ mod test {
 			"0001020304050607080900010203040506070809000102030405060708090102",
 		)
 		.unwrap();
-		let description = std::iter::repeat("A").take(639).collect::<String>();
+		let description = "A".repeat(639);
 		let fallback_addr = crate::Fallback::SegWitProgram {
 			version: bitcoin::WitnessVersion::V0,
 			program: vec![0; 32],

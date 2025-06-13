@@ -234,7 +234,7 @@ fn test_routed_scid_alias() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000).2;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
 	let mut as_channel_ready = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000).0;
 
 	let last_hop = nodes[2].node.list_usable_channels();

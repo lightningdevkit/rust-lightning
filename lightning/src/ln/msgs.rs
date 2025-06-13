@@ -4563,7 +4563,7 @@ mod tests {
 		}
 		if disable {
 			let flag = target_value.last_mut().unwrap();
-			*flag = *flag | 1 << 1;
+			*flag |= 1 << 1;
 		}
 		target_value
 			.append(&mut <Vec<u8>>::from_hex("009000000000000f42400000271000000014").unwrap());

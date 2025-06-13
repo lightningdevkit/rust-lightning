@@ -459,9 +459,7 @@ impl OMNameResolver {
 					.filter_map(
 						|rr| if let RR::Txt(txt) = rr { Some(txt.data.as_vec()) } else { None },
 					)
-					.filter_map(
-						|data| if let Ok(s) = String::from_utf8(data) { Some(s) } else { None },
-					)
+					.filter_map(|data| String::from_utf8(data).ok())
 					.filter(|data_string| data_string.len() > URI_PREFIX.len())
 					.filter(|data_string| {
 						data_string[..URI_PREFIX.len()].eq_ignore_ascii_case(URI_PREFIX)
