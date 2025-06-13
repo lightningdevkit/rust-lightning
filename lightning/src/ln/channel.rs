@@ -3997,13 +3997,20 @@ where
 		cmp::max(self.config.options.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
 	}
 
+	/// Returns a maximum "sane" fee rate used to reason about our dust exposure.
+	/// Will be Some if the `channel_type`'s dust exposure depends on its commitment fee rate, and
+	/// None otherwise.
 	fn get_dust_exposure_limiting_feerate<F: Deref>(
-		&self, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, channel_type: &ChannelTypeFeatures,
 	) -> Option<u32>
 	where
 		F::Target: FeeEstimator,
 	{
-		Some(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate))
+		if channel_type.supports_anchor_zero_fee_commitments() {
+			None
+		} else {
+			Some(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate))
+		}
 	}
 
 	/// Returns the maximum configured dust exposure.
@@ -4139,7 +4146,9 @@ where
 			return Err(ChannelError::close("Remote side tried to send more than the total value of the channel".to_owned()));
 		}
 
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = self.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		if htlc_stats.pending_inbound_htlcs + 1 > self.holder_max_accepted_htlcs as usize {
 			return Err(ChannelError::close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.holder_max_accepted_htlcs)));
@@ -4215,7 +4224,9 @@ where
 		F::Target: FeeEstimator,
 	{
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = self.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
@@ -4332,7 +4343,9 @@ where
 		L::Target: Logger,
 	{
 		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = self.get_pending_htlc_stats(funding, Some(feerate_per_kw), dust_exposure_limiting_feerate);
 		let stats = self.build_commitment_stats(funding, true, true, Some(feerate_per_kw), Some(htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize));
 		let holder_balance_msat = stats.local_balance_before_fee_msat - htlc_stats.outbound_holding_cell_msat;
@@ -4781,6 +4794,12 @@ where
 			.unwrap_or(self.feerate_per_kw)
 			.checked_sub(dust_exposure_limiting_feerate.unwrap_or(0));
 
+		// Dust exposure is only decoupled from feerate for zero fee commitment channels.
+		debug_assert!(
+			funding.get_channel_type().supports_anchor_zero_fee_commitments()
+				== dust_exposure_limiting_feerate.is_none()
+		);
+
 		let extra_nondust_htlc_on_counterparty_tx_dust_exposure_msat = excess_feerate_opt.map(|excess_feerate| {
 			let extra_htlc_commit_tx_fee_sat = SpecTxBuilder {}.commit_tx_fee_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1 + on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
 			let extra_htlc_htlc_tx_fees_sat = chan_utils::htlc_tx_fees_sat(excess_feerate, on_counterparty_tx_accepted_nondust_htlcs + 1, on_counterparty_tx_offered_nondust_htlcs, funding.get_channel_type());
@@ -4912,7 +4931,9 @@ where
 		// Note that we have to handle overflow due to the case mentioned in the docs in general
 		// here.
 
-		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(
+			&fee_estimator, funding.get_channel_type(),
+		);
 		let htlc_stats = context.get_pending_htlc_stats(funding, None, dust_exposure_limiting_feerate);
 
 		// Subtract any non-HTLC outputs from the local and remote balances
@@ -9205,7 +9226,9 @@ where
 			return Err(LocalHTLCFailureReason::ChannelClosed)
 		}
 
-		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
+		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(
+			&fee_estimator, self.funding.get_channel_type(),
+		);
 
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding.iter())
