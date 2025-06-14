@@ -603,8 +603,7 @@ pub(crate) enum PaymentSendFailure {
 #[derive(Debug)]
 pub enum Bolt11PaymentError {
 	/// Incorrect amount was provided to [`ChannelManager::pay_for_bolt11_invoice`].
-	/// This happens when an amount is specified when [`Bolt11Invoice`] already contains
-	/// an amount, or vice versa.
+	/// This happens when the user-provided amount is less than an amount specified in the [`Bolt11Invoice`].
 	///
 	/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
 	/// [`ChannelManager::pay_for_bolt11_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt11_invoice
@@ -917,7 +916,9 @@ impl OutboundPayments {
 
 		let amount = match (invoice.amount_milli_satoshis(), amount_msats) {
 			(Some(amt), None) | (None, Some(amt)) => amt,
-			(None, None) | (Some(_), Some(_)) => return Err(Bolt11PaymentError::InvalidAmount),
+			(Some(inv_amt), Some(user_amt)) if user_amt < inv_amt => return Err(Bolt11PaymentError::InvalidAmount),
+			(Some(_), Some(user_amt)) => user_amt,
+			(None, None) => return Err(Bolt11PaymentError::InvalidAmount),
 		};
 
 		let mut recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
