@@ -86,9 +86,10 @@ use crate::ln::outbound_payment::{
 	SendAlongPathArgs, StaleExpiration,
 };
 use crate::ln::types::ChannelId;
-use crate::offers::flow::OffersMessageFlow;
+use crate::offers::flow::{FlowConfigs, OffersMessageFlow};
 use crate::offers::invoice::{
-	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, DEFAULT_RELATIVE_EXPIRY,
+	Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, InvoiceBuilderVariant,
+	UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY,
 };
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
@@ -156,7 +157,6 @@ use {
 };
 #[cfg(not(c_bindings))]
 use {
-	crate::offers::offer::{DerivedMetadata, OfferBuilder},
 	crate::offers::refund::RefundBuilder,
 	crate::onion_message::messenger::DefaultMessageRouter,
 	crate::routing::gossip::NetworkGraph,
@@ -164,6 +164,9 @@ use {
 	crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters},
 	crate::sign::KeysManager,
 };
+
+#[cfg(any(not(c_bindings), async_payments))]
+use crate::offers::offer::{DerivedMetadata, OfferBuilder};
 
 use lightning_invoice::{
 	Bolt11Invoice, Bolt11InvoiceDescription, CreationError, Currency, Description,
@@ -3711,9 +3714,51 @@ where
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			secp_ctx.clone(), message_router
+			secp_ctx.clone(), message_router, FlowConfigs::new()
 		);
 
+		Self::new_inner(
+			secp_ctx, fee_est, chain_monitor, tx_broadcaster, router, flow,
+			logger, entropy_source, node_signer, signer_provider, config, params,
+			current_timestamp
+		)
+
+	}
+
+	/// Similar to [`ChannelManager::new`], but allows providing a custom [`OffersMessageFlow`] implementation.
+	///
+	/// This is useful if you want more control over how BOLT12 offer-related messages are handled,
+	/// including support for custom [`FlowConfigs`] to conditionally trigger [`OfferEvents`] that you
+	/// can handle asynchronously via your own logic.
+	///
+	/// Use this method when:
+	/// - You want to initialize [`ChannelManager`] with a non-default [`OffersMessageFlow`] implementation.
+	/// - You need fine-grained control over BOLT12 event generation or message flow behavior.
+	///
+	/// [`FlowConfigs`]: crate::offers::flow::FlowConfigs
+	/// [`OfferEvents`]: crate::offers::flow::OfferEvents
+	#[rustfmt::skip]
+	pub fn new_with_flow(
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, flow: OffersMessageFlow<MR>,
+		logger: L, entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
+		params: ChainParameters, current_timestamp: u32,
+	) -> Self {
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+
+		Self::new_inner(
+			secp_ctx, fee_est, chain_monitor, tx_broadcaster, router, flow,
+			logger, entropy_source, node_signer, signer_provider, config, params,
+			current_timestamp
+		)
+	}
+
+	#[rustfmt::skip]
+	fn new_inner(
+		secp_ctx: Secp256k1<secp256k1::All>, fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R,
+		flow: OffersMessageFlow<MR>, logger: L, entropy_source: ES, node_signer: NS,
+		signer_provider: SP, config: UserConfig, params: ChainParameters, current_timestamp: u32
+	) -> Self {
 		ChannelManager {
 			default_configuration: config.clone(),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -3733,10 +3778,10 @@ where
 			pending_intercepted_htlcs: Mutex::new(new_hash_map()),
 			short_to_chan_info: FairRwLock::new(new_hash_map()),
 
-			our_network_pubkey,
+			our_network_pubkey: node_signer.get_node_id(Recipient::Node).unwrap(),
 			secp_ctx,
 
-			inbound_payment_key: expanded_inbound_key,
+			inbound_payment_key: node_signer.get_inbound_payment_key(),
 			fake_scid_rand_bytes: entropy_source.get_secure_random_bytes(),
 
 			probing_cookie_secret: entropy_source.get_secure_random_bytes(),
@@ -12878,8 +12923,17 @@ where
 					Err(_) => return None,
 				};
 
+				let invoice_request = match self.flow.determine_invoice_request_handling(invoice_request) {
+					Ok(Some(ir)) => ir,
+					Ok(None) => return None,
+					Err(_) => {
+						log_trace!(self.logger, "Failed to handle invoice request");
+						return None;
+					}
+				};
+
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-					&invoice_request.inner
+					&invoice_request.inner, None
 				) {
 					Ok(amount_msats) => amount_msats,
 					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
@@ -12897,15 +12951,55 @@ where
 				};
 
 				let entropy = &*self.entropy_source;
-				let (response, context) = self.flow.create_response_for_invoice_request(
-					&self.node_signer, &self.router, entropy, invoice_request, amount_msats,
-					payment_hash, payment_secret, self.list_usable_channels()
-				);
 
-				match context {
-					Some(context) => Some((response, responder.respond_with_reply_path(context))),
-					None => Some((response, responder.respond()))
-				}
+				let (builder_var, context) = match self.flow.create_invoice_builder_from_invoice_request(
+					&self.router,
+					entropy,
+					&invoice_request,
+					amount_msats,
+					payment_hash,
+					payment_secret,
+					self.list_usable_channels(),
+				) {
+					Ok(result) => result,
+					Err(error) => {
+						return Some((
+							OffersMessage::InvoiceError(InvoiceError::from(error)),
+							responder.respond(),
+						));
+					}
+				};
+
+				let result = match builder_var {
+					InvoiceBuilderVariant::Derived(builder) => {
+						builder
+							.build_and_sign(&self.secp_ctx)
+							.map_err(InvoiceError::from)
+					},
+					InvoiceBuilderVariant::Explicit(builder) => {
+						builder
+							.build()
+							.map_err(InvoiceError::from)
+							.and_then(|invoice| {
+								#[cfg(c_bindings)]
+								let mut invoice = invoice;
+								invoice
+									.sign(|invoice: &UnsignedBolt12Invoice| self.node_signer.sign_bolt12_invoice(invoice))
+									.map_err(InvoiceError::from)
+							})
+					}
+				};
+
+				Some(match result {
+					Ok(invoice) => (
+						OffersMessage::Invoice(invoice),
+						responder.respond_with_reply_path(context),
+					),
+					Err(error) => (
+						OffersMessage::InvoiceError(error),
+						responder.respond(),
+					),
+				})
 			},
 			OffersMessage::Invoice(invoice) => {
 				let payment_id = match self.flow.verify_bolt12_invoice(&invoice, context.as_ref()) {
@@ -12916,6 +13010,15 @@ where
 				let logger = WithContext::from(
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
+
+				let invoice = match self.flow.determine_invoice_handling(invoice, payment_id) {
+					Ok(Some(invoice)) => invoice,
+					Ok(None) => return None,
+					Err(_) => {
+						log_trace!(logger, "Failed to handle invoice");
+						return None
+					},
+				};
 
 				if self.default_configuration.manually_handle_bolt12_invoices {
 					// Update the corresponding entry in `PendingOutboundPayment` for this invoice.
@@ -15140,7 +15243,7 @@ where
 		let flow = OffersMessageFlow::new(
 			chain_hash, best_block, our_network_pubkey,
 			highest_seen_timestamp, expanded_inbound_key,
-			secp_ctx.clone(), args.message_router
+			secp_ctx.clone(), args.message_router, FlowConfigs::new(),
 		);
 
 		let channel_manager = ChannelManager {
