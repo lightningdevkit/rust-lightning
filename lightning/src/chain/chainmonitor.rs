@@ -29,8 +29,8 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
-	WithChannelMonitor,
+	Balance, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
+	TransactionOutputs, WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
@@ -1032,6 +1032,35 @@ where
 						panic!("{}", err_str);
 					},
 				}
+
+				// We may need to start monitoring for any alternative funding transactions.
+				if let Some(ref chain_source) = self.chain_source {
+					for update in &update.updates {
+						match update {
+							ChannelMonitorUpdateStep::RenegotiatedFunding {
+								channel_parameters, ..
+							} => {
+								let funding_outpoint = channel_parameters.funding_outpoint
+									.expect("Renegotiated funding must always have known outpoint");
+								let funding_script =
+									channel_parameters.make_funding_redeemscript().to_p2wsh();
+								log_trace!(
+									&logger,
+									"Registering renegotiated funding outpoint {} with the filter to monitor confirmations and spends",
+									&funding_outpoint
+								);
+								chain_source.register_tx(&funding_outpoint.txid, &funding_script);
+								chain_source.register_output(WatchedOutput {
+									block_hash: None,
+									outpoint: funding_outpoint,
+									script_pubkey: funding_script,
+								});
+							},
+							_ => {},
+						}
+					}
+				}
+
 				if update_res.is_err() {
 					ChannelMonitorUpdateStatus::InProgress
 				} else {
