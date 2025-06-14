@@ -1080,6 +1080,7 @@ impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
+impl_for_vec!(crate::blinded_path::message::BlindedMessagePath);
 impl_for_vec!((A, B), A, B);
 impl_for_vec!(SerialId);
 impl_for_vec!(InteractiveTxInput);
